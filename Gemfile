@@ -5,6 +5,8 @@ source 'https://rubygems.org'
 gem 'nanoc', '4.12'
 gem 'erubis', '2.7.0'
 gem 'kramdown', '2.4.0'
+gem 'kramdown-parser-gfm', '1.1.0'
+gem 'json'
 
 group :development do
   gem 'adsf', '1.4.8'
