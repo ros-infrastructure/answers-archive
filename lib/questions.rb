@@ -3,13 +3,13 @@ require "yaml"
 
 # This is a hack anyway but I still wish I could read the existing nanoc config
 # instead of re-reading the YAML. But whatever
-QuestionsConfig = Struct.new(:max_per_site, :only_answered)
+QuestionsConfig = Struct.new(:max_per_site, :only_answered, :only_migrated)
 CONFIG = QuestionsConfig.new
-
 if ENV["XTEST_ANSWERS_DEBUG"]
   config = YAML.load_file("nanoc.yaml")["data_sources"].select{|ds| ds["type"] == "questions"}.first["xtest"]
   CONFIG.max_per_site = config["max_per_site"]
   CONFIG.only_answered = config["only_answered"]
+  CONFIG.only_migrated = config["only_migrated"]
 end
 
 
@@ -110,6 +110,9 @@ class QuestionsDataSource < Nanoc::DataSource
 
     ros_questions = (JSON.load(File.read('answers/ros_unexported_se_dump.json'))["Questions"] +
                      JSON.load(File.read('answers/ros_se_dump.json'))["Questions"])
+    if CONFIG.only_migrated
+      ros_questions = ros_questions.select { |json| ros_migration_map.has_key? json["OriginalPostID"] }
+    end
     if CONFIG.only_answered
       ros_questions = ros_questions.select { |json| json["Answers"].size > 0 }
     end
@@ -125,6 +128,9 @@ class QuestionsDataSource < Nanoc::DataSource
 
    gz_questions = (JSON.load(File.read('answers/gazebosim_unexported_se_dump.json'))["Questions"] +
                    JSON.load(File.read('answers/gazebo_se_dump.json'))["Questions"])
+    if CONFIG.only_migrated
+      gz_questions = gz_questions.select { |json| gz_migration_map.has_key? json["OriginalPostID"] }
+    end
    if CONFIG.only_answered
      gz_questions = gz_questions.select { |json| json["Answers"].size > 0 }
    end
