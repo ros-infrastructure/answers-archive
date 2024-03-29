@@ -15,6 +15,27 @@ module AnswersForHelper
   end
 end
 
+module MigratedPostsHelper
+  def migrated_posts
+    items.select do |item|
+      item[:migrated_url]
+    end
+  end
+
+  def migrated_ros_posts
+    migrated_posts.select do |item|
+      item[:site].id == "ros"
+    end
+  end
+
+  def migrated_gz_posts
+    migrated_posts.select do |item|
+      item[:site].id == "gz"
+    end
+  end
+end
+
 use_helper Nanoc::Helpers::Rendering
 use_helper PageTitleHelper
 use_helper AnswersForHelper
+use_helper MigratedPostsHelper
