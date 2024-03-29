@@ -9,9 +9,13 @@ module PageTitleHelper
   end
 end
 
-module AnswersForHelper
+module QuestionsHelper
   def answers_for item
     items.find_all "#{item.identifier.without_ext}/answer/*"
+  end
+
+  def questions_for_site site
+    items.find_all "/questions/#{site}/question/*"
   end
 end
 
@@ -37,5 +41,5 @@ end
 
 use_helper Nanoc::Helpers::Rendering
 use_helper PageTitleHelper
-use_helper AnswersForHelper
+use_helper QuestionsHelper
 use_helper MigratedPostsHelper
