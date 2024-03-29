@@ -42,7 +42,10 @@ class Question < Struct.new(
   end
 
   def attributes
-    @attributes ||= self.to_h
+    return @attributes if defined?(@attributes)
+    @attributes = self.to_h.tap do |h|
+      h[:migrated_url] = self.migrated_url
+    end
   end
 
   def migrated_url
