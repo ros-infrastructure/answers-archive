@@ -9,5 +9,12 @@ module PageTitleHelper
   end
 end
 
+module AnswersForHelper
+  def answers_for item
+    items.find_all "#{item.identifier.without_ext}/answer/*"
+  end
+end
+
 use_helper Nanoc::Helpers::Rendering
 use_helper PageTitleHelper
+use_helper AnswersForHelper
