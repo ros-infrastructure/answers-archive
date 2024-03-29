@@ -9,4 +9,7 @@ gem 'json'
 
 group :development do
   gem 'adsf', '1.4.8'
+  gem 'pry'
+  gem 'byebug'
+  gem 'pry-byebug'
 end
