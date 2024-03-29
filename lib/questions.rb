@@ -1,4 +1,17 @@
 require "json"
+require "yaml"
+
+# This is a hack anyway but I still wish I could read the existing nanoc config
+# instead of re-reading the YAML. But whatever
+QuestionsConfig = Struct.new(:max_per_site, :only_answered)
+CONFIG = QuestionsConfig.new
+
+if ENV["XTEST_ANSWERS_DEBUG"]
+  config = YAML.load_file("nanoc.yaml")["data_sources"].select{|ds| ds["type"] == "questions"}.first["xtest"]
+  CONFIG.max_per_site = config["max_per_site"]
+  CONFIG.only_answered = config["only_answered"]
+end
+
 
 class Question < Struct.new(
   :answers,
@@ -95,17 +108,31 @@ class QuestionsDataSource < Nanoc::DataSource
 
     @questions = Array.new
 
-    (JSON.load(File.read('answers/ros_unexported_se_dump.json'))["Questions"] +
-     JSON.load(File.read('answers/ros_se_dump.json'))["Questions"]).select{|json|
-       json["Answers"].size > 0}.take(10).each do |q_json|
+    ros_questions = (JSON.load(File.read('answers/ros_unexported_se_dump.json'))["Questions"] +
+                     JSON.load(File.read('answers/ros_se_dump.json'))["Questions"])
+    if CONFIG.only_answered
+      ros_questions = ros_questions.select { |json| json["Answers"].size > 0 }
+    end
+    if CONFIG.max_per_site
+      ros_questions = ros_questions.take(CONFIG.max_per_site)
+    end
+
+    ros_questions.each do |q_json|
       question = Question.from_json q_json
       question.site = ros_site
       @questions << question
     end
 
-   (JSON.load(File.read('answers/gazebosim_unexported_se_dump.json'))["Questions"] +
-    JSON.load(File.read('answers/gazebo_se_dump.json'))["Questions"]).select{|json|
-      json["Answers"].size > 0}.take(10).each do |q_json|
+   gz_questions = (JSON.load(File.read('answers/gazebosim_unexported_se_dump.json'))["Questions"] +
+                   JSON.load(File.read('answers/gazebo_se_dump.json'))["Questions"])
+   if CONFIG.only_answered
+     gz_questions = gz_questions.select { |json| json["Answers"].size > 0 }
+   end
+   if CONFIG.max_per_site
+     gz_questions = gz_questions.take(CONFIG.max_per_site)
+   end
+
+    gz_questions.each do |q_json|
       question = Question.from_json q_json
       question.site = gz_site
       @questions << question
