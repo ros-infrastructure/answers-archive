@@ -17,6 +17,10 @@ module QuestionsHelper
   def questions_for_site site
     items.find_all "/questions/#{site}/question/*"
   end
+
+  def pretty_date date
+    date.strftime("%F %T UTC")
+  end
 end
 
 module MigratedPostsHelper
