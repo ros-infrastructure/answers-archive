@@ -1,3 +1,4 @@
+require "date"
 require "json"
 
 module QuestionData
@@ -31,7 +32,7 @@ module QuestionData
         body_markdown: json['BodyMarkdown'],
         owner_display_name: json['OwnerDisplayName'],
         tags: json["Tags"].split(","),
-        creation_date: json['CreationDate'], # TODO PARSE IT?
+        creation_date: DateTime.parse(json["CreationDate"]),
         upvote_count: json['UpvoteCount'],
         original_post_url: json['OriginalPostURL'],
         answers: json['Answers'].map{|answer| Answer.from_json answer},
@@ -69,7 +70,7 @@ module QuestionData
       self.new(
         original_post_id: json["OriginalPostID"],
         owner_display_name: json["OwnerDisplayName"],
-        creation_date: json["CreationDate"],
+        creation_date: DateTime.parse(json["CreationDate"]),
         body_markdown: json["BodyMarkdown"],
         accepted?: json["Accepted"],
         upvote_count: json["UpvoteCount"],
