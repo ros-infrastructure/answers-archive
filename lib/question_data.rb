@@ -13,6 +13,7 @@ module QuestionData
 
   class Question < Struct.new(
     :answers,
+    :comments,
     :body_markdown,
     :creation_date,
     :original_post_id,
@@ -41,6 +42,7 @@ module QuestionData
         upvote_count: json["UpvoteCount"],
         original_post_url: json["OriginalPostURL"],
         answers: json["Answers"].map{|answer| Answer.from_json answer},
+        comments: json["Comments"].map{|comment| Comment.from_json comment},
       )
     end
 
@@ -85,6 +87,7 @@ module QuestionData
         body_markdown: json["BodyMarkdown"],
         accepted?: json["Accepted"],
         upvote_count: json["UpvoteCount"],
+        comments: json["Comments"].map{|comment| Comment.from_json comment},
       )
     end
 
@@ -95,6 +98,33 @@ module QuestionData
     def nanoc_identifier
       @nanoc_identifier ||= Nanoc::Identifier.new(
         "/answer/#{self.original_post_id}.md"
+      )
+    end
+  end
+
+  class Comment < Struct.new(
+    :body_markdown,
+    :owner,
+    :creation_date,
+    keyword_init: true
+  )
+
+    def self.from_json json
+      owner = UserProfile.find_by_url(json["OwnerProfileUrl"]) ||
+        UserProfile.add(
+          UserProfile.from_owner_info(json["OwnerProfileUrl"], json["OwnerDisplayName"])
+        )
+
+      self.new(
+        body_markdown: json["BodyMarkdown"],
+        owner: owner,
+        creation_date: DateTime.parse(json["CreationDate"]),
+      )
+    end
+
+    def nanoc_identifier index
+      @nanoc_identifier ||= Nanoc::Identifier.new(
+        "/comment/#{self.owner.id}-#{index}.md"
       )
     end
   end
@@ -210,7 +240,7 @@ module QuestionData
       end if @config.only_answered
 
       site_questions = site_questions.select do |json|
-        json["BodyMarkdown"] =~ /### Original comments/
+        json["Comments"].size > 0
       end if @config.only_commented
       site_questions = site_questions.take(@config.max_per_site) if @config.max_per_site
 
