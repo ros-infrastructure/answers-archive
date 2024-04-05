@@ -4,7 +4,7 @@ module PageTitleHelper
     if item[:site].nil?
       "#{item[:title]} - ROS and Gazebo Answers Archive"
     else
-    "#{item[:title]} - #{item[:site]}"
+      "#{item[:title]} - #{item[:site].title}"
     end
   end
 end
