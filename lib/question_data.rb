@@ -17,7 +17,7 @@ module QuestionData
     :creation_date,
     :original_post_id,
     :original_post_url,
-    :owner_display_name,
+    :owner,
     :site,
     :tags,
     :title,
@@ -26,16 +26,21 @@ module QuestionData
   )
 
     def self.from_json json
+      owner = UserProfile.find_by_url(json["OwnerProfileUrl"]) ||
+        UserProfile.add(
+          UserProfile.from_owner_info(json["OwnerProfileUrl"], json["OwnerDisplayName"])
+        )
+
       self.new(
-        original_post_id: json['OriginalPostID'],
-        title: json['Title'],
-        body_markdown: json['BodyMarkdown'],
-        owner_display_name: json['OwnerDisplayName'],
+        original_post_id: json["OriginalPostID"],
+        title: json["Title"],
+        body_markdown: json["BodyMarkdown"],
+        owner: owner,
         tags: json["Tags"].split(","),
         creation_date: DateTime.parse(json["CreationDate"]),
-        upvote_count: json['UpvoteCount'],
-        original_post_url: json['OriginalPostURL'],
-        answers: json['Answers'].map{|answer| Answer.from_json answer},
+        upvote_count: json["UpvoteCount"],
+        original_post_url: json["OriginalPostURL"],
+        answers: json["Answers"].map{|answer| Answer.from_json answer},
       )
     end
 
@@ -62,14 +67,20 @@ module QuestionData
     :body_markdown,
     :creation_date,
     :original_post_id,
-    :owner_display_name,
+    :owner,
     :upvote_count,
+    :comments,
     keyword_init: true
   )
     def self.from_json json
+      owner = UserProfile.find_by_url(json["OwnerProfileUrl"]) ||
+        UserProfile.add(
+          UserProfile.from_owner_info(json["OwnerProfileUrl"], json["OwnerDisplayName"])
+        )
+
       self.new(
         original_post_id: json["OriginalPostID"],
-        owner_display_name: json["OwnerDisplayName"],
+        owner: owner,
         creation_date: DateTime.parse(json["CreationDate"]),
         body_markdown: json["BodyMarkdown"],
         accepted?: json["Accepted"],
@@ -85,6 +96,40 @@ module QuestionData
       @nanoc_identifier ||= Nanoc::Identifier.new(
         "/answer/#{self.original_post_id}.md"
       )
+    end
+  end
+
+  class UserProfile < Struct.new(
+    :id,
+    :profile_url,
+    :site,
+    :username,
+    :display_name,
+    keyword_init: true
+  )
+    URL_PATTERN = %r{https://([a-z\.]+)/users/(\d+)/([^/]+)/}
+
+    @@all_users ||= Hash.new
+
+    def self.from_owner_info url, display_name
+      match_data = url.match(URL_PATTERN)
+
+      domain = match_data[1]
+      id = match_data[2].to_i
+      username = match_data[3]
+      site = Site.find_by_domain domain
+      self.new(id: id, username: username, display_name: display_name, profile_url: url, site: site)
+    end
+
+    def self.find_by_url url
+      require "pry"; binding.pry unless url.match(URL_PATTERN)
+      id = url.match(URL_PATTERN)[1].to_i
+      @@all_users[id]
+    end
+
+    def self.add user
+      @@all_users[user.id] = user
+      user
     end
   end
 
