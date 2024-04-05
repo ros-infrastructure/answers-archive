@@ -134,6 +134,19 @@ module QuestionData
   end
 
   class Site < Struct.new(:id, :title, :migration_map, keyword_init: true)
+    @@sites ||= Hash.new
+    def self.add site
+      @@sites[site.id] = site
+    end
+
+    def self.find_by_domain domain
+      case domain
+      when "answers.ros.org"
+        @@sites["ros"]
+      when "answers.gazebosim.org"
+        @@sites["gz"]
+      end
+    end
   end
 
   class DataReader
@@ -166,7 +179,7 @@ module QuestionData
                 when "ros"
                   "ROS Answers"
                 end
-        Site.new(id: id, title: title, migration_map: migration_map)
+        Site.add(Site.new(id: id, title: title, migration_map: migration_map))
       end
     end
 
