@@ -30,14 +30,29 @@ class QuestionsDataSource < Nanoc::DataSource
         question.attributes,
         question.nanoc_identifier
       )
-      if question.answers
-        question.answers.each do |answer|
-          @items << new_item(
-            answer.body_markdown,
-            answer.attributes,
-            Nanoc::Identifier.new(question.nanoc_identifier.without_ext + answer.nanoc_identifier)
-          )
+      question.answers.each do |answer|
+        answer_id = Nanoc::Identifier.new(question.nanoc_identifier.without_ext + answer.nanoc_identifier)
+        @items << new_item(
+          answer.body_markdown,
+          answer.attributes,
+          answer_id,
+        )
+        if answer.comments
+          answer.comments.each_with_index do |comment, index|
+            @items << new_item(
+              comment.body_markdown,
+              comment.attributes,
+              Nanoc::Identifier.new(answer_id.without_ext + comment.nanoc_identifier(index))
+        )
+          end
         end
+      end
+      question.comments.each_with_index do |comment, index|
+        @items << new_item(
+          comment.body_markdown,
+          comment.attributes,
+          Nanoc::Identifier.new(question.nanoc_identifier.without_ext + comment.nanoc_identifier(index))
+        )
       end
     end
     @items
