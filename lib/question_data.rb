@@ -122,6 +122,10 @@ module QuestionData
       )
     end
 
+    def attributes
+      self.to_h
+    end
+
     def nanoc_identifier index
       @nanoc_identifier ||= Nanoc::Identifier.new(
         "/comment/#{self.owner.id}-#{index}.md"

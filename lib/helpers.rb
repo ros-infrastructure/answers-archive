@@ -14,6 +14,10 @@ module QuestionsHelper
     items.find_all "#{item.identifier.without_ext}/answer/*"
   end
 
+  def comments_for item
+    items.find_all "#{item.identifier.without_ext}/comment/*"
+  end
+
   def questions_for_site site
     items.find_all "/questions/#{site}/question/*"
   end
