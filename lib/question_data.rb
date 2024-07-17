@@ -1,5 +1,6 @@
 require "date"
-require "json"
+require "sequel"
+
 
 module QuestionData
   Config = Struct.new(
@@ -194,7 +195,9 @@ module QuestionData
                   Config.new(*config)
                 end
       raise ArgumentError.new("data_path must be specified to read question data") unless @config.data_path
-      @data_path = File.expand_path(@config.data_path)
+      data_path = File.expand_path(@config.data_path)
+      @ros_db = Sequel.sqlite('data/ros_dump.db')
+      @gz_db = Sequel.sqlite('data/gazebo_dump.db')
     end
 
     # Read data for site objects which stores the name of the site (ROS or
@@ -232,8 +235,9 @@ module QuestionData
     private
     def read_site_questions site
       site_questions = (
-        JSON.load_file(File.join(@data_path, "#{site.id}_unexported_se_dump.json"))["Questions"] +
-        JSON.load_file(File.join(@data_path, "#{site.id}_se_dump.json"))["Questions"]
+        #JSON.load_file(File.join(@data_path, "#{site.id}_unexported_se_dump.json"))["Questions"] +
+        #JSON.load_file(File.join(@data_path, "#{site.id}_se_dump.json"))["Questions"]
+        JSON.load_file(File.join(@data_path, "updated_dump.json"))["Questions"]
       )
       site_questions = site_questions.select do |json|
         site.migration_map.has_key? json["OriginalPostID"]

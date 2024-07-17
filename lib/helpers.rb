@@ -1,10 +1,14 @@
 module PageTitleHelper
+  SITE_TITLES = {
+    "ros" => "ROS Answers archive",
+    "gz" => "Gazebo Answers archive",
+  }
   def page_title_for item
 
     if item[:site].nil?
       "#{item[:title]} - ROS and Gazebo Answers Archive"
     else
-      "#{item[:title]} - #{item[:site].title}"
+      "#{item[:title]} - #{SITE_TITLES[item[:site]]}"
     end
   end
 end
@@ -47,7 +51,17 @@ module MigratedPostsHelper
   end
 end
 
+module UsersHelper
+  def owner_name post
+    items.find_all(
+      "/users/#{post[:site]}/user/#{post[:user_id]}.md"
+    ).first[:name]
+  end
+end
+
 use_helper Nanoc::Helpers::Rendering
+use_helper Nanoc::Helpers::LinkTo
 use_helper PageTitleHelper
 use_helper QuestionsHelper
 use_helper MigratedPostsHelper
+use_helper UsersHelper
