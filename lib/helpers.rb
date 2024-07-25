@@ -1,3 +1,5 @@
+require "redcarpet"
+
 module PageTitleHelper
   def page_title_for item
 
@@ -47,13 +49,16 @@ module MigratedPostsHelper
   end
 end
 
-def render_markdown md_str
-  # This is inefficient as markdown renderer should not be created every time
-  markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
-  markdown.render(md_str)
+module MarkdownHelper
+  RENDERER = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
+
+  def render_markdown md_str
+    RENDERER.render(md_str)
+  end
 end
 
 use_helper Nanoc::Helpers::Rendering
 use_helper PageTitleHelper
 use_helper QuestionsHelper
 use_helper MigratedPostsHelper
+use_helper MarkdownHelper
