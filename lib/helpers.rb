@@ -22,8 +22,8 @@ module QuestionsHelper
     items.find_all "/questions/#{site}/question/*"
   end
 
-  def pretty_date date
-    date.strftime("%F %T UTC")
+  def pretty_date date_str
+    DateTime.parse(date_str).strftime("%F %T UTC")
   end
 end
 
@@ -45,6 +45,11 @@ module MigratedPostsHelper
       item[:site].id == "gz"
     end
   end
+end
+
+def render_markdown md_str
+  markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
+  markdown.render(md_str)
 end
 
 use_helper Nanoc::Helpers::Rendering
