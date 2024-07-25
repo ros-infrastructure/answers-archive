@@ -50,7 +50,11 @@ module MigratedPostsHelper
 end
 
 module MarkdownHelper
-  RENDERER = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
+  RENDERER = Redcarpet::Markdown.new(
+    Redcarpet::Render::HTML,
+    no_intra_emphasis: true,
+    autolink: true,
+  )
 
   def render_markdown md_str
     RENDERER.render(md_str)
