@@ -48,6 +48,7 @@ module MigratedPostsHelper
 end
 
 def render_markdown md_str
+  # This is inefficient as markdown renderer should not be created every time
   markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
   markdown.render(md_str)
 end
