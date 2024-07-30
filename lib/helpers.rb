@@ -4,7 +4,7 @@ module PageTitleHelper
   def page_title_for item
 
     if item[:site].nil?
-      "#{item[:title]} - ROS and Gazebo Answers Archive"
+      "#{item[:title]} - <PLACEHOLDER> Answers Archive"
     else
       "#{item[:title]} - #{item[:site].title}"
     end
