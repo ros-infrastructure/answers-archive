@@ -1,16 +1,5 @@
 require "redcarpet"
 
-module PageTitleHelper
-  def page_title_for item
-
-    if item[:site].nil?
-      "#{item[:title]} - <PLACEHOLDER> Answers Archive"
-    else
-      "#{item[:title]} - #{item[:site].title}"
-    end
-  end
-end
-
 module QuestionsHelper
   def answers_for item
     items.find_all "#{item.identifier.without_ext}/answer/*"
@@ -62,7 +51,6 @@ module MarkdownHelper
 end
 
 use_helper Nanoc::Helpers::Rendering
-use_helper PageTitleHelper
 use_helper QuestionsHelper
 use_helper MigratedPostsHelper
 use_helper MarkdownHelper
