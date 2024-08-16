@@ -1,13 +1,4 @@
-module PageTitleHelper
-  def page_title_for item
-
-    if item[:site].nil?
-      "#{item[:title]} - ROS and Gazebo Answers Archive"
-    else
-      "#{item[:title]} - #{item[:site].title}"
-    end
-  end
-end
+require "redcarpet"
 
 module QuestionsHelper
   def answers_for item
@@ -22,8 +13,8 @@ module QuestionsHelper
     items.find_all "/questions/#{site}/question/*"
   end
 
-  def pretty_date date
-    date.strftime("%F %T UTC")
+  def pretty_date date_str
+    DateTime.parse(date_str).strftime("%F %T UTC")
   end
 end
 
@@ -47,7 +38,19 @@ module MigratedPostsHelper
   end
 end
 
+module MarkdownHelper
+  RENDERER = Redcarpet::Markdown.new(
+    Redcarpet::Render::HTML,
+    no_intra_emphasis: true,
+    autolink: true,
+  )
+
+  def render_markdown md_str
+    RENDERER.render(md_str)
+  end
+end
+
 use_helper Nanoc::Helpers::Rendering
-use_helper PageTitleHelper
 use_helper QuestionsHelper
 use_helper MigratedPostsHelper
+use_helper MarkdownHelper
