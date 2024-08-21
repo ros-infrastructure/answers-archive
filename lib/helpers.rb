@@ -50,7 +50,9 @@ module MarkdownHelper
   end
 end
 
+use_helper Nanoc::Helpers::HTMLEscape
 use_helper Nanoc::Helpers::Rendering
-use_helper QuestionsHelper
-use_helper MigratedPostsHelper
+
 use_helper MarkdownHelper
+use_helper MigratedPostsHelper
+use_helper QuestionsHelper
