@@ -36,7 +36,21 @@ earthly +compile
 
 #### Viewing the site
 
-You can view the site with a local web server of your choice such as python's build in http server
+In order to test the full site configuration with redirect behavior and all, you can generate a container image configuring ASF httpd with the `+server` target.
+
+```
+earthly +server --CONTENT=gazebo
+```
+
+You can then run the created container image with your preferred container client: (`docker`, `podman`, etc)
+```
+docker run -p 80:80 gazebo-answers-httpd
+```
+
+It will then be visible at <http://localhost>
+
+
+Alternatively, you can view the site with a local web server of your choice such as python's build in http server
 
 ```
 pushd output; python3 -m http.server; popd
