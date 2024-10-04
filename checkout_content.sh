@@ -14,7 +14,7 @@ if test -z "$1"; then
 	exit 1
 fi
 
-case "$1"
+case "$1" in
 	ros)
 		BRANCH=ros-content
 		;;
