@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>What Is The Best Way to0 Learn GAZEBO in ROS For Beginners? - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/1991">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>What Is The Best Way to0 Learn GAZEBO in ROS For Beginners?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/26082/what-is-the-best-way-to0-learn-gazebo-in-ros-for-beginners">https://robotics.stackexchange.com/questions/26082/what-is-the-best-way-to0-learn-gazebo-in-ros-for-beginners</a>.</p>
+        <p>i am beginner and i wanna learn how can I use gazebo in ros. i installed gazebo 1.5.0 in synaptic.</p>
+
+<p>in <a href="http://gazebosim.org/wiki/1.5/install">http://gazebosim.org/wiki/1.5/install</a> wroted:</p>
+
+<blockquote>
+<p>Only install Gazebo from here, and
+only follow tutorials from this
+website. Documentation on ros.org for
+Gazebo is old and not actively
+maintained.</p>
+</blockquote>
+
+<p>and i wanna work gazebo with ros interface, but i&#39;m confused! cus there is another tutorial for gazebo here &gt;&gt; <a href="http://www.ros.org/wiki/simulator_gazebo/Tutorials">http://www.ros.org/wiki/simulator_gazebo/Tutorials</a></p>
+
+<p>what is your idea?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/242">Mohsen Hk</a> on 2013-03-20 16:45:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>hello.
+ROS simulator gazebo is outdated, use the gazebosim here wich is the one being updated and developed. </p>
+
+<p>You can follow the tutorials here to learn how to use sensor data and move models and then use a plugin to send data to ROS. You will need some knowledge of ROS publishing/subscribe to topics and types of messages, but once this &quot;bridge&quot; is set up you can use ROS to send vel commands to your gazebo robot.</p>
+
+<p>At the moment i have a robot in gazebo that sends laser scans and Pose to ROS and receives geometry_msgs/Twist (linear and angular vel) to move him around. With this i&#39;m able to use ROS gmapping and rviz to create the maps just like in any other ROS simulation.</p>
+
+<p>EDIT/UPDATE: @amit, and everyone who might find this usefull to use Gazebosim and ROS, this assumes you have done the tutorials, specialy Control model and ROS-enabled plugin.
+Also i&#39;m using gazebo-1.4 and ROS fuerte.</p>
+
+<p>WARNING: this is what i did, i&#39;m not using join commands (<strong>and don&#39;t intend to for now</strong>), only set the velocity of the model, using a robot model without friction and the hokuyo model for laser, already in the gazebo models library (gazebosim.org/models). I&#39;m almost sure that you can use the tutorial &quot;box&quot; (not tried it myself tho).</p>
+
+<p><strong>-&gt;If there are better ways of doing it please feel free to comment.</strong></p>
+
+<p><strong>TYPOS: the forum feature that uses underscores &quot;_&quot; to set italic text is setting some parts of my answer to italic without me wanting to and removing underscores where it should not.</strong></p>
+
+<p>Be sure to get familiar with ROS messages, in this case geometry_msgs/Twist , geometry_msgs/PoseStamped (<a href="http://www.ros.org/wiki/geometry_msgs">http://www.ros.org/wiki/geometry_msgs</a>) and sensor_msgs/LaserScan (<a href="http://ros.org/wiki/sensor_msgs">http://ros.org/wiki/sensor_msgs</a>) and have some understanding of publishing/subscribing topics in ROS. 
+I tried to clean, comment and remove unecessary code the best i could. Hope you get the basic ideas of how things work and then experiment on your own.</p>
+
+<pre><code>#include &lt;boost/bind.hpp&gt;
+#include &lt;gazebo.hh&gt;
+#include &lt;physics/physics.hh&gt;
+#include &lt;common/common.hh&gt;
+#include &lt;stdio.h&gt;
+
+#include &quot;ros/ros.h&quot;
+#include &quot;geometry_msgs/Twist.h&quot;
+#include &quot;geometry_msgs/PoseStamped.h&quot;
+#include &quot;sensor_msgs/LaserScan.h&quot;
+
+#include &quot;gazebo/gazebo.hh&quot;
+#include &quot;gazebo/physics/physics.hh&quot;
+#include &quot;gazebo/common/common.hh&quot;
+#include &quot;gazebo/sensors/RaySensor.hh&quot;
+#include &quot;gazebo/sensors/SensorManager.hh&quot;
+#include &quot;math/Vector3.hh&quot;
+#include &lt;math/gzmath.hh&gt;
+
+static float Vlin=0.0, Vang=0.0; // set as global 
+
+namespace gazebo
+{   
+  class ROSModelPlugin : public ModelPlugin
+  {   
+    public: ROSModelPlugin()
+    {
+      // Start up ROS
+      std::string name1 = &quot;gz&quot;; // this is what appears in the rostopics
+      int argc = 0;
+      ros::init(argc, NULL, name1);      
+    }
+    public: ~ROSModelPlugin()
+    {
+      delete this-&gt;nh;
+    }
+
+    public: void Load(physics::ModelPtr _parent, sdf::ElementPtr /*_sdf*/)
+    {
+      // Store the pointer to the model
+      this-&gt;model = _parent;
+
+      // ROS Nodehandle
+      this-&gt;nh = new ros::NodeHandle(&quot;~&quot;);
+      // ROS Subscriber
+      this-&gt;subvel = this-&gt;nh-&gt;subscribe&lt;geometry_msgs::Twist&gt;(&quot;cmd_vel&quot;, 1000, &amp;ROSModelPlugin::ROSCallback_Vel, this );
+
+      this-&gt;nh = new ros::NodeHandle(&quot;~&quot;);
+      this-&gt;pubscan = this-&gt;nh-&gt;advertise&lt;sensor_msgs::LaserScan&gt;(&quot;scan&quot;,1000);
+
+      this-&gt;nh = new ros::NodeHandle(&quot;~&quot;);
+      this-&gt;pubpose = this-&gt;nh-&gt;advertise&lt;geometry_msgs::PoseStamped&gt;(&quot;pose&quot;,1000);
+
+//***********************************************
+      sensors::SensorPtr sensor = sensors::SensorManager::Instance()-&gt;GetSensor(&quot;laser&quot;);
+      if(!sensor)
+        printf(&quot;sensor is NULL\n&quot;);
+      this-&gt;raysensor = boost::shared_dynamic_cast&lt;sensors::RaySensor&gt;(sensor);
+      if(!this-&gt;raysensor)
+        printf(&quot;raysensor is NULL\n&quot;);
+//***********************************************
+
+      // Listen to the update event. This event is broadcast every
+      // simulation iteration.
+      // for gazebo 1.4 or lower it should be ConnectWorldUpdateStart
+      this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(
+          boost::bind(&amp;ROSModelPlugin::OnUpdate, this));
+    }
+
+    // Called by the world update start event
+    public: void OnUpdate()
+    {
+      std::vector&lt;double&gt; rangesgz;
+            static double qw,qx,qy,qz, Rrad, Prad, Yrad;
+
+// ************* QUATERNION / POSE DATA ******************
+      math::Vector3 p = model-&gt;GetWorldPose().pos;
+      math::Quaternion r = model-&gt;GetWorldPose().rot;
+      //from quaternion to Roll Pitch Yaw, in radianos
+      qw=r.w;   qx=r.x;     qy=r.y;     qz=r.z;
+      Rrad=atan2(  2*(qw*qx+qy*qz),  1-2*(qx*qx+qy*qy)  );  //Roll
+      Prad=asin(2*(qw*qy-qz*qx));               //Pitch
+      Yrad=atan2(  2*(qw*qz+qx*qy),  1-2*(qy*qy+qz*qz)  );  //Yaw
+
+// ***************************************************
+            ros::Time current_time, last_time;
+            current_time = ros::Time::now();
+            last_time = ros::Time::now();
+
+// *********** SCAN DATA *****************************
+            //Pub Scan msg
+            sensor_msgs::LaserScan scan2ros;
+            scan2ros.header.stamp=current_time; //ros::Time::now();
+            scan2ros.header.frame_id=&quot;base_scan&quot;;
+            scan2ros.angle_min=this-&gt;raysensor-&gt;GetAngleMin().Radian();
+            scan2ros.angle_max=this-&gt;raysensor-&gt;GetAngleMax().Radian();
+            scan2ros.angle_increment=this-&gt;raysensor-&gt;GetAngleResolution();
+            scan2ros.time_increment=0.0;
+            scan2ros.scan_time=0.0;
+            scan2ros.range_min=this-&gt;raysensor-&gt;GetRangeMin();
+            float rmn=scan2ros.range_min;
+            scan2ros.range_max=this-&gt;raysensor-&gt;GetRangeMax();
+            float rmx=scan2ros.range_max;
+            // *********************************************
+            this-&gt;raysensor-&gt;GetRanges(rangesgz);
+            int raynumber=this-&gt;raysensor-&gt;GetRangeCount();
+            scan2ros.ranges.resize(raynumber);
+            for (int iray=0;iray&lt;raynumber;iray++)
+            {
+                // i found that for some unknown reason the laser scan subtracts,
+                // to each laser measure, the min range defined on the laser model
+                // to &quot;correct&quot; this when building the scan message for ROS i add
+                // that valor if the sum is not greater than max range
+                float rg = this-&gt;raysensor-&gt;GetRange(iray);
+                if(rg+rmn&lt;=rmx)
+                    {scan2ros.ranges[iray]=rg+rmn;}
+                else {scan2ros.ranges[iray]=rmx;}
+            }
+            // *********************************************
+            this-&gt;pubscan.publish(scan2ros);
+
+// ******************************************
+            //Pub Pose msg
+            geometry_msgs::Point p2ros;
+            p2ros.x=p.x; p2ros.y=p.y; p2ros.z=p.z;
+
+            geometry_msgs::Quaternion r2ros;
+            r2ros.x=r.x; r2ros.y=r.y; r2ros.z=r.z; r2ros.w=r.w;
+
+            geometry_msgs::PoseStamped Pose2ros;
+            Pose2ros.header.stamp=scan2ros.header.stamp;//ros::Time::now();
+            Pose2ros.header.frame_id=&quot;base_link&quot;;
+            Pose2ros.pose.position=p2ros;
+            Pose2ros.pose.orientation=r2ros;
+
+            this-&gt;pubpose.publish(Pose2ros);
+
+// *********************************************** 
+            //set velocities
+            float velx,vely;
+            velx=Vlin*cos(Yrad);
+            vely=Vlin*sin(Yrad);    
+            this-&gt;model-&gt;SetLinearVel(math::Vector3(velx, vely, 0));
+            this-&gt;model-&gt;SetAngularVel(math::Vector3(0, 0, Vang));
+
+// ***********************************************
+            ros::spinOnce();
+    }
+
+    // callback functions run every time data is published to the topic
+    void ROSCallback_Vel(const geometry_msgs::Twist::ConstPtr&amp; msg)
+    {
+            Vlin=msg-&gt;linear.x;
+            Vang=msg-&gt;angular.z;
+    }
+
+    // Pointer to the model
+    private: physics::ModelPtr model;
+
+    private: sensors::RaySensorPtr raysensor;
+
+    // Pointer to the update event connection
+    private: event::ConnectionPtr updateConnection;
+
+    // ROS Nodehandle
+    private: ros::NodeHandle* nh;
+    // ROS Subscriber
+    ros::Subscriber subvel;
+
+        // ROS Publisher
+        ros::Publisher pubscan;
+        ros::Publisher pubpose;
+        //*************
+
+  };
+
+  // Register this plugin with the simulator
+  GZ_REGISTER_MODEL_PLUGIN(ROSModelPlugin)
+}
+</code></pre>
+
+<p>After running a world with a robot with the plugin, in the terminal window type &quot;rostopic list&quot; and you should get something like:</p>
+
+<p>/gz/cmd_vel </p>
+
+<p>/gz/pose </p>
+
+<p>/gz/scan </p>
+
+<p>/rosout </p>
+
+<p>/rosout_agg </p>
+
+<p>now you can download ros teleop with keyboard (<a href="http://www.ros.org/wiki/teleop_twist_keyboard">http://www.ros.org/wiki/teleop_twist_keyboard</a>), first go to you ros workspace folder &quot;$roscd&quot; then in the terminal type: </p>
+
+<p>svn co <a href="https://brown-ros-pkg.googlecode.com/svn/trunk/distribution/brown_remotelab">https://brown-ros-pkg.googlecode.com/svn/trunk/distribution/brown_remotelab</a></p>
+
+<p>next edit brown_remotelab/teleop_twist_keyboard/bin/teleop_twist_keyboard.py , in line 61 replace
+    pub = rospy.Publisher(&#39;cmd_vel&#39;, Twist) 
+with
+    pub = rospy.Publisher(&#39;gz/cmd_vel&#39;, Twist)  </p>
+
+<p>if everything is working if you run the teleop you should be able to control the model manualy.</p>
+
+<p><strong>&quot;HOMEWORK&quot;</strong> </p>
+
+<p>furthermore, you can learn how to publish odom and tf topics (<a href="http://www.ros.org/wiki/navigation/Tutorials/RobotSetup/Odom">http://www.ros.org/wiki/navigation/Tutorials/RobotSetup/Odom</a>) then use ROS gmapping (<a href="http://www.ros.org/wiki/gmapping">http://www.ros.org/wiki/gmapping</a>) but with</p>
+
+<p>rosrun gmapping slam_gmapping scan:=gz/scan</p>
+
+<p>and use rviz to see the map.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/274">GAugusto</a> on 2013-03-21 07:08:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi :) tnx! i read Ros beginner level tutorials from here &gt;&gt; <a href="http://www.ros.org/wiki/ROS/Tutorials">http://www.ros.org/wiki/ROS/Tutorials</a> but now i wanna learn gazzebo first, then use ROS interface for. i find some link for next step : (<a href="http://gazebosim.org/wiki/Tutorials#Gazebo_Version_1.5">http://gazebosim.org/wiki/Tutorials#Gazebo_Version_1.5</a>)  , (<a href="http://gazebosim.org/user_guide/">http://gazebosim.org/user_guide/</a>) , (<a href="http://gazebosim.org/wiki/Main_Page">http://gazebosim.org/wiki/Main_Page</a>) , (<a href="http://www.ros.org/wiki/gazebo">http://www.ros.org/wiki/gazebo</a>) , (<a href="http://www.ros.org/wiki/simulator_gazebo">http://www.ros.org/wiki/simulator_gazebo</a>) , (<a href="http://www.ros.org/wiki/simulator_gazeb">http://www.ros.org/wiki/simulator_gazeb</a>). what is your idea if i wanna learn in order?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/242">Mohsen Hk</a> on 2013-03-21 16:17:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The best way to learn Gazebo is to follow the tutorials (<a href="http://gazebosim.org/wiki/tutorials">http://gazebosim.org/wiki/tutorials</a>). Once you&#39;re ready, you can advance onto ROS plugins(<a href="http://gazebosim.org/wiki/Tutorials/1.5/ros_enabled_model_plugin">http://gazebosim.org/wiki/Tutorials/1.5/ros_enabled_model_plugin</a>)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5">nkoenig</a> on 2013-03-22 11:01:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>hello.
+i advise you start with the tutorials from gazebosim 1.5 version, then you will have a basic idea of how things work. <a href="http://gazebosim.org/wiki/Tutorials#Gazebo_Version_1.5">http://gazebosim.org/wiki/Tutorials#Gazebo_Version_1.5</a>
+in between &quot;Building a Robot&quot; and &quot;Plugins&quot; go to version 1.3 (3.3 on the tutorial page) and do &quot;Controlling a Robot&quot; (this section is not on 1.4 and 1.5) wich will give some understanding on how to move objects/robots. then ros model plugin <a href="http://gazebosim.org/wiki/Tutorials/1.5/ros_enabled_model_plugin">http://gazebosim.org/wiki/Tutorials/1.5/ros_enabled_model_plugin</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/274">GAugusto</a> on 2013-03-22 11:04:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thank you friends :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/242">Mohsen Hk</a> on 2013-03-23 06:31:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@GAugusto Hi, You have mentioned that you have a robot in Gazebo that sends laser scans and Pose to ROS and receives geometry_msgs/Twist (linear and angular vel) to move him around. I need to do the same thing. Could you please explain a little further how did you do it ? </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/166">amit</a> on 2013-04-02 19:40:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@amit hi, i edited my answer, hope that helps. also some parts where the text is italic are missing &quot;_&quot; underscores and that might give the typos. saddly can&#39;t find a way around it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/274">GAugusto</a> on 2013-04-03 11:36:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi, if there&#39;s anyone who&#39;s done ROS plugins in gazebosim in Python, please provide code/tips, etc., for people who prefer python over C++.  Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/24">logicalguy</a> on 2013-04-03 12:16:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks GAugusto..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/166">amit</a> on 2013-04-03 23:25:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hello. I have two questions. 
+1) ROS is communicated through plugin, so to control a robot , publishing force/volocity to the robot, and receive the position/sensor data, we need plugin, and we also need to write our own ROS-Node, is this true?
+2) do you recommand any resource for writing the  plugin and the ROS to achieve the  purposes mention in question 1?</p>
+
+<p>thank you very much for your time.
+very appreciated!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/344">gazer</a> on 2013-05-20 00:43:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>A gazebo plugin can act as a rosnode. Here is an example: <a href="https://bitbucket.org/osrf/drcsim/src/c062c14af79a529d481c07be4ec1044f2baaf7d1/ros/atlas_msgs/AtlasPlugin.cpp?at=default">https://bitbucket.org/osrf/drcsim/src/c062c14af79a529d481c07be4ec1044f2baaf7d1/ros/atlas_msgs/AtlasPlugin.cpp?at=default</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5">nkoenig</a> on 2013-05-20 17:31:11 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

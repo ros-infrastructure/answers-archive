@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publishing parameters to a running gazebo simulation - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/17948">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publishing parameters to a running gazebo simulation</h2>
+      <div class="question">
+        <p>HI
+I am trying to update the parameters of my plugins before starting the simulation.</p>
+
+<p>So I want to create a standalone publisher that will publish to a topic listened to by the world and model plugins in the simulation.
+However, this does not work. Gazebo just hangs and stop responding. When I try to restart the standalone publisher, Gazebo crashes with this error:</p>
+
+<pre><code>terminate called after throwing an instance of &#39;boost::exception_detail::clone_impl&lt;boost::exception_detail::error_info_injector&lt;boost::thread_resource_error&gt; &gt;&#39;
+  what():  boost thread: trying joining itself: Resource deadlock avoided
+</code></pre>
+
+<p>I am using <strong>Gazebo 7.4.0</strong>
+The minimized version of the independent publisher is:</p>
+
+<pre><code>#include &lt;gazebo/transport/transport.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+#include &lt;gazebo/gazebo_client.hh&gt;
+#include &quot;gazebo/common/common.hh&quot;
+#include &lt;gazebo/gazebo.hh&gt;
+
+#include &lt;gazebo/physics/physics.hh&gt;
+
+#include &lt;iostream&gt;
+#include &lt;fstream&gt;
+#include &lt;set&gt;
+#include &lt;mutex&gt;
+std::mutex mutex1;
+
+using namespace std;
+bool world_loaded;
+
+void world_loaded_func(ConstAnyPtr &amp;any)
+{std::lock_guard&lt;std::mutex&gt; lock(mutex1);
+    world_loaded = any-&gt;bool_value();
+}
+
+int main(int _argc, char **_argv)
+{
+    world_loaded = false;
+    //Load gazebo
+    gazebo::client::setup(_argc, _argv);
+
+    //create our node for communication
+    gazebo::transport::NodePtr node(new gazebo::transport::Node());
+    node-&gt;Init();
+
+    //listen to when world is loaded
+    gazebo::transport::SubscriberPtr sub_world_loaded;
+    sub_world_loaded = node-&gt;Subscribe(&quot;/world_loaded&quot;,world_loaded_func);
+
+
+    //for advertising simulation parameters
+    gazebo::transport::PublisherPtr pub_params = node-&gt;Advertise&lt;gazebo::msgs::Any&gt;(&quot;/params_topic&quot;);
+    pub_params-&gt;WaitForConnection();
+
+    gazebo::msgs::Any any;
+    any.set_type(gazebo::msgs::Any::STRING);
+    std::string pars = &quot;nei_sensing:5.0&quot;;
+    any.set_string_value(pars);
+
+    while(true){//busy wait
+        gazebo::common::Time::MSleep(100);
+        if(world_loaded)
+        {
+            cout&lt;&lt;&quot;world_loaded&quot;&lt;&lt;endl;
+                    pub_params-&gt;Publish(any);
+
+        }
+        //cout&lt;&lt;&quot;running&quot;&lt;&lt;endl;
+    }
+
+    //Make sure to shut everything down
+    gazebo::client::shutdown();
+}
+</code></pre>
+
+<p>Sample code of world plugin (one of the plugins I need to set parameters for).</p>
+
+<pre><code>#include &lt;ignition/math/Pose3.hh&gt;
+#include &quot;gazebo/physics/physics.hh&quot;
+#include &quot;gazebo/common/common.hh&quot;
+#include &quot;gazebo/gazebo.hh&quot;
+#include &lt;boost/bind.hpp&gt;
+#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;fstream&gt;
+#include &lt;mutex&gt;
+#include &lt;map&gt;
+#include &lt;vector&gt;
+#include &lt;set&gt;
+
+using namespace std;
+namespace gazebo
+{
+    class WP_Swarm1 : public WorldPlugin
+    {
+        //Pointer to the update event connection
+        private:
+            event::ConnectionPtr updateConnection;
+            physics::WorldPtr world;
+            std::mutex mutex;
+            transport::NodePtr node;
+            transport::PublisherPtr pub_world_loaded;
+            std::string world_info_string;//should state when simulation starts and ends per world
+            bool world_info_bool;//used to indicate start of new simulation
+            double nei_sensing;
+            bool param_set;
+            gazebo::transport::SubscriberPtr sub_params;
+
+        public:
+            void Load(physics::WorldPtr _parent, sdf::ElementPtr /*_sdf*/)
+            {
+                this-&gt;world = _parent;
+                this-&gt;node = transport::NodePtr(new transport::Node());
+                this-&gt;node-&gt;Init();
+                this-&gt;pub_world_loaded = this-&gt;node-&gt;Advertise&lt;msgs::Any&gt;(&quot;/world_loaded&quot;);
+                            this-&gt;world_info_bool = true;
+                this-&gt;param_set = false;
+                this-&gt;sub_params = this-&gt;node-&gt;Subscribe(&quot;/params_topic&quot;,&amp;WP_Swarm1::Params_cb,this);
+
+                this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(
+                            boost::bind(&amp;WP_Swarm1::OnUpdate,this,_1));
+            }
+            void Params_cb(ConstAnyPtr &amp;a)
+            {//set all parameters and set param_set = true when done.
+                std::lock_guard&lt;std::mutex&gt; lock(this-&gt;mutex);
+                if(!this-&gt;param_set)
+                {
+                    std::string all_params = a-&gt;string_value();
+                    //all_params = all_params + &quot; &quot;;
+                    while(all_params.find(&quot; &quot;) != std::string::npos)
+                    {//loop through all parameters and assign to appropriate variable in plugin.
+                        int ploc = all_params.find(&quot; &quot;);
+                        std::string temp = all_params.substr(0,ploc);
+
+                        int aloc = temp.find(&quot;:&quot;);
+                        std::string param_name = temp.substr(0,aloc);
+                        if(param_name.compare(&quot;nei_sensing&quot;) == 0)
+                        {
+                            std::string param_value_str = temp.substr(aloc+1);
+                            double value = std::stod(param_value_str);//double value of parameter
+                            this-&gt;nei_sensing = value;
+                            this-&gt;param_set = true;
+                        }
+
+                    }
+
+                }
+            }
+            void OnUpdate(const common::UpdateInfo &amp;_info)
+            {
+                std::lock_guard&lt;std::mutex&gt; lock(this-&gt;mutex);
+                gazebo::common::Time st = _info.simTime;
+                if(this-&gt;param_set)
+                {
+                                  //do stuff
+                    if(st.sec &gt;= 30)
+                    {//stop simulation after 30 seconds
+                        msgs::Any any;
+                        any.set_type(msgs::Any::BOOLEAN);
+                        any.set_bool_value(this-&gt;world_info_bool);
+                        this-&gt;pub_world_loaded-&gt;Publish(any);
+                        this-&gt;world-&gt;Reset();
+                        this-&gt;world-&gt;Stop();//or this-&gt;world-&gt;Fini());
+
+                    }
+                }
+                if(this-&gt;world_info_bool){
+                    msgs::Any any;
+                    any.set_type(msgs::Any::BOOLEAN);
+                    any.set_bool_value(this-&gt;world_info_bool);
+                    this-&gt;pub_world_loaded-&gt;Publish(any);
+                    this-&gt;world_info_bool = false;
+                }
+
+            }
+    };
+
+    //Register this plugin with the simulator
+    GZ_REGISTER_WORLD_PLUGIN(WP_Swarm1)
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2963">elcymon</a> on 2017-11-28 08:31:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

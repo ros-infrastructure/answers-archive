@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gazebo Simulated Time. Control step by step - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/18995">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gazebo Simulated Time. Control step by step</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am having problems trying to control Gazebo&#39;s simulated time. I want to command Gazebo to simulate one step after some processing is done. </p>
+
+<p>I have created a publisher for gazebo&#39;s topic ~/world_control in order to publish a WorldControl message with &quot;step = true&quot; whenever I want Gazebo to move forward one step.
+However, those messages sometimes are effective (i.e. Gazebo moves forward one step) and other times they have no effect. 
+As an example, in the attached code I publish 3 times the message to advance the simulation one step, so I expect Gazebo to advance 3 steps in the simulation. However, it only moves forward one step and I can&#39;t understand why. </p>
+
+<p>Any explanation why this is happening? It seems to me that Gazebo is not receiving all the published messages, those messages are getting lost in the way or something like that. Any help will be very much appreciated.</p>
+
+<p>Thanks, 
+Ignacio</p>
+
+<pre><code>#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;gazebo/gazebo_client.hh&gt;
+#include &lt;gazebo/common/Plugin.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+#include &lt;gazebo/transport/transport.hh&gt;
+
+static bool stop_simulation;
+
+void rosShutdownHandler(int sig)
+{
+stop_simulation = true;
+}
+
+int main(int argc, char **argv)
+{
+gazebo::client::setup(argc,argv);
+
+gazebo::transport::NodePtr node(new gazebo::transport::Node());
+node-&gt;Init();
+
+//Create publisher for topic ~/world_control
+gazebo::transport::PublisherPtr pub = node-&gt;Advertise&lt;gazebo::msgs::WorldControl&gt;(&quot;~/world_control&quot;);
+//Create message
+gazebo::msgs::WorldControl msg_step;
+
+stop_simulation = false;
+
+
+//Publish to topic ~/world_control
+pub-&gt;WaitForConnection();
+
+//Set step to true
+msg_step.set_step(1);
+
+//Publish 1st step
+pub-&gt;Publish(msg_step, true);
+//Publish 2nd step
+pub-&gt;Publish(msg_step, true);
+//Publish 3rd step
+pub-&gt;Publish(msg_step, true);
+
+while (!stop_simulation){
+    std::cout &lt;&lt; &quot;Running \n&quot;;
+}
+
+gazebo::shutdown();
+return 0;
+} // end main()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/4805">iAba</a> on 2018-04-13 07:57:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Did you manage to solve this ? I want to also control each step of the simulation from ros code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/6007">gpldecha</a> on 2018-08-09 07:45:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If you&#39;re looking to use Gazebo <em>with ROS</em>, I have submitted a PR to gazebo_ros_pkgs, for a new ROS-facing &#39;/step_control&#39; service that does what you&#39;re looking for.
+You can track it here:
+<a href="https://github.com/ros-simulation/gazebo_ros_pkgs/pull/1280">https://github.com/ros-simulation/gazebo_ros_pkgs/pull/1280</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26197">alikureishy</a> on 2021-06-01 00:18:38 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>This code worked for me: </p>
+
+<pre><code>#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;gazebo/gazebo_client.hh&gt;
+#include &lt;gazebo/common/Plugin.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+#include &lt;gazebo/transport/transport.hh&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;std_srvs/Empty.h&gt;
+#include &lt;functional&gt;  // To use std::bind
+#include &quot;plen_ros/Iterate.h&quot;
+
+
+bool iterateCallback(plen_ros::Iterate::Request&amp; req, plen_ros::Iterate::Response&amp; res, const gazebo::transport::PublisherPtr&amp; pub)
+{
+  // Create Iterate msg
+  gazebo::msgs::WorldControl stepper;
+  // Set multi-step to requested iterations
+  stepper.set_multi_step(req.iterations);
+  pub-&gt;Publish(stepper);
+
+  res.result = true;
+
+  return true;
+}
+
+int main(int argc, char **argv)
+{
+gazebo::client::setup(argc,argv);
+
+gazebo::transport::NodePtr node(new gazebo::transport::Node());
+node-&gt;Init();
+
+ros::init(argc, argv, &quot;gazebo_iterator&quot;); // register the node on ROS
+ros::NodeHandle nh; // get a handle to ROS
+
+//Create publisher for topic ~/world_control
+gazebo::transport::PublisherPtr pub = node-&gt;Advertise&lt;gazebo::msgs::WorldControl&gt;(&quot;~/world_control&quot;);
+//Publish to topic ~/world_control
+pub-&gt;WaitForConnection();
+
+// Create Iterate Service Server
+ros::ServiceServer iter_server = nh.advertiseService&lt;plen_ros::Iterate::Request,
+                                    plen_ros::Iterate::Response&gt;(&quot;/iterate&quot;, std::bind(&amp;iterateCallback,
+                                                               std::placeholders::_1, 
+                                                               std::placeholders::_2,
+                                                               pub));
+
+//Publish 1st step
+
+// pub-&gt;Publish(stepper, true);
+
+while (ros::ok())
+  {
+    ros::spinOnce();
+  }
+return 0;
+} // end main()
+</code></pre>
+
+<p>Using this code, you can call my &quot;/iterate&quot; service and specify the number of iterations.</p>
+
+<p>However, note that you cannot (to my knowledge) issue joint commands using the ros_control package or read from any topics while the sim is paused. Iterating does not change this. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/23632">moribots</a> on 2020-02-18 21:41:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Could I know what is in your srv file? you use the Iterate.h but I have no idea what should be include</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25276">Donghao</a> on 2020-06-29 20:46:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am not sure I understand. Is gazebo paused when this service is called?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26368">devjo</a> on 2020-09-08 02:49:15 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

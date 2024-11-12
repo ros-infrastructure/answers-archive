@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to calculate distance of a target using Velodyne hdl32 on Ubuntu 18.04 - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/24242">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to calculate distance of a target using Velodyne hdl32 on Ubuntu 18.04</h2>
+      <div class="question">
+        <p>Hi all, I am trying to calculate the distance from a target using the <code>Velodyne hdl32</code>. For this reason I set up a simulation using <code>Gazebo</code> and followed the intermediate tutorial as I am new to <code>Gazebo</code>. 
+Specifically I did <a href="http://gazebosim.org/tutorials?cat=guided_i&tut=guided_i6">this tutorial</a>. I finished it and was able to run it.
+Now as exercise I wanted to understand to calculate the distance from the <code>Velodyne hdl32</code>to the target. In this case the target is simply a cube I positioned as is possible to see in the print screen below. I am stuck and am not able to move on:</p>
+
+<p><img src="https://i.imgur.com/lncdnkE.png" alt="obstacle"></p>
+
+<p>The code I used is the following below</p>
+
+<p><strong>velodyne_plugin.cc</strong></p>
+
+<pre><code>namespace gazebo
+{
+  class VelodynePlugin : public ModelPlugin
+  {
+    public: VelodynePlugin() {}
+    public: virtual void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
+    {
+          if (_model-&gt;GetJointCount() == 0)
+          {
+            std::cerr &lt;&lt; &quot;Invalid joint count, Velodyne plugin not loaded\n&quot;;
+            return;
+          }
+          this-&gt;model = _model;
+          this-&gt;joint = _model-&gt;GetJoints()[0];
+          this-&gt;pid = common::PID(0.1, 0, 0);
+          this-&gt;model-&gt;GetJointController()-&gt;SetVelocityPID(
+              this-&gt;joint-&gt;GetScopedName(), this-&gt;pid);
+
+          double velocity = 0;
+          if (_sdf-&gt;HasElement(&quot;velocity&quot;))
+            velocity = _sdf-&gt;Get&lt;double&gt;(&quot;velocity&quot;);
+
+          this-&gt;node = transport::NodePtr(new transport::Node());
+          this-&gt;node-&gt;Init(this-&gt;model-&gt;GetWorld()-&gt;GetName());
+          // create topic name
+            std::string topicName = &quot;~/&quot; + this-&gt;model-&gt;GetName() + &quot;/vel_cmd&quot;;
+          // subscribe the topic
+            this-&gt;sub = this-&gt;node-&gt;Subscribe(topicName,
+                                              &amp;VelodynePlugin::OnMsg, this);
+            // Initialize ros, if it has not already bee initialized.
+            if (!ros::isInitialized())
+            {
+              int argc = 0;
+              char **argv = NULL;
+              ros::init(argc, argv, &quot;gazebo_client&quot;,
+                  ros::init_options::NoSigintHandler);
+            }
+            this-&gt;rosNode.reset(new ros::NodeHandle(&quot;gazebo_client&quot;));
+            // Create a named topic, and subscribe to it.
+            ros::SubscribeOptions so =
+              ros::SubscribeOptions::create&lt;std_msgs::Float32&gt;(
+                  &quot;/&quot; + this-&gt;model-&gt;GetName() + &quot;/vel_cmd&quot;,
+                  1,
+                  boost::bind(&amp;VelodynePlugin::OnRosMsg, this, _1),
+                  ros::VoidPtr(), &amp;this-&gt;rosQueue);
+            this-&gt;rosSub = this-&gt;rosNode-&gt;subscribe(so);
+
+            // Spin up the queue helper thread.
+            this-&gt;rosQueueThread =
+              std::thread(std::bind(&amp;VelodynePlugin::QueueThread, this));
+      }
+      public: void SetVelocity(const double &amp;_vel)
+      {
+          // Set the joints target velocity
+          this-&gt;model-&gt;GetJointController()-&gt;SetVelocityTarget(
+                      this-&gt;joint-&gt;GetScopedName(), _vel);
+      }
+      /// \brief Handle an incoming message from ROS
+      public: void OnRosMsg(const std_msgs::Float32ConstPtr &amp;_msg)
+      {
+        this-&gt;SetVelocity(_msg-&gt;data);
+      }
+      private: void QueueThread()
+      {
+        static const double timeout = 0.01;
+        while (this-&gt;rosNode-&gt;ok())
+        {
+          this-&gt;rosQueue.callAvailable(ros::WallDuration(timeout));
+        }
+      }
+      /// \brief Handle incoming message
+      private: void OnMsg(ConstVector3dPtr &amp;_msg)
+      {
+        this-&gt;SetVelocity(_msg-&gt;x());
+      }
+      /// \brief A node used for transport
+      private: transport::NodePtr node;
+      /// \brief A subscriber to a named topic.
+      private: transport::SubscriberPtr sub;
+      /// \brief Pointer to the model.
+      private: physics::ModelPtr model;
+      /// \brief Pointer to the joint.
+      private: physics::JointPtr joint;
+      /// \brief A PID controller for the joint.
+      private: common::PID pid;
+      // Communication with ROS
+      /// \brief A node use for ROS transport
+      private: std::unique_ptr&lt;ros::NodeHandle&gt; rosNode;
+      /// \brief A ROS subscriber
+      private: ros::Subscriber rosSub;
+
+      /// \brief A ROS callbackqueue that helps process messages
+      private: ros::CallbackQueue rosQueue;
+
+      /// \brief A thread the keeps running the rosQueue
+      private: std::thread rosQueueThread;
+  };
+
+  // Tell Gazebo about this plugin, so that Gazebo can call Load on this plugin.
+  GZ_REGISTER_MODEL_PLUGIN(VelodynePlugin)
+}
+</code></pre>
+
+<p>below the <strong>vel.cc</strong> from the same tutorial</p>
+
+<pre><code>int main(int _argc, char **_argv)
+{
+    // Load Gazebo as client
+    gazebo::setupClient(_argc, _argv);
+    // create our node for communication
+    gazebo::transport::NodePtr node(new gazebo::transport::Node());
+    node-&gt;Init();
+    // Publish to the Velodyne topic
+    gazebo::transport::PublisherPtr pub =
+            node-&gt;Advertise&lt;gazebo::msgs::Vector3d&gt;(&quot;~/my_velodyne/vel_cmd&quot;);
+    // wait for a subscriber to connect to this publisher
+    pub-&gt;WaitForConnection();
+    // create a vector3 message
+    gazebo::msgs::Vector3d msg;
+    // Set the velocity in the x-component
+    gazebo::msgs::Set(&amp;msg, gazebo::math::Vector3(std::atof(_argv[1]), 0, 0));
+    // send the message
+    pub-&gt;Publish(msg);
+    // Make sure to shut everything down
+    gazebo::shutdown();
+}
+</code></pre>
+
+<p>Thank you very much for pointing in the right direction to help me solve this problem.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/21402">RayGz</a> on 2019-12-17 12:22:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

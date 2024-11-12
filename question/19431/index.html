@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Only one model plugin receiving subscription data - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/19431">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Only one model plugin receiving subscription data</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/28489/only-one-model-plugin-receiving-subscription-data">https://robotics.stackexchange.com/questions/28489/only-one-model-plugin-receiving-subscription-data</a>.</p>
+        <p>Hey guys,
+I am publishing a Vector3 through a world plugin.</p>
+
+<p>This is the code that publishes</p>
+
+<pre><code>namespace gazebo
+{
+    class global_wind : public WorldPlugin
+    {
+        ignition::math::Vector3d wind;
+        transport::PublisherPtr pub;
+        private: event::ConnectionPtr updateConnection;
+
+        public: void Load(physics::WorldPtr _parent, sdf::ElementPtr /*_sdf*/)
+        {
+            gazebo::transport::NodePtr node(new gazebo::transport::Node);
+            node-&gt;Init(_parent-&gt;GetName());
+
+            transport::run();
+
+            pub = node-&gt;Advertise&lt;gazebo::msgs::Vector3d&gt;(&quot;~/global_wind&quot;);
+
+            this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(std::bind(&amp;global_wind::OnUpdate, this));
+
+        //  gazebo::transport::fini();
+        }
+
+        public: void OnUpdate()
+        {
+            // pub-&gt;WaitForConnection();
+
+            wind.Set(2,2,0);
+
+            gazebo::msgs::Vector3d msg;
+            gazebo::msgs::Set(&amp;msg, wind);
+
+            pub-&gt;Publish(msg);
+        }
+    };
+    GZ_REGISTER_WORLD_PLUGIN(global_wind)
+}
+</code></pre>
+
+<p>The lines that are commented are causing some problems. The first commented line causes the following error</p>
+
+<pre><code>[Err] [ConnectionManager.cc:611] ConnectionManager is not initialized
+[Err] [TransportIface.cc:416] ConnectionManager has not been initialized!
+[Err] [Node.cc:125] No namespaces found
+</code></pre>
+
+<p>The 2nd commented line just makes gazebo hang when launching. Nonetheless, the plugin &#39;works&#39; when these 2 are commented.</p>
+
+<p>This is the code that sunscribes.</p>
+
+<pre><code>class wind_push : public ModelPlugin
+  {
+    // Pointer to the model
+    private: physics::ModelPtr model;
+
+    // Pointer to the update event connection
+    private: event::ConnectionPtr updateConnection;
+
+    math::Vector3 force;
+
+    public: void Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
+    {
+      // Store the pointer to the model
+      this-&gt;model = _parent;
+
+      // Create our node for communication
+      gazebo::transport::NodePtr node(new gazebo::transport::Node());
+      node-&gt;Init();
+
+      sub = node-&gt;Subscribe(&quot;/gazebo/default/global_wind&quot;, &amp;wind_push::publ, this);
+
+      gazebo::physics::LinkPtr link= model-&gt;GetChildLink(&quot;link_1&quot;);
+      link-&gt;AddForce(gazebo::math::Vector3(20, 20, 0));
+
+      // Listen to the update event. This event is broadcast every
+      // simulation iteration.
+      this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(std::bind(&amp;wind_push::OnUpdate, this));
+    }
+
+    // Called by the world update start event
+    public: void OnUpdate()
+    {      
+      gazebo::physics::LinkPtr link= model-&gt;GetChildLink(&quot;link_1&quot;);
+      link-&gt;AddForce(force);
+    }  
+
+    public: void publ(ConstVector3dPtr &amp;_msg)
+    {
+      std::cout &lt;&lt; this-&gt;model-&gt;GetName();
+      force.Set(_msg-&gt;x(),_msg-&gt;y(),_msg-&gt;z());    
+    }  
+  };    
+  // Register this plugin with the simulator
+  GZ_REGISTER_MODEL_PLUGIN(wind_push)
+}
+</code></pre>
+
+<p>So what&#39;s happening here is that I have many models with the above model plugin. The global<em>wind plugin publishes a global topic, from which wind</em>push is supposed to get the wind force vector and apply a suitable force. The problem is that only one model is responding to this force. After further debugging, I found out that only the model plugin on THAT model is calling the callback in the subscriber function, while I actually want all of them to be called. Debugging also revealed that all the model plugins are running, executing other parts of the code. I don&#39;t understand why this is happening. Thanks!</p>
+
+<p>Edit:I printed the &amp;wind_push::publ variable in the load function, and all model plugins referred to the same address! Shouldn&#39;t gazebo be running a seperate instance of the plugin for each model? Another thing I noticed is that the model which responds to the wind is the last model described with the subscriber plugin in the world file. I think that only the last model plugin&#39;s callback is being called. Or there&#39;s only one callback???</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4457">varunvp</a> on 2018-05-20 02:50:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Some ideas:</p>
+
+<ol>
+<li>Use the fully qualified topic name on both the publisher and the subscriber (i.e. <code>/gazebo/default/global_wind</code>)</li>
+<li>Did you try printing <code>this</code> instead of <code>&amp;wind_push::publ</code> to see if that&#39;s also the same?</li>
+<li>Why do you want to call <code>gazebo::transport::fini()</code> on your load function? That will finish the whole transport system, so no more pub/sub for anyone.</li>
+<li>While running the simulation, run <code>gz topic -i /gazebo/default/global_wind</code> to see how many subscribers and publishers are there</li>
+<li>Store your subscriber in a member variable, otherwise it will only live in the scope of the load function.</li>
+</ol>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1019"></a> on 2018-05-21 10:39:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Apologies for the delay.
+The 1st solution worked for me! Thank you!</p>
+
+<p>Edit:Nope, it was actaully the last solution that worked for me. I reverted to the earlier topic name. Also, I did store the subscriber in a member variable, but it was initialised outside the class. Don&#39;t know why I did that. It worked when I added it inside.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4457">varunvp</a> on 2018-05-24 07:32:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Glad to hear it worked out</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1019">chapulina</a> on 2018-05-24 12:37:01 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

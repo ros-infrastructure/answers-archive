@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>error in simple plugin for an AUV - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/15105">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>error in simple plugin for an AUV</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/27988/error-in-simple-plugin-for-an-auv">https://robotics.stackexchange.com/questions/27988/error-in-simple-plugin-for-an-auv</a>.</p>
+        <p>Hi,
+I am new to gazebo. I had written a Matlab code for nonlinear dynamics of an AUV , now I need to connect my simulink code to gazebo. I am not using the physics of gazebo as the physics is going to be controlled from simulink.</p>
+
+<p>I create a model of the AUV in gazebo and setup the joints for the propeller, rudder and elevator.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/gazebosim/14829145079064326.jpg" alt="image description"></p>
+
+<p>However, I am having difficulty understanding the plugin tutorials.</p>
+
+<p>I copy and modified the code from here<a href="http://answers.gazebosim.org/question/1991/what-is-the-best-way-to0-learn-gazebo-in-ros-for-beginners/?answer=2002#post-id-2002">link text</a></p>
+
+<p>I am trying to compile the plugin but I am having error:</p>
+
+<p>[ 50%] Building CXX object CMakeFiles/remusbody.dir/remusbody.cc.o
+/home/wilmer/catkin<em>ws/src/plugins/remusbody.cc:5:33: fatal error: geometry</em>msgs/Twist.h: No such file or directory
+compilation terminated.
+CMakeFiles/remusbody.dir/build.make:62: recipe for target &#39;CMakeFiles/remusbody.dir/remusbody.cc.o&#39; failed
+make[2]: *** [CMakeFiles/remusbody.dir/remusbody.cc.o] Error 1
+CMakeFiles/Makefile2:355: recipe for target &#39;CMakeFiles/remusbody.dir/all&#39; failed
+make[1]: *** [CMakeFiles/remusbody.dir/all] Error 2
+Makefile:138: recipe for target &#39;all&#39; failed
+make: *** [all] Error 2</p>
+
+<p>what I am doing wrong?</p>
+
+<p>I attach this line to package.xml</p>
+
+<p><code>&lt;build_depend&gt;geometry_msgs&lt;/build_depend&gt;</code></p>
+
+<p>My cmakelist is this</p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8 FATAL_ERROR)
+
+find_package(gazebo REQUIRED)
+
+find_package(catkin REQUIRED COMPONENTS roscpp geometry_msgs)
+
+ add_library(remusbody SHARED remusbody.cc)
+
+ target_link_libraries(remusbody ${GAZEBO_LIBRARIES})
+
+ include_directories(${GAZEBO_INCLUDE_DIRS})
+
+ link_directories(${GAZEBO_LIBRARY_DIRS})
+
+ list(APPEND CMAKE_CXX_FLAGS &quot;${GAZEBO_CXX_FLAGS}&quot;)
+</code></pre>
+
+<p>My plugin code is attached down.</p>
+
+<p>any help is welcome...</p>
+
+<pre><code>#include &lt;stdio.h&gt;
+
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &quot;geometry_msgs/PoseStamped.h&quot;
+
+#include &quot;gazebo/gazebo.hh&quot;
+#include &quot;gazebo/physics/physics.hh&quot;
+#include &quot;gazebo/common/common.hh&quot;
+#include &quot;math/Vector3.hh&quot;
+#include &lt;math/gzmath.hh&gt;
+
+static float Vlin=0.0, Vang=0.0; // set as global 
+
+namespace gazebo
+{   
+  class ROSModelPlugin : public ModelPlugin
+  {   
+    public: ROSModelPlugin()
+    {
+      // Start up ROS
+      std::string name1 = &quot;gz&quot;; // this is what appears in the rostopics
+      int argc = 0;
+      ros::init(argc, NULL, name1);      
+    }
+    public: ~ROSModelPlugin()
+    {
+      delete this-&gt;nh;
+    }
+
+    public: void Load(physics::ModelPtr _parent, sdf::ElementPtr /*_sdf*/)
+    {
+      // Store the pointer to the model
+      this-&gt;model = _parent;
+
+      // ROS Nodehandle
+      this-&gt;nh = new ros::NodeHandle(&quot;~&quot;);
+      // ROS Subscriber
+      this-&gt;subvel = this-&gt;nh-&gt;subscribe&lt;geometry_msgs::Twist&gt;(&quot;cmd_vel&quot;, 1000, &amp;ROSModelPlugin::ROSCallback_Vel, this );
+
+
+      this-&gt;nh = new ros::NodeHandle(&quot;~&quot;);
+      this-&gt;pubpose = this-&gt;nh-&gt;advertise&lt;geometry_msgs::PoseStamped&gt;(&quot;pose&quot;,1000);
+
+//***********************************************
+
+      // Listen to the update event. This event is broadcast every
+      // simulation iteration.
+      // for gazebo 1.4 or lower it should be ConnectWorldUpdateStart
+      this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(
+      boost::bind(&amp;ROSModelPlugin::OnUpdate, this));
+    }
+
+    // Called by the world update start event
+    public: void OnUpdate()
+    {
+      std::vector&lt;double&gt; rangesgz;
+        static double qw,qx,qy,qz, Rrad, Prad, Yrad;
+
+// ************* QUATERNION / POSE DATA ******************
+      math::Vector3 p = model-&gt;GetWorldPose().pos;
+      math::Quaternion r = model-&gt;GetWorldPose().rot;
+      //from quaternion to Roll Pitch Yaw, in radianos
+      qw=r.w;   qx=r.x;     qy=r.y;     qz=r.z;
+      Rrad=atan2(  2*(qw*qx+qy*qz),  1-2*(qx*qx+qy*qy)  );  //Roll
+      Prad=asin(2*(qw*qy-qz*qx));               //Pitch
+      Yrad=atan2(  2*(qw*qz+qx*qy),  1-2*(qy*qy+qz*qz)  );  //Yaw
+
+// ***************************************************
+        ros::Time current_time, last_time;
+        current_time = ros::Time::now();
+        last_time = ros::Time::now();
+
+// ******************************************
+        //Pub Pose msg
+        geometry_msgs::Point p2ros;
+        p2ros.x=p.x; p2ros.y=p.y; p2ros.z=p.z;
+
+        geometry_msgs::Quaternion r2ros;
+        r2ros.x=r.x; r2ros.y=r.y; r2ros.z=r.z; r2ros.w=r.w;
+
+        geometry_msgs::PoseStamped Pose2ros;
+        Pose2ros.header.stamp=scan2ros.header.stamp;//ros::Time::now();
+        Pose2ros.header.frame_id=&quot;base_link&quot;;
+        Pose2ros.pose.position=p2ros;
+        Pose2ros.pose.orientation=r2ros;
+
+        this-&gt;pubpose.publish(Pose2ros);
+
+// *********************************************** 
+        //set velocities
+
+        this-&gt;model-&gt;SetLinearVel(math::Vector3(velx, vely, velz));
+        this-&gt;model-&gt;SetAngularVel(math::Vector3(Vangx, Vangy, Vangz));
+
+// ***********************************************
+        ros::spinOnce();
+    }
+
+    // callback functions run every time data is published to the topic
+    void ROSCallback_Vel(const geometry_msgs::Twist::ConstPtr&amp; msg)
+    {
+        velx=msg-&gt;linear.x;
+        vely=msg-&gt;linear.y;
+        velz=msg-&gt;linear.z;
+        Vangx=msg-&gt;angular.x;
+        Vangy=msg-&gt;angular.y;
+        Vangz=msg-&gt;angular.z;
+    }
+
+    // Pointer to the model
+    private: physics::ModelPtr model;
+
+
+    // Pointer to the update event connection
+    private: event::ConnectionPtr updateConnection;
+
+    // ROS Nodehandle
+    private: ros::NodeHandle* nh;
+    // ROS Subscriber
+    ros::Subscriber subvel;
+
+    // ROS Publisher
+    ros::Publisher pubpose;
+    //*************
+
+  };
+
+  // Register this plugin with the simulator
+  GZ_REGISTER_MODEL_PLUGIN(ROSModelPlugin)
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2988">wilmer</a> on 2016-12-28 04:38:00 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Have you installed the geometry messages? For example:</p>
+
+<pre><code>sudo apt-get install ros-kinetic-geometry-msgs
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1019"></a> on 2017-01-03 23:42:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>hi, nop that is not the problem.</p>
+
+<p>I runed and i get this</p>
+
+<p>ros-kinetic-geometry-msgs is already the newest version (1.12.5-0xenial-20161026-181759-0700).
+ros-kinetic-geometry-msgs set to manually installed.
+0 to upgrade, 0 to newly install, 0 to remove and 166 not to upgrade.</p>
+
+<p>can you tell me what are the step to compile a plugin? why i have to add to package.xml</p>
+
+<p>can you check my cmakelist, maybe the errors is there. i added to my initial question</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2988">wilmer</a> on 2017-01-04 18:48:47 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I found the error was in package.xml, there was multiple errors.</p>
+
+<p>In theory this plugin should move an object in the enviroment. i had to test the plugin with my robot</p>
+
+<p>thank you for your help chapulina</p>
+
+<p><strong>if someone see an error please write a comment</strong></p>
+
+<p>my plugin at the moment is:</p>
+
+<pre><code>    #include &lt;boost/bind.hpp&gt;
+    #include &lt;gazebo/gazebo.hh&gt;
+    #include &quot;geometry_msgs/Twist.h&quot;
+    #include &lt;gazebo/physics/physics.hh&gt;
+    #include &lt;gazebo/common/common.hh&gt;
+    #include &lt;stdio.h&gt;
+    static float velx=0.0,vely=0.0,velz=0.0,Vangx=0.0,Vangy=0.0, Vangz=0.0; // set as global
+    namespace gazebo
+    {
+      class remusbody : public ModelPlugin
+      {
+        public: void Load(physics::ModelPtr _parent, sdf::ElementPtr /*_sdf*/)
+        {
+          // Store the pointer to the model
+          this-&gt;model = _parent;
+
+          // Listen to the update event. This event is broadcast every
+          // simulation iteration.
+          this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(
+              boost::bind(&amp;remusbody::OnUpdate, this, _1));
+        }
+        // callback functions run every time data is published to the topic
+        void ROSCallback_Vel(const geometry_msgs::Twist::ConstPtr&amp; msg)
+        {
+            velx=msg-&gt;linear.x;
+            vely=msg-&gt;linear.y;
+            velz=msg-&gt;linear.z;
+            Vangx=msg-&gt;angular.x;
+            Vangy=msg-&gt;angular.y;
+            Vangz=msg-&gt;angular.z;
+        }
+
+        // Called by the world update start event
+        public: void OnUpdate(const common::UpdateInfo &amp; /*_info*/)
+        {
+          // Apply a small linear velocity to the model.
+          this-&gt;model-&gt;SetLinearVel(math::Vector3(velx, vely, velz));
+           this-&gt;model-&gt;SetAngularVel(math::Vector3(Vangx, Vangy, Vangz));
+        }
+
+
+
+        // Pointer to the model
+        private: physics::ModelPtr model;
+
+        // Pointer to the update event connection
+        private: event::ConnectionPtr updateConnection;
+      };
+
+      // Register this plugin with the simulator
+      GZ_REGISTER_MODEL_PLUGIN(remusbody)
+    }
+</code></pre>
+
+<p>my cmakelist is</p>
+
+<pre><code>    cmake_minimum_required(VERSION 2.8.3)
+    project(plugins)
+
+    # Load catkin and all dependencies required for this package
+    find_package(catkin REQUIRED COMPONENTS 
+      roscpp 
+      gazebo_ros
+      geometry_msgs 
+    )
+
+    # Depend on system install of Gazebo
+    set(CMAKE_CXX_FLAGS &quot;-std=c++0x ${CMAKE_CXX_FLAGS}&quot;)
+    find_package(gazebo REQUIRED)
+
+    link_directories(${GAZEBO_LIBRARY_DIRS})
+    include_directories(${Boost_INCLUDE_DIR} ${catkin_INCLUDE_DIRS} ${GAZEBO_INCLUDE_DIRS})
+
+    add_library(plugins SHARED remusbody.cc)
+    target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES})
+
+    catkin_package(
+      DEPENDS 
+        roscpp 
+        gazebo_ros 
+        geometry_msgs
+    )
+</code></pre>
+
+<p>and my package.xml inside my plugin folder is</p>
+
+<pre><code>    &lt;?xml version=&quot;1.0&quot;?&gt;
+    &lt;package&gt;
+      &lt;name&gt;plugins&lt;/name&gt;
+      &lt;version&gt;0.0.0&lt;/version&gt;
+      &lt;description&gt;The plugins wilmer_gazebo package&lt;/description&gt;
+
+      &lt;maintainer email=&quot;wilmer@todo.todo&quot;&gt;wilmer&lt;/maintainer&gt;
+
+
+
+      &lt;license&gt;TODO&lt;/license&gt;
+
+
+
+      &lt;buildtool_depend&gt;catkin&lt;/buildtool_depend&gt;
+      &lt;build_depend&gt;roscpp&lt;/build_depend&gt;
+      &lt;build_depend&gt;rospy&lt;/build_depend&gt;
+      &lt;build_depend&gt;gazebo_ros&lt;/build_depend&gt;
+      &lt;build_depend&gt;std_msgs&lt;/build_depend&gt;
+      &lt;build_depend&gt;geometry_msgs&lt;/build_depend&gt;
+      &lt;run_depend&gt;roscpp&lt;/run_depend&gt;
+      &lt;run_depend&gt;rospy&lt;/run_depend&gt;
+      &lt;run_depend&gt;gazebo_ros&lt;/run_depend&gt;
+      &lt;run_depend&gt;std_msgs&lt;/run_depend&gt;
+      &lt;run_depend&gt;geometry_msgs&lt;/run_depend&gt;
+
+
+      &lt;!-- The export tag contains other, unspecified, tags --&gt;
+      &lt;export&gt;
+        &lt;!-- Other tools can request additional information be placed here --&gt;
+
+      &lt;/export&gt;
+    &lt;/package&gt;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2988">wilmer</a> on 2017-01-04 22:26:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

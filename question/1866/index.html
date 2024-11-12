@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>DRCSim and TF : please tell me what I'm missing - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/1866">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>DRCSim and TF : please tell me what I'm missing</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/26057/drcsim-and-tf-please-tell-me-what-im-missing">https://robotics.stackexchange.com/questions/26057/drcsim-and-tf-please-tell-me-what-im-missing</a>.</p>
+        <p>Hello All,</p>
+
+<p>DRCSim-2.2, Ubuntu 12.04.2LTS</p>
+
+<p>I am trying to convert LaserScan images to Point Clouds with modified version of code here... <br/>
+[<a href="http://answers.ros.org/question/11232/how-to-turn-laser-scan-to-point-cloud-map/">http://answers.ros.org/question/11232/how-to-turn-laser-scan-to-point-cloud-map/</a>]</p>
+
+<p>Modifications are only changing link/topic names, and changing setExtrapolationLimit to 3.0.</p>
+
+<p>I get the following error...</p>
+
+<p><code>
+terminate called after throwing an instance of &#39;tf::LookupException&#39;<br>
+  what():  Frame id /head_hokuyo_frame does not exist! Frames (31): Frame /hokuyo_link exists with parent /head.<br>
+Frame /head exists with parent /utorso.<br>
+Frame /ltorso exists with parent /pelvis.
+</code></p>
+
+<p>I shortened this, but /head_hokoyu_frame is not in the list.
+<br>
+<br>
+<br>
+&quot;view_frames&quot; shows connection between /pelvis and /head_hokoyu_frame
+<br>
+<br>
+<strong>Update</strong> : I have been trying the TF tutorials for inspiration. The view_frames output says the transform from /pelvis to /ltorso is 1363397010.463 sec old ??  Also, tf_monitor shows Average Delay: -0.495226 for some frames. </p>
+
+<p>Thank you for any assistance or useful links.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/267">dougbot01</a> on 2013-03-15 21:09:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Looks like the problem is that when you receive a laser scan, its timestamp is later than all the available /tf data.  This is a common issue in a distributed system, and is what <a href="http://www.ros.org/wiki/tf/Tutorials/Using%20Stamped%20datatypes%20with%20tf%3A%3AMessageFilter">message filters</a> were designed to address.  You should try using a message filter.</p>
+
+<p>In the meantime, to help understand the problem, below is a slightly modified version of the <a href="http://answers.ros.org/question/11232/how-to-turn-laser-scan-to-point-cloud-map">code you pointed to</a>.  In this version, I added a sleep to the laser scan callback to allow for /tf data to be received before trying to transform the latest scan.  By default, this sleep would block receipt of all data, including /tf; so I created a <a href="http://www.ros.org/wiki/roscpp/Overview/Callbacks%20and%20Spinning#Multi-threaded_Spinning">multithreaded spinner</a>.  What you should see if you run this program is that at first transforms will fail as your /tf subscriber hooks up and starts getting data; then they&#39;ll start succeeding.</p>
+
+<p>Again, don&#39;t use the code here; use <a href="http://www.ros.org/wiki/tf/Tutorials/Using%20Stamped%20datatypes%20with%20tf%3A%3AMessageFilter">message filters</a> instead.</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;laser_geometry/laser_geometry.h&gt;
+
+class My_Filter {
+     public:
+        My_Filter();
+        void scanCallback(const sensor_msgs::LaserScan::ConstPtr&amp; scan);
+     private:
+        ros::NodeHandle node_;
+        laser_geometry::LaserProjection projector_;
+        tf::TransformListener tfListener_;
+
+        ros::Publisher point_cloud_publisher_;
+        ros::Subscriber scan_sub_;
+};
+
+My_Filter::My_Filter(){
+        scan_sub_ = node_.subscribe&lt;sensor_msgs::LaserScan&gt; (&quot;/multisense_sl/laser/scan&quot;, 100, &amp;My_Filter::scanCallback, this);
+        point_cloud_publisher_ = node_.advertise&lt;sensor_msgs::PointCloud2&gt; (&quot;/cloud&quot;, 100, false);
+        tfListener_.setExtrapolationLimit(ros::Duration(0.1));
+}
+
+void My_Filter::scanCallback(const sensor_msgs::LaserScan::ConstPtr&amp; scan){
+    // Sleep a little so that we have a better chance of having current /tf data
+    // before trying to transfrom this latest /scan.
+    ros::Duration(0.1).sleep();
+    sensor_msgs::PointCloud2 cloud;
+    try
+    {
+      projector_.transformLaserScanToPointCloud(&quot;pelvis&quot;, *scan, cloud, tfListener_);
+    }
+    catch(tf::TransformException&amp; e)
+    {
+      printf(&quot;failed to transform: %s\n&quot;, e.what());
+      return;
+    }
+    printf(&quot;success\n&quot;);
+    point_cloud_publisher_.publish(cloud);
+}
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;my_filter&quot;);
+
+    My_Filter filter;
+
+    // Start up two threads, one to handle /tf messages and the other for /scan
+    // messages.
+    ros::MultiThreadedSpinner spinner(2);
+    spinner.spin();
+
+    return 0;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/74">gerkey</a> on 2013-03-19 21:11:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Brian, thank you so much for the response. I have been getting through the TF tutorials and see that I will need the MessageFilter as you said. Unfortunately the code/programs for the tutorial are no longer in fuerte (unless I missed a package) but I have almost re-created all the files and will submit bug/patch on GitHub for that. Thanks again!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/267">dougbot01</a> on 2013-03-20 13:28:29 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

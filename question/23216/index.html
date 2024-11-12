@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Can you suggest the Gazebo plugin for the Mecanum wheel robot ? Because planar move and ros force based move don't work for me - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/23216">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Can you suggest the Gazebo plugin for the Mecanum wheel robot ? Because planar move and ros force based move don't work for me</h2>
+      <div class="question">
+        <p>Hi, I am quite new to ROS and Gazebo. I have try the planar move plugin for my Mecanum robot. It seem to be good except that the this plugin override physics. That means even I change mass, inertia, friction in URDF of my robot. There is no effect. When I move robot 1000 kg or 1 kg it yield the same results.
+Therefore I use ros force based plugin for my multiple Mecanum robots instead of the planar move. refer to <a href="https://answers.ros.org/question/212889/gazebo-planar-move-plugin-for-omni-directional-wheel/">https://answers.ros.org/question/212889/gazebo-planar-move-plugin-for-omni-directional-wheel/</a></p>
+
+<p>You can check the ros<em>force</em>based_move plugin here </p>
+
+<p><a href="https://github.com/tu-darmstadt-ros-pkg/hector_gazebo/tree/kinetic-devel/hector_gazebo_plugins/src">https://github.com/tu-darmstadt-ros-pkg/hector_gazebo/tree/kinetic-devel/hector_gazebo_plugins/src</a></p>
+
+<p>However, I still found a problem here.</p>
+
+<ul>
+<li>When I spawn the robot, there are
+   always offset of robot position in
+   my map and also the yaw direction
+   offset for 90 degrees. Hence, I have
+   to edit the arguments for static
+   transform node in order to solve
+   this problem.  Here are some parts
+   of my launch file to call a single
+   robot with the namespace.</li>
+</ul>
+
+<p><code>&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;odom_map_broadcaster&quot; args=&quot;0 0 0 0 0 0 /map $(arg robot_name)/odom 10&quot; /&gt;</code></p>
+
+<p>Note that when I set to 0 0 0 0 0 0 the robot will offset in Rviz when compare to the Gazebo
+ So I have to change the offset here. But when I use the original planar move there is no problem.</p>
+
+<ul>
+<li>When I move robot sideways in the
+   y-axis, the odometry in Rviz does
+   not change even though in gazebo it
+   has change position already. For
+   move straight and backward in
+   X-axis, there is no problem.</li>
+</ul>
+
+<p>Here is the part of my URDF file to call the plugin in </p>
+
+<p><code>&lt;gazebo&gt;
+   &lt;plugin name=&quot;ros_force_based_controller&quot; filename=&quot;libgazebo_ros_force_based_move.so&quot;&gt;
+      &lt;commandTopic&gt;cmd_vel&lt;/commandTopic&gt;
+      &lt;odometryTopic&gt;odom&lt;/odometryTopic&gt;
+      &lt;odometryFrame&gt;odom&lt;/odometryFrame&gt;
+      &lt;odometryRate&gt;100.0&lt;/odometryRate&gt;
+      &lt;robotBaseFrame&gt;base_link&lt;/robotBaseFrame&gt;
+      &lt;publishOdometryTf&gt;true&lt;/publishOdometryTf&gt;
+      &lt;yaw_velocity_p_gain&gt;500&lt;/yaw_velocity_p_gain&gt;
+      &lt;x_velocity_p_gain&gt;1000&lt;/x_velocity_p_gain&gt;
+      &lt;y_velocity_p_gain&gt;1000&lt;/y_velocity_p_gain&gt;
+      &lt;cmdVelTimeOut&gt;0.25&lt;/cmdVelTimeOut&gt;
+    &lt;/plugin&gt;
+  &lt;/gazebo&gt;</code></p>
+
+<p>Finally, I have studied from ridgeback robot simulation from Clearpath robotics. It seems that they modify the ros force based move to not publish odometryTF. But they use this information from &quot;gazebo<em>ros</em>control&quot; instead.  This simulation is work for me. But I can&#39;t migrate code to make multiple Mecanum robots. So I still looking for the best solution plugin for my multiple mecanum robot.</p>
+
+<p>The link of Ridgeback robot URDF is here</p>
+
+<p><a href="https://github.com/ridgeback/ridgeback/blob/kinetic-devel/ridgeback_description/urdf/ridgeback.gazebo">https://github.com/ridgeback/ridgeback/blob/kinetic-devel/ridgeback_description/urdf/ridgeback.gazebo</a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/13778">kamoonty</a> on 2019-07-14 05:51:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi,</p>
+
+<p>I may be a bit late to answer but concerning the problem of measuring the odometry on the y-axis, I think it&#39;s because the implementation of the force_move_based_plugin simply ignores it, as we can see <a href="https://github.com/tu-darmstadt-ros-pkg/hector_gazebo/blob/kinetic-devel/hector_gazebo_plugins/src/gazebo_ros_force_based_move.cpp#L361">in the function computing odometry</a>:</p>
+
+<p><code>
+tf::Transform GazeboRosForceBasedMove::getTransformForMotion(double linear_vel_x, double angular_vel, double timeSeconds) const
+</code></p>
+
+<p>I think a solution is to reimplement this function correctly by taking the transversal axis into account. I tried to replace it with the following and it looks like it works now but I still have to test it more thoroughly:</p>
+
+<pre><code>    tf::Transform GazeboRosForceBasedMove::getTransformForMotion(double linear_vel_x, double linear_vel_y, double angular_vel, double timeSeconds) const
+{
+
+    tf::Transform tmp;
+    tmp.setIdentity();
+
+    const double linear_x = linear_vel_x * timeSeconds;
+    const double linear_y = linear_vel_y * timeSeconds;
+    const double angular = angular_vel * timeSeconds;
+
+    if (std::abs(angular_vel) &lt; 0.0001) {
+        tmp.setOrigin(tf::Vector3(linear_x, 0.0, 0.0));
+    } else {
+        const double delta_x = linear_x*cos(angular) - linear_y*sin(angular);
+        const double delta_y = linear_x*sin(angular) + linear_y*cos(angular);
+
+        tmp.setOrigin(tf::Vector3(delta_x, delta_y, 0.0));
+        tmp.setRotation(tf::createQuaternionFromYaw(angular));
+    }
+
+    return tmp;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3018">gurbain</a> on 2020-04-01 04:42:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

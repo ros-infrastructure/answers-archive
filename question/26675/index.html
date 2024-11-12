@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>accuracy of gazebo simulation of arm vs real hardware - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/26675">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>accuracy of gazebo simulation of arm vs real hardware</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am interested in getting the most accurate gazebo representation of a custom 7-dof robotics arm, in terms of its dynamics when loaded/unloaded vs the real arm. Is this even possible? </p>
+
+<p>In the open source projects with arms that I see, the gazebo sim do not correlate with reality for the arm. The arm is tuned with some PIDs for the EffortJointController so it works well in sim, but it has not correlation with the real hardware. Most projects actually just use the Hareware_interface/PositionJointController instead since there&#39;s no need for a PID.</p>
+
+<p>Given the link inertias, mass, torque limits, vel limit and accel limits in the urdf, is that not enough to give a good representation? What else is missing? In theory, what other factors complicates the simulation such that it cannot realistically match a real arm?</p>
+
+<p>The Atlas was simulated in Gazebo by OSRF for the DRC. It was capable ok walking. Is the simulation an accurate model of the robot there?</p>
+
+<p>I&#39;m using ROS noetic and the default ode engine for Gazebo 11.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/16352">rakuwaku</a> on 2021-03-11 02:20:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <blockquote>
+<p>What else is missing? In theory, what
+other factors complicates the
+simulation such that it cannot
+realistically match a real arm?*</p>
+</blockquote>
+
+<p>Yes, I&#39;m interested in this too. I would like an accurate dynamical model of the UR5 and other UR manipulators. But I don&#39;t yet know of a package or project that provides this kind of Gazebo &quot;emulator&quot; for a given robot system that includes both its accurate physical dynamics and captures the effects of any software delays (which might be appreciable and more important than subtle dynamic effects.)</p>
+
+<p>To accurately simulate the dynamic response of the robot to command inputs you really need a model of all of its internal software/hardware/firmware controllers and you also need accurate dynamical models of its actuators.</p>
+
+<p>On the subject of actuation, and a modeling approach to make a Gazebo model more realistic, I&#39;ve been thinking about it but I think it needs to explicitly handle the actuators at least at a simple level.</p>
+
+<p>I feel like there&#39;s an important concept put well here by Russ Tedrake:</p>
+
+<p><a href="http://manipulation.csail.mit.edu/robot.html">http://manipulation.csail.mit.edu/robot.html</a></p>
+
+<blockquote>
+<p>One thing that might be surprising is
+that, <strong>despite the fact that the joint
+dynamics of a manipulator are highly
+coupled and state dependent, the PID
+gains for each joint are often chosen
+independently for each joint, and are
+constant</strong> (not gain-scheduled ).</p>
+
+<p>...</p>
+
+<p>nearly all electric robots have fairly substantial gear reductions, often on the order of 100:1</p>
+
+<p>...</p>
+
+<p>The &quot;reflected inertia&quot; of the arm at
+the motor is cut by the square of the
+gear ratio; or the &quot;reflected inertia&quot;
+of the motor at the arm is multiplied
+by the square of the gear ratio. This
+has interesting consequences -- as we
+move to the multi-link case, we will
+see that the inertia of the arm is a
+state-dependent function that captures
+the inertial coupling of the other
+joints in the manipulator. The motor
+inertia, on the other hand, is
+constant. <strong>For large gear ratios, this
+means the dynamics of the joint are
+less dependent on the nonlinear
+effects of joint position and
+velocity, making it relatively easy to
+tune constant feedback gains that
+perform well in all configurations</strong></p>
+</blockquote>
+
+<p>However, in short, if we&#39;re trying to use an effort controller, I think this means that we <em>must</em> have a simple model for how the arm&#39;s inertia tries to backdrive the motor inertias. Simply removing the active torque on the motor rotor does not set the joint torque to zero as viewed from the standpoint of the arm&#39;s inertia. Rather, setting the motor torque to zero will allow the rotor to freewheel, which actually dominates the overall inertia of the system. The actual effort seen by the &quot;motor coils,&quot; which are what we would control with an effort joint interface, is very different from 1/N the joint torques from the manipulator dynamic equations.</p>
+
+<p>I don&#39;t know if there&#39;s a good plugin framework for modeling actuator dynamics. Just having the gearbox (like the <a href="https://wiki.ros.org/urdf/XML/Transmission"><code>&lt;transmission&gt;</code> tag</a>) isn&#39;t enough, I think you need to take rotor inertia into account at minimum. And honestly, I don&#39;t even know if the transmission tags are even working? (this is something I&#39;m looking into, trying to understand <code>ros_control</code> better, and will update if I find more)</p>
+
+<p>I believe what is needed to mimic an effort joint interface that&#39;s realistic for many real robots is a realistic gear ratio, even if lossless, and an actual spinning rotor inertia, which can be virtual/mathematical. When the motor rotor is stopped or spinning slowly, the effort PID controller then sees that it needs to supply 1/N the torque of the actual arm joint. When the motor is spinning fast, the inertia of the motor dominates the dynamic torque behavior, and the PID controller is largely controlling the spinning inertia of the rotor, with the actual manipulator dynamics of the arm as kind of a small adjustment.</p>
+
+<p>It&#39;s not clear to me yet how to make this happen in Gazebo, but I have not yet found a project that&#39;s trying to do this. I&#39;d be interested.</p>
+
+<blockquote>
+<p>Most projects actually just use the Hareware_interface/PositionJointController instead since there&#39;s no need for a PID.</p>
+</blockquote>
+
+<p>I think that is a better approach, to be honest. I understand that this question is linked from and maybe related to <a href="https://github.com/ros-industrial/universal_robot/issues/566">this discussion on the <code>universal_robot</code> packages</a>, and I know that there they are discussing the use of effort joint controllers to solve problems with hard contact between the position controlled robot and its environment (I&#39;ve been experimenting with <a href="https://github.com/ros-industrial/universal_robot/pull/526">PR #526</a> already). However, I think because of the reflected inertia effects in the transmission dynamics discussed above, a PID controller running directly on the robot joint is going to have different dynamics than a PID controller running a motor inertia.</p>
+
+<p>I am actually having some trouble with low &quot;stiffness&quot; of the effort joint controllers for the UR5 in Gazebo. I am still working on documenting my issue and seeing if I can tune them differently and trying to diagnose exactly what&#39;s going on. </p>
+
+<p>I think the short-term fix for me is to go back to using a position-controlled or velocity-controlled robot. The UR5 joints are very stiff and the machine uses feedback control to make it &quot;as kinematic as possible,&quot; so position or velocity control is not an unreasonable approximation. For the URx robots, I suspect that their primary mechanical deflection is due to elastic deformation of the harmonic drive flexspline rather than anything like backdriven &quot;slip&quot; of the magnetic field in the motor at maximum current. (I do not know this, this just my current working guess). I also think the robot will enter safety stops well below the nominal torque limits of the joints, probably limiting non-kinematic deflections even more.</p>
+
+<p>To fix the &quot;exploding robot&quot; problems seen with position controllers, therefore, I&#39;m thinking of adding some realistic joint elasticity to a kinematically-controlled robot. I have already achieved a &quot;safe&quot; environment for a position-controlled robot by mounting environmental obstacles on spring-damper mounts. See some information here:</p>
+
+<p><a href="https://answers.gazebosim.org/question/26533/properly-making-soft-joints-to-world-in-gazebo-9-ros-melodic/">https://answers.gazebosim.org/question/26533/properly-making-soft-joints-to-world-in-gazebo-9-ros-melodic/</a></p>
+
+<p>I think realistic elastic joint deflections comparable to the real robot&#39;s stiffness MIGHT keep the robot from exploding on contact with rigid, fixed obstacles, and would also add a bit of inertial and contact/load deflection that is relatively realistic. I don&#39;t know yet if this is feasible or not. In my application I&#39;m most concerned with controlling kinematic positioning to the nominal repeatability numbers of the UR5 without having it explode when it touches objects.</p>
+
+<p>Some other kind of more complex load-dependent &quot;deflection&quot; scheme might be possible with plugins, etc. but I don&#39;t know enough about that yet to comment intelligently.  </p>
+
+<p>My robot cannot accept torque control commands, so there&#39;s no inherent benefit in an effort controller for me. For me, the effort controller is to avoid &quot;explosion&quot; on contact, which I&#39;ve already solved with environmental compliance. I also want to read the joint efforts, which only the effort controller reports on <code>/joint_states</code>. But I believe that this can be solved with other methods, like force-torque sensors in the robot model. </p>
+
+<p>I&#39;m curious, in your application do you have realtime control over the joint torque commands? Or do you also need to use position or velocity commands?</p>
+
+<p>Are you seeing or measuring deviations from desired trajectories in an experimental system that are excessive, or do you want an &quot;emulator&quot; of real hardware to see what would happen before you try hardware on some aggressive/difficult/precise trajectories?</p>
+
+<p>I think it would be very nice to have a &quot;digital twin&quot; of popular robot models that behave as accurately as possible, but this is a large system identification and controller software effort and I think generally the results are not made available as ROS tools for others to use, if they were even developed in a ROS context in the first place. A big part of this is detailed models of the temporal effects of the electronics and software, as well, not just the mechanical dynamics. For example, see </p>
+
+<p><a href="https://backend.orbit.dtu.dk/ws/portalfiles/portal/117833332/Universal_Robot_report.pdf">https://backend.orbit.dtu.dk/ws/portalfiles/portal/117833332/Universal_Robot_report.pdf</a></p>
+
+<p>where there is a very long delay between command and action in the robot electronics itself:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/gazebosim/16216180461275292.png" alt="image description"></p>
+
+<p>Also, each joint on the physical robot has a PID controller. For a URx robot, you can change those settings. Traveling from position to position or velocity to velocity uses an underlying control law of that controller. </p>
+
+<p>Issues like that on my hardware, which doesn&#39;t support external motion control that well, are going to be more significant than physical dynamics and deflections, especially if you try to close an external feedback loop around the robot. Maybe your robot comes with a better real-time control interface designed to be useful in a feedback loop and will not have such issues (and indeed, I think newer URs are better, maybe the ROS driver is fixed, I don&#39;t know yet).</p>
+
+<p>I&#39;d be interested in general discussion about this topic. I would like to have an &quot;emulator&quot; of different robots to see what can be done to understand, communicate, and control residual unwanted behaviors all in simulation. But I think an emulator for one robot is a long, involved project in itself.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/41990"></a> on 2021-05-21 12:29:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;m curious if you&#39;ve looked at the <a href="https://github.com/nilseuropa/gazebo_ros_motors">gazebo_ros_motors</a> project. I haven&#39;t played with it myself yet, but it looks like it takes a more realistic approach to motor modelling in Gazebo</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/47307">shonigmann</a> on 2021-06-10 13:10:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I haven&#39;t looked at that, looks interesting. Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/41990">danzimmerman</a> on 2021-10-15 12:40:48 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I think, as Dan mentions, arguably the most important detail in relation to simulating real hardware and their corresponding control laws is temporal effects. Sure I can implement a PID controller in Gazebo using many different methods, but it seems that regardless of the dynamic properties that are used, and the route in which PID is implemented, on a model one can&#39;t simulate these temporal effects in any real way. If I can design a PID controller that will have 0 s.s. error in Gazebo it is certainly wonderful, but what of rise time? mechanical time constants? These details are arguably just as important, especially because commands will often change before steady state has been reached at all, meaning within a short command sequence a real system and a simulated system in Gazebo will already be behaving fairly differently. </p>
+
+<p>On a similar front, roboticists often come from one of two backgrounds: computer science or control engineering. For those based in controls, like myself, being able to assess my simulated system &quot;open loop&quot; or &quot;closed loop&quot; is very important, but it seems that in Gazebo, neither one can really be simulated. Setting a new velocity, through PID or not, changes this speed instantly. And what if I want my system to have a similar impulse response to the real system? As far as I am aware this really cannot be done as the resulting time history of this actuation will bang on and bang right back off. Any incites on this front would be particularly helpful. Sorry I could not be more help, but I wanted to add my two cents in hopes that some broader attention can be brought to this question.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/46872">Adam Gronewold</a> on 2021-06-09 17:39:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gazebo node cannot see Gazebo Topic, need help understanding why - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/15288">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gazebo node cannot see Gazebo Topic, need help understanding why</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/28011/gazebo-node-cannot-see-gazebo-topic-need-help-understanding-why">https://robotics.stackexchange.com/questions/28011/gazebo-node-cannot-see-gazebo-topic-need-help-understanding-why</a>.</p>
+        <p>I used this tutorial to get me going <a href="http://gazebosim.org/tutorials?tut=guided_i5#TestthemessagepassingAPI">http://gazebosim.org/tutorials?tut=guided_i5#TestthemessagepassingAPI</a>.</p>
+
+<p>It gave me enough information to create a gazebo model plugin, and a standalone gazebo node that would use a gazebo transport node to publish commands to a Gazebo topic. </p>
+
+<p>My problem is that my gazebo model plugin is unable to see when a message is sent to the gazebo topic (&quot;/topic/a&quot;) even though I have a gazebo subscriber callback function for &quot;/topic/a&quot;. To confirm that I was publishing and subscribing to the gazebo topic I opened a terminal and used the command </p>
+
+<pre><code>&quot;gz topic -i /topic/a&quot;
+</code></pre>
+
+<p>The response was </p>
+
+<pre><code>Type: gazebo.msgs.Vector3d
+
+Publishers:
+    Same IP:43457
+
+Subscribers:
+    Same IP:45557
+</code></pre>
+
+<p>They had the same IP but different ports. Is that normal? How do I get both gazebo nodes to look at the same Gazebo topic? </p>
+
+<p>My code for my standalone is below</p>
+
+<pre><code>#include &lt;gazebo/gazebo_client.hh&gt;
+#include &lt;gazebo/common/common.hh&gt;
+#include &lt;gazebo/gazebo_config.h&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &lt;gazebo/transport/transport.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+
+
+void callback_from_gazebo(ConstVector3dPtr &amp;_msg) {   std::cout &lt;&lt; &quot;Callback received () \n&quot;; }
+
+
+int main(int _argc, char **_argv) {     std::cout &lt;&lt; &quot;Gazebo Initialization \n&quot;;
+    gazebo::transport::PublisherPtr pub1,pub2;
+    gazebo::transport::SubscriberPtr sub1;
+
+    gazebo::client::setup(_argc, _argv);
+
+    gazebo::transport::init();
+    gazebo::transport::run();
+    gazebo::transport::NodePtr node(new gazebo::transport::Node());
+    node-&gt;Init(&quot;default&quot;);
+    std::cout &lt;&lt; &quot;End Gazebo Initialization \n&quot;;
+
+    std::cout &lt;&lt; &quot;Define Gazebo Publishers and Subscribers \n&quot;;
+    pub1 = node-&gt;Advertise&lt;gazebo::msgs::Vector3d&gt;(&quot;/topic/a&quot;);
+    pub2 = node-&gt;Advertise&lt;gazebo::msgs::WorldControl&gt;(&quot;/gazebo/torqueprofile/world_control&quot;);
+    sub1 = node-&gt;Subscribe(&quot;/topic/b&quot;, callback_from_gazebo);
+
+    std::cout &lt;&lt; &quot;Waiting for connection\n&quot;;
+    pub1-&gt;WaitForConnection();
+    pub2-&gt;WaitForConnection();
+    std::cout &lt;&lt; &quot;Connections confirmed\n&quot;;
+
+    while(1)
+    {
+        gazebo::msgs::Vector3d cmd;
+        cmd.set_x(1);
+        cmd.set_y(2);
+        cmd.set_z(3);
+        pub1-&gt;WaitForConnection();
+        pub1-&gt;Publish(cmd);
+
+        gazebo::msgs::WorldControl world_msg;
+        world_msg.set_step(true);
+        pub2-&gt;Publish(world_msg);
+
+        gazebo::common::Time::MSleep(1000);
+    }
+
+    gazebo::transport::fini();
+    gazebo::client::shutdown();
+    return 0; }
+</code></pre>
+
+<p>My code for my plugin is below</p>
+
+<pre><code>#include &lt;boost/bind.hpp&gt;
+#include &lt;gazebo/transport/transport.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &lt;gazebo/common/common.hh&gt;
+#include &lt;gazebo/math/Angle.hh&gt;
+#include &lt;gazebo/gazebo_client.hh&gt;
+#include &lt;gazebo/gazebo_config.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;fstream&gt;
+
+
+namespace gazebo
+{
+  /// \brief A plugin to control two cubes strictly in Gazebo
+  class gazebo_simple_plugin : public ModelPlugin
+  {
+    /// \brief Constructor
+    public: gazebo_simple_plugin() 
+    {
+    }
+
+
+    public: virtual void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
+    {
+        model = _model;
+
+        if (model-&gt;GetJointCount() == 0)
+        {
+            std::cerr &lt;&lt; &quot;\n no joints \n&quot;;
+            return;
+        }
+        else
+            std::cerr &lt;&lt; &quot;\n joints are there \n&quot;;
+
+        //set joint handle to joints in the _model
+        joint1 = model-&gt;GetJoints()[0]; 
+
+        // Create the Gazebo node
+        node = transport::NodePtr(new transport::Node());
+        node-&gt;Init(this-&gt;model-&gt;GetWorld()-&gt;GetName());
+
+        pub1 = node-&gt;Advertise&lt;gazebo::msgs::Vector3d&gt;(&quot;/topic/b&quot;);
+        sub1 = node-&gt;Subscribe(&quot;/topic/a&quot;, &amp;gazebo_simple_plugin::callback_from_standalone, this);
+
+        //Listen to the update event. This event is broadcast every
+        updateConnection = event::Events::ConnectWorldUpdateBegin(boost::bind(&amp;gazebo_simple_plugin::OnUpdate, this, _1));
+
+    }
+
+
+    private: void callback_from_standalone(ConstVector3dPtr &amp;_msg)
+    {
+      cmd=(_msg-&gt;x());
+      printf(&quot;cmd received %f \n&quot;,cmd);
+    }
+
+
+
+    // Called by the world update start event
+    public: void OnUpdate(const common::UpdateInfo &amp; /*_info*/)
+    {
+
+        //double force_1 = joint1_sy-&gt;GetForceTorque(0).body2Force.z;
+
+        joint1-&gt;SetForce(2, cmd);
+
+        gazebo::msgs::Vector3d feedback_msg;
+        feedback_msg.set_x(joint1-&gt;GetAngle(2).Degree());
+        pub1-&gt;WaitForConnection();
+        pub1-&gt;Publish(feedback_msg);
+
+        printf(&quot;ONUPDATE: Update occurred&quot;);
+
+
+    }
+
+
+
+    // Pointer to the model
+    private: physics::ModelPtr model;
+
+    /// \brief Pointer to the joint.
+    private: physics::JointPtr joint1; //shoulder yaw
+
+    /// \brief A node used for transport
+    public: transport::NodePtr node;
+    public: transport::PublisherPtr pub1;
+    public: transport::SubscriberPtr sub1;
+
+    // Pointer to the update event connection
+    private: event::ConnectionPtr updateConnection;
+
+    private: double cmd;
+
+  };
+
+  // Tell Gazebo about this plugin, so that Gazebo can call Load on this plugin.
+  GZ_REGISTER_MODEL_PLUGIN(gazebo_simple_plugin)
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-25 17:11:59 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Make sure there is no typo in the topic name for your subscribe call. Can you provide code and what Gazebo version you are using?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59">hugomatic</a> on 2017-01-26 13:53:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I made sure there was no typo in the topic name. Also i am able to see both the publisher and the subscriber to the topic so that confirms that the gazebo nodes are looking at the topic.</p>
+
+<p>I did find this page to be helpful (<a href="http://gazebosim.org/tutorials?tut=custom_messages#CodeExplained13">http://gazebosim.org/tutorials?tut=custom_messages#CodeExplained13</a>). It made it clear that in my gazebo node executable (that uses int main()) I needed to make a call to these two transport functions:</p>
+
+<p>gazebo::transport::init();
+gazebo::transport::run();</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-27 11:20:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I also added the call pub1-&gt;WaitForConnection(); before each message that I publish over the gazebo transport layer, before I just called it after defining the gazebo publisher handle. 
+I am using Gazebo 7, and cannot show code due to employment restrictions.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-27 11:22:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It is normal that the publisher and subscriber have different ports. The output of gz topic indicates that there is one publisher on /topic/a and one subscriber. If you are running a model plugin, then you shouldn&#39;t call gazebo::transport::init nor gazebo::transport::run. The documentation you referenced is for a standalone program. Can you post your code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5">nkoenig</a> on 2017-01-27 11:26:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I can show small portions though. Here is my subscriber for topic a in one gazebo node
+sub1 = node-&gt;Subscribe(&quot;/gazebo/torqueprofile/feedback&quot;, callback_from_gazebo);</p>
+
+<p>Here is my code for the publisher for &quot;topic a&quot; in the gazebo control plugin
+pub1 = node-&gt;Advertise<a href="gazebo::msgs::Vector3d">gazebo::msgs::Vector3d</a>(&quot;/gazebo/torqueprofile/feedback&quot;);</p>
+
+<p>They are identical name definition</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-27 11:26:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Can you create a simple plugin that demonstrates your problem, but doesn&#39;t violate your employment restrictions. Creating a simple plugin will also help you self-debug the problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5">nkoenig</a> on 2017-01-27 11:28:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I added the code to the question now. </p>
+
+<p>So basically what I see now is the stand alone can publish to topic a, but the gazebo plugin cannot publish to topic b, any ideas?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-27 12:50:13 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>If I understood well, you have a model plugin and a standalone program talking to each other over a Gazebo topic, right?</p>
+
+<p>You could try setting the <code>GAZEBO_MASTER_URI</code> <a href="http://gazebosim.org/tutorials?tut=components#EnvironmentVariables">environment variable</a> before launching Gazebo with your plugin and before launching the standalone program in an attempt to force them to use the same port, for example:</p>
+
+<pre><code>GAZEBO_MASTER_URI=http://localhost:43457 gazebo your.world
+GAZEBO_MASTER_URI=http://localhost:43457 ./standalone_program
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1019"></a> on 2017-01-27 11:31:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I  tired using the command you suggested, but I keep getting an error saying your.world is a invalid type of identifier. Obviosuly I replace your.world with my world. </p>
+
+<p>Aside from that I dont think that the port is what is causing this problem I created a simple version of standalone program and gazebo plugin and posted it above. What I found was that the standalone program was able to publish to the topic a, and the gazebo plugin was able to see see the message</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-27 14:12:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>However the gazebo plugin cannot publish to topic B, and I have no idea why,</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2880">Francis123</a> on 2017-01-27 14:12:49 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I was able to figure out why my standalone gazebo program and gazebo plugin were having problems communicating with each other.</p>
+
+<p>It was all on the the standalone gazebo program side, and I used this link to help me understand where I went wrong. 
+<a href="http://gazebosim.org/tutorials?tut=custom_messages#CMakeListsforPluginandExecutable">http://gazebosim.org/tutorials?tut=custom_messages#CMakeListsforPluginandExecutable</a></p>
+
+<p>For the problem of publishing messages to a gazebo topic 
+Basically I was missing these two lines before initializing the gazebo transport node (something that is not used in another tutorial I used)</p>
+
+<pre><code>gazebo::transport::init();
+gazebo::transport::run();
+</code></pre>
+
+<p>For the problem of subscribing to a gazebo topic through the standalone gazebo program, I had to create a shared boost ptr to the object that is passed as a parameter to the callback function </p>
+
+<pre><code>typedef const boost::shared_ptr&lt;gazebo::msgs::Vector3d&gt; ConstVector3dPtr;
+</code></pre>
+
+<p>In the future it might be helpful if there were tutorials that are soley about creating standalone gazebo programs, I did find the answers but through a lot of assumptions.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2880">Francis123</a> on 2017-01-31 14:50:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

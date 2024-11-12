@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>system plugin to publish /clock from gazebo 1.7.1 standalone to ROS - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/2733">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>system plugin to publish /clock from gazebo 1.7.1 standalone to ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/26345/system-plugin-to-publish-clock-from-gazebo-1-7-1-standalone-to-ros">https://robotics.stackexchange.com/questions/26345/system-plugin-to-publish-clock-from-gazebo-1-7-1-standalone-to-ros</a>.</p>
+        <p>Hi,</p>
+
+<p>I have not installed <code>simulator_gazebo</code> in ros-groovy and currently working with gazebo standalone 1.7.1. I need to publish <code>/clock</code> as in <code>simulator_gazebo</code>. I figured that it was done by the <code>gazebo_ros_api_plugin</code>. However, <code>gazebo_ros_api_plugin</code> do much more than publishing <code>/clock</code> and I isolated the following parts for my purpose. But, still it seems something is missing as /clock is not advertised. Any help would be appreciated.</p>
+
+<p>Also, how do you run the gzclient with this plugin? I tried with <code>gzclient -g libmy_gazebo_ros_clock.so</code> and it didnt work.</p>
+
+<p>Thank you</p>
+
+<pre>
+#include <my_gazebo_plugins/gazebo_ros_clock.h>
+
+namespace gazebo
+{
+
+
+SystemClock::SystemClock()
+{
+    this->world_created_ = false;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Destructor
+SystemClock::~SystemClock()
+{
+    event::Events::DisconnectWorldUpdateBegin(this->time_update_event_);
+    // Finalize the controller
+    this->rosnode_->shutdown();
+    delete this->rosnode_;
+
+    // shutdown ros queue
+    this->gazebo_callback_queue_thread_->join();
+    delete this->gazebo_callback_queue_thread_;
+}
+
+/// \brief ros queue thread for this node
+void SystemClock::gazeboQueueThread()
+{
+    ROS_DEBUG_STREAM("Callback thread id=" << boost::this_thread::get_id());
+    static const double timeout = 0.001;
+    while (this->rosnode_->ok())
+    this->gazebo_queue_.callAvailable(ros::WallDuration(timeout));
+}
+
+void SystemClock::Load(int argc, char** argv)
+{
+    // setup ros related
+    if (!ros::isInitialized())
+        ros::init(argc,argv,"gazebo",ros::init_options::NoSigintHandler);
+    else
+        ROS_ERROR("Something other than this gazebo_ros_api plugin started ros::init(...), command line arguments may not be parsed properly.");
+
+    this->rosnode_ = new ros::NodeHandle("~");
+
+    /// \brief setup custom callback queue
+    gazebo_callback_queue_thread_ = new boost::thread(&SystemClock::gazeboQueueThread,this);
+
+    // below needs the world to be created first
+    this->load_gazebo_ros_clock_plugin_event_ = event::Events::ConnectWorldCreated(boost::bind(&SystemClock::LoadGazeboClockPlugin,this,_1));
+}
+
+void SystemClock::LoadGazeboClockPlugin(std::string _worldName)
+{
+    // make sure things are only called once
+    event::Events::DisconnectWorldCreated(this->load_gazebo_ros_clock_plugin_event_);
+    this->lock_.lock();
+    if (this->world_created_)
+    {
+        this->lock_.unlock();
+        return;
+    }
+
+    // set flag to true and load this plugin
+    this->world_created_ = true;
+    this->lock_.unlock();
+
+
+    this->world = physics::get_world(_worldName);
+    if (!this->world)
+    {
+        ROS_FATAL("cannot load gazebo ros api server plugin, physics::get_world() fails to return world");
+        return;
+    }
+
+    this->gazebonode_ = transport::NodePtr(new transport::Node());
+    this->gazebonode_->Init(_worldName);
+
+    // publish clock for simulated ros time
+    pub_clock_ = this->rosnode_->advertise<rosgraph_msgs::Clock>("/clock",10);
+    // set param for use_sim_time if not set by user alread
+    this->rosnode_->setParam("/use_sim_time", true);
+
+    this->time_update_event_   = event::Events::ConnectWorldUpdateStart(boost::bind(&SystemClock::publishSimTime,this));
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+/// \brief
+void SystemClock::publishSimTime(const boost::shared_ptr<msgs::WorldStatistics const> &msg)
+{
+    ROS_ERROR("CLOCK2");
+    common::Time currentTime = msgs::Convert( msg->sim_time() );
+    rosgraph_msgs::Clock ros_time_;
+    ros_time_.clock.fromSec(currentTime.Double());
+    //  publish time to ros
+    this->pub_clock_.publish(ros_time_);
+}
+void SystemClock::publishSimTime()
+{
+    common::Time currentTime = this->world->GetSimTime();
+    rosgraph_msgs::Clock ros_time_;
+    ros_time_.clock.fromSec(currentTime.Double());
+    //  publish time to ros
+    this->pub_clock_.publish(ros_time_);
+}
+
+// Register this plugin with the simulator
+GZ_REGISTER_SYSTEM_PLUGIN(SystemClock)
+
+}
+
+
+</pre>
+
+        <div class="owner"><p>Asked by <a href="/users/111">peshala</a> on 2013-05-08 05:12:11 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Go to the directory where you have your system plugin and 
+with 
+<pre>
+gazebo -s libmy_gazebo_ros_clock.so
+</pre> </p>
+
+<p>the <code>/clock</code> is published OK. And, you may also remove the following parts from the above code, as well.
+<pre>
+    In SystemClock::~SystemClock()
+    // shutdown ros queue
+    this-&gt;gazebo_callback_queue_thread_-&gt;join();
+    delete this-&gt;gazebo_callback_queue_thread_;</p>
+
+<pre><code>In SystemClock::Load
+/// \brief setup custom callback queue
+gazebo_callback_queue_thread_ = new boost::thread(&amp;SystemClock::gazeboQueueThread,this);
+
+/// \brief ros queue thread for this node
+void SystemClock::gazeboQueueThread()
+{
+   ROS_DEBUG_STREAM(&quot;Callback thread id=&quot; &lt;&lt; boost::this_thread::get_id());
+   static const double timeout = 0.001;
+   while (this-&gt;rosnode_-&gt;ok())
+   this-&gt;gazebo_queue_.callAvailable(ros::WallDuration(timeout));
+ }
+</code></pre>
+
+<p></pre></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/111">peshala</a> on 2013-05-08 06:51:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

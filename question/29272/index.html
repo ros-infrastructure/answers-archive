@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Problem setting namespace for custom force plugin to multiple drones. - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/29272">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Problem setting namespace for custom force plugin to multiple drones.</h2>
+      <div class="question">
+        <p>Currently running ROS2 Foxy (with Python) with Gazebo 11.11</p>
+
+<p>I currently have a custom force plugin to move my drone model in Gazebo. I am trying to apply a positive force at the location of each propeller of the respective drone. This plugin successfully does so, and when I check the ROS2 topic list, I see only the topic &quot;/motor<em>speed</em>cmd&quot; with the prefix &quot;/drone<em>1&quot;  for example. But, when I spawn 2 or more drones with only a single drone controller publishing to their respective topic (ie /drone</em>1/motor<em>speed</em>cmd), all the drones are being controlled (ie &quot;/drone<em>2/motor</em>speed<em>cmd&quot; and &quot;/drone</em>3/motor<em>speed</em>cmd&quot;). Additionally, it almost seems as if the IMU plugin data may also be shared despite the distinct separation of topics by namespaces, because angular position error seems to affect all drones, but GPS position is consistent.</p>
+
+<p>To implement the namespaces for each drone, from the launch file, the spawner was passed its namespace (drone_ns) and it seems the gazebo plugins take care of the rest (IMU and GPS plugins).</p>
+
+<p>As for the custom force plugin, I had help implementing a workaround where from the launch file I pass to the spawner the &quot;-robot<em>namespace&quot; which is a variable I define in the plugin to prefix the topic name in the plugin. In the plugin &quot;</em>ns&quot; contains the namespace prefix and is applied to my topic &quot;motor<em>speed</em>cmd&quot; to subscribe to, then the publisher &quot;pose&quot; to apply to the Gazebo model. </p>
+
+<p>Any insights to this problem or how to fix it is greatly appreciated. Also guides to resources would also be appreciated. C++ is definitely not my strong suit and this has been quite challenging and time consuming to try and figure out.</p>
+
+<p>The following code is the spawner launch file:</p>
+
+<pre><code>from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import LaunchConfiguration
+
+name_pkg = &quot;drone_description&quot;
+pkg_share = FindPackageShare(package=name_pkg).find(name_pkg)
+
+def generate_launch_description():    
+    robot_description_topic_name = &quot;robot_description&quot;
+
+    drone_ns = LaunchConfiguration(&#39;drone_ns&#39;, default=&#39;-&#39;)
+    drone_spawn_x = LaunchConfiguration(&#39;drone_spawn_x&#39;, default=&#39;-&#39;)
+    drone_spawn_y = LaunchConfiguration(&#39;drone_spawn_y&#39;, default=&#39;-&#39;)
+    drone_spawn_z = LaunchConfiguration(&#39;drone_spawn_z&#39;, default=&#39;-&#39;)
+    drone_spawn_yaw = LaunchConfiguration(&#39;drone_spawn_yaw&#39;, default=&#39;-&#39;)
+
+    return LaunchDescription([
+
+        Node(
+            package=&#39;gazebo_ros&#39;,
+            executable=&#39;spawn_entity.py&#39;,
+            output=&#39;screen&#39;,
+            arguments=[
+                &#39;-entity&#39;, drone_ns,
+                &#39;-topic&#39;, robot_description_topic_name,
+                &quot;-robot_namespace&quot;, drone_ns,
+                &#39;-x&#39;, drone_spawn_x,
+                &#39;-y&#39;, drone_spawn_y,
+                &#39;-z&#39;, drone_spawn_z,
+                &#39;-Y&#39;, drone_spawn_yaw
+            ],                    
+        ),
+    ])
+</code></pre>
+
+<p>The following code is the include file for the plugin:</p>
+
+<pre><code># ifndef DRONE_PLUGIN__GAZEBO_ROS_DRONE_FORCE_HPP_
+# define DRONE_PLUGIN__GAZEBO_ROS_DRONE_FORCE_HPP_
+
+# include &lt;gazebo/common/Plugin.hh&gt;
+# include &lt;tf2_ros/transform_broadcaster.h&gt;
+# include &lt;memory&gt;
+
+namespace gazebo_plugins
+{
+class GazeboRosDroneForcePrivate;
+
+/// A ackermann drive plugin for car like robots. Subscribes to geometry_msgs/twist
+
+
+class GazeboRosDroneForce : public gazebo::ModelPlugin
+{
+public:
+  /// Constructor
+  GazeboRosDroneForce();
+
+  /// Destructor
+  ~GazeboRosDroneForce();
+
+  // Documentation inherited
+  void Load(gazebo::physics::ModelPtr _model, sdf::ElementPtr _sdf) override;
+
+  void RosThread();
+
+  void PublishDronePose();
+protected:
+  // /// Optional callback to be called at every simulation iteration.
+  // virtual void OnUpdate();
+  // void onMotorSpeedsMsg(const geometry_msgs::msg::Twist::SharedPtr _msg);
+
+private:
+  /// Private data pointer
+  std::unique_ptr&lt;GazeboRosDroneForcePrivate&gt; impl_;
+
+  std::thread ros_thread;
+
+  std::mutex pose_mtx;
+  std::mutex cmd_mtx;
+  std::string _ns;
+  double _rate;
+  double _rotor_thrust_coeff;
+  double _rotor_torque_coeff;
+  bool _publish_tf;
+  std::shared_ptr&lt;tf2_ros::TransformBroadcaster&gt; tf_broadcaster_;
+};
+}  // namespace gazebo_plugins
+
+#endif  // GAZEBO_PLUGINS__GAZEBO_ROS_ACKERMANN_DRIVE_HPP_
+</code></pre>
+
+<p>The following code is the custom plugin:</p>
+
+<pre><code>#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;gazebo/physics/Model.hh&gt;
+#include &lt;gazebo/physics/Link.hh&gt;
+#include &lt;drone_plugin/gazebo_ros_drone_force.hpp&gt;
+
+#include &lt;gazebo_ros/node.hpp&gt;
+#include &lt;drone_common/msg/pose.hpp&gt;
+#include &lt;drone_common/msg/motor_speed.hpp&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+
+#include &lt;tf2/LinearMath/Quaternion.h&gt;
+#include &lt;tf2/LinearMath/Matrix3x3.h&gt;
+#include &lt;tf2_geometry_msgs/tf2_geometry_msgs.h&gt;
+#include &lt;geometry_msgs/msg/transform_stamped.h&gt;
+
+#include &lt;memory&gt;
+#include &lt;mutex&gt;
+#include &lt;thread&gt;
+
+namespace gazebo_plugins
+{
+  ignition::math::Pose3d _pose;
+  std::mutex cmd_mtx;
+  std::mutex pose_mtx;
+  drone_common::msg::MotorSpeed motor_speed_msg;
+  // std::string ns_; //tried implementing namespace variable in xacro but I couldnt get it to work
+/// Class to hold private data members (PIMPL pattern)
+class GazeboRosDroneForcePrivate
+{
+public:
+  /// Pointer to model.
+  gazebo::physics::ModelPtr model_;
+  double _rotor_thrust_coeff;
+  double _rotor_torque_coeff;
+  bool _publish_tf;
+
+  /// Node for ROS communication.
+  //gazebo_ros::Node::SharedPtr ros_node_; 
+  rclcpp::Node::SharedPtr ros_node_;
+
+  /// Pose publisher
+  rclcpp::Publisher&lt;drone_common::msg::Pose&gt;::SharedPtr pose_pub_; 
+  /// Command subscriber
+  rclcpp::Subscription&lt;drone_common::msg::MotorSpeed&gt;::SharedPtr cmd_sub_; 
+
+  /// Connection to event called at every world iteration.
+  gazebo::event::ConnectionPtr update_connection_;
+
+  void OnUpdate();
+  void onMotorSpeedsMsg(const drone_common::msg::MotorSpeed::SharedPtr _msg);
+
+  void UpdateThrust();
+
+  double CalculateThrust(double w);
+  double CalculateTorque(double w);
+  double CalculateBodyTorque(double q);
+};
+
+GazeboRosDroneForce::GazeboRosDroneForce()
+: impl_(std::make_unique&lt;GazeboRosDroneForcePrivate&gt;())
+{
+  std::cout &lt;&lt; &quot;drone_plugin Started&quot; &lt;&lt; std::endl;
+}
+
+GazeboRosDroneForce::~GazeboRosDroneForce()
+{
+  std::cout &lt;&lt; &quot;drone_plugin Closed&quot; &lt;&lt; std::endl;
+}
+
+void GazeboRosDroneForce::Load(gazebo::physics::ModelPtr _model, sdf::ElementPtr _sdf)
+{
+  std::string originalString = _model-&gt;GetName().c_str();
+  _ns = &quot;/&quot; + originalString + &quot;/&quot;;
+
+  if (_sdf-&gt;HasElement(&quot;updateRate&quot;)) {
+      _rate = _sdf-&gt;GetElement(&quot;updateRate&quot;)-&gt;Get&lt;double&gt;();
+    } else {
+      _rate = 100.0;
+    }
+  if (_sdf-&gt;HasElement(&quot;rotorThrustCoeff&quot;)) {
+      _rotor_thrust_coeff = _sdf-&gt;GetElement(&quot;rotorThrustCoeff&quot;)-&gt;Get&lt;double&gt;();
+    } else {
+      _rotor_thrust_coeff = 0.01037;
+    }
+  impl_-&gt;_rotor_thrust_coeff = _rotor_thrust_coeff;
+  if (_sdf-&gt;HasElement(&quot;rotorTorqueCoeff&quot;)) {
+      _rotor_torque_coeff = _sdf-&gt;GetElement(&quot;rotorTorqueCoeff&quot;)-&gt;Get&lt;double&gt;();
+    } else {
+      _rotor_torque_coeff = 0.0000074;
+    }
+  impl_-&gt;_rotor_torque_coeff = _rotor_torque_coeff;
+  if (_sdf-&gt;HasElement(&quot;publishTf&quot;)) {
+      _publish_tf = _sdf-&gt;GetElement(&quot;publishTf&quot;)-&gt;Get&lt;bool&gt;();
+    } else {
+      _publish_tf = true;
+    }
+  impl_-&gt;_publish_tf = _publish_tf;
+
+
+  // Create a GazeboRos node instead of a common ROS node.
+  // Pass it SDF parameters so common options like namespace and remapping
+  // can be handled.
+  impl_-&gt;ros_node_ = rclcpp::Node::make_shared(&quot;drone_force&quot;);
+  // Get QoS profiles
+  // const gazebo_ros::QoS &amp; qos = impl_-&gt;ros_node_-&gt;get_qos();
+  impl_-&gt;model_ = _model;
+
+  // The model pointer gives you direct access to the physics object,
+  // for example:
+  RCLCPP_INFO(impl_-&gt;ros_node_-&gt;get_logger(), _model-&gt;GetName().c_str());
+
+  impl_-&gt;pose_pub_ = impl_-&gt;ros_node_-&gt;create_publisher&lt;drone_common::msg::Pose&gt;(
+       **_ns** + &quot;pose&quot;, 10
+      );
+
+  impl_-&gt;cmd_sub_ = impl_-&gt;ros_node_-&gt;create_subscription&lt;drone_common::msg::MotorSpeed&gt;(
+      **_ns** + &quot;motor_speed_cmd&quot;, //add namespace in front of topic name
+      10,
+      std::bind(&amp;GazeboRosDroneForcePrivate::onMotorSpeedsMsg, impl_.get(), std::placeholders::_1)
+      );
+  ros_thread = std::thread(std::bind(&amp;GazeboRosDroneForce::RosThread, this));
+
+  tf_broadcaster_ = std::make_shared&lt;tf2_ros::TransformBroadcaster&gt;(impl_-&gt;ros_node_);
+
+  impl_-&gt;update_connection_ = gazebo::event::Events::ConnectWorldUpdateBegin(
+      std::bind(&amp;GazeboRosDroneForcePrivate::OnUpdate, impl_.get())
+      );
+}
+
+void GazeboRosDroneForcePrivate::OnUpdate()
+{
+  pose_mtx.lock();
+  _pose = model_-&gt;WorldPose();
+  pose_mtx.unlock();
+
+  GazeboRosDroneForcePrivate::UpdateThrust();
+}
+
+void GazeboRosDroneForcePrivate::onMotorSpeedsMsg(const drone_common::msg::MotorSpeed::SharedPtr _msg) {
+  cmd_mtx.lock();
+  motor_speed_msg = *_msg;
+  cmd_mtx.unlock();
+
+}
+
+void GazeboRosDroneForce::RosThread() {
+    rclcpp::Rate rate(_rate);
+    while (rclcpp::ok()) {
+      GazeboRosDroneForce::PublishDronePose();
+      rclcpp::spin_some(impl_-&gt;ros_node_);
+      rate.sleep();
+    }
+}
+
+void GazeboRosDroneForce::PublishDronePose() {
+    pose_mtx.lock();
+    ignition::math::Pose3d pose = _pose;
+    pose_mtx.unlock();
+
+    // ignition::math::Vector3 rpy = pose.Rot.GetAsEuler();
+    tf2::Quaternion q(pose.Rot().Roll(), pose.Rot().Pitch(), pose.Rot().Yaw(), pose.Rot().W());
+    tf2::Matrix3x3 m(q);
+    double roll, pitch, yaw;
+    m.getRPY(roll, pitch, yaw);
+
+    drone_common::msg::Pose pose_msg;
+    pose_msg.x = pose.Pos().X();
+    pose_msg.y = pose.Pos().Y();
+    pose_msg.z = pose.Pos().Z();
+    pose_msg.roll = roll;
+    pose_msg.pitch = -pitch;
+    pose_msg.yaw = yaw;
+    impl_-&gt;pose_pub_-&gt;publish(pose_msg);
+
+    if (_publish_tf) {
+      tf2::Transform T;
+      T.setOrigin(tf2::Vector3(pose.Pos().X(), pose.Pos().Y(), pose.Pos().Z()));
+      T.setRotation(tf2::Quaternion(q));
+
+      geometry_msgs::msg::TransformStamped transformStamped;
+      transformStamped.header.stamp = impl_-&gt;ros_node_-&gt;now();
+      transformStamped.header.frame_id = &quot;world&quot;;
+      transformStamped.child_frame_id = &quot;drone&quot;;
+      transformStamped.transform.translation.x = T.getOrigin().x();
+      transformStamped.transform.translation.y = T.getOrigin().y();
+      transformStamped.transform.translation.z = T.getOrigin().z();
+      transformStamped.transform.rotation.x = T.getRotation().x();
+      transformStamped.transform.rotation.y = T.getRotation().y();
+      transformStamped.transform.rotation.z = T.getRotation().z();
+      transformStamped.transform.rotation.w = T.getRotation().w();
+      // tf_broadcaster_-&gt;sendTransform(transformStamped);
+    }
+  }
+
+  void GazeboRosDroneForcePrivate::UpdateThrust() { 
+    cmd_mtx.lock();
+    drone_common::msg::MotorSpeed cmd = motor_speed_msg;
+    cmd_mtx.unlock();
+
+    int n = cmd.name.size();
+    for (int i = 0; i &lt; n; ++i) {
+      double thrust = GazeboRosDroneForcePrivate::CalculateThrust(cmd.velocity[i]);
+      double torque = GazeboRosDroneForcePrivate::CalculateTorque(cmd.velocity[i]);
+      //ROS_INFO(&quot;torque: %f&quot;, torque);
+      gazebo::physics::LinkPtr link_ = model_-&gt;GetLink(cmd.name[i]);
+      if (link_ != NULL) {
+        link_-&gt;AddLinkForce(ignition::math::Vector3d(0, 0, thrust));
+        link_-&gt;AddRelativeTorque(ignition::math::Vector3d(0, 0, torque));
+      }
+    }
+
+    int m = cmd.torque_body_name.size();
+    for (int i = 0; i &lt; m; ++i) {
+      double body_moment = GazeboRosDroneForcePrivate::CalculateBodyTorque(cmd.body_torque[i]);
+      //ROS_INFO(&quot;torque: %f&quot;, torque);
+      gazebo::physics::LinkPtr link_ = model_-&gt;GetLink(cmd.torque_body_name[i]);
+      if (link_ != NULL) {
+        link_-&gt;AddRelativeForce(ignition::math::Vector3d(0, body_moment, 0));
+
+      }
+    }
+  }
+
+
+  //apply thrust data from DJI E2000 powertrain data () [equation of force is per rotor]
+  double GazeboRosDroneForcePrivate::CalculateThrust(double w) {
+    double thrust = (0.0002*w*w) - 0.0083*abs(w) + 1.0069; //_rotor_thrust_coeff * w * w;
+    return thrust;
+  }
+
+  //apply torque given from powertrain data [equation of force is per rotor]
+  double GazeboRosDroneForcePrivate::CalculateTorque(double w) {
+    double torque = 0; //copysign(100*(538.54*pow(abs(w),-2.282))*(1.2041*0.223459*0.266701*pow((abs(w)*0.266701),2)), w);//new formula:  (2.7488*pow(w,-0.282))  //OLD FORMULA: (538.54*pow(abs(w),-2.282))*(1.2041*0.223459*0.266701*pow((abs(w)*0.266701),2)) //copysign(_rotor_torque_coeff * w * w, w);
+    return torque;
+  }
+
+  //apply torque given from powertrain data [equation of force is per rotor]
+  double GazeboRosDroneForcePrivate::CalculateBodyTorque(double q) {
+    double force = q/0.4475; //torque divided by the distance from the body center (see drone.xacro cylinder radius)
+    return force;
+  }
+
+// Register this plugin with the simulator
+GZ_REGISTER_MODEL_PLUGIN(GazeboRosDroneForce)
+}  // namespace gazebo_plugins
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/204943">cnchano</a> on 2023-07-11 08:27:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I realized the root of the problem being that my xacro model had a single publisher creating multiple models with the same link names. So when I applied a force on the link (&quot;AddLinkForce()&quot;), it seems that all drones were affected. Or at the very least it is what I have gathered from looking at the Gazebo Link Class API. </p>
+
+<p><a href="https://osrf-distributions.s3.amazonaws.com/gazebo/api/dev/classgazebo_1_1physics_1_1Link.html#ac29ce58313df0518b59382e39395a7e3">https://osrf-distributions.s3.amazonaws.com/gazebo/api/dev/classgazebo_1_1physics_1_1Link.html#ac29ce58313df0518b59382e39395a7e3</a></p>
+
+<p>To get around this issue, I essentially added the namespace to the links by passing an argument using the python xacro library before passing the xacro from a node (as a client) to Gazebo EntitySpawner.py (refer to this post <a href="https://discourse.ros.org/t/spawning-a-robot-entity-using-a-node-with-gazebo-and-ros-2/9985">https://discourse.ros.org/t/spawning-a-robot-entity-using-a-node-with-gazebo-and-ros-2/9985</a> and &quot;The Construct&quot; video for reference <a href="https://youtu.be/OMwK8u7bap0">https://youtu.be/OMwK8u7bap0</a> ).</p>
+
+<pre><code>import xacro
+
+robot_description_config = xacro.process_file(urdf_file_path, mappings={&#39;robot_name_arg&#39;: args.drone_name}) #remap link/joint namespaces in xacro file
+robot_desc = robot_description_config.toxml() #convert xacro to xml string
+</code></pre>
+
+<p>In the end it resolved that issue but then I had an issue with being unable to control two drones using my custom plugin. Seems there is an issue with the timing of forces being applied.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/204943">cnchano</a> on 2023-07-17 16:33:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

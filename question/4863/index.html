@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS differential drive controller does not publish TF's for wheels - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/4863">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS differential drive controller does not publish TF's for wheels</h2>
+      <div class="question">
+        <p>Hi</p>
+
+<p>ubuntu: 12.04 64biz
+gazebo: 2.0.0
+ros: hydro</p>
+
+<p>I have a modelled pioneer3DX (not the one from the server) and I am using a URDF file described by xarco to generate a robot description for ROS and Gazebo but it looks like that gazebo/or the ros plugin is not publishing the tf&#39;s for joints with a continuous joint type.</br>
+The problem is now that rviz shows the wheels on a incorrect pose and I have incorrect tf.</br>
+My question is now who should publish this tf&#39;s the differential<em>drive</em>controller plug-in?
+I would love to up-load an image and the workspace but my karma is to low :-)</p>
+
+<p>Greetings
+Markus</p>
+
+        <div class="owner"><p>Asked by <a href="/users/491">Markus Bader</a> on 2013-10-30 03:03:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi </p>
+
+<p>the better solution is by using an additional gazebo ros plug-in I wrote, it publishes joint states and not tf&#39;s. You can use now the ROS robot_state_publisher to publish tf&#39;s.</p>
+
+<p>The header</p>
+
+<pre><code>#ifndef JOINT_STATE_PUBLISHER_PLUGIN_HH
+#define JOINT_STATE_PUBLISHER_PLUGIN_HH
+
+#include &lt;boost/bind.hpp&gt;
+#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &lt;gazebo/common/common.hh&gt;
+#include &lt;stdio.h&gt;
+
+// ROS
+#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;sensor_msgs/JointState.h&gt;
+
+// Usage in URDF:
+//   &lt;gazebo&gt;
+//       &lt;plugin name=&quot;joint_state_publisher&quot; filename=&quot;libgazebo_ros_joint_state_publisher.so&quot;&gt;
+//      &lt;robotNamespace&gt;/pioneer2dx&lt;/robotNamespace&gt;
+//      &lt;jointName&gt;chassis_swivel_joint, swivel_wheel_joint, left_hub_joint, right_hub_joint&lt;/jointName&gt;
+//      &lt;updateRate&gt;100.0&lt;/updateRate&gt;
+//      &lt;alwaysOn&gt;true&lt;/alwaysOn&gt;
+//       &lt;/plugin&gt;
+//   &lt;/gazebo&gt;
+
+
+
+namespace gazebo {
+class GazeboRosJointStatePublisher : public ModelPlugin {
+public:
+    GazeboRosJointStatePublisher();
+    ~GazeboRosJointStatePublisher();
+    void Load ( physics::ModelPtr _parent, sdf::ElementPtr _sdf );
+    void OnUpdate ( const common::UpdateInfo &amp; _info );
+    void publishTF();
+
+    // Pointer to the model
+private:
+    event::ConnectionPtr updateConnection;
+    physics::WorldPtr world_;
+    physics::ModelPtr parent_;
+    std::vector&lt;physics::JointPtr&gt; joints_;
+
+    // ROS STUFF
+    boost::shared_ptr&lt;ros::NodeHandle&gt; rosnode_;
+    sensor_msgs::JointState joint_state;
+    ros::Publisher joint_state_publisher_;
+    std::string tf_prefix_;
+    std::string robot_namespace_;
+    std::vector&lt;std::string&gt; joint_names_;
+
+    // Update Rate
+    double update_rate_;
+    double update_period_;
+    common::Time last_update_time_;
+};
+
+// Register this plugin with the simulator
+GZ_REGISTER_MODEL_PLUGIN ( GazeboRosJointStatePublisher )
+}
+
+#endif //JOINT_STATE_PUBLISHER_PLUGIN_HH
+</code></pre>
+
+<p>THE CPP</p>
+
+<pre><code>#include &lt;gazebo_plugins/gazebo_ros_joint_state_publisher.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+
+using namespace gazebo;
+
+GazeboRosJointStatePublisher::GazeboRosJointStatePublisher() {}
+
+// Destructor
+GazeboRosJointStatePublisher::~GazeboRosJointStatePublisher() {
+    rosnode_-&gt;shutdown();
+}
+
+void GazeboRosJointStatePublisher::Load ( physics::ModelPtr _parent, sdf::ElementPtr _sdf ) {
+    // Store the pointer to the model
+    this-&gt;parent_ = _parent;
+    this-&gt;world_ = _parent-&gt;GetWorld();
+
+    this-&gt;robot_namespace_ = parent_-&gt;GetName ();
+    if ( !_sdf-&gt;HasElement ( &quot;robotNamespace&quot; ) ) {
+        ROS_INFO ( &quot;GazeboRosJointStatePublisher Plugin missing &lt;robotNamespace&gt;, defaults to \&quot;%s\&quot;&quot;,
+                   this-&gt;robot_namespace_.c_str() );
+    } else {
+        this-&gt;robot_namespace_ = _sdf-&gt;GetElement ( &quot;robotNamespace&quot; )-&gt;Get&lt;std::string&gt;();
+        if ( this-&gt;robot_namespace_.empty() ) this-&gt;robot_namespace_ = parent_-&gt;GetName ();
+    }
+    if ( !robot_namespace_.empty() ) this-&gt;robot_namespace_ += &quot;/&quot;;
+    rosnode_ = boost::shared_ptr&lt;ros::NodeHandle&gt; ( new ros::NodeHandle ( this-&gt;robot_namespace_ ) );
+
+    if ( !_sdf-&gt;HasElement ( &quot;jointName&quot; ) ) {
+        ROS_ASSERT ( &quot;GazeboRosJointStatePublisher Plugin missing jointNames&quot; );
+    } else {
+        sdf::ElementPtr element = _sdf-&gt;GetElement ( &quot;jointName&quot; ) ;
+        std::string joint_names = element-&gt;Get&lt;std::string&gt;();
+        boost::erase_all ( joint_names, &quot; &quot; );
+        boost::split ( joint_names_, joint_names, boost::is_any_of ( &quot;,&quot; ) );
+    }
+
+    this-&gt;update_rate_ = 100.0;
+    if ( !_sdf-&gt;HasElement ( &quot;updateRate&quot; ) ) {
+        ROS_WARN ( &quot;GazeboRosJointStatePublisher Plugin (ns = %s) missing &lt;updateRate&gt;, defaults to %f&quot;,
+                   this-&gt;robot_namespace_.c_str(), this-&gt;update_rate_ );
+    } else {
+        this-&gt;update_rate_ = _sdf-&gt;GetElement ( &quot;updateRate&quot; )-&gt;Get&lt;double&gt;();
+    }
+
+    // Initialize update rate stuff
+    if ( this-&gt;update_rate_ &gt; 0.0 ) {
+        this-&gt;update_period_ = 1.0 / this-&gt;update_rate_;
+    } else {
+        this-&gt;update_period_ = 0.0;
+    }
+    last_update_time_ = this-&gt;world_-&gt;GetSimTime();
+
+    for ( unsigned int i = 0; i&lt; joint_names_.size(); i++ ) {
+        joints_.push_back ( this-&gt;parent_-&gt;GetJoint ( joint_names_[i] ) );
+        ROS_INFO ( &quot;joint_name: %s&quot;, joint_names_[i].c_str() );
+    }
+
+    ROS_INFO ( &quot;Starting GazeboRosJointStatePublisher Plugin (ns = %s)!, parent name: %s&quot;, this-&gt;robot_namespace_.c_str(), parent_-&gt;GetName ().c_str() );
+
+    tf_prefix_ = tf::getPrefixParam ( *rosnode_ );
+    joint_state_publisher_ = rosnode_-&gt;advertise&lt;sensor_msgs::JointState&gt; ( &quot;joint_states&quot;,1000 );
+
+    last_update_time_ = this-&gt;world_-&gt;GetSimTime();
+    // Listen to the update event. This event is broadcast every
+    // simulation iteration.
+    this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin (
+                                 boost::bind ( &amp;GazeboRosJointStatePublisher::OnUpdate, this, _1 ) );
+}
+
+void GazeboRosJointStatePublisher::OnUpdate ( const common::UpdateInfo &amp; _info ) {
+    // Apply a small linear velocity to the model.
+    common::Time current_time = this-&gt;world_-&gt;GetSimTime();
+    double seconds_since_last_update = ( current_time - last_update_time_ ).Double();
+    if ( seconds_since_last_update &gt; update_period_ ) {
+
+        publishTF();
+
+        last_update_time_+= common::Time ( update_period_ );
+
+    }
+
+}
+
+void GazeboRosJointStatePublisher::publishTF() {
+    ros::Time current_time = ros::Time::now();
+
+    joint_state.header.stamp = current_time;
+    joint_state.name.resize ( joints_.size() );
+    joint_state.position.resize ( joints_.size() );
+
+    for ( int i = 0; i &lt; joints_.size(); i++ ) {
+        physics::JointPtr joint = joints_[i];
+        math::Angle angle = joint-&gt;GetAngle ( 0 );
+        joint_state.name[i] = joint-&gt;GetName();
+        joint_state.position[i] = angle.Radian () ;
+    }
+    joint_state_publisher_.publish ( joint_state );
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/491">Markus Bader</a> on 2013-10-30 11:38:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Nice. I still see it as a valuable contribution to ros_gazebo_pkgs, please consider to send it upstream. By the way, could you please mark this answer as correct with the check button?  Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/152">Jose Luis Rivero</a> on 2013-10-31 06:32:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I cannot mark this answer as correct. The system tells me I need at least 20 points to mark my question as answered :-(</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/491">Markus Bader</a> on 2013-11-04 03:25:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I placed a pull request on the ros_gazebo_pkgs, hopfully soon there will be the source available.
+I made also changes on the  differential_drive_controller plug-in to publish TF/Joint States based on an xml option.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/491">Markus Bader</a> on 2013-11-05 05:26:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You rock! Thanks very much. <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/pull/141">https://github.com/ros-simulation/gazebo_ros_pkgs/pull/141</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/152">Jose Luis Rivero</a> on 2013-11-05 20:03:54 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Why not just make them static if they do not move except in rotation to the base.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/449">rnunziata</a> on 2013-11-04 18:09:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes I could but if a fixed joint type in gazebo cannot be actuated and on the other hand I like to see my wheels spinning :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/491">Markus Bader</a> on 2013-11-05 03:32:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am just saying not for gazebo but only for the tf. The wheels will spin in gazebo.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/449">rnunziata</a> on 2013-11-05 15:19:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@munziata: can you please tell how to fix the tf of wheels with respect to robot body but keep it a continuous joint. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/811">keshav_sarraf</a> on 2014-06-24 07:40:45 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

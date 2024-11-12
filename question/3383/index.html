@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to add a dynamic visual marker in gazebo? - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/3383">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to add a dynamic visual marker in gazebo?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/26516/how-to-add-a-dynamic-visual-marker-in-gazebo">https://robotics.stackexchange.com/questions/26516/how-to-add-a-dynamic-visual-marker-in-gazebo</a>.</p>
+        <p>I have a regular robot model in gazebo and i&#39;d like to display some forces applied on a link for visualization and validation purposes. What would be the best way to do this? </p>
+
+<p>I&#39;m looking for something that would allow me to display a vector (coming from a ros topic) without interacting with the rest of the sim. Do I have to use a cylinder object? if so, how do I modify it dynamically?</p>
+
+<p>I run gazebo 1.5 distributed with Ros-groovy in linux 12.04 lts.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/406">rsquare</a> on 2013-06-28 11:04:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>You could add a visual plugin for that:
+briefly described <a href="https://bitbucket.org/osrf/gazebo/commits/028df72684b2f62455887a1f0aab21be7dd92c77">here</a>:</p>
+
+<p>Add something like this in your model.sdf:</p>
+
+<pre><code>&lt;link name=&quot;some_link&quot;&gt;
+    &lt;visual name=&quot;some_visual&quot;&gt;
+        &lt;plugin name=&quot;some_visual_plugin&quot; filename=&quot;some_visual_plugin.so&quot;/&gt;
+        &lt;pose&gt;0 0 0 0 0 0&lt;/pose&gt;
+        &lt;geometry&gt;
+            &lt;!-- your geometry --&gt;
+        &lt;/geometry&gt;
+    &lt;/visual&gt;
+    &lt;....&gt;
+&lt;/link&gt;
+</code></pre>
+
+<p>And then to add you would write a plugin as:</p>
+
+<p>in some <code>gazebo_visual_plugin.h</code>:</p>
+
+<pre><code>#ifndef SOME_VISUAL_PLUGIN_H
+#define SOME_VISUAL_PLUGIN_H
+
+#include &quot;gazebo/physics/physics.hh&quot;
+#include &quot;gazebo/transport/TransportTypes.hh&quot;
+#include &quot;gazebo/msgs/MessageTypes.hh&quot;
+
+#include &quot;gazebo/common/Time.hh&quot;
+#include &quot;gazebo/common/Plugin.hh&quot;
+#include &quot;gazebo/common/Events.hh&quot;
+
+#include &quot;gazebo/rendering/DynamicLines.hh&quot;
+#include &quot;gazebo/rendering/RenderTypes.hh&quot;
+#include &quot;gazebo/rendering/Visual.hh&quot;
+#include &quot;gazebo/rendering/Scene.hh&quot;
+
+#include &lt;ros/callback_queue.h&gt;
+#include &lt;ros/advertise_options.h&gt;
+#include &lt;ros/ros.h&gt;
+
+#include &lt;geometry_msgs/Point.h&gt;
+// if you want some positions of the model use this....
+#include &lt;gazebo_msgs/ModelStates.h&gt;
+
+#include &lt;boost/thread.hpp&gt;
+#include &lt;boost/bind.hpp&gt;
+
+
+namespace gazebo
+{
+  namespace rendering
+  {
+    class SomeVisualPlugin : public VisualPlugin
+    {
+      public:
+        /// \brief Constructor
+        SomeVisualPlugin();
+
+        /// \brief Destructor
+        virtual ~SomeVisualPlugin();
+
+        /// \brief Load the visual force plugin tags
+        /// \param node XML config node
+        void Load( VisualPtr _parent, sdf::ElementPtr _sdf );
+
+
+      protected: 
+        /// \brief Update the visual plugin
+        virtual void UpdateChild();
+
+
+      private:
+        /// \brief pointer to ros node
+        ros::NodeHandle* rosnode_;
+
+        /// \brief store model name
+        std::string model_name_;
+
+        /// \brief topic name
+        std::string topic_name_;
+
+        // /// \brief The visual pointer used to visualize the force.
+        VisualPtr visual_;
+
+        // /// \brief The scene pointer.
+        ScenePtr scene_;
+
+        /// \brief For example a line to visualize the force
+        DynamicLines *line;
+
+        /// \brief for setting ROS name space
+        std::string visual_namespace_;
+
+        /// \Subscribe to some force
+        ros::Subscriber force_sub_;
+
+        /// \brief Visualize the force
+        void VisualizeForceOnLink(const geometry_msgs::PointConstPtr &amp;force_ms);
+
+        // Pointer to the update event connection
+        event::ConnectionPtr update_connection_;
+    };
+  }
+}
+
+#endif
+</code></pre>
+
+<p>and the <code>gazebo_visual_plugin.cpp</code>:</p>
+
+<pre><code>#include &lt;test_pkg/gazebo_visual_plugin.h&gt;
+
+namespace gazebo
+{
+  namespace rendering
+  {
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Constructor
+    SomeVisualPlugin::SomeVisualPlugin(): 
+      line(NULL),
+    {
+
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Destructor
+    SomeVisualPlugin::~SomeVisualPlugin()
+    {
+      // Finalize the visualizer
+      this-&gt;rosnode_-&gt;shutdown();
+      delete this-&gt;rosnode_;
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Load the plugin
+    void SomeVisualPlugin::Load( VisualPtr _parent, sdf::ElementPtr _sdf )
+    {
+      this-&gt;visual_ = _parent;
+
+      this-&gt;visual_namespace_ = &quot;visual/&quot;;
+
+      // start ros node
+      if (!ros::isInitialized())
+      {
+        int argc = 0;
+        char** argv = NULL;
+        ros::init(argc,argv,&quot;gazebo_visual&quot;,ros::init_options::NoSigintHandler|ros::init_options::AnonymousName);
+      }
+
+      this-&gt;rosnode_ = new ros::NodeHandle(this-&gt;visited_visual_namespace_);
+      this-&gt;force_sub_ = this-&gt;rosnode_-&gt;subscribe(&quot;/some_force&quot;, 1000, &amp;SomeVisualPlugin::VisualizeForceOnLink, this);
+
+      // Listen to the update event. This event is broadcast every
+      // simulation iteration.
+      this-&gt;update_connection_ = event::Events::ConnectRender(
+          boost::bind(&amp;SomeVisualPlugin::UpdateChild, this));
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////
+    // Update the visualizer
+    void SomeVisualPlugin::UpdateChild()
+    {
+      ros::spinOnce();
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////
+    // VisualizeForceOnLink
+    void SomeVisualPlugin::VisualizeForceOnLink(const geometry_msgs::PointConstPtr &amp;force_msg)
+    {
+      this-&gt;line = this-&gt;visual_-&gt;CreateDynamicLine(RENDERING_LINE_STRIP);
+
+      //TODO: Get the current link position
+      link_pose = CurrentLinkPose();
+      //TODO: Get the current end position
+      endpoint = CalculateEndpointOfForceVector(link_pose, force_msg);
+
+      // Add two points to a connecting line strip from link_pose to endpoint
+      this-&gt;line-&gt;AddPoint(
+        math::Vector3(
+          link_pose.position.x,
+          link_pose.position.y,
+          link_pose.position.z
+          )
+        );
+      this-&gt;line-&gt;AddPoint(math::Vector3(endpoint.x, endpoint.y, endpoint.z));
+      // set the Material of the line, in this case to purple
+      this-&gt;line-&gt;setMaterial(&quot;Gazebo/Purple&quot;)
+      this-&gt;line-&gt;setVisibilityFlags(GZ_VISIBILITY_GUI);
+      this-&gt;visual_-&gt;SetVisible(true);
+    }
+
+    // Register this plugin within the simulator
+    GZ_REGISTER_VISUAL_PLUGIN(SomeVisualPlugin)
+  }
+}
+</code></pre>
+
+<p>Didn&#39;t test any of this and left two functions for you, hope it works though.</p>
+
+<p>Hope that helps :)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/28">ffurrer</a> on 2013-06-29 11:12:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks a lot! I had no idea there existed a DynamicLines class! I&#39;ll work on it and let you know how it goes.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/406">rsquare</a> on 2013-07-02 10:50:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for this answer. May end up using this Template!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3879">josephcoombe</a> on 2018-05-03 08:32:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Does it have to be done from a visual plugin? I have a plugin that gives me a <code>ModelPtr</code>, and the plugin computes and applies forces to it with <code>AddForceAtRelativePosition</code>. I would like to print those forces with DynamicLines, but I just don&#39;t manage to do it from that plugin... Even link-&gt;GetChild() only seems to give me the collision but not the visual...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/43521">jonesv</a> on 2021-03-04 18:00:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I want to do the same thing actually. But I think it cannot be done.
+Because there are two different plugin, model plugin and visual plugin.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/54991">ismilesj</a> on 2021-09-08 10:08:14 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Visual markers have been added to gazebo8. Use <code>gz marker -h</code> for help.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5">nkoenig</a> on 2017-01-31 11:36:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Is there are way to update the markers efficiently? I need a marker that visualizes a vector every <code>OnUpdate</code> loop and it seems that <code>node.Request(&quot;/marker&quot;, markerMsg);</code> is super slow.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28458">cosmictrex</a> on 2020-06-26 03:06:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@cosmictrex Hi, did you find a solution to your problem?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2829">rfn123</a> on 2020-12-21 07:01:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@nkoenig Is there a way to make these visual markers appear in camera images?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48895">ashwin5059198</a> on 2021-06-15 03:49:56 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

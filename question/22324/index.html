@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Connect to gazebo using a custom socket client - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/22324">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Connect to gazebo using a custom socket client</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>My goal here is to control a model in gazebo using keys from the keyboard. I was able to do that using plugins within gazebo using a publisher and subscriber pattern that sends and receives information over topics. But now I want to achieve the same by a completely independent process say using ZeroMQ that does not include any gazebo dependencies. Can you guys give me any insights to this. It will be very helpful.</p>
+
+<p>Code for plugin1:</p>
+
+<pre><code>KeyboardGUIPlugin::KeyboardGUIPlugin()
+  : GUIPlugin(), dataPtr(new KeyboardGUIPluginPrivate)
+{
+  gazebo::gui::MainWindow *mainWindow = gazebo::gui::get_main_window();
+  if (!mainWindow)
+  {
+    gzerr &lt;&lt; &quot;Couldn&#39;t get main window, keyboard events won&#39;t be filtered.&quot;
+        &lt;&lt; std::endl;
+    return;
+  }
+  mainWindow-&gt;installEventFilter(this);
+
+  // Make this invisible
+  this-&gt;move(-1, -1);
+  this-&gt;resize(1, 1);
+
+  // Initialize transport.
+  // Publish the key presses to the autoCrane topic
+  this-&gt;dataPtr-&gt;gzNode = transport::NodePtr(new transport::Node());
+  this-&gt;dataPtr-&gt;gzNode-&gt;Init();
+  this-&gt;dataPtr-&gt;keyboardPub =
+      this-&gt;dataPtr-&gt;gzNode-&gt;Advertise&lt;msgs::Any&gt;(&quot;~/keyboard/keypress&quot;);
+}
+
+/////////////////////////////////////////////////
+KeyboardGUIPlugin::~KeyboardGUIPlugin()
+{
+  this-&gt;dataPtr-&gt;keyboardPub.reset();
+  this-&gt;dataPtr-&gt;gzNode-&gt;Fini();
+}
+
+/////////////////////////////////////////////////
+// Send the message
+void KeyboardGUIPlugin::OnKeyPress(const gazebo::common::KeyEvent &amp;_event)
+{
+  msgs::Any msg;
+  msg.set_type(msgs::Any_ValueType_INT32);
+  msg.set_int_value(_event.key);
+  this-&gt;dataPtr-&gt;keyboardPub-&gt;Publish(msg);
+}
+
+/////////////////////////////////////////////////  
+bool KeyboardGUIPlugin::eventFilter(QObject *_obj, QEvent *_event)
+{
+  // Check if there was a keypress in a child
+  if (_event-&gt;type() == QEvent::ShortcutOverride)
+  {
+    QKeyEvent *qtKeyEvent = dynamic_cast&lt;QKeyEvent *&gt;(_event);
+
+    gazebo::common::KeyEvent gazeboKeyEvent;
+    gazeboKeyEvent.text = qtKeyEvent-&gt;text().toStdString();
+
+    // QKeyEvent::key() does not distiguish between lowercase and uppercase.
+    // Need to use QKeyEvent::text() to get the unicode character.
+    // Special keys (shift, ctrl) will have an empty text field.
+    gazeboKeyEvent.key = !gazeboKeyEvent.text.empty() ? gazeboKeyEvent.text[0] :
+      qtKeyEvent-&gt;key();
+
+    this-&gt;OnKeyPress(gazeboKeyEvent);
+  }
+  return QObject::eventFilter(_obj, _event);
+}
+</code></pre>
+
+<p>code for plugin2:</p>
+
+<pre><code>void KeysToJointsPlugin::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
+{ 
+  this-&gt;model = _model;
+  auto controller = this-&gt;model-&gt;GetJointController();
+
+  // Load params from SDF
+  if (_sdf-&gt;HasElement(&quot;map&quot;))
+  {
+    auto mapElem = _sdf-&gt;GetElement(&quot;map&quot;);
+    while (mapElem)
+    {
+       // Get the joints from the sdf file
+      auto jointName = mapElem-&gt;Get&lt;std::string&gt;(&quot;joint&quot;);
+      auto joint = this-&gt;model-&gt;GetJoint(jointName);
+      if (!joint)
+      {
+        // It will complain if no joints are found
+        gzwarn &lt;&lt; &quot;Can&#39;t find joint [&quot; &lt;&lt; jointName &lt;&lt; &quot;]&quot; &lt;&lt; std::endl;
+      }
+      else
+      {
+        // The joint should have the below characteristics
+        if (!mapElem-&gt;HasAttribute(&quot;key&quot;) ||
+            !mapElem-&gt;HasAttribute(&quot;scale&quot;) ||
+            !mapElem-&gt;HasAttribute(&quot;type&quot;))
+        {
+          gzwarn &lt;&lt; &quot;Missing [key], [scale] or [type] attribute, skipping map.&quot;
+              &lt;&lt; std::endl;
+          mapElem = mapElem-&gt;GetNextElement(&quot;map&quot;);
+          continue;
+        }
+        KeyInfo info;
+        info.key = mapElem-&gt;Get&lt;int&gt;(&quot;key&quot;);
+        info.joint = joint;
+        info.scale = mapElem-&gt;Get&lt;double&gt;(&quot;scale&quot;);
+        info.type = mapElem-&gt;Get&lt;std::string&gt;(&quot;type&quot;);
+
+        if (info.type != &quot;force&quot;)
+        {
+          double kp = 0;
+          double ki = 0;
+          double kd = 0;
+          if (mapElem-&gt;HasAttribute(&quot;kp&quot;))
+            kp = mapElem-&gt;Get&lt;double&gt;(&quot;kp&quot;);
+          if (mapElem-&gt;HasAttribute(&quot;ki&quot;))
+            ki = mapElem-&gt;Get&lt;double&gt;(&quot;ki&quot;);
+          if (mapElem-&gt;HasAttribute(&quot;kd&quot;))
+            kd = mapElem-&gt;Get&lt;double&gt;(&quot;kd&quot;);
+
+          common::PID pid(kp, ki, kd);
+          if (info.type == &quot;position&quot;)
+            controller-&gt;SetPositionPID(info.joint-&gt;GetScopedName(), pid);
+          else if (info.type == &quot;velocity&quot;)
+            controller-&gt;SetVelocityPID(info.joint-&gt;GetScopedName(), pid);
+         }
+
+         this-&gt;keys.push_back(info);
+       }
+
+      mapElem = mapElem-&gt;GetNextElement(&quot;map&quot;);
+    }
+  }
+
+  // Initialize transport
+  this-&gt;node = transport::NodePtr(new transport::Node());
+  this-&gt;node-&gt;Init();
+
+  // subscribe to KeyboardGUIPlugin by registering OnKeyPress() callback
+  this-&gt;keyboardSub =
+      this-&gt;node-&gt;Subscribe(&quot;~/keyboard/keypress&quot;,
+      &amp;KeysToJointsPlugin::OnKeyPress, this, true);
+ }
+
+ /////////////////////////////////////////////////
+void KeysToJointsPlugin::OnKeyPress(ConstAnyPtr &amp;_msg)
+{
+   for (auto &amp;key : this-&gt;keys)
+  {
+     if (_msg-&gt;int_value() != key.key)
+     continue;
+
+     auto controller = this-&gt;model-&gt;GetJointController();
+
+    if (key.type == &quot;position&quot;)
+    {
+      auto currPos = key.joint-&gt;Position(0);
+      controller-&gt;SetPositionTarget(key.joint-&gt;GetScopedName(),
+          currPos + key.scale);
+    }
+    else if (key.type == &quot;velocity&quot;)
+    {
+      controller-&gt;SetVelocityTarget(key.joint-&gt;GetScopedName(),
+          key.scale);
+    }
+    else if (key.type == &quot;force&quot;)
+    {
+      key.joint-&gt;SetForce(0, key.scale);
+    }
+  }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/9361">kangkan</a> on 2019-04-18 11:33:59 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi, did you solve this issue? If so, could you provide your solution or at least roughly say, how you did it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29530">m.bahno</a> on 2021-11-25 10:37:41 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Plugin problem launching .launch - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/9385">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Plugin problem launching .launch</h2>
+      <div class="question">
+        <p>Hi Gazebo users:</p>
+
+<p>I have just created a pkg following this page link text It just creates a plugin and a world with the plugin. My problem is that when I launch the .launch terminal says:</p>
+
+<pre><code>gzserver: symbol lookup error: /home/alcor/catkin_ws/devel/lib/libgazebo_light_sensor_plugin.so: undefined symbol: _ZN6gazebo20GazeboRosCameraUtilsC2Ev
+[gazebo-1] process has died [pid 20107, exit code 127, cmd /home/alcor/catkin_ws/src/gazebo_ros_pkgs/gazebo_ros/scripts/gzserver --verbose -e ode /home/alcor/catkin_ws/src/gazebo_light_sensor_plugin/worlds/light.world __name:=gazebo __log:=/root/.ros/log/2a55e3fe-5872-11e5-af06-fcaa14787194/gazebo-1.log].
+log file: /root/.ros/log/2a55e3fe-5872-11e5-af06-fcaa14787194/gazebo-1*.log
+</code></pre>
+
+<p>And Gazebo opens a black screen.</p>
+
+<p>What am I doing wrong? How can I solve it?</p>
+
+<p>Thanks a lot</p>
+
+<p>EDIT:</p>
+
+<p>LAUNCH FILE:</p>
+
+<pre><code>&lt;launch&gt;
+ &lt;!-- We resume the logic in empty_world.launch, changing only the name of the world to be launched --&gt;
+ &lt;include file=&quot;$(find gazebo_ros)/launch/empty_world.launch&quot;&gt;
+ &lt;arg name=&quot;verbose&quot; value=&quot;true&quot;/&gt;
+ &lt;arg name=&quot;world_name&quot; value=&quot;$(find gazebo_light_sensor_plugin)/worlds/light.world&quot;/&gt;
+ &lt;!-- more default parameters can be changed here --&gt;
+ &lt;/include&gt;
+ &lt;/launch&gt;
+</code></pre>
+
+<p>.CPP FILE</p>
+
+<pre><code>#include &lt;gazebo/common/Plugin.hh&gt;
+#include &lt;ros/ros.h&gt;
+#include &quot;/home/alcor/catkin_ws/src/gazebo_light_sensor_plugin/include/gazebo_light_sensor_plugin/light_sensor_plugin.h&quot;
+
+#include &quot;gazebo_plugins/gazebo_ros_camera.h&quot;
+
+#include &lt;string&gt;
+
+#include &lt;gazebo/sensors/Sensor.hh&gt;
+#include &lt;gazebo/sensors/CameraSensor.hh&gt;
+#include &lt;gazebo/sensors/SensorTypes.hh&gt;
+
+#include &lt;sensor_msgs/Illuminance.h&gt;
+
+namespace gazebo
+{
+ // Register this plugin with the simulator
+ GZ_REGISTER_SENSOR_PLUGIN(GazeboRosLight)
+
+ ////////////////////////////////////////////////////////////////////////////////
+ // Constructor
+ GazeboRosLight::GazeboRosLight():
+ _nh(&quot;light_sensor_plugin&quot;),
+ _fov(6),
+ _range(10)
+ {
+ _sensorPublisher = _nh.advertise&lt;sensor_msgs::Illuminance&gt;(&quot;lightSensor&quot;, 1);
+ }
+
+ ////////////////////////////////////////////////////////////////////////////////
+ // Destructor
+ GazeboRosLight::~GazeboRosLight()
+ {
+ ROS_DEBUG_STREAM_NAMED(&quot;camera&quot;,&quot;Unloaded&quot;);
+ }
+
+ void GazeboRosLight::Load(sensors::SensorPtr _parent, sdf::ElementPtr _sdf)
+ {
+ // Make sure the ROS node for Gazebo has already been initialized
+ if (!ros::isInitialized())
+ {
+ ROS_FATAL_STREAM(&quot;A ROS node for Gazebo has not been initialized, unable to load plugin. &quot;
+ &lt;&lt; &quot;Load the Gazebo system plugin &#39;libgazebo_ros_api_plugin.so&#39; in the gazebo_ros package)&quot;);
+ return;
+ }
+
+ CameraPlugin::Load(_parent, _sdf);
+ // copying from CameraPlugin into GazeboRosCameraUtils
+ this-&gt;parentSensor_ = this-&gt;parentSensor;
+ this-&gt;width_ = this-&gt;width;
+ this-&gt;height_ = this-&gt;height;
+ this-&gt;depth_ = this-&gt;depth;
+ this-&gt;format_ = this-&gt;format;
+ this-&gt;camera_ = this-&gt;camera;
+
+ GazeboRosCameraUtils::Load(_parent, _sdf);
+ }
+
+ ////////////////////////////////////////////////////////////////////////////////
+ // Update the controller
+ void GazeboRosLight::OnNewFrame(const unsigned char *_image,
+ unsigned int _width, unsigned int _height, unsigned int _depth,
+ const std::string &amp;_format)
+ {
+ static int seq=0;
+
+ this-&gt;sensor_update_time_ = this-&gt;parentSensor_-&gt;GetLastUpdateTime();
+
+ if (!this-&gt;parentSensor-&gt;IsActive())
+ {
+ if ((*this-&gt;image_connect_count_) &gt; 0)
+ // do this first so there&#39;s chance for sensor to run once after activated
+ this-&gt;parentSensor-&gt;SetActive(true);
+ }
+ else
+ {
+ if ((*this-&gt;image_connect_count_) &gt; 0)
+ {
+ common::Time cur_time = this-&gt;world_-&gt;GetSimTime();
+ if (cur_time - this-&gt;last_update_time_ &gt;= this-&gt;update_period_)
+ {
+ this-&gt;PutCameraData(_image);
+ this-&gt;PublishCameraInfo();
+ this-&gt;last_update_time_ = cur_time;
+
+ sensor_msgs::Illuminance msg;
+ msg.header.stamp = ros::Time::now();
+ msg.header.frame_id = &quot;&quot;;
+ msg.header.seq = seq;
+
+ int startingPix = _width * ( (int)(_height/2) - (int)( _fov/2)) - (int)(_fov/2);
+
+ double illum = 0;
+ for (int i=0; i&lt;_fov ; ++i)
+ {
+ int index = startingPix + i*_width;
+ for (int j=0; j&lt;_fov ; ++j)
+ illum += _image[index+j];
+ }
+
+ msg.illuminance = illum/(_fov*_fov);
+ msg.variance = 0.0;
+
+ _sensorPublisher.publish(msg);
+
+ seq++;
+ }
+ }
+ }
+ }
+}
+</code></pre>
+
+<p>.H FILE</p>
+
+<pre><code>#ifndef GAZEBO_ROS_LIGHT_SENSOR_HH
+#define GAZEBO_ROS_LIGHT_SENSOR_HH
+
+#include &lt;string&gt;
+
+// library for processing camera data for gazebo / ros conversions
+#include &lt;gazebo/plugins/CameraPlugin.hh&gt;
+
+#include &lt;gazebo_plugins/gazebo_ros_camera_utils.h&gt;
+
+namespace gazebo
+{
+class GazeboRosLight : public CameraPlugin, GazeboRosCameraUtils
+{
+/// \brief Constructor
+/// \param parent The parent entity, must be a Model or a Sensor
+public: GazeboRosLight();
+
+/// \brief Destructor
+public: ~GazeboRosLight();
+
+/// \brief Load the plugin
+/// \param take in SDF root element
+public: void Load(sensors::SensorPtr _parent, sdf::ElementPtr _sdf);
+
+/// \brief Update the controller
+protected: virtual void OnNewFrame(const unsigned char *_image,
+unsigned int _width, unsigned int _height,
+unsigned int _depth, const std::string &amp;_format);
+
+ros::NodeHandle _nh;
+ros::Publisher _sensorPublisher;
+
+double _fov;
+double _range;
+};
+}
+#endif
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/1236">Alvaro Salcedo</a> on 2015-09-11 06:18:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you post a copy of your launch file?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/109">scpeters</a> on 2015-09-14 00:50:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Of course @scpeters . I have just edited the post</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1236">Alvaro Salcedo</a> on 2015-09-14 05:01:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>And also your plugin source code? I had this error not that long ago and it was something silly like having an old function declared in the header but not defined. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1200">niall</a> on 2015-09-14 06:15:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes! here you are! .cpp and .h @niall Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1236">Alvaro Salcedo</a> on 2015-09-14 06:20:26 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Can anybody help me? Thank you so much. I can not fix it.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1236">Alvaro Salcedo</a> on 2015-09-17 05:32:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;m sorry, I can&#39;t find what you&#39;re doing wrong. Not a C++ guru myself. What helped me was follow this part of the error: &quot;undefined symbol: _ZN6gazebo20GazeboRosCameraUtilsC2Ev&quot;. The gazebo part likely means the problem originates in that namespace, in the GazeboRosCameraUtils part with a function starting with &quot;Ev&quot;. That&#39;s how I found my error. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1200">niall</a> on 2015-09-17 16:19:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am checking the namespace Gazebo in gazebo_ros_camera and there is not any function starting with &quot;Ev&quot; @niall . I am desperate...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1236">Alvaro Salcedo</a> on 2015-09-18 06:48:17 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

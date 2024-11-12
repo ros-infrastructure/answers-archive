@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Looking for a stable solution to reset a robot (with controller) in Gazebo - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/27178">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Looking for a stable solution to reset a robot (with controller) in Gazebo</h2>
+      <div class="question">
+        <p>Hey,</p>
+
+<p>I think the problem is known to almost everyone, but here again the problem description: The position of a robot should be reset to a defined position, e.g. the start position of all joints defined in the launch file.</p>
+
+<p>A simple service call with &#39;/gazebo/reset<em>world&#39; nor &#39;/gazebo/reset</em>sim&#39; wouldn&#39;t do the trick.
+Note: I&#39;m aware of <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/issues/93">the famous github issue #93</a> and the pause/unpause solution is at least a stable one.</p>
+
+<p>My best solution so far:</p>
+
+<ol>
+<li>restart all controllers</li>
+<li>pause</li>
+<li>set pose via &#39;/gazebo/set<em>model</em>configuration&#39;</li>
+<li>update the controllers &quot;desired positions&quot; via FF topic command: &#39;/controller_ns/command&#39;</li>
+<li>unpause</li>
+<li>for good measure a repeat of 4.</li>
+</ol>
+
+<p>Most of the times this works well and seems to work fast as well, but sometimes one ore more joints seems to be lost and flattering around without any control. The topics show the error position and error velocity, but 0 acceleration and 0 effort (for joint effort controllers). From this point on, it can&#39;t recover to a good and clean reset, it will always lost the same joints.</p>
+
+<p>What is this black magic trickery and how can i avoid it? Is it better to delete the robot and spawn it again? </p>
+
+        <div class="owner"><p>Asked by <a href="/users/50530">sre</a> on 2021-07-09 03:01:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Restarting the controllers doesn&#39;t do anything. For some reason the <code>/joint_states</code> topic can publish partially wrong values after the position is set during <code>&#39;/gazebo/pause_physics&#39;</code> with <code>/gazebo/set_model_configuration&#39;</code>. The build-in reset functions are not touched!</p>
+
+<p>A solution that works for us without sleep timers or weird behavior (so far...) is the following order:</p>
+
+<ol>
+<li>Get model state via <code>&#39;/gazebo/model_states&#39;</code>and put it into a new <a href="http://docs.ros.org/en/noetic/api/geometry_msgs/html/msg/Pose.html">Pose message</a>.</li>
+<li>Delete the robot with <code>&#39;/gazebo/delete_model&#39;</code>, this will also remove all controllers for the robot. Otherwise you could stop and remove all controllers manually.</li>
+<li>Spawn the robot again on the same position, e.g. via <code>&#39;/gazebo/spawn_urdf_model&#39;</code>, you could also store the urdf with <code>rospy.get_param(&#39;/robot_description&#39;)</code> or whatever name you choose.</li>
+<li>Pause physics</li>
+<li>Set the new old pose/joint states with <code>/gazebo/set_model_configuration&#39;</code></li>
+<li>Unpause physics</li>
+<li>Load all controllers with <code>&#39;/controller_manager/load_controller&#39;</code></li>
+<li>Start all controllers with <code>&#39;/controller_manager/switch_controller&#39;</code></li>
+<li>Send the same joint states from 5. on the <code>/ns/controller/command</code> topic, otherwise the controller tries to move all joints to 0.0 rad.</li>
+</ol>
+
+<p>Please share your thoughts or observations.</p>
+
+<p>*Tested with ROS noetic, Gazebo 11 on <code>effort_controllers/JointTrajectoryController</code> for a 16 joints robot</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50530">sre</a> on 2021-07-16 07:40:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>i did exactly the 9 steps mentioned in @sre <a href="https://answers.gazebosim.org/question/27178/looking-for-a-stable-solution-to-reset-a-robot-with-controller-in-gazebo/?answer=27194#post-id-27194">answer</a>, but it didn&#39;t work.
+with some effort, i was able to make it work at last. the problem was in step 3 for me. i had to pause physics, spawn model, set_model_configuration, load_controller and then send a request for switch_controller (to enable them). at this point, this request is not responded because the physics is stoped. but as soon as physics is unpaused, the response is returned and the robot is remained in the defined configuration.
+this way i didn&#39;t even need to send command (/controller/command topic)  anymore.
+so solution for me was:</p>
+
+<ol>
+<li>Get model state via <code>/gazebo/model_states</code> and put it into a new Pose message.</li>
+<li>Delete the robot with <code>/gazebo/delete_model</code></li>
+<li> Pause physics</li>
+<li>Spawn the robot again on the same position via <code>/gazebo/spawn_urdf_model</code></li>
+<li>Set the old <code>pose/joint states</code> with <code>/gazebo/set_model_configuration</code></li>
+<li>Load all controllers with <code>/controller_manager/load_controller</code>
+
+<ol>
+<li>Start all controllers with <code>/controller_manager/switch_controller</code> (send request and wait for response in another terminal/thread)</li>
+<li>Unpause physics (switch_controller will respond immediately)</li>
+</ol></li>
+</ol>
+
+<p><em>test</em>: gazebo 11, ros noetic with 6dof arm</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120523">arahami</a> on 2022-12-10 06:47:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Wait for model plugin to load in world plugin - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/22329">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Wait for model plugin to load in world plugin</h2>
+      <div class="question">
+        <p>Hi!</p>
+
+<p>I am trying to spawn a model from my world plugin, and that model uses its own plugin. It seems to work fine, however, when I wait for the model to subscribe to my topic, it hangs Gazebo and the model plugin ends up never being loaded...
+I am trying to use a callback to detect when the model is spawned, but it is called before the plugin actually loads, so it is sort of useless. I have also tried running <code>WaitForConnection()</code> in a thread, but it still hangs Gazebo....
+Is there a proper way to do this?</p>
+
+<p>The world plugin:</p>
+
+<pre><code>  namespace gazebo
+    {
+    RLControl::RLControl(): WorldPlugin()
+    {
+        ROS_INFO(&quot;[*] Created RLControl plugin&quot;);
+    }
+
+    RLControl::~RLControl() {}
+
+    void RLControl::Load(physics::WorldPtr _parent, sdf::ElementPtr _sdf)
+    {
+        // Make sure the ROS node for Gazebo has already been initialized                                                                                    
+        if (!ros::isInitialized())
+        {
+            ROS_FATAL_STREAM(&quot;A ROS node for Gazebo has not been initialized, unable to load plugin. &quot;
+                    &lt;&lt; &quot;Load the Gazebo system plugin &#39;libgazebo_ros_api_plugin.so&#39; in the gazebo_ros package)&quot;);
+            return;
+        }
+
+                ROS_INFO(&quot;[*] Loading RLControl plugin...&quot;);
+        this-&gt;world = _parent;
+        this-&gt;node = transport::NodePtr(new transport::Node());
+        this-&gt;node-&gt;Init(this-&gt;world-&gt;GetName());
+        transport::run();
+        this-&gt;pubVelocity = this-&gt;node-&gt;Advertise&lt;msgs::Vector3d&gt;(&quot;~/aero/velocity&quot;);
+        this-&gt;SpawnDrone(ignition::math::Vector3d(0, 0, 0));
+        //std::string topicName = &quot;~/intel_aero/crashed&quot;;
+        //ROS_INFO(&quot;[*] Subscribing to topic &quot;);
+        //this-&gt;subCrashed = this-&gt;node-&gt;Subscribe(topicName, &amp;RLControl::SetCrashed, this);
+    }
+
+    void RLControl::Train()
+    {
+        ROS_INFO(&quot;[*] Starting RL training (in a thread)...&quot;);
+        ROS_INFO(&quot;[*] Waiting for connection on ~/aero/velocity&quot;);
+        this-&gt;pubVelocity-&gt;WaitForConnection();
+        this-&gt;isCrashed = false;
+        msgs::Vector3d velMsg;
+        msgs::Set(&amp;velMsg, ignition::math::Vector3d(.9, 0, .5));
+        while (true) {
+            ROS_INFO(&quot;[*] Publishing velocity...&quot;);
+            this-&gt;pubVelocity-&gt;Publish(velMsg);
+            common::Time::MSleep(1500);
+        }
+        ROS_INFO(&quot;[*] End of training session&quot;);
+    }
+
+    void RLControl::SpawnDrone(const ignition::math::Vector3d location)
+    {
+        ROS_INFO(&quot;[*] Spawning Intel Aero&quot;);
+        this-&gt;subSpawned = this-&gt;node-&gt;Subscribe(&quot;~/model/info&quot;, &amp;RLControl::ModelSpawned, this);
+        this-&gt;world-&gt;SetPaused(true);
+        // The filename must be in the GAZEBO_MODEL_PATH environment variable.
+        //this-&gt;world-&gt;InsertModelFile(&quot;model://aero_control/models/aero&quot;);
+        this-&gt;world-&gt;InsertModelFile(&quot;model://aero_control/models/aero_working_standalone&quot;);
+    }
+
+    void RLControl::ModelSpawned(ConstModelPtr &amp;msg)
+    {
+        ROS_INFO(&quot;[*] Model spawned. Unpausing simulation.&quot;);
+        this-&gt;world-&gt;SetPaused(false);
+        std::thread training(&amp;RLControl::Train, this);
+        ROS_INFO(&quot;[*] Training thread running&quot;);
+        training.join();
+    }
+}
+</code></pre>
+
+<p>And the model plugin:</p>
+
+<pre><code>namespace gazebo
+{
+    AeroControl::AeroControl(): ModelPlugin()
+    {
+        ROS_INFO(&quot;[AERO] Created AeroControl plugin&quot;);
+    }
+
+    void AeroControl::Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
+    {
+        // Make sure the ROS node for Gazebo has already been initialized
+        if (!ros::isInitialized())
+        {
+            ROS_FATAL_STREAM(&quot;A ROS node for Gazebo has not been initialized, unable to load plugin. &quot;
+                    &lt;&lt; &quot;Load the Gazebo system plugin &#39;libgazebo_ros_api_plugin.so&#39; in the gazebo_ros package)&quot;);
+            return;
+        }
+
+        ROS_INFO(&quot;[AERO] Loading model &quot;);
+        this-&gt;model = _parent;
+        this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(
+                std::bind(&amp;AeroControl::OnUpdate, this));
+        this-&gt;node = transport::NodePtr(new transport::Node());
+        this-&gt;node-&gt;Init(this-&gt;model-&gt;GetWorld()-&gt;GetName());
+        transport::run();
+        std::string topicName = &quot;~/&quot; + this-&gt;model-&gt;GetName() + &quot;/velocity&quot;;
+        ROS_INFO(&quot;[AERO] Subscribing to topic &quot;);
+        std::cout &lt;&lt; topicName &lt;&lt; std::endl;
+        this-&gt;subVelocity = this-&gt;node-&gt;Subscribe(topicName, &amp;AeroControl::SetVelocity, this);
+    }
+
+    void AeroControl::OnUpdate()
+    {
+        // Example: apply a small linear velocity
+        //this-&gt;model-&gt;SetLinearVel(ignition::math::Vector3d(.3, 0, 0));
+        //TODO: Publish to crashed
+    }
+
+    void AeroControl::SetVelocity(ConstVector3dPtr &amp;msg)
+    {
+        ROS_INFO(&quot;[AERO] Got velocity command&quot;);
+        this-&gt;model-&gt;SetLinearVel(msgs::ConvertIgn(*msg));
+    }
+
+    bool AeroControl::IsCrashed()
+    {
+        // TODO
+        return false;
+    }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/9375">theo</a> on 2019-04-19 07:56:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>A bit late so it, unfortunately, might not help you anymore but I think the problem you&#39;re facing is that you&#39;re pausing the simulation which also pauses ROS time and ROS spinning (delivery of messages to callbacks etc.).</p>
+
+<p>In short, everything is paused so your callback will not be called unless you unpause the simulation manually.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30038">StefanFabian</a> on 2020-08-10 04:26:33 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

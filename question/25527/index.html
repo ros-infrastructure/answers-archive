@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Segmentation fault when publishing to a topic while the ModelPlugin which subscribes to this topic is deleted - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/25527">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Segmentation fault when publishing to a topic while the ModelPlugin which subscribes to this topic is deleted</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/29035/segmentation-fault-when-publishing-to-a-topic-while-the-modelplugin-which-subscr">https://robotics.stackexchange.com/questions/29035/segmentation-fault-when-publishing-to-a-topic-while-the-modelplugin-which-subscr</a>.</p>
+        <p>I am using two gazebo plugins, <code>VictimPlugin</code> and <code>LifeBuoyPlugin</code>. The <code>VictimPlugin</code> subscribes to a topic to get a bool that is used by <code>timerThreadFunction</code>, which sleeps for a predefined amount of time and when it awakes if this bool is <code>true</code> it deletes the gazebo model associated to the plugin. The <code>LifeBuoyPlugin</code> publishes this bool which indicates if the model should be deleted or not. </p>
+
+<p>The problem is that sometimes when <code>LifeBuoyPlugin</code> is trying to publish and <code>VictimPlugin</code> is deleted a segmentation fault happens, the gdb log is:</p>
+
+<pre><code>#0  0x00007ffff5dbcfa0 in __GI___pthread_mutex_lock (mutex=0x110) at ../nptl/pthread_mutex_lock.c:65
+#1  0x00007fffbc942fa0 in ros::Publication::hasSubscribers() () at /opt/ros/melodic/lib/libroscpp.so
+#2  0x00007fffbc933296 in ros::TopicManager::publish(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;, boost::function&lt;ros::SerializedMessage ()&gt; const&amp;, ros::SerializedMessage&amp;) () at /opt/ros/melodic/lib/libroscpp.so
+#3  0x00007ffeb85d92e5 in void ros::Publisher::publish&lt;std_msgs::Bool_&lt;std::allocator&lt;void&gt; &gt; &gt;(std_msgs::Bool_&lt;std::allocator&lt;void&gt; &gt; const&amp;) const ()
+    at /home/gus/Documents/git/jason_ros_ws/devel/lib/liblifebuoy.so
+#4  0x00007ffeb85d653c in gazebo::LifeBuoyPlugin::OnRosMsg(boost::shared_ptr&lt;gazebo_msgs::ModelStates_&lt;std::allocator&lt;void&gt; &gt; const&gt; const&amp;) () at /home/gus/Documents/git/jason_ros_ws/devel/lib/liblifebuoy.so
+</code></pre>
+
+<p><code>VictimPlugin</code> code:</p>
+
+<pre><code>#include &lt;thread&gt;
+#include &lt;chrono&gt;
+#include &lt;mutex&gt;
+
+#include &lt;gazebo/transport/Node.hh&gt;
+#include &lt;gazebo/common/Plugin.hh&gt;
+#include &lt;gazebo/physics/Model.hh&gt;
+#include &lt;ignition/math/Pose3.hh&gt;
+
+#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/Bool.h&quot;
+#include &quot;ros/callback_queue.h&quot;
+#include &quot;ros/subscribe_options.h&quot;
+
+namespace gazebo{
+  class VictimPlugin : public ModelPlugin{
+  private:
+    gazebo::transport::NodePtr node;
+    std::unique_ptr&lt;ros::NodeHandle&gt; rosNode;
+
+    ros::Subscriber rosSub;
+    ros::CallbackQueue rosQueue;
+    std::thread rosQueueThread;
+
+    bool drowning = true;
+
+    physics::ModelPtr model;
+
+    int drowning_time_ = 0;
+    std::thread timer_thread_;
+    std::mutex mtx;
+
+    void timerThreadFunction(){
+      std::this_thread::sleep_for(
+        std::chrono::milliseconds(this-&gt;drowning_time_));
+
+      std::lock_guard&lt;std::mutex&gt; guard(mtx);
+
+      if(this-&gt;drowning){
+        gazebo::transport::PublisherPtr request_pub = this-&gt;node-&gt;Advertise&lt;msgs::Request&gt;(&quot;~/request&quot;);
+        msgs::Request *msg = msgs::CreateRequest(&quot;entity_delete&quot;, this-&gt;model-&gt;GetName());
+        request_pub-&gt;Publish(*msg);
+        delete msg;
+      }
+    }
+
+    void QueueThread(){
+      static const double timeout = 0.01;
+      while (this-&gt;rosNode-&gt;ok())
+      {
+        this-&gt;rosQueue.callAvailable(ros::WallDuration(timeout));
+      }
+    }
+
+  public:
+    VictimPlugin() : ModelPlugin(){}
+    ~VictimPlugin(){
+      rosQueue.clear();
+      rosQueue.disable();
+      rosNode-&gt;shutdown();
+      rosQueueThread.join();
+      timer_thread_.join();
+    }
+
+    void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf){
+      model = _model;
+
+      this-&gt;node = boost::make_shared&lt;gazebo::transport::Node&gt;();
+      this-&gt;node-&gt;Init();
+
+      if (!_sdf-&gt;HasElement(&quot;drowningTime&quot;)){
+        this-&gt;drowning_time_ = 5000;
+        ROS_DEBUG(&quot;Victim plugin missing &lt;drowningTime&gt;, default to 5000ms&quot;);
+      }else{
+        this-&gt;drowning_time_ = _sdf-&gt;Get&lt;int&gt;(&quot;drowningTime&quot;);
+      }
+
+      if (!ros::isInitialized()){
+        ROS_FATAL_STREAM(&quot;A ROS node for Gazebo has not been initialized, unable to load plugin. &quot;
+          &lt;&lt; &quot;Load the Gazebo system plugin &#39;libgazebo_ros_api_plugin.so&#39; in the gazebo_ros package)&quot;);
+        return;
+      }
+      this-&gt;rosNode.reset(new ros::NodeHandle(&quot;victim&quot;));
+
+      ros::SubscribeOptions so =
+        ros::SubscribeOptions::create&lt;std_msgs::Bool&gt;(
+          &quot;/victim/&quot;+this-&gt;model-&gt;GetName(),
+          1,
+          boost::bind(&amp;VictimPlugin::OnRosMsg, this, _1),
+          ros::VoidPtr(), &amp;this-&gt;rosQueue);
+
+      this-&gt;rosSub = this-&gt;rosNode-&gt;subscribe(so);
+
+      this-&gt;rosQueueThread =
+        std::thread(std::bind(&amp;VictimPlugin::QueueThread, this));
+
+      this-&gt;timer_thread_ =
+        std::thread(std::bind(&amp;VictimPlugin::timerThreadFunction, this));
+    }
+
+    void OnRosMsg(const std_msgs::BoolConstPtr &amp;_msg){
+      std::lock_guard&lt;std::mutex&gt; guard(mtx);
+      this-&gt;drowning = _msg-&gt;data;
+    }
+  };
+  GZ_REGISTER_MODEL_PLUGIN(VictimPlugin)
+}
+</code></pre>
+
+<p><code>LifeBuoyPlugin</code> code:</p>
+
+<pre><code>#include &lt;gazebo/common/Plugin.hh&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &lt;thread&gt;
+#include &lt;ignition/math/Pose3.hh&gt;
+#include &quot;gazebo/common/common.hh&quot;
+#include &quot;gazebo/gazebo.hh&quot;
+
+#include &quot;ros/ros.h&quot;
+#include &quot;ros/callback_queue.h&quot;
+#include &quot;ros/subscribe_options.h&quot;
+#include &quot;gazebo_msgs/ModelStates.h&quot;
+#include &quot;gazebo_msgs/DeleteModel.h&quot;
+#include &quot;geometry_msgs/Pose.h&quot;
+// #include &quot;std_msgs/String.h&quot;
+#include &quot;std_msgs/Bool.h&quot;
+
+#include &lt;iostream&gt;
+#include &lt;math.h&gt;
+#include &lt;unistd.h&gt;
+
+double euclideanDistance(geometry_msgs::Pose &amp;buoyPose, ignition::math::Pose3d &amp;modelPose){
+  return  pow(pow(buoyPose.position.x - modelPose.Pos().X(), 2) +
+              pow(buoyPose.position.y - modelPose.Pos().Y(), 2) +
+              pow(buoyPose.position.z - modelPose.Pos().Z(), 2), 0.5);
+}
+
+namespace gazebo{
+  class LifeBuoyPlugin : public ModelPlugin{
+  private:
+    physics::ModelPtr model;
+
+    std::unique_ptr&lt;ros::NodeHandle&gt; rosNode;
+
+    ros::Subscriber rosSub;
+    ros::CallbackQueue rosQueue;
+    std::thread rosQueueThread;
+
+    void QueueThread(){
+      static const double timeout = 0.01;
+      while (this-&gt;rosNode-&gt;ok())
+      {
+        this-&gt;rosQueue.callAvailable(ros::WallDuration(timeout));
+      }
+    }
+
+  public:
+    LifeBuoyPlugin() : ModelPlugin(){}
+
+    ~LifeBuoyPlugin(){
+      rosQueue.clear();
+      rosQueue.disable();
+      rosNode-&gt;shutdown();                     // This MUST BE CALLED before thread join()!!
+      rosQueueThread.join();
+    }
+
+    void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf){
+      model = _model;
+
+      if (!ros::isInitialized()){
+        ROS_FATAL_STREAM(&quot;A ROS node for Gazebo has not been initialized, unable to load plugin. &quot;
+          &lt;&lt; &quot;Load the Gazebo system plugin &#39;libgazebo_ros_api_plugin.so&#39; in the gazebo_ros package)&quot;);
+        return;
+      }
+      this-&gt;rosNode.reset(new ros::NodeHandle(&quot;buoy&quot;));
+
+      ros::SubscribeOptions so =
+        ros::SubscribeOptions::create&lt;gazebo_msgs::ModelStates&gt;(
+          &quot;/gazebo/model_states&quot;,
+          1,
+          boost::bind(&amp;LifeBuoyPlugin::OnRosMsg, this, _1),
+          ros::VoidPtr(), &amp;this-&gt;rosQueue);
+
+      this-&gt;rosSub = this-&gt;rosNode-&gt;subscribe(so);
+
+      this-&gt;rosQueueThread =
+        std::thread(std::bind(&amp;LifeBuoyPlugin::QueueThread, this));
+    }
+
+    void OnRosMsg(const gazebo_msgs::ModelStatesConstPtr &amp;_msg){
+      for (size_t i = 0; i &lt; _msg-&gt;name.size(); i++) {
+        if(_msg-&gt;name.at(i).compare(0, 6,&quot;victim&quot;) == 0){
+          geometry_msgs::Pose victimPose = _msg-&gt;pose.at(i);
+          ignition::math::Pose3d buoyPose = model-&gt;WorldPose();
+
+          double distance = euclideanDistance(victimPose, buoyPose);
+          if(distance &lt; 2.5 &amp; ros::ok()){
+            std_msgs::Bool pubMsg;
+            pubMsg.data = false;
+
+            ros::Publisher victimPub;
+            victimPub = rosNode-&gt;advertise&lt;std_msgs::Bool&gt;(&quot;/victim/&quot;+_msg-&gt;name.at(i), 1);
+            victimPub.publish(pubMsg);
+
+            i = _msg-&gt;name.size();
+          }
+        }
+      }
+    }
+
+  };
+  GZ_REGISTER_MODEL_PLUGIN(LifeBuoyPlugin)
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/26928">rezenders</a> on 2020-07-14 12:20:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Setting <code>so.transport_hints = ros::TransportHints().unreliable();</code> solved this</p>
+
+<pre><code>ros::SubscribeOptions so =
+        ros::SubscribeOptions::create&lt;std_msgs::Bool&gt;(
+          &quot;/victim/&quot;+this-&gt;model-&gt;GetName(),
+          1,
+          boost::bind(&amp;VictimPlugin::OnRosMsg, this, _1),
+          ros::VoidPtr(), &amp;this-&gt;rosQueue);
+
+      so.transport_hints = ros::TransportHints().unreliable();
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26928">rezenders</a> on 2020-07-14 13:23:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

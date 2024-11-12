@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to change transparency/visibility of visual using gazeboRos modelplugin - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/14222">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to change transparency/visibility of visual using gazeboRos modelplugin</h2>
+      <div class="question">
+        <p>I am trying to change the transparency of the cones in the attached picture online <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/gazebosim/14719509397911838.png" alt="image description"></p>
+
+<p>First some system info:</p>
+
+<ul>
+<li>Ubuntu 14.04</li>
+<li>Gazebo 7.3</li>
+<li>Gazebo 5.1</li>
+<li>ROS JADE</li>
+</ul>
+
+<p>I have tested with both Gazobo 7 and Gazobo 5, to determine if this was a version problem, but the problem remains the same. I made a plugin for ROS to change the transparancy, but it does not seem to have any affect on the chosen visual in gazebo.</p>
+
+<pre><code>#include &quot;generic_sprayer_plugin/generic_sprayer_plugin.h&quot;
+#include &lt;cmath&gt;
+
+namespace gazebo
+{
+
+
+    GenericSprayerPlugin::GenericSprayerPlugin()
+    {
+        alive_ = false;
+    }
+
+    GenericSprayerPlugin::~GenericSprayerPlugin() {
+    }
+
+    void GenericSprayerPlugin::Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
+    {
+
+        this-&gt;parent = _parent;
+
+        this-&gt;gzNode = transport::NodePtr(new transport::Node());
+        this-&gt;gzNode-&gt;Init();
+
+        this-&gt;visPub = this-&gt;gzNode-&gt;Advertise&lt;gazebo::msgs::Visual&gt;(&quot;~/visual&quot;);
+
+        gazebo_ros_ = GazeboRosPtr(new GazeboRos(_parent, _sdf, &quot;GenericSprayerPlugin&quot;));
+
+        // Make sure the ROS node for Gazebo has already been initialized
+        gazebo_ros_-&gt;isInitialized();
+
+        gazebo_ros_-&gt;getParameter &lt; std::string &gt; (sprayer_viz_topic_, &quot;sprayerVizTopic&quot;, &quot;/aiSim/gen_sprayer&quot;);
+
+        last_update_time_ = parent-&gt;GetWorld()-&gt;GetSimTime();
+
+        spray_link = parent-&gt;GetChildLink(&quot;sprayer_1&quot;);
+
+        Sprayer_inputMsg.valve = true;
+
+        alive_ = true;
+
+        ros::SubscribeOptions so =
+            ros::SubscribeOptions::create&lt;generic_sprayer_plugin::Sprayer_input&gt; ( sprayer_viz_topic_, 1,
+            boost::bind ( &amp;GenericSprayerPlugin::onVizUpdate, this, _1 ),
+            ros::VoidPtr(), &amp;queue_ );
+
+        subscriber_ = gazebo_ros_-&gt;node()-&gt;subscribe ( so );
+
+        ROS_INFO ( &quot;%s: Subscribe to %s!&quot;, gazebo_ros_-&gt;info(), sprayer_viz_topic_.c_str() );
+
+        // start custom queue for diff drive
+        this-&gt;callback_queue_thread_ = boost::thread ( boost::bind ( &amp;GenericSprayerPlugin::QueueThread, this ) );
+
+        // listen to the update event (broadcast every simulation iteration)
+        this-&gt;update_connection_ = event::Events::ConnectWorldUpdateBegin(
+                boost::bind(&amp;GenericSprayerPlugin::OnUpdate, this));
+    }
+
+    void GenericSprayerPlugin::OnUpdate()
+    {
+
+        std::string _name = &quot;generic_sprayer::sprayer_1::spray_cone&quot;;
+            std::string _parentName = &quot;generic_sprayer::sprayer_1&quot;;
+
+        msgs::Visual visualMsg;
+        visualMsg.set_name(_name);
+        visualMsg.set_parent_name(_parentName);
+
+        //ROS_ERROR(&quot;HELL&quot;);
+
+
+        //std::string _tt = spray_link-&gt;GetScopedName();
+
+
+
+        //ROS_ERROR(_tt.c_str());
+        //ROS_ERROR(parent-&gt;GetScopedName().c_str());
+
+        if (!Sprayer_inputMsg.valve)
+            visualMsg.set_transparency(0);
+        else
+            visualMsg.set_transparency(1.0);
+
+        visPub-&gt;Publish(visualMsg);
+
+    }
+
+    void GenericSprayerPlugin::QueueThread()
+    {
+        static const double timeout = 0.01;
+        while ( alive_ &amp;&amp; gazebo_ros_-&gt;node()-&gt;ok() ) {
+            queue_.callAvailable ( ros::WallDuration ( timeout ) );
+        }
+    }
+
+    // Finalize the plugin
+    void GenericSprayerPlugin::FiniChild()
+    {
+        alive_ = false;
+        queue_.clear();
+        queue_.disable();
+        gazebo_ros_-&gt;node()-&gt;shutdown();
+        callback_queue_thread_.join();
+    }
+
+    void GenericSprayerPlugin::onVizUpdate(const generic_sprayer_plugin::Sprayer_input::ConstPtr&amp; msg)
+    {
+        Sprayer_inputMsg.header = msg-&gt;header;
+        Sprayer_inputMsg.valve = msg-&gt;valve;
+    }
+}
+</code></pre>
+
+<hr>
+
+<p>I think I am either not publishing the msgs::Visual message correctly or connection incorrectly to (&quot;~/visual&quot;);
+But I have not found a way to verify what is actually going wrong.</p>
+
+<p>I have tried to implement similar solution to the code in :
+<a href="https://bitbucket.org/osrf/handsim/src/62b1deba4ab2f82b7910beb959042212c3c9bfae/src/HaptixWorldPlugin.cc?at=default&fileviewer=file-view-default">HaptixWorldPlugin</a>
+<a href="https://bitbucket.org/osrf/gazebo/src/106b33f9a9238b71719700a9e9fc98f0a23e25b1/plugins/FoosballDemoPlugin.cc?at=foosball&fileviewer=file-view-default#FoosballDemoPlugin.cc-307">FootballDemoPlugin</a>
+whitout any succes for both cases.</p>
+
+<p>The main difference is that I am also using ROS and therefore using a differrent type of gazebo plugin.
+I hope I can get some hints on what I am doing wrong :-\</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2746">mpc</a> on 2016-08-23 06:30:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Do you see your message being published while echoing it? <code>gz topic -e /gazebo/default/visual</code>   Also double check the visual name. Finally, could you try starting from an opaque cone? It could be that the original transparency is interfering with the new one, that would be a bug.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1019">chapulina</a> on 2016-08-23 10:18:51 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ardupilot Circle mode not right in Gazebo - Gazebo Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/18120">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ardupilot Circle mode not right in Gazebo</h2>
+      <div class="question">
+        <p>Hi all,</p>
+
+<p>I have been simulating a drone in Gazebo using Mavros with Ardupilot, I&#39;ve tried different modes and things, but I have a problem with the Circle mode. From the <a href="http://ardupilot.org/copter/docs/circle-mode.html">Ardupilot documentation</a>, I understand that without me overwriting yaw control the nose of the drone should always be pointing towards the center of the circle, which is not the case for me. I guess I could write a yaw controller that does that and force it, but there doesn&#39;t seem to be an easy way to send yaw controls through mavros in Circle mode (local raw attitude setpoints, if I understand well, can only be used in modes like guided or manual). I don&#39;t think I&#39;m overriding anything that could stop the automatic yaw controller, the script is very simple and I only send throttle, which is supposed to be left for the user to control in Circle mode.</p>
+
+<p>Here is my small python script, if anyone has any ideas or has tested the Circle mode in Gazebo and can tell me how it went, that would be great !</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from mavros_msgs.srv import SetMode
+from mavros_msgs.srv import CommandBool
+from mavros_msgs.srv import CommandTOL
+from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import State
+from sensor_msgs.msg import NavSatFix
+from mavros_msgs.msg import OverrideRCIn
+from mavros_msgs.msg import ParamValue
+from mavros_msgs.srv import ParamSet
+
+class Operation():
+
+def state_callback(self,data):
+    self.cur_state = data
+
+def gps_callback(self,data):
+    self.gps = data
+    self.gps_read = True
+
+def start_operation(self):
+    rospy.init_node(&#39;my_operation&#39;, anonymous=True) 
+    self.gps_read = False
+    self.localtarget_received = False
+    r = rospy.Rate(10)
+    rospy.Subscriber(&quot;/mavros/state&quot;, State, self.state_callback)
+    rospy.Subscriber(&quot;/mavros/global_position/global&quot;, NavSatFix, self.gps_callback)
+    pub_rc = rospy.Publisher(&#39;/mavros/rc/override&#39;, OverrideRCIn, queue_size=10)
+
+    while not self.gps_read:
+        r.sleep()
+
+    # Service Clients
+    change_mode = rospy.ServiceProxy(&#39;/mavros/set_mode&#39;, SetMode) 
+    arm = rospy.ServiceProxy(&#39;/mavros/cmd/arming&#39;, CommandBool)
+    takeoff = rospy.ServiceProxy(&#39;/mavros/cmd/takeoff&#39;, CommandTOL)
+    change_param = rospy.ServiceProxy(&#39;/mavros/param/set&#39;, ParamSet)
+
+    last_request = rospy.get_rostime() 
+
+    # Change mode to GUIDED
+    rospy.wait_for_service(&#39;/mavros/set_mode&#39;)
+    try:
+        base_mode = 0
+        custom_mode = &quot;GUIDED&quot;
+        out = change_mode(base_mode, custom_mode)
+        if out.success:
+            rospy.loginfo(&quot;GUIDED mode set&quot;)
+        else:
+            rospy.loginfo(&quot;Failed SetMode&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+    last_request = rospy.get_rostime() 
+
+    while not out.success:
+        r.sleep()
+        out = change_mode(base_mode, custom_mode)
+        if out.success:
+            rospy.loginfo(&quot;setmode send ok value&quot;)
+        else:
+            rospy.loginfo(&quot;Failed SetMode&quot;)
+
+    # Arm drone
+    rospy.wait_for_service(&#39;/mavros/cmd/arming&#39;)
+    try:
+        out = arm(True)
+        if out.success:
+            rospy.loginfo(&quot;Armed&quot;)
+        else:
+            rospy.loginfo(&quot;Failed Arming&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+    last_request = rospy.get_rostime() 
+
+    while not out.success:
+        r.sleep()
+        out = arm(True)
+        if out.success:
+            rospy.loginfo(&quot;Armed&quot;)
+        else:
+            rospy.loginfo(&quot;Failed Arming&quot;)
+
+    # Take off
+    current_altitude = self.gps.altitude 
+    rospy.wait_for_service(&#39;/mavros/cmd/takeoff&#39;)
+    try:            
+        min_pitch = 0
+        yaw = 0
+        latitude = 0 #self.gps.latitude
+        longitude = 0 #self.gps.longitude
+        altitude = 4
+        out = takeoff(min_pitch, yaw, latitude, longitude, altitude)
+        if out.success:
+            rospy.loginfo(&quot;Took-off&quot;)
+        else:
+            rospy.loginfo(&quot;Failed taking-off&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    # Keep sending take-off messages until received by FCU
+    while not out.success:
+        r.sleep()
+        out = takeoff(min_pitch, yaw, latitude, longitude, altitude)
+        if out.success:
+            rospy.loginfo(&quot;Took-off&quot;)
+        else:
+            rospy.loginfo(&quot;Failed taking-off&quot;)
+
+    while self.gps.altitude&lt; current_altitude+altitude-0.1:
+        r.sleep()
+        differ = self.gps.altitude - current_altitude
+        rospy.loginfo(&quot;Waiting to take off, current height %s&quot;, differ)
+
+    # Change GCS parameter
+    rospy.wait_for_service(&#39;/mavros/param/set&#39;)
+    try:            
+        myparam = ParamValue()
+        myparam.integer = 1
+        out = change_param(&quot;SYSID_MYGCS&quot;, myparam)
+        if out.success:
+            rospy.loginfo(&quot;Changed my GCS&quot;)
+        else:
+            rospy.loginfo(&quot;Failed changing GCS&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    # Set throttle to 1500 (not controlled in circle mode)
+    myrc = OverrideRCIn()
+    myrc.channels[2] = 1500
+    pub_rc.publish(myrc)
+    rospy.sleep(3.)
+
+    # Change GCS parameter back
+    try:
+        rospy.wait_for_service(&#39;/mavros/param/set&#39;)
+        myparam = ParamValue()
+        myparam.integer = 255
+        myparam.real = 0
+        out = change_param(&quot;SYSID_MYGCS&quot;, myparam)
+        if out.success:
+            rospy.loginfo(&quot;Changed my GCS back&quot;)
+        else:
+            rospy.loginfo(&quot;Failed changing GCS&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    # Change RTL parameters
+    rospy.wait_for_service(&#39;/mavros/param/set&#39;)
+    try:
+        myparam.integer = 0
+        myparam.real = 4.0
+        out = change_param(&quot;RTL_ALT&quot;, myparam)
+        if out.success:
+            rospy.loginfo(&quot;Changed rtl altitude&quot;)
+        else:
+            rospy.loginfo(&quot;Failed changing rtl altitude&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    # Change circle parameters
+    rospy.wait_for_service(&#39;/mavros/param/set&#39;)
+    try:
+        myparam.integer = 0
+        myparam.real = 1.0 # now in deg/s!
+        out = change_param(&quot;CIRCLE_RATE&quot;, myparam)
+        if out.success:
+            rospy.loginfo(&quot;Changed circle rate&quot;)
+        else:
+            rospy.loginfo(&quot;Failed changing circle rate&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    try:
+        myparam.integer = 0
+        myparam.real = 1000.0 # now in cm!
+        out = change_param(&quot;CIRCLE_RADIUS&quot;, myparam)
+        if out.success:
+            rospy.loginfo(&quot;Changed circle radius&quot;)
+        else:
+            rospy.loginfo(&quot;Failed changing circle radius&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    # Change mode to circle
+    rospy.wait_for_service(&#39;/mavros/set_mode&#39;)
+    try:
+        rospy.sleep(10.)
+        base_mode = 0
+        custom_mode = &quot;CIRCLE&quot;
+        out = change_mode(base_mode, custom_mode)
+        if out.success:
+            rospy.loginfo(&quot;CIRCLE mode set&quot;)
+        else:
+            rospy.loginfo(&quot;Failed setting CIRCLE mode&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+    # Change GCS parameter back
+    rospy.wait_for_service(&#39;/mavros/param/set&#39;)
+    try:            
+        myparam = ParamValue()
+        myparam.integer = 255
+        myparam.real = 0
+        out = change_param(&quot;SYSID_MYGCS&quot;, myparam)
+        if out.success:
+            rospy.loginfo(&quot;Changed my GCS back&quot;)
+        else:
+            rospy.loginfo(&quot;Failed changing GCS&quot;)
+    except rospy.ServiceException, e:
+        rospy.loginfo(&quot;Service call failed&quot;)
+
+
+if __name__ == &#39;__main__&#39;:
+    my_operation = Operation()
+    my_operation.start_operation()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/4235">monabf</a> on 2017-12-15 10:07:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>
