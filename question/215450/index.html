@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Weird looking PointCloud in RViz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/215450">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Weird looking PointCloud in RViz</h2>
+      <div class="question">
+        <p>Hi!</p>
+
+<p>This is more or less a follow-up to a <a href="http://answers.ros.org/question/215295/display-pointcloud2-in-rviz/">previous question of mine</a>.</p>
+
+<p>In short: I used the <strong>pcd<em>to</em>pointcloud</strong> tool to create a PointCloud publisher.</p>
+
+<p>Now I have extended my publisher to work with the PMD Nano camboard I&#39;m using. The cloud is displayed in RViz however it looks weird:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/14389622918581526.png" alt="image description"></p>
+
+<p>If I look at it from the side I get this peculiar view:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/14389624408418437.png" alt="image description"></p>
+
+<p>I work with the rgbd-grabber library and if I use sample provided in it I get this:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/143896249940725.png" alt="image description"></p>
+
+<p>I had great difficulties figuring out how to publish and display the cloud inside RViz in the first and the way it looks like tells me I am doing some configuration wrong. You can see on the top of this...pyramid...turned upside down I get a view of my hand (though it looks pretty bad). It seems that the depth image I&#39;m getting is somehow projected onto the bottom of this pyramid (bottom here is the &quot;top&quot; side of the cloud) and in 2D. All I&#39;m doing is use the <strong>pcl::toROSMsg(...)</strong> to convert my <strong>pcl::PointCloud<a href="pcl::PointXYZ">pcl::PointXYZ</a>::Ptr</strong> to a <strong>ros::sensor_msgs::PointCloud2</strong> message, which a publish to the ROS network. I do not do any sort of transformation to its points.</p>
+
+<p>Any advice how to correct this behaviour? I can also provide the code though as I said I just take the points from the camera, convert them to a ROS-compatible message and display them inside RViz.</p>
+
+<p>Thanks!</p>
+
+<p><strong>EDIT:</strong>
+The code is as follows:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;string&gt;
+#include &lt;memory&gt;
+#include &lt;opencv2/core/core.hpp&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;pcl/visualization/cloud_viewer.h&gt;
+#include &lt;pcl_ros/point_cloud.h&gt;
+//#include &lt;sensor_msgs/point_cloud_conversion.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &quot;../include/pmd_nano/PMDNano.h&quot;
+#include &lt;pcl/io/io.h&gt;
+#include &lt;pcl/io/pcd_io.h&gt;
+#include &lt;pcl_ros/publisher.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;ros/publisher.h&gt;
+
+using std::string;
+
+class PMDPublisher
+{
+protected:
+  string ppp_file, pap_file;
+  ros::NodeHandle nh;
+  std::shared_ptr&lt;DepthCamera&gt; camera;
+  string cloud_topic;
+  string imgDepth_topic, imgAmplitude_topic;
+  string tf_frame;
+  ros::NodeHandle private_nh;
+  pcl_ros::Publisher&lt;sensor_msgs::PointCloud2&gt; pubCloud;
+  image_transport::Publisher pubDepth, pubAmplitude;
+public:
+  sensor_msgs::PointCloud2 cloud;
+  //sensor_msgs::PointCloud2Ptr cloud;
+
+  PMDPublisher(string _ppp_file, string _pap_file, string _cloud_topic=&quot;pmd_cloud&quot;, string _imgDepth_topic=&quot;pmd_depth&quot;, string _imgAmplitude_topic=&quot;pmd_amplitude&quot;)
+    : ppp_file(_ppp_file), pap_file(_pap_file),
+      cloud_topic(_cloud_topic),
+      imgDepth_topic(_imgDepth_topic), imgAmplitude_topic(_imgAmplitude_topic),
+      tf_frame(&quot;/base_link&quot;),
+      private_nh(&quot;~&quot;)
+  {
+    ROS_INFO(&quot;Initializing PMD Publisher&quot;);
+    if(ppp_file == &quot;&quot; || pap_file == &quot;&quot;)
+      exit(EXIT_FAILURE);
+
+    ROS_INFO_STREAM(&quot;Following PMD configuration files were loaded:\n&quot;
+                    &lt;&lt; &quot;PPP file: \&quot;&quot; &lt;&lt; ppp_file &lt;&lt; &quot;\&quot;\n&quot;
+                    &lt;&lt; &quot;PAP file: \&quot;&quot; &lt;&lt; pap_file &lt;&lt; &quot;\&quot;\n&quot;);
+
+    camera = std::shared_ptr&lt;DepthCamera&gt;(new PMDNano(pap_file, ppp_file));
+
+    pubCloud.advertise(nh, cloud_topic, 1);
+    image_transport::ImageTransport imgTransportDepth(nh), imgTransportAmplitude(nh);
+    pubDepth = imgTransportDepth.advertise(imgDepth_topic, 1);
+    pubAmplitude = imgTransportAmplitude.advertise(imgAmplitude_topic, 1);
+
+    private_nh.param(&quot;frame_id&quot;, tf_frame, string(&quot;/base_link&quot;));
+    ROS_INFO_STREAM(&quot;Publishing data on topic \&quot;&quot; &lt;&lt; nh.resolveName(cloud_topic) &lt;&lt; &quot;\&quot; with frame_id \&quot;&quot; &lt;&lt; tf_frame &lt;&lt; &quot;\&quot;&quot;);
+  }
+
+  int start()
+  {
+    try {
+     camera-&gt;start();
+    }
+    catch(std::exception e) {
+      ROS_ERROR(&quot;Node unable to start camera&quot;);
+      return -1;
+    }
+    ROS_INFO_STREAM(&quot;Depth: &quot; &lt;&lt; camera-&gt;depthSize().width &lt;&lt; &quot; by &quot; &lt;&lt; camera-&gt;depthSize().height);
+    return 0;
+  }
+
+  bool spin ()
+  {
+    ROS_INFO(&quot;Allocating memory&quot;);
+    cv::Mat depth = cv::Mat::zeros(camera-&gt;depthSize(), CV_32F);
+    cv::Mat amplitude = cv::Mat::zeros(camera-&gt;depthSize(), CV_32F);
+    cv::Mat a;
+    int nr_points;
+    string fields_list;
+    sensor_msgs::ImagePtr depthMsg, amplitudeMsg;
+    // Reserve memory for the cloud based on the dimension parameters retrieved from the PMD
+    PointCloud::Ptr cloudPcl(new PointCloud(camera-&gt;depthSize().width, camera-&gt;depthSize().height));
+
+    ros::Rate r(50);
+
+    ROS_INFO(&quot;Entering loop&quot;);
+    while(nh.ok ())
+    {
+      ROS_INFO(&quot;Capturing new data&quot;);
+      camera-&gt;captureDepth(depth);
+      camera-&gt;captureAmplitude(amplitude);
+      camera-&gt;capturePointCloud(cloudPcl);
+      pcl::toROSMsg(*cloudPcl, cloud);  // Convert the PointCloud to ROS message PointCloud2
+      cloud.header.frame_id = tf_frame;
+      nr_points = cloud.width * cloud.height;
+      fields_list = pcl::getFieldsList(cloud);
+
+      ROS_INFO(&quot;Flipping retrieved data and converting colour space (amplitude only!)&quot;);
+      cv::flip(depth, depth, 0);
+      cv::flip(amplitude, amplitude, 0);
+      amplitude.convertTo(a, CV_8U, 255.0 / 1000.0);
+
+      depthMsg = cv_bridge::CvImage(std_msgs::Header(), &quot;mono16&quot;, depth).toImageMsg();
+      amplitudeMsg = cv_bridge::CvImage(std_msgs::Header(), &quot;mono8&quot;, amplitude).toImageMsg();
+
+      //ROS_DEBUG_STREAM_ONCE
+      ROS_INFO_STREAM(&quot;Publishing data with &quot; &lt;&lt; nr_points
+                            &lt;&lt; &quot; points &quot; &lt;&lt; fields_list
+                            &lt;&lt; &quot; on topic \&quot;&quot; &lt;&lt; nh.resolveName(cloud_topic)
+                            &lt;&lt; &quot;\&quot; in frame \&quot;&quot; &lt;&lt; cloud.header.frame_id &lt;&lt; &quot;\&quot;&quot;);
+
+      cloud.header.stamp = ros::Time::now();
+      pubCloud.publish(cloud);
+      pubDepth.publish(depthMsg);
+      pubAmplitude.publish(amplitudeMsg);
+
+      r.sleep();
+    }
+    return (true);
+  }
+};
+
+int main(int argc, char* argv[])
+{
+  ros::init (argc, argv, &quot;pmd_nano_publisher&quot;);
+  ros::NodeHandle nh;
+  string ppp_file = &quot;&quot;, pap_file = &quot;&quot;;
+  ROS_INFO(&quot;Retrieveing parameters&quot;);
+  nh.getParam(&quot;ppp&quot;, ppp_file);
+  nh.getParam(&quot;pap&quot;, pap_file);
+
+  if(argc == 3 &amp;&amp; (ppp_file == &quot;&quot; || pap_file == &quot;&quot;)) {
+    ROS_INFO(&quot;Overloading launch parameters with command line arguments&quot;);
+    ppp_file = argv[1];
+    pap_file = argv[2];
+  }
+
+  PMDPublisher pmdp(ppp_file, pap_file);
+
+  if (pmdp.start () == -1)
+  {
+    ROS_ERROR(&quot;Woops!&quot;);
+    return -1;
+  }
+  /*ROS_INFO_STREAM(&quot;Loaded a point cloud with &quot; &lt;&lt; pmdp.cloud.width * pmdp.cloud.height
+                  &lt;&lt; &quot; points (total size is &quot; &lt;&lt; pmdp.cloud.data.size() &lt;&lt; &quot;) and the following channels: &quot; &lt;&lt; pcl::getFieldsList(pmdp.cloud));*/
+  pmdp.spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Code is still pretty rough on the edges (though at least I haven&#39;t discovered any memory leaks). As you can see here is what happens with the point cloud data:</p>
+
+<ol>
+<li><strong>sensor_msgs::PointCloud2 cloud</strong> - stores the message that I want to publish</li>
+<li><strong>PointCloud::Ptr cloudPcl(new PointCloud(camera-&gt;depthSize().width, camera-&gt;depthSize().height))</strong> - the memory block that will hold the pcl::PointCloud<a href="pcl::PointXYZ">pcl::PointXYZ</a> that I get from my PMD (again - this can be seen in the last screenshot)</li>
+<li><strong>camera-&gt;capturePointCloud(cloudPcl)</strong> - populates my pcl::PointCloud<a href="pcl::PointXYZ">pcl::PointXYZ</a> memory block with data from the PMD (last screenshot)</li>
+<li><strong>cloud.header.frame<em>id = tf</em>frame</strong> - sets the frame of the point cloud; any object inside RViz has to have some sort of a frame and respectively transformation between that frame and some fixed frame unless both are the same (which I did in my case)</li>
+<li><strong>cloud.header.stamp = ros::Time::now()</strong> - add time stamp using ROS time</li>
+<li><strong>pubCloud.publish(cloud)</strong> - publish the sensor_msgs::PointCloud2</li>
+</ol>
+
+<p>I can&#39;t see what I&#39;m doing wrong here to be honest. :-/</p>
+
+<p><strong>EDIT2:</strong>
+As requested the log files: <a href="https://github.com/aleksandaratanasov/PMDNano_ROS/tree/master/pcd_data">https://github.com/aleksandaratanasov/PMDNano_ROS/tree/master/pcd_data</a> (I have created both ascii and binary compressed plus a ZIP archive containing all the samples)
+Using my PCL Visualizer widget I have discovered that the problem starts BEFORE the conversion to ROS message even starts. Inside my <a href="https://github.com/aleksandaratanasov/PMDNano_ROS/blob/master/src/pmd_nano_publisher.cpp">publisher</a> I created a sequence of PCD files using the &quot;raw&quot; data from the PMDNano (using the rgbd-grabber library). Then I viewed the generated samples and it looks the same way as in RViz hence the issue lies somewhere in the way I&#39;m using the PMDNano class inside my node. I have no idea what can cause such strange results but at least now I have found that the problem is not in the conversion step which I&#39;m really thankful for, @William . If you or anyone else has any advice where I can start looking next I would be extremely thankful!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/14216">rbaleksandar</a> on 2015-08-07 10:56:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You should link to, or post, your code. You may have to open an issue against <code>pcl_conversions</code> if no one finds something wrong with your code: <a href="https://github.com/ros-perception/pcl_conversions/issues">https://github.com/ros-perception/pcl_conversions/issues</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2015-08-07 12:20:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Okay, will do that tomorrow since I don&#39;t have access to the computer right now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14216">rbaleksandar</a> on 2015-08-07 12:27:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@William There I added the code. I didn&#39;t have access to the computer till today.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14216">rbaleksandar</a> on 2015-08-10 10:07:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Can you log some of the pcd files and post them? Have you tried <a href="http://wiki.ros.org/pcl_ros#pcd_to_pointcloud">http://wiki.ros.org/pcl_ros#pcd_to_pointcloud</a>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2015-08-10 23:20:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Phew, took me a while to get access to the damn computer. Please see <strong>EDIT2</strong> in my post. It seems the problem starts before the conversion step.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14216">rbaleksandar</a> on 2015-08-12 06:49:42 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

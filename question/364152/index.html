@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Remotely Launch Nodes in ROS2 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/364152">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Remotely Launch Nodes in ROS2</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97405/remotely-launch-nodes-in-ros2">https://robotics.stackexchange.com/questions/97405/remotely-launch-nodes-in-ros2</a>.</p>
+        <p>Is there a way to remotely launch nodes in ROS2? This could be done in ROS1 using the <code>&lt;machine&gt;</code> attribute. It&#39;s listed in the <a href="https://design.ros2.org/articles/roslaunch.html#launching-nodes-processes-remotely-and-portability">ROS2 design document</a> but I can&#39;t figure out how to use it. I&#39;m using the python <code>launch</code> and <code>launch_ros</code> libraries.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/61624">smorad</a> on 2020-10-26 06:27:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi. Same need. I didn&#39;t find into the documentation...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72776">resnault</a> on 2021-04-01 03:34:10 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As far as I can tell, this is still a work in progress, but has been on the backlog to get merged into the documentation. Lots of discussion <a href="https://github.com/ros2/design/pull/297">here</a>, and it seems the change to the documentation is awaiting approval to get merged in. </p>
+
+<p>The <em>tentative</em> document can be found <a href="https://github.com/ros2/design/blob/acb998756be1bdae5ce816794335e3950e3a3ed2/articles/153_roslaunch_remote_launch.md">here</a>, but it doesn&#39;t look like the proposed changes have made their way into code yet. </p>
+
+<p>I&#39;d imagine it is pretty low priority because ssh is possible on all the tier 1 platforms (ever since Windows joined the club).</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/69938"></a> on 2021-06-07 23:16:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It has been quite some time since this was posted. Could anyone comment on when support for remote-launching nodes via roslaunch can be expected to make it into ROS2?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/54063">alikureishy</a> on 2022-02-17 15:04:33 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I&#39;ve just found a way to perform a remote launch from a python launch file using the ExecuteProcess launch action. There are several problems you&#39;re going to face if you go this way, so here are the workarounds I used to solve them (on Ubuntu 20.04).</p>
+
+<p>First, let&#39;s state what we are trying to achieve:</p>
+
+<ol>
+<li>We have a main <strong>machine A</strong> and a <strong>machine B</strong> reachable via <code>ssh pi@192.168.0.20</code> from <strong>machine A</strong> (without a password, i.e. use <code>ssh-keygen -t rsa -b 2048 &amp;&amp; ssh-copy-id pi@192.168.0.20</code> first)</li>
+<li>We have a launch file <code>drinks_hmi_launch.py</code> in <code>drinks_hmi_bringup</code> package on <strong>machine B</strong> (we can launch it from machine B via <code>ros2 launch drinks_hmi_bringup drinks_hmi_launch.py</code>)</li>
+<li>We have a launch file <code>drinks_bringup_launch.py</code> in <code>drinks_bringup</code> package on <strong>machine A</strong> which is supposed (among other actions) to launch <code>drinks_hmi_launch.py</code> on <strong>machine B</strong></li>
+</ol>
+
+<p>Now the following command should work from <strong>machine A</strong>, i.e. it launches the nodes, prints out output and can be terminated via SIGINT (Ctrl+C):</p>
+
+<pre><code>ssh -t pi@192.168.0.20 &#39;bash -i -c &quot;ros2 launch drinks_hmi_bringup drinks_hmi_launch.py&quot;&#39;
+</code></pre>
+
+<p>However, after putting it directly into <code>ExecuteProcess</code> action in <code>drinks_bringup_launch.py</code>, the process complains about not having a proper <code>tty</code> console and the nodes on <strong>machine B</strong> are not terminated after terminating the <code>ros2 launch drinks_bringup drinks_bringup_launch.py</code> process.</p>
+
+<p>A workaround is to call the above command inside a detached <code>screen</code> (use <code>sudo apt install screen</code> if not present). This, however, raises two further problems:</p>
+
+<ul>
+<li>The <code>screen</code> does not pass SIGINT from calling process to inner processes, so it does not terminate the nodes when Ctrl+C is pressed. However it can be terminated explicitly using a <code>remote_launch_terminator</code> node which calls <code>screen -S hmi -X quit</code> (see the complete solution below)</li>
+<li>The <code>screen</code> does not pass output from inner processes to calling process, so this needs to be done explicitly by redirecting inner output to <a href="https://stackoverflow.com/a/40270593/4003774">outer</a></li>
+</ul>
+
+<p><strong>The complete solution is as follows:</strong></p>
+
+<p><code>/home/machine_A/drink_ws/src/launch_utils/launch_utils/remote_launch_terminator.py</code>:</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+import os
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = Node(&#39;remote_launch_terminator&#39;)
+    node.declare_parameter(&#39;screen_pid&#39;, &#39;remote&#39;)
+    screen_pid = node.get_parameter(&#39;screen_pid&#39;).get_parameter_value().string_value
+
+    try:
+        rclpy.spin(node)
+    except:
+        pass
+
+    print(&#39;Terminating &#39; + screen_pid)
+    os.system(&#39;screen -S &#39; + screen_pid + &#39; -X quit&#39;)
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p><code>/home/machine_A/drink_ws/src/drinks_bringup/launch/drinks_bringup_launch.py</code>:</p>
+
+<pre><code>import os
+
+from ament_index_python.packages import get_package_share_directory
+
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.actions.execute_process import ExecuteProcess
+
+def generate_launch_description():
+    return LaunchDescription([
+
+        # other actions
+
+        # remote launch
+        ExecuteProcess(
+            name=&#39;hmi&#39;,
+            cmd=[&#39;{ outer_stdout=$(readlink -f /proc/self/fd/3); } 3&gt;&amp;1 &amp;&amp; screen -DmS hmi bash -i -c &quot;ssh -t pi@192.168.0.20 \&#39;bash -i -c \\&quot;ros2 launch drinks_hmi_bringup drinks_hmi_launch.py\\&quot;\&#39; &gt; $outer_stdout&quot;&#39;],
+            output=&quot;screen&quot;,
+            shell=True,
+            emulate_tty=True
+        ),
+        Node(
+            package=&#39;launch_utils&#39;,
+            executable=&#39;remote_launch_terminator&#39;,
+            name=&#39;remote_launch_terminator&#39;,
+            output=&#39;screen&#39;,
+            parameters=[{&#39;screen_pid&#39;: &#39;hmi&#39;}]
+        ),
+    ])
+</code></pre>
+
+<p>Hope this helps, cheers! ;)</p>
+
+<p>Note: <code>ExecuteProcess</code> action does not work inside <code>OnShutdown</code> event, that&#39;s why the <code>remote_launch_terminator</code> must be used</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/37597">afrixs</a> on 2022-04-26 06:23:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>My answer to this is to use the existing linux system to do this: <strong>systemd</strong>. Basically do the following:</p>
+
+<p>On the target machine, the machine you want to run remote nodes on, do the following:</p>
+
+<ol>
+<li>Make sure the nodes you want to run are on the remote machine already and it&#39;s already built on that machine.</li>
+<li>Make a bash script that executes ros2 launch and sources the right install directory. We&#39;ll call this remote_ros.sh. This is a script because you might want to do other things with this.</li>
+<li>Make a remote_ros.service file that runs the remote_ros.sh script. This can be setup to start on boot or not.</li>
+</ol>
+
+<p>On the local machine, the machine you want to launch remote nodes on, do the following:</p>
+
+<ol>
+<li>Make a launch script that SSHes into the remote machine and executes <code>systemctl stop remote_ros</code> and/or <code>systemctl start remote_ros</code>. This can be done with the ExecuteProcess launch action. </li>
+</ol>
+
+<p>Stop will kill the nodes and start will bring them up. If you don&#39;t want to stop the nodes, I believe start is a NOOP if they are already running.</p>
+
+<p>I think this solution is more straight forward than the others presented and ideally the service just runs all the time, but you can always kill it with the systemctl stop command.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/118336">gerok</a> on 2022-09-19 11:37:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I have found a solution that works for me be using rosbridge to remotely publish service messages to start or stop processes.</p>
+
+<ol>
+<li>First I made rosbridge and a ros2
+node start on
+boot of the device by:</li>
+</ol>
+
+<p><code>sudo vim /etc/systemd/system/ros2node.service</code></p>
+
+<pre><code>[Unit]
+Description=Start ROS2 Node
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c &#39;source /opt/ros/humble/setup.bash; source 
+/home/ketill/Documents/ros2_script/ros2_ws/install/setup.bash; ros2 launch rosbridge_server 
+rosbridge_websocket_launch.xml; ros2 run node_starter talker&#39;
+User=ketill
+Environment=&quot;DISPLAY=:0&quot;
+Environment=&quot;XAUTHORITY=/run/user/1000/gdm/Xauthority&quot;
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+
+<p><code>sudo systemctl enable ros2node.service</code>
+<code>sudo systemctl start ros2node.service</code></p>
+
+<p>and similar for the node.
+ 2. The a node for handling the
+    processes depending on the service
+    message for the gui </p>
+
+<pre><code>class NavigationService(Node):
+
+def __init__(self):
+    super().__init__(&#39;navigation_service&#39;)
+    self.srv = self.create_service(SetBool, &#39;start_navigation&#39;, self.handle_service)
+    self.process = None
+    self.hasStartedOnce = False
+
+def handle_service(self, request, response):
+    response.success = self.run_navigation_launch_file(request.data)
+    response.message = &#39;Navigation launch started.&#39; if response.success else &#39;Failed to start navigation launch.&#39;
+    return response
+
+def run_navigation_launch_file(self, start):
+    if start and not self.hasStartedOnce:
+        command = &quot;source /opt/ros/humble/setup.bash; source /home/ggeo/auto_gpr/install/setup.bash; ros2 launch auto_gpr bringup.launch.py&quot;
+        self.process = subprocess.Popen(command, shell=True, executable=&quot;/bin/bash&quot;, preexec_fn=os.setsid)
+        self.hasStartedOnce = True
+        return self.process.poll() is None  # return True if process is running
+    else:
+        # Implement logic to stop the process here
+        if self.process is not None:
+            os.killpg(os.getpgid(self.process.pid), signal.SIGINT)  # Send the signal to all the process in the group
+            self.process = None
+            self.hasStartedOnce = False
+        return False
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+navigation_service = NavigationService()
+
+rclpy.spin(navigation_service)
+
+navigation_service.destroy_node()
+rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+main()
+</code></pre>
+
+<p>This solution make it possible to start remotely as long as the devices are on the same network. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/150144">ketill</a> on 2023-05-20 07:15:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

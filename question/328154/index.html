@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Get tf transform AFTER publishing node has died - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/328154">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Get tf transform AFTER publishing node has died</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/92462/get-tf-transform-after-publishing-node-has-died">https://robotics.stackexchange.com/questions/92462/get-tf-transform-after-publishing-node-has-died</a>.</p>
+        <p>see original version below</p>
+
+<p>Hey there, 
+I still struggle to get tf transforms out of ros for successive runs of a <code>pygmo</code>optimization problem. At least it does not crash anymore but I have not found a working way to reset/restart the tf listener and buffer yet.</p>
+
+<p>This is what I do for starting the algorithm:</p>
+
+<pre><code>#!/usr/bin/env python
+
+import pygmo as pg
+import rospy
+import roslaunch
+import tf2_ros
+import [algo] as co
+import sys
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument(&quot;-f&quot;, &quot;--bagfile&quot;, dest=&quot;bagfile&quot;,
+                    help=&quot;write report to FILE&quot;, metavar=&quot;FILE&quot;)
+args = parser.parse_args()
+print(args)
+
+# start roscore
+uuid_roscore = roslaunch.rlutil.get_or_generate_uuid(None, False)
+roslaunch.configure_logging(uuid_roscore)
+roscore = roslaunch.parent.ROSLaunchParent(uuid_roscore, [],is_core=True)
+roscore.start()
+
+# start tf listener
+node_name = &#39;[node_name]&#39;
+rospy.init_node(node_name)
+rate = rospy.Rate(10.0)
+
+algo = pg.algorithm(pg.nsga2(gen=100))
+algo.set_verbosity(100)
+problem = pg.problem(co.optimize(args.bagfile))
+pop = pg.population(problem, 20)
+pop = algo.evolve(pop)
+</code></pre>
+
+<p>The important part of the class for the evaluation is:</p>
+
+<pre><code>class ProcessListener(roslaunch.pmon.ProcessListener):
+process_finished = False
+def process_died(self, name, exit_code):
+    self.process_finished = True
+    rospy.logwarn(&quot;%s died with code %s&quot;, name, exit_code)
+    # global process_finished
+
+class optimize(object):
+def __init__(self, bagfile):
+    self.bagfile = bagfile
+def evaluate(self):
+    # start tf listener
+    tf_buffer = tf2_ros.Buffer()
+    tf2_listener = tf2_ros.TransformListener(tf_buffer)
+
+    # start launchfile
+    uuid_launchfile = roslaunch.rlutil.get_or_generate_uuid(None, False)
+    roslaunch.configure_logging(uuid_launchfile)
+
+    cli_args = [&#39;[package_name]&#39;, &#39;launchfile.launch&#39;, &#39;configuration_directory:=$(find [package_name])/config&#39;,&#39;configuration_basenames:=config.lua&#39;, &#39;bag_filenames:=&#39;+self.bagfile]
+    roslaunch_args = cli_args[2:]
+    roslaunch_file = [(roslaunch.rlutil.resolve_launch_arguments(cli_args)[0], roslaunch_args)]
+    process_listener = ProcessListener()
+    launchfile = roslaunch.parent.ROSLaunchParent(uuid_launchfile, roslaunch_file, process_listeners=[process_listener],is_core=False)
+    launchfile.start()
+
+    #get transform
+    transform_received = False
+
+    while not process_listener.process_finished:
+        # continue
+        time.sleep(.01)
+    print(&quot;Process had finished&quot;)
+    for i in range(3000): 
+        if  not transform_received:
+            try:
+                trans = tf_buffer.lookup_transform(&#39;map&#39;,
+                                                &#39;base_link&#39;,
+                                                rospy.Time(0))
+                transform_received = True
+                print(&quot;Transform received&quot;)
+            except:
+                time.sleep(.01)
+                # continue
+    if(not transform_received):
+        print(&quot;NO transform received&quot;)
+        pos_x = 1337.0
+        pos_y = 1337.0
+        pos_z = 1337.0
+    else:
+        pos_x = trans.transform.translation.x
+        pos_y = trans.transform.translation.y
+        pos_z = trans.transform.translation.z
+
+    print(pos_x)
+    print(pos_y)
+    print(pos_z)
+
+    del tf_buffer
+    del tf2_listener
+
+    return [pos_x, pos_y, pos_z]
+</code></pre>
+
+<p>The error message I get is (at the moment, different other tries in the comments e.g. restarting the master...)</p>
+
+<pre><code>Warning: TF_OLD_DATA ignoring data from the past for frame odom at time 1.56268e+09 according to authority /[node]
+
+Possible reasons are listed at http://wiki.ros.org/tf/Errors%20explained
+     at line 277 in /tmp/binarydeb/ros-melodic-tf2-0.6.5/src/buffer_core.cpp
+</code></pre>
+
+<p>How can I manage that each loop iteration starts with fresh (=empty) tf data? As you probably noticed, I am quite new to python.</p>
+
+<hr>
+
+<p>Hey there,</p>
+
+<p>in order to evaluate the performance of some algorithms, I want to compare the position of my robot after a rosbag with sensor data has finished with another run with different parameters.</p>
+
+<p>The straightforward approach with a <code>TransformListener</code>does not work as the nodes are not sending anymore. </p>
+
+<p>Is there a more convenient solution for this problem than stupidly letting a node run which just records the positions/transforms?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-10 10:19:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Just a question at this point: if your <code>Listener</code> has been listening while everything was running, it should still have all the transforms. If you then ask for &quot;the latest&quot; transform (ie: <code>ros::Time(0)</code>) it should still be able to answer your query.</p>
+
+<p>Does that not work for you? Are you using <code>ros::Time::now()</code>?</p>
+
+<hr>
+
+<p>Edit: you might also want to look into the length of the cache for the <code>Listener</code> that you&#39;ve created. Default is 1 minute I believe. Older TFs will be pruned, and in that case even asking for <code>ros::Time(0)</code> wouldn&#39;t work (as the cache would be empty).</p>
+
+<hr>
+
+<p>Edit 2: I don&#39;t know about the rest of your code (I&#39;m not sure I would&#39;ve chosen your approach as it seems to be doing some things I&#39;m not sure are supposed to be even supported in a single process), but I do notice this:</p>
+
+<pre><code>tf_buffer = tf2_ros.Buffer()
+</code></pre>
+
+<p>You appear to be using the default length for the <code>Buffer</code> (ie: 10 seconds). I cannot deduce whether that is sufficient for your particular use of these APIs. You may want to consider configuring a larger length using the <code>cache_time</code> argument.</p>
+
+<p>The following should create a <code>Buffer</code> with length 60 seconds:</p>
+
+<pre><code>tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(60.0))
+</code></pre>
+
+<p>It might also be valuable to see which frames <em>are</em> actually known to the <code>tf_buffer</code> object by calling the <code>all_frames_as_string()</code> method on it.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2019-07-10 11:35:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for your response. Actually, that could work for me. I&#39;ll try it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-11 02:05:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Still did not manage to fix it.
+I am using a python script to iterate through the paremeters given by a genetic algorithm.
+Each time, the master is shut down and a new one is started.
+In the second loop, I alwasy get an error message saying: <code>rospy.service.ServiceException: service [/[node_name]/tf2_frames] already registered</code>, although I started a new master and tried to unsubscribe before shutting the old one down:</p>
+
+<pre><code>m = rosgraph.masterapi.Master(rospy.get_name())
+node_uri = m.lookupNode(node_name)
+print(&quot;Unregister: &quot; + node_uri + node_name + &#39;/tf2_frames&#39;)
+m.unregisterService(&#39;~tf2_frames&#39;,node_uri + node_name + &#39;/tf2_frames&#39;)
+</code></pre>
+
+<p>What am I missing?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-15 06:01:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p><code>rospy.signal_shutdown(&#39;Quit&#39;)</code> seemed to help. I keep watching.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-15 06:16:30 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>Each time, the master is shut down and a new one is started</p>
+</blockquote>
+
+<p>but your nodes aren&#39;t?</p>
+
+<p>I&#39;m not entirely sure what you&#39;re doing, or whether it&#39;s actually connected to your issues, but interacting with the master on a side channel to (de)register services/topics/nodes is probably not entirely sanitary and could introduce some weird effects.</p>
+
+<blockquote>
+<p>Still did not manage to fix it. </p>
+</blockquote>
+
+<p>you haven&#39;t actually described what doesn&#39;t work for you.</p>
+
+<p>If a <code>TfListener</code> has a sufficiently long buffer <em>and</em> it has seen the TFs that you&#39;re interested in it should be able to return &quot;the latest&quot; transform to you. Regardless of whether other nodes are still running. It&#39;s decoupled from that.</p>
+
+<p>But your last few comments seem to indicate that you&#39;re doing some unconventional meddling with the master/your nodes, which could be affecting normal operations.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-07-15 06:18:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Actually they did. It could be similar to this bug: <a href="https://answers.ros.org/question/10777/service-exception-using-tf-listener-in-rospy/">https://answers.ros.org/question/10777/service-exception-using-tf-listener-in-rospy/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-15 06:19:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It did NOT help. The second iteration, no new ros node is started. 
+Next guess was to start the whole ROS stuff before this iteration loop and to pass the tf2 buffer as parameter. Did not work either.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-16 07:02:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m not sure where the need for capitals comes from.</p>
+
+<p>You still haven&#39;t shown me any errors or code of something that doesn&#39;t work. Please show actual errors copy-pasted and/or code snippets.</p>
+
+<p>I would still expect lookups to work for frames that were last broadcast <code>N</code> seconds ago if:</p>
+
+<ol>
+<li>the listener has a long enough buffer (at least as long as <code>N</code>, but probably more)</li>
+<li>you ask for either a point <code>t</code> that falls before the last broadcast of the frame <em>or</em> ask for &quot;the latest&quot;</li>
+</ol>
+
+<p>Whether or not there still are broadcasters for those frames should not matter.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-07-16 07:39:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That was just meant as emphasis. I will rewrite the original question with code snippets.
+The problem is rather that I cannot get rid of the listener and transforms of the preceeding loop run. Even when I shut everything down, including the code. That does not make any sense at all for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-16 07:45:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for your response, I think you put me at least on the right track. After increasing the buffer size (as misinterpreted <code>TF_OLD_DATA</code> as a buffer beeing too <strong>long</strong> and thus containing old data), it continues without warnings.
+But there is still one big issue:
+The TF returned by <code>trans = eval_tf_buffer.lookup_transform(&#39;map&#39;,
+                                                    &#39;base_link&#39;,
+                                                    rospy.Time(0))</code>
+is always identical. I highly doubt that the algorithm (google cartographer) would lead to exactly the same results although its parameters are changed. What is the problem here?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44028">ROSinenbroetchen</a> on 2019-07-23 06:09:43 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

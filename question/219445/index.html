@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publish messages immediately within a subscribe callback? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/219445">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publish messages immediately within a subscribe callback?</h2>
+      <div class="question">
+        <p>What&#39;s the cleanest way to publish a message immediately, without triggering any subscriber callbacks?  I would expect calling ros::spinOnce() inside a callback to (potentially) result in stack overflow as the callback calls itself.</p>
+
+<p>Use case: I am trying to make heartbeat function that &quot;just works&quot; in callbacks and such.  Here is a broken initial design:</p>
+
+<pre><code>  class Heart {
+   private:
+    ros::NodeHandle nh;
+    std::unordered_map&lt;std::string, ros::Publisher&gt; publishers;
+    const char* file_;
+   public:
+    Heart(const char* file) {
+      file_ = file;
+    }
+    void beat(int line) {
+      string keystring = std::string(&quot;heartbeat_&quot;) + file_ + &quot;_&quot; + std::to_string(line);
+      std::replace(keystring.begin(), keystring.end(),&#39;.&#39;, &#39;_&#39;);
+      auto resultpair = publishers.find(keystring);
+      if (resultpair == publishers.end())
+      {
+        publishers[keystring] = nh.advertise&lt;std_msgs::Empty&gt;(keystring, 1);
+      } 
+      publishers[keystring].publish(std_msgs::Empty());
+      ros::spinOnce();
+    };
+  };
+  Heart heart(__FILE__);
+  heart.beat(__LINE__);
+</code></pre>
+
+<p>The idea is that you spray a bunch of:</p>
+
+<pre><code>heart.beat(__LINE__); 
+</code></pre>
+
+<p>all over your code, record with:</p>
+
+<pre><code>rosbag record --regex &quot;/heartbeat_(.*)&quot; -O heartbeats.bag
+</code></pre>
+
+<p>And look at the gloriously clearly sorted lines in:</p>
+
+<pre><code>rqt_bag heartbeats.bag
+</code></pre>
+
+<p>It is broken in the sense that spinOnce() isn&#39;t enough to result in even remotely reliable timings.  </p>
+
+        <div class="owner"><p>Asked by <a href="/users/1742">drewm1980</a> on 2015-10-20 02:19:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <blockquote>
+<p>What&#39;s the cleanest way to publish a message immediately, without triggering any subscriber callbacks?</p>
+</blockquote>
+
+<p>Just use <code>ros::Publisher::publish(..)</code>? As long as you&#39;re not running multithreaded or asynchronous spinners, callback queue processing is singlethreaded, so you should not run into issues.</p>
+
+<blockquote>
+<p>I would expect calling ros::spinOnce() inside a callback to (potentially) result in stack overflow as the callback calls itself.</p>
+</blockquote>
+
+<p>Calling <code>spinOnce()</code> inside a callback is not a good idea in any case, for whatever reason. It generally points to bad data / control flow design.</p>
+
+<blockquote>
+<p>Use case: Publishing messages as timing statements in different parts of a long running callback. rosbag record just the topics for the timing statements, look at their timing in rqt_bag</p>
+</blockquote>
+
+<p>Could you describe your design for this a bit more? If you&#39;re publishing msg type <code>X</code> for your timing info, and your <em>long running callback</em> is triggered by publications of type <code>Y</code>, where do you expect there to be an issue with self-triggering?</p>
+
+<hr>
+
+<p>edit:</p>
+
+<blockquote>
+<p>It is broken in the sense that spinOnce() isn&#39;t enough to result in even remotely reliable timings. </p>
+</blockquote>
+
+<p>I&#39;d expect this to be the case because the infrastructure was never designed for this use case (the <code>stamp</code> field is there for a reason).</p>
+
+<p>As to your issue:</p>
+
+<ul>
+<li>you could probably get around the &quot;spinOnce() calls my callback while I&#39;m in the callback&quot; by some judicious use of multiple callback queues and associated spinners. You are responsible for spinning custom queues, so that should allow you to call <code>spinOnce()</code> without triggering execution of <code>callback_Y</code></li>
+<li>perhaps (this is really a guess) see if using UDPROS improves anything. Since it uses UDP, it should not do any buffering like TCP does, which might reduce the latency you observe</li>
+<li>use the <code>stamp</code> field and accept that for analysis / visualisation you can&#39;t directly use <code>rqt_bag</code>, but would need to process the messages and extract the timestamp</li>
+<li>use proper profiling tools (like perf, oprofile, gprof, etc)</li>
+<li>see if you can use <a href="http://wiki.ros.org/rqt_graphprofiler">rqt_graphprofiler</a> and <a href="http://wiki.ros.org/rosprofiler">rosprofiler</a> (but really only for messaging analysis). Random presentation about this: <a href="http://nerve.uml.edu/ros-2014/ROS%20System%20Profiling%20and%20Visualization%20-%20Dan%20Brooks.pdf">ROS System Profiling and Visualization</a>.</li>
+</ul>
+
+<p>In general I&#39;d say that if your bottleneck is in messaging, then yes, you could use bags and their visualisation to get an idea of that, and your approach may make sense (but I&#39;d use other tools for that). If the bottleneck is in the callbacks, then it is an algorithm issue, and you should be profiling those algorithms, without the middleware interfering.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2015-10-20 04:00:26 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>If I publish type X in a callback triggered by publications of type Y, and then call spinOnce() in the callback, the callback for type Y could be called again. Calling publish() alone isn&#39;t enough to push the message out immediately on the network socket, which is what I want for timing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1742">drewm1980</a> on 2015-10-20 04:08:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m not sure I follow: why would <code>callback_Y</code> be called again? Unless you&#39;re expecting there to be more outstanding <code>msg_Y</code> instances in your queue?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-10-20 04:11:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>As to timing: publishing is an asynchronous afair through-and-through. Once you let go of the msg, you don&#39;t have any control over it anymore. If capturing timing info is important, use the <code>stamp</code> field in the header.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-10-20 04:13:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m trying to make something that isn&#39;t terribly accurate, but that is really easy to use, for debugging delays on the order of a tenth of a second.  I updated the question with code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1742">drewm1980</a> on 2015-10-20 04:18:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>and yes, another node is publishing messages of type Y in our discussion, and faster than my callback for type Y can handle them.  I am manually instrumenting this callback to try to fix the problem.  (really I am hoping to come up with a general solution to this problem, though)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1742">drewm1980</a> on 2015-10-20 04:21:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m looking into your first couple suggestions.  I don&#39;t want to have to write a separate analysis tool (again).  Sampling based profiling tools don&#39;t give you a good idea where your latencies are, or what your control flow was during the recorded history, especially if you&#39;re dropping data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1742">drewm1980</a> on 2015-10-21 09:00:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Using a separate callBackQueue doesn&#39;t seem to work. And upon reflection, the delays I am seeing are way to big to be just a TCP vs. UDP thing. Here&#39;s a version with separate callback queue that wasn&#39;t better: <a href="http://paste.ubuntu.com/12892878/">http://paste.ubuntu.com/12892878/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1742">drewm1980</a> on 2015-10-22 03:59:48 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

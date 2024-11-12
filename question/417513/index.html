@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Close all threads when using CTRL-C - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417513">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Close all threads when using CTRL-C</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103425/ros2-close-all-threads-when-using-ctrl-c">https://robotics.stackexchange.com/questions/103425/ros2-close-all-threads-when-using-ctrl-c</a>.</p>
+        <p>Hi all!
+In my project I&#39;m spawning a thread which contains a while loop, simply like so:</p>
+
+<pre><code>std::thread worker([this]() { this-&gt;ballotCheckingThread(); });
+std::unique_lock&lt;std::mutex&gt; lock(this-&gt;candidate_mutex_);
+</code></pre>
+
+<p>where the thread code is like this</p>
+
+<pre><code>void ballotCheckingThread() {
+    while (!this-&gt;checkVotingCompleted() &amp;&amp; !this-&gt;checkForExternalLeader()) {
+        // Simulate some delay between checks
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // Notify the first thread to stop waiting
+    cv.notify_all();
+}
+</code></pre>
+
+<p>Unfortunately, when I use CTRL-C to terminate the node, this thread remains hanging and I have to manually kill it.</p>
+
+<p>Right now in the main function I&#39;m doing this:</p>
+
+<pre><code>int main(int argc, char *argv[]) {
+    std::cout &lt;&lt; &quot;Starting  node...&quot; &lt;&lt; std::endl;
+    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+    rclcpp::init(argc, argv);
+
+    rclcpp::Node::SharedPtr node = std::make_shared&lt;myNode&gt;();
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+
+    try {
+        executor.spin();
+    } catch (std::exception&amp; e) {
+        std::cout &lt;&lt; &quot;rclcpp shutting down...&quot; &lt;&lt; std::endl;
+        rclcpp::shutdown();
+        return 0;
+    }
+
+}
+</code></pre>
+
+<p>but I guess that&#39;s not enough. Is there a standard way to do this?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/145981"></a> on 2023-07-17 12:51:33 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In the end, I&#39;ve found a solution.
+Using a global variable <code>std::weak_ptr&lt;MyNode&gt; MyNode::instance_;</code>, I&#39;ve initialized it in the main and registered it as a signal handler:</p>
+
+<pre><code>// Set the instance pointer to the shared pointer of the main node
+MyNode::setInstance(node);
+// Register the signal handler for SIGINT (CTRL+C)
+signal(SIGINT, MyNode::signalHandler);
+</code></pre>
+
+<p>before adding and spinning the node.</p>
+
+<p>I had to add some function to the node, of course:</p>
+
+<pre><code>class MyNode : public rclcpp::Node {
+    public:
+        std::atomic&lt;bool&gt; is_terminated_ {false};
+        void stopThread();
+        void startThread();
+        static void signalHandler(int signum);
+        static std::shared_ptr&lt;MyNode&gt; getInstance();
+        static void setInstance(rclcpp::Node::SharedPtr instance);
+    private:
+        std::thread helping_thread_;
+        static std::weak_ptr&lt;MyNode&gt; instance_; // Weak pointer to the instance of the node
+}
+
+void MyNode::setInstance(rclcpp::Node::SharedPtr instance) {
+    instance_ = std::static_pointer_cast&lt;MyNode&gt;(instance);
+}
+
+std::shared_ptr&lt;MyNode&gt; MyNode::getInstance() {
+    return instance_.lock();
+}
+
+void MyNode::signalHandler(int signum) {
+    // Stop the thread gracefully
+    std::shared_ptr&lt;MyNode&gt; node = getInstance();
+        if (node) {
+            node-&gt;stopThread();
+        }
+
+    rclcpp::shutdown();
+}
+
+void MyNode::startThread() {
+    if (!this-&gt;helping_thread_.joinable()) {
+        this-&gt;helping_thread_ = std::thread(&amp;MyNode::spawnedThread, this);
+    }
+}
+
+void MyNode::stopThread() {
+    if (this-&gt;helping_thread_.joinable()) {
+        this-&gt;is_terminated_ = true;
+        this-&gt;helping_thread_.join();
+    }
+}
+</code></pre>
+
+<p>where <code>spawnedThread</code> is the main function used in the additional thread.</p>
+
+<p>I don&#39;t really like using global variables and such, but for now this works as intended.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/145981"></a> on 2023-07-20 02:21:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

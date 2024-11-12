@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ur_modern_driver and teach_mode() URscript command - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/248103">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ur_modern_driver and teach_mode() URscript command</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/77350/ur-modern-driver-and-teach-mode-urscript-command">https://robotics.stackexchange.com/questions/77350/ur-modern-driver-and-teach-mode-urscript-command</a>.</p>
+        <p>I&#39;m working with a system using two UR5 arms being controlled via a pair of ur_modern drivers. I&#39;m trying to implement a joystick button to engage teach mode on the arms, mostly because it&#39;s sometimes physically challenging in our setup to manipulate the teach-mode-d arms while holding down the Teach Pendant button. </p>
+
+<p>The URscript API (<a href="http://www.sysaxes.com/manuels/scriptmanual_en_3.1.pdf">http://www.sysaxes.com/manuels/scriptmanual_en_3.1.pdf</a>) documents the &#39;teach<em>mode()&#39; and &#39;end</em>teach<em>mode()&#39; commands, and I&#39;ve been trying to make the button work by publishing these commands to the URscript topic that ur</em>modern creates and listens to. I&#39;ve had success using other URscript commands through that topic (&#39;movej()&#39;, &#39;speedl()&#39;, and &#39;stop()&#39; in particular), but I haven&#39;t been able to get the teach_mode() command to do anything at all.</p>
+
+<p>I&#39;ve read that there have historically been issues getting the Teach Pendant and ROS-I ur_driver to play well together around teach mode, because they constantly send conflicting messages - is the issue I&#39;m having because the Teach Pendant is constantly telling the robot it&#39;s NOT in teach mode until the button on the pendant is depressed? Is there any other solution I might pursue to try to get this to work?</p>
+
+<p>Thanks in advance!</p>
+
+<p>EDIT 11/16/2016:</p>
+
+<p>On gvdhoorn&#39;s advice below, looked into the Teach Pendant logs. The log seems to record most commands I send through the ur<em>modern URscript topic, but does not report anything for the teach</em>mode() command. Example log output:</p>
+
+<pre><code>// Enabled teach mode using the pendant, then released it:   
+URControl C100A1: Robot changed mode: TEACH   
+URControl C100A0: Robot changed mode: OK   
+// Used URscript topic to send movej(), speedl(), and stop() commands:   
+RTMachine Program stopl started   
+RTMachine Program stopl started   
+RTMachine Program movejstarted   
+RTMachine Program stopl started   
+RTMachine Program speedl started   
+RTMachine Program speedl started   
+RTMachine Program speedl started   
+RTMachine Program speedl started   
+// Sent teach_mode() commands via URscript topic --&gt; no output on log   
+</code></pre>
+
+<p>Sidenote - the api also lists both teach<em>mode() and freedrive</em>mode() commands, and I&#39;m not clear on what the difference between these is... I&#39;ve tried both though, to the same lack of effect.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28529">conor.mcmahon</a> on 2016-11-14 17:51:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>The <code>ur_modern_driver</code> should only upload the controller side of things whenever it needs to execute a trajectory. Can you try and see whether the <code>log</code> tab on the pendant has any info on which programs are running at the time you send <code>teach_mode()</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-11-15 03:00:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>To test whether there is some clash with <code>ur_modern_driver</code>, use something like <code>ncat</code> to send the URScript command directly. <a href="https://github.com/ThomasTimm/ur_modern_driver/issues/73">ThomasTimm/ur_modern_driver#73</a> might also be related.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-11-15 03:02:18 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I have solved this problem. We need a loop to set the teach mode.</p>
+
+<pre><code>       std_msgs::String temp;
+        std::string cmd_str;
+//        std::string force_mode=&quot;force_mode( tool_pose(), [0, 0, 1, 0, 0, 0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, [0.05, 0.05, 0.05, 0.17, 0.17, 0.17])\n&quot;;
+//        std::string free_drive_mode = &quot;\tfreedrive_mode()\n&quot;;
+
+        while(ros::ok()){
+            bool last_io_button = io_button_;
+            ros::spinOnce();
+            if(!last_io_button &amp;&amp; io_button_){
+                cmd_str = &quot;def myProg():\n&quot;;
+                cmd_str += &quot;\twhile (True):\n&quot;;
+                cmd_str += &quot;\t\tfreedrive_mode()\n&quot;;
+                cmd_str +=&quot;\t\tsync()\n&quot;;
+                cmd_str += &quot;\tend\n&quot;;
+                cmd_str +=&quot;end\n&quot;;
+                temp.data = cmd_str;
+                pub_free_drive_.publish(temp);
+            }
+            if(last_io_button &amp;&amp; !io_button_){
+                cmd_str = &quot;def myProg():\n&quot;;
+                cmd_str += &quot;\twhile (True):\n&quot;;
+                cmd_str += &quot;\t\tend_freedrive_mode()\n&quot;;
+                cmd_str +=&quot;\t\tsleep(0.5)\n&quot;;
+                cmd_str += &quot;\tend\n&quot;;
+                cmd_str +=&quot;end\n&quot;;
+                temp.data = cmd_str;
+                pub_free_drive_.publish(temp);
+            }
+</code></pre>
+
+<p>The detail is in <a href="https://github.com/ThomasTimm/ur_modern_driver/issues/73">ThomasTimm/ur_modern_driver#73</a> </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/32922">xiaogao</a> on 2017-12-09 02:01:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I haven&#39;t had any success with the method here. Does this still work with SW vers 5.2.0.61336?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38931">ceres</a> on 2019-06-21 12:15:00 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

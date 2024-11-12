@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to correctly incorporate sensor fusion for odometry in RTAB-Map SLAM Algorithm? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/413547">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to correctly incorporate sensor fusion for odometry in RTAB-Map SLAM Algorithm?</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I have built a four-wheeled differential drive robot that is equipped with an Intel Realsense D435 RGBD camera sensor, LD14 Lidar sensor, BNO055 9-DOF IMU, and a set of LM393 wheel encoders. I have been trying to perform SLAM using the RTAB-Map algorithm and I have received mixed results. Originally, I was only using RGBD visual odometry from the camera as input for the RTAB SLAM algorithm while also using the Lidar for odometry correction along with building the 2D occupancy grid. The results were pretty decent as can be seen in the <a href="https://drive.google.com/file/d/1aFYhw32q93us-DMsH3Z_pIchUbmQUqGb/view?usp=share_link">screenshot</a> of the generated point cloud + the occupancy grid. However, as is known, it is very easy to lose the odometry using visual odometry alone, so I wanted to implement readings from my other sensors in combination with the RGBD visual odometry in an extended kalman filter node (from robot_localization) for more robust odometry readings. The resulting occupancy grid + point cloud, however, did not turn out as well as the one when only visual odometry was used as can be seen from this <a href="https://drive.google.com/file/d/18muOOdlSwD7mEGPl8dExGpMVXcs-w951/view?usp=share_link">screenshot</a>. The launch file that initializes sensor messages, rtabmap, and the ekf can be seen below:</p>
+
+<p><launch></p>
+
+<p>&lt;!-- This launch assumes that you have already
+       started you preferred RGB-D sensor and your IMU.
+       TF between frame_id and the sensors should already be set too. --&gt;</p>
+
+<pre><code>&lt;arg name=&quot;rviz&quot;                    default=&quot;true&quot; /&gt;
+&lt;arg name=&quot;frame_id&quot;                default=&quot;base_link&quot;/&gt;
+&lt;arg name=&quot;vis_odom_topic&quot;          default=&quot;/vo&quot;/&gt;
+&lt;arg name=&quot;twist_topic&quot;             default=&quot;/wheel_twist&quot;/&gt;
+&lt;arg name=&quot;imu_topic&quot;               default=&quot;/imu/data&quot; /&gt;
+&lt;arg name=&quot;imu_remove_gravitational_acceleration&quot; default=&quot;true&quot; /&gt;
+&lt;arg name=&quot;localization&quot;            default=&quot;false&quot;/&gt;
+
+&lt;include file=&quot;$(find rtabmap_ros)/launch/rtabmap_odom.launch&quot;&gt;
+    &lt;arg unless=&quot;$(arg localization)&quot; name=&quot;rtabmap_args&quot; value=&quot;--delete_db_on_start&quot;/&gt;
+    &lt;arg name=&quot;frame_id&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+    &lt;arg name=&quot;subscribe_rgbd&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;subscribe_scan&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;rgbd_topic&quot;  value=&quot;/rgbd_image&quot;/&gt;
+    &lt;arg name=&quot;compressed&quot;  value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;visual_odometry&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;queue_size&quot;  value=&quot;30&quot;/&gt;
+    &lt;arg name=&quot;rviz&quot;        value=&quot;$(arg rviz)&quot;/&gt;
+    &lt;arg if=&quot;$(arg rviz)&quot; name=&quot;rtabmapviz&quot;  value=&quot;false&quot;/&gt;
+
+&lt;/include&gt;
+
+&lt;!--Launch static transform between base_link and camera_link--&gt;
+&lt;node name=&quot;base_to_camera_static_publisher&quot; pkg=&quot;tf2_ros&quot; type=&quot;static_transform_publisher&quot; args=&quot;0.2531 0 0.0859 0 0 0 base_link camera_link&quot;/&gt;
+
+&lt;!-- Initializing teleop node--&gt;
+&lt;remap from=&quot;vel_cmd&quot; to=&quot;mega_one/vel_cmd&quot;/&gt;
+&lt;node pkg=&quot;devbot_teleop&quot; type=&quot;teleop_control.py&quot; name=&quot;teleop_node&quot; /&gt;
+
+&lt;!-- Initializing nodes that will provide other sources of odometry--&gt;
+&lt;!-- Launching wheel twist node--&gt;
+&lt;remap from=&quot;twist&quot; to=&quot;mega_one/twist&quot; /&gt;
+&lt;include file=&quot;$(find base_controller_twist_converter)/launch/base_controller_twist.launch&quot;&gt;
+    &lt;!-- Set custom parameters if needed
+    &lt;param name=&quot;linear_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    &lt;param name=&quot;angular_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    --&gt;
+&lt;/include&gt;    
+&lt;!-- Launching imu node--&gt;
+&lt;remap from=&quot;bno055&quot; to=&quot;mega_two/bno055&quot; /&gt;
+&lt;include file=&quot;$(find bno055_imu_ros)/launch/bno055_imu.launch&quot;&gt;
+    &lt;!-- Set custom parameters if needed
+    &lt;param name=&quot;linear_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    &lt;param name=&quot;angular_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    --&gt;
+&lt;/include&gt;
+
+&lt;!-- Odometry fusion (EKF), refer to demo launch file in robot_localization for more info --&gt;
+&lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_localization&quot; clear_params=&quot;true&quot; output=&quot;screen&quot;&gt;
+
+    &lt;param name=&quot;frequency&quot; value=&quot;50&quot;/&gt;
+    &lt;param name=&quot;sensor_timeout&quot; value=&quot;0.1&quot;/&gt;
+    &lt;param name=&quot;two_d_mode&quot; value=&quot;true&quot;/&gt;
+
+    &lt;param name=&quot;odom_frame&quot; value=&quot;odom&quot;/&gt;
+    &lt;param name=&quot;base_link_frame&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+    &lt;param name=&quot;world_frame&quot; value=&quot;odom&quot;/&gt;
+
+    &lt;param name=&quot;transform_time_offset&quot; value=&quot;0.0&quot;/&gt;
+
+    &lt;param name=&quot;odom0&quot;  value=&quot;$(arg vis_odom_topic)&quot;/&gt;
+    &lt;param name=&quot;twist0&quot; value=&quot;$(arg twist_topic)&quot;/&gt;
+    &lt;param name=&quot;imu0&quot; value=&quot;$(arg imu_topic)&quot;/&gt;
+
+    &lt;!-- The order of the values is x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az. --&gt;
+    &lt;rosparam param=&quot;odom0_config&quot;&gt;[true, true, false,
+                                    false, false, false,
+                                    false, false, false,
+                                    false, false, false,
+                                    false, false, false]&lt;/rosparam&gt;
+
+    &lt;rosparam param=&quot;twist0_config&quot;&gt;[false, false, false,
+                                    false, false, false,
+                                    true, true, false,
+                                    false, false, true,
+                                    false, false, false]&lt;/rosparam&gt;
+
+    &lt;rosparam param=&quot;imu0_config&quot;&gt;[false, false, false,
+                                    false,  false,  true,
+                                    false, false, false,
+                                    false,  false,  true,
+                                    true,  false,  false]&lt;/rosparam&gt;
+
+    &lt;param name=&quot;odom0_differential&quot; value=&quot;false&quot;/&gt;
+    &lt;param name=&quot;twist0_differential&quot; value=&quot;false&quot;/&gt;
+    &lt;param name=&quot;imu0_differential&quot; value=&quot;false&quot;/&gt;
+
+    &lt;param name=&quot;odom0_relative&quot;  value=&quot;true&quot;/&gt;
+    &lt;param name=&quot;twist0_relative&quot; value=&quot;true&quot;/&gt;
+    &lt;param name=&quot;imu0_relative&quot; value=&quot;true&quot;/&gt;
+
+    &lt;param name=&quot;odom0_queue_size&quot; value=&quot;5&quot;/&gt;
+    &lt;param name=&quot;twist0_queue_size&quot; value=&quot;10&quot;/&gt;
+    &lt;param name=&quot;imu0_queue_size&quot; value=&quot;50&quot;/&gt;
+
+    &lt;!-- The values are ordered as x, y, z, roll, pitch, yaw, vx, vy, vz,
+       vroll, vpitch, vyaw, ax, ay, az. --&gt;
+    &lt;rosparam param=&quot;process_noise_covariance&quot;&gt;[0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                                              0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]&lt;/rosparam&gt;
+
+    &lt;!-- The values are ordered as x, y,
+    z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az. --&gt;
+    &lt;rosparam param=&quot;initial_estimate_covariance&quot;&gt;[1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9,  0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     1e-9,  0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     1e-9,  0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     1e-9, 0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    1e-9, 0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    1e-9]&lt;/rosparam&gt;
+
+&lt;/node&gt;
+</code></pre>
+
+<p></launch></p>
+
+<p>The <code>rtabmap_odom.launch</code> file is an edited version of the standard <code>rtabmap.launch</code> file with the following changes:</p>
+
+<ul>
+<li><p>The rtabmap visual odometry node has the following parameters added:</p>
+
+<pre><code>    &lt;!-- Odom Parameters--&gt;
+    &lt;param name=&quot;publish_null_when_lost&quot;      type=&quot;bool&quot;   value=&quot;false&quot;/&gt;
+    &lt;param name=&quot;Odom/FillInfoData&quot;      type=&quot;string&quot; value=&quot;true&quot;/&gt;
+    &lt;param name=&quot;Odom/ResetCountdown&quot;    type=&quot;string&quot; value=&quot;1&quot;/&gt;
+    &lt;param name=&quot;Vis/FeatureType&quot;        type=&quot;string&quot; value=&quot;6&quot;/&gt;
+    &lt;param name=&quot;OdomF2M/MaxSize&quot;        type=&quot;string&quot; value=&quot;1000&quot;/&gt; 
+</code></pre>
+
+<ul>
+<li>The rtabmap SLAM node has the following parameters added/changed:</li>
+</ul>
+
+<!-- RTAB-Map's parameters -->
+
+<pre><code>&lt;remap from=&quot;odom&quot; to=&quot;/odometry/filtered&quot;/&gt;
+
+&lt;!-- RTAB-Map&#39;s parameters --&gt;
+&lt;param name=&quot;Kp/DetectorStrategy&quot;       type=&quot;string&quot; value=&quot;6&quot;/&gt; &lt;!-- use same features as odom --&gt;  
+&lt;param name=&quot;RGBD/NeighborLinkRefining&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt;
+&lt;param name=&quot;RGBD/ProximityBySpace&quot;     type=&quot;string&quot; value=&quot;true&quot;/&gt;
+&lt;param name=&quot;RGBD/ProximityPathMaxNeighbors&quot; type=&quot;string&quot; value=&quot;10&quot;/&gt;
+&lt;param name=&quot;RGBD/AngularUpdate&quot;        type=&quot;string&quot; value=&quot;0.01&quot;/&gt;
+&lt;param name=&quot;RGBD/LinearUpdate&quot;         type=&quot;string&quot; value=&quot;0.01&quot;/&gt;
+&lt;param name=&quot;RGBD/OptimizeFromGraphEnd&quot; type=&quot;string&quot; value=&quot;false&quot;/&gt;
+&lt;param name=&quot;Reg/Force3DoF&quot;             type=&quot;string&quot; value=&quot;true&quot;/&gt;
+&lt;param name=&quot;Grid/Sensor&quot;               type=&quot;string&quot; value=&quot;false&quot;/&gt; &lt;!-- occupancy grid from lidar --&gt;
+
+&lt;!-- ICP parameters --&gt;
+&lt;param name=&quot;Icp/VoxelSize&quot;                 type=&quot;string&quot; value=&quot;0.05&quot;/&gt;
+&lt;param name=&quot;Icp/MaxCorrespondenceDistance&quot; type=&quot;string&quot; value=&quot;0.1&quot;/&gt;
+</code></pre></li>
+</ul>
+
+<p>Examples of the actual error/warning messages that are appearing while I am mapping with the ekf implemented can be seen below:</p>
+
+<p><a href="2023-03-18%2015:35:27.761"> WARN</a> OdometryF2M.cpp:561::computeTransform() Registration failed: &quot;Not enough inliers 8/20 (matches=94) between -1 and 134&quot; (guess=xyz=0.040539,-0.013540,0.053908 rpy=0.044678,0.130888,-0.003641)</p>
+
+<p><a href="2023-03-18%2015:35:27.761"> WARN</a> OdometryF2M.cpp:309::computeTransform() Failed to find a transformation with the provided guess (xyz=0.040539,-0.013540,0.053908 rpy=0.044678,0.130888,-0.003641), trying again without a guess.</p>
+
+<p>[ INFO] [1679168127.787621315]: rtabmap (27): Rate=1.00s, Limit=0.000s, Conversion=0.0009s, RTAB-Map=0.0740s, Maps update=0.0040s pub=0.0001s (local map=4, WM=4)</p>
+
+<p><a href="2023-03-18%2015:35:38.306"> WARN</a> OdometryF2M.cpp:561::computeTransform() Registration failed: &quot;Not enough inliers 6/20 (matches=101) between -1 and 170&quot; (guess=xyz=-0.016210,-0.018582,-0.011542 rpy=0.043647,-0.017861,0.017543)</p>
+
+<p><a href="2023-03-18%2015:35:38.306"> WARN</a> OdometryF2M.cpp:309::computeTransform() Failed to find a transformation with the provided guess (xyz=-0.016210,-0.018582,-0.011542 rpy=0.043647,-0.017861,0.017543), trying again without a guess.</p>
+
+<p><a href="2023-03-18%2015:35:38.349"> WARN</a> OdometryF2M.cpp:571::computeTransform() Trial with no guess succeeded!</p>
+
+<p><a href="2023-03-18%2015:31:17.205"> WARN</a> OptimizerTORO.cpp:151::optimize() TORO optimizer doesn&#39;t support prior or gravity links, use GTSAM or g2o optimizers (see parameter Optimizer/Strategy). Link 18 ignored...</p>
+
+<p><a href="2023-03-18%2015:31:17.205"> WARN</a> OptimizerTORO.cpp:151::optimize() TORO optimizer doesn&#39;t support prior or gravity links, use GTSAM or g2o optimizers (see parameter Optimizer/Strategy). Link 20 ignored...</p>
+
+<p><a href="2023-03-18%2015:31:17.205"> WARN</a> OptimizerTORO.cpp:151::optimize() TORO optimizer doesn&#39;t support prior or gravity links, use GTSAM or g2o optimizers (see parameter Optimizer/Strategy). Link 24 ignored...</p>
+
+<p>[ WARN] [1679168142.628500127]: Odometry automatically reset to latest computed pose!</p>
+
+<p>[ INFO] [1679168142.628977971]: Odom: quality=8, std dev=0.000000m|0.000000rad, update time=0.296383s</p>
+
+<p>[ INFO] [1679168142.665094478]: Odom: quality=0, std dev=99.995000m|99.995000rad, update time=0.034518s</p>
+
+<p><a href="2023-03-18%2015:35:42.914"> WARN</a> OdometryF2M.cpp:557::computeTransform() Registration failed: &quot;Not enough inliers 0/20 (matches=80) between -1 and 2&quot;</p>
+
+<p>[ WARN] [1679168142.915116408]: Odometry lost! Odometry will be reset after next 1 consecutive unsuccessful odometry updates...</p>
+
+<p>[ WARN] [1679168143.115914792]: Could not get transform from vo to base<em>link after 0.200000 seconds (for stamp=1679168142.506509)! Error=&quot;canTransform: target</em>frame vo does not exist.. canTransform returned after 0.20073 timeout was 0.2.&quot;.</p>
+
+<p>[ WARN] [1679168143.115975277]: Odometry automatically reset to latest computed pose!</p>
+
+<p>At this point, I am open to any suggestions on parameter tuning in order to obtain proper localization and odometry calculations so that the mapping can be done correctly. If anyone could give even minor advice on parameter tuning, I would truly appreciate it. I am running the noetic distro of ROS on both my remote computer and the robot itself. Thank you.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/61268">Devin1126</a> on 2023-03-18 23:38:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This may not help but try using the robot_pose_ekf package it transforms odom-&gt;base_footprint. and maybe try setting visual_odometry to false</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/78090">bribri123</a> on 2023-03-19 12:18:46 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I have figured out the issue to the problem I described above. The <code>vis_odom_topic</code> in the launch file <code>/vo</code> is actually supposed to be <code>/rtabmap/vo</code> because the visual odometry node in the rtabmap launch file launches with the namespace <code>/rtabmap</code>. The built map is much clearer now.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/61268">Devin1126</a> on 2023-03-25 11:26:48 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

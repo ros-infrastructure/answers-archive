@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Using depth_image_proc with different data. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/45266">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Using depth_image_proc with different data.</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am attempting to use my own rgb and depth images in depth<em>image</em>proc instead of those provided by openni.launch. What I want to do is to perform some color segmentation before building a point cloud. By following some examples here&#39;s what I&#39;ve come up with:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+
+
+namespace enc = sensor_msgs::image_encodings;
+
+using namespace cv;
+using namespace std;
+
+static const char WINDOW[] = &quot;Image window&quot;;
+
+class ImageConverter
+{
+  ros::NodeHandle nh_;
+  image_transport::ImageTransport it_;
+  image_transport::Subscriber image_sub_, depth_sub_;
+  image_transport::Publisher image_pub_, depth_pub_;
+  Mat dst;//=Mat::zeros(cv_ptr-&gt;image.size(), cv_ptr-&gt;image.type());
+
+public:
+  ImageConverter()
+    : it_(nh_)
+  {
+    image_pub_ = it_.advertise(&quot;out&quot;, 1);
+    depth_pub_=it_.advertise(&quot;depth_filtered&quot;,1);
+    image_sub_ = it_.subscribe(&quot;/camera/rgb/image_color&quot;, 1, &amp;ImageConverter::imageCb, this);
+    depth_sub_ = it_.subscribe(&quot;/camera/depth/image_raw&quot;, 1, &amp;ImageConverter::depthCb, this),
+    cv::namedWindow(WINDOW);
+    dst=Mat::zeros(480, 640, 16);
+  }
+
+  ~ImageConverter()
+  {
+    cv::destroyWindow(WINDOW);
+  }
+  string getImgType(int imgTypeInt)
+{
+    int numImgTypes = 35; // 7 base types, with five channel options each (none or C1, ..., C4)
+
+    int enum_ints[] =       {CV_8U,  CV_8UC1,  CV_8UC2,  CV_8UC3,  CV_8UC4,
+                             CV_8S,  CV_8SC1,  CV_8SC2,  CV_8SC3,  CV_8SC4,
+                             CV_16U, CV_8UC1,  CV_8UC2,  CV_8UC3,  CV_8UC4,
+                             CV_16S, CV_16SC1, CV_16SC2, CV_16SC3, CV_16SC4,
+                             CV_32S, CV_32SC1, CV_32SC2, CV_32SC3, CV_32SC4,
+                             CV_32F, CV_32FC1, CV_32FC2, CV_32FC3, CV_32FC4,
+                             CV_64F, CV_64FC1, CV_64FC2, CV_64FC3, CV_64FC4};
+
+    string enum_strings[] = {&quot;CV_8U&quot;,  &quot;CV_8UC1&quot;,  &quot;CV_8UC2&quot;,  &quot;CV_8UC3&quot;,  &quot;CV_8UC4&quot;,
+                             &quot;CV_8S&quot;,  &quot;CV_8SC1&quot;,  &quot;CV_8SC2&quot;,  &quot;CV_8SC3&quot;,  &quot;CV_8SC4&quot;,
+                             &quot;CV_16U&quot;, &quot;CV_8UC1&quot;,  &quot;CV_8UC2&quot;,  &quot;CV_8UC3&quot;,  &quot;CV_8UC4&quot;,
+                             &quot;CV_16S&quot;, &quot;CV_16SC1&quot;, &quot;CV_16SC2&quot;, &quot;CV_16SC3&quot;, &quot;CV_16SC4&quot;,
+                             &quot;CV_32S&quot;, &quot;CV_32SC1&quot;, &quot;CV_32SC2&quot;, &quot;CV_32SC3&quot;, &quot;CV_32SC4&quot;,
+                             &quot;CV_32F&quot;  &quot;CV_32FC1&quot;, &quot;CV_32FC2&quot;, &quot;CV_32FC3&quot;, &quot;CV_32FC4&quot;,
+                             &quot;CV_64F&quot;, &quot;CV_64FC1&quot;, &quot;CV_64FC2&quot;, &quot;CV_64FC3&quot;, &quot;CV_64FC4&quot;};
+
+    for(int i=0; i&lt;numImgTypes; i++)
+    {
+        if(imgTypeInt == enum_ints[i]) return enum_strings[i];
+    }
+    return &quot;unknown image type&quot;;
+}
+
+  void imageCb(const sensor_msgs::ImageConstPtr&amp; msg)
+  {
+    cv_bridge::CvImagePtr cv_ptr;
+    try
+    {
+      cv_ptr = cv_bridge::toCvCopy(msg, enc::BGR8);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+      ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+      return;
+    }
+
+   Mat hsv;
+   Mat src=cv_ptr-&gt;image;
+    cv::cvtColor(cv_ptr-&gt;image, hsv, CV_BGR2HSV);
+
+    Mat bw;
+    ROS_INFO(&quot;Creating mask with color segmentation&quot;);
+        cv::inRange(hsv, Scalar(60,100, 50), Scalar(86,170, 255), bw);
+
+
+    vector&lt;vector&lt;Point&gt; &gt; contours;
+    Mat smthg=bw.clone();
+    ROS_INFO(&quot;Finding countours to be filled&quot;);
+    cv::findContours(smthg, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
+
+     dst = Mat::zeros(cv_ptr-&gt;image.size(), cv_ptr-&gt;image.type());
+
+    cv::drawContours(dst, contours, -1, Scalar::all(255), CV_FILLED);
+
+    Mat result=dst &amp; src;
+
+    cv::imshow(&quot;mask&quot;, bw);
+
+
+    cv::imshow(&quot;rgb_filtered&quot;, result);
+
+
+
+    cv::imshow(WINDOW, cv_ptr-&gt;image);
+    cv::waitKey(1);
+
+    image_pub_.publish(cv_ptr-&gt;toImageMsg());
+  }
+
+void depthCb(const sensor_msgs::ImageConstPtr&amp; msg)
+  {
+    cv_bridge::CvImageConstPtr cv_ptr;
+    try
+    {
+      cv_ptr = cv_bridge::toCvShare(msg, enc::TYPE_16UC1);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+      ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+      return;
+    }
+
+     ROS_INFO(&quot;Applying mask to depth image&quot;);
+   Mat m=Mat(cv_ptr-&gt;image.size(), cv_ptr-&gt;image.type());
+
+
+   cvtColor(dst,m,CV_RGB2GRAY);
+
+
+   Mat result=Mat(cv_ptr-&gt;image.size(), cv_ptr-&gt;image.type());
+   cv_ptr-&gt;image.copyTo(result, m); //TESTE
+
+    cv::imshow(&quot;depth_filtered&quot;, result);
+
+    cv::imshow(&quot;depth_image&quot;, cv_ptr-&gt;image);
+    cv::waitKey(1);
+
+    depth_pub_.publish(cv_ptr-&gt;toImageMsg());
+  }
+
+};
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;image_converter&quot;);
+  ImageConverter ic;
+  ros::spin();
+  return 0;
+}
+</code></pre>
+
+<p>I know this setup is not the best but I&#39;ve only recently started so it will be adapted into two different processes or nodelets (or some sort of synchronizing subscription to 2 different topics?)</p>
+
+<p>My problem now is that I wanted to launch depth<em>image</em>proc and try to process the data I built with the node above. However when I start the following launch file:</p>
+
+<pre><code>&lt;launch&gt;
+
+    &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;convert_metric&quot;
+            args=&quot;load depth_image_proc/convert_metric record_player_manager --no-bond&quot;&gt;
+            &lt;remap from=&quot;image_raw&quot; to=&quot;/depth_filtered&quot;/&gt;
+        &lt;remap from=&quot;image&quot; to=&quot;/image_filtered&quot;/&gt;
+    &lt;/node&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>the topics don&#39;t get redirected into the convert_metric nodelet. I&#39;ve only recently learned about nodelets and so I&#39;m sure I am doing something wrong here. I&#39;m using ROS electric in ubuntu 11.10 if it helps. Also if you have any further suggestions towards the efficiency of what I am trying to do please share. Thanks in advance.</p>
+
+<p>Regards,
+João Barbosa</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2373">Barbosa</a> on 2012-10-07 13:14:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

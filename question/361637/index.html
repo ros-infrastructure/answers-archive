@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Using C++ message filters in ROS2 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/361637">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Using C++ message filters in ROS2</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97112/using-c-message-filters-in-ros2">https://robotics.stackexchange.com/questions/97112/using-c-message-filters-in-ros2</a>.</p>
+        <p>I am trying to subscribe to two topics. If their header stamps are equal they should be combined into a single message and published.</p>
+
+<p>I believe that an exact<em>time message</em>filter is the way to go here.</p>
+
+<p>In my case the messages will be high resolution images so would like the node to be written in C++ to reduce the CPU cost.</p>
+
+<p>For testing I have wrote up a Python node to to publish two messages (just <code>sensor_msgs::msg::Temperature</code> for this testing case) with the same header stamp. This node works with no issue.</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+
+from sensor_msgs.msg import Temperature
+
+
+class DoublePublisher(Node):
+
+    def __init__(self):
+        super().__init__(&#39;double_publisher&#39;)
+
+        # create publishers
+        self.publisher_temp_1_ = self.create_publisher(Temperature, &#39;temp_1&#39;, 10)
+        self.publisher_temp_2_ = self.create_publisher(Temperature, &#39;temp_2&#39;, 10)
+
+        # create timer
+        timer_period = 1 
+        self.timer_ = self.create_timer(timer_period, self.timer_callback)
+
+        # initialize counter
+        self.i = 0
+
+    def timer_callback(self):
+        self.get_logger().info(&quot;Publishing messages&quot;)
+
+        # get current time for headers
+        msg_stamp = self._clock.now().to_msg()
+
+        # create and publish Temperature messages
+        msg_1 = Temperature()
+        msg_1.header.stamp = msg_stamp
+        msg_1.temperature = float(self.i)
+        self.publisher_temp_1_.publish(msg_1)
+
+        msg_2 = Temperature()
+        msg_2.header.stamp = msg_stamp
+        msg_2.temperature = float(self.i + 2)
+        self.publisher_temp_2_.publish(msg_2)
+
+        self.i += 1
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    minimal_publisher = DoublePublisher()
+
+    rclpy.spin(minimal_publisher)
+
+    minimal_publisher.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>I then tried to make a C++ node that would use message filters to subscribe to the two topics and call a callback if two messages have the same timestamp. I can&#39;t really find any solid examples on how to do this in ROS2. I tried to figure it out from the comments in the code from <a href="https://github.com/ros2/message_filters">this</a> repo. Below is my code and the compile errors that I get.</p>
+
+<p>The code:</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;cstring&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+#include &quot;sensor_msgs/msg/temperature.hpp&quot;
+#include &quot;message_filters/subscriber.h&quot;
+#include &quot;message_filters/time_synchronizer.h&quot;
+
+using std::placeholders::_1;
+using std::placeholders::_2;
+
+class ExactTimeSubscriber : public rclcpp::Node
+{
+public:
+  ExactTimeSubscriber()
+      : Node(&quot;exact_time_subscriber&quot;)
+  {
+    subscription_temp_1_.subscribe(this, &quot;temp_1&quot;);
+    subscription_temp_2_.subscribe(this, &quot;temp_2&quot;);
+
+    message_filters::TimeSynchronizer&lt;sensor_msgs::msg::Temperature, sensor_msgs::msg::Temperature&gt; sync_(subscription_temp_1_, subscription_temp_2_, 3);
+    sync_.registerCallback(std::bind(&amp;ExactTimeSubscriber::topic_callback, this, _1, _2));
+  }
+
+private:
+  void topic_callback(const sensor_msgs::msg::Temperature::SharedPtr tmp_1, const sensor_msgs::msg::Temperature::SharedPtr tmp_2) const
+  {
+    const char *temp_1 = std::to_string(tmp_1-&gt;temperature).c_str();
+    const char *temp_2 = std::to_string(tmp_2-&gt;temperature).c_str();
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;I heard: &#39;%s&#39; and &#39;%s&#39;&quot;, temp_1, temp_2);
+  }
+  message_filters::Subscriber&lt;sensor_msgs::msg::Temperature&gt; subscription_temp_1_;
+  message_filters::Subscriber&lt;sensor_msgs::msg::Temperature&gt; subscription_temp_2_;
+};
+
+int main(int argc, char *argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;ExactTimeSubscriber&gt;());
+  rclcpp::shutdown();
+
+  return 0;
+}
+</code></pre>
+
+<p>Does anyone know how to use the <code>message_filters::TimeSynchronizer</code> (or similar) to synchronize messages in ROS2?</p>
+
+<p>My system details are as follows:</p>
+
+<ul>
+<li>X86 64 CPU architecture</li>
+<li>Ubuntu 18.04.5</li>
+<li>Eloquent</li>
+</ul>
+
+<p>My compile error follows:</p>
+
+<pre><code>--- stderr: synchronizer                             
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h: In instantiation of ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’:
+/opt/ros/eloquent/include/message_filters/synchronizer.h:298:40:   required from ‘message_filters::Connection message_filters::Synchronizer&lt;Policy&gt;::registerCallback(const C&amp;) [with C = std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;; Policy = message_filters::sync_policies::ExactTime&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;]’
+/workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:24:89:   required from here
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: no matching function for call to ‘message_filters::Signal9&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;::addCallback&lt;const M0ConstPtr&amp;, const M1ConstPtr&amp;, const M2ConstPtr&amp;, const M3ConstPtr&amp;, const M4ConstPtr&amp;, const M5ConstPtr&amp;, const M6ConstPtr&amp;, const M7ConstPtr&amp;, const M8ConstPtr&amp;&gt;(std::_Bind_helper&lt;false, const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type)’
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:170:14: note: candidate: template&lt;class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(const std::function&lt;void(P0, P1, P2, P3, P4, P5, P6, P7, P8)&gt;&amp;) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; P7 = P7; P8 = P8; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(const std::function&lt;void(P0, P1, P2, P3, P4, P5, P6, P7, P8)&gt;&amp; callback)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:170:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: note:   cannot convert ‘std::bind(_Func&amp;&amp;, _BoundArgs&amp;&amp; ...) [with _Func = const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;&amp;; _BoundArgs = {const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;}; typename std::_Bind_helper&lt;std::__is_socketlike&lt;_Func&gt;::value, _Func, _BoundArgs ...&gt;::type = std::_Bind&lt;std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;(std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;, std::_Placeholder&lt;3&gt;, std::_Placeholder&lt;4&gt;, std::_Placeholder&lt;5&gt;, std::_Placeholder&lt;6&gt;, std::_Placeholder&lt;7&gt;, std::_Placeholder&lt;8&gt;, std::_Placeholder&lt;9&gt;)&gt;](std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9)’ (type ‘std::_Bind_helper&lt;false, const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type {aka std::_Bind&lt;std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;(std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;, std::_Placeholder&lt;3&gt;, std::_Placeholder&lt;4&gt;, std::_Placeholder&lt;5&gt;, std::_Placeholder&lt;6&gt;, std::_Placeholder&lt;7&gt;, std::_Placeholder&lt;8&gt;, std::_Placeholder&lt;9&gt;)&gt;}’) to type ‘const std::function&lt;void(const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;)&gt;&amp;’
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:180:14: note: candidate: template&lt;class P0, class P1&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1)) [with P0 = P0; P1 = P1; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:180:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 2)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:186:14: note: candidate: template&lt;class P0, class P1, class P2&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2)) [with P0 = P0; P1 = P1; P2 = P2; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:186:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 3)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:192:14: note: candidate: template&lt;class P0, class P1, class P2, class P3&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2, P3))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:192:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 4)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:198:14: note: candidate: template&lt;class P0, class P1, class P2, class P3, class P4&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:198:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 5)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:204:14: note: candidate: template&lt;class P0, class P1, class P2, class P3, class P4, class P5&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:204:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 6)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:210:14: note: candidate: template&lt;class P0, class P1, class P2, class P3, class P4, class P5, class P6&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5, P6)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:210:14: note:   template argument deduction/substitution failed:
+In file included from /opt/ros/eloquent/include/message_filters/synchronizer.h:47:0,
+                 from /opt/ros/eloquent/include/message_filters/time_synchronizer.h:41,
+                 from /workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:9:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 7)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:216:14: note: candidate: template&lt;class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5, P6, P7)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; P7 = P7; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6, P7))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:216:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 8)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:222:14: note: candidate: template&lt;class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5, P6, P7, P8)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; P7 = P7; P8 = P8; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6, P7, P8))
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:222:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: note:   cannot convert ‘std::bind(_Func&amp;&amp;, _BoundArgs&amp;&amp; ...) [with _Func = const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;&amp;; _BoundArgs = {const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;}; typename std::_Bind_helper&lt;std::__is_socketlike&lt;_Func&gt;::value, _Func, _BoundArgs ...&gt;::type = std::_Bind&lt;std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;(std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;, std::_Placeholder&lt;3&gt;, std::_Placeholder&lt;4&gt;, std::_Placeholder&lt;5&gt;, std::_Placeholder&lt;6&gt;, std::_Placeholder&lt;7&gt;, std::_Placeholder&lt;8&gt;, std::_Placeholder&lt;9&gt;)&gt;](std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9)’ (type ‘std::_Bind_helper&lt;false, const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type {aka std::_Bind&lt;std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;(std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;, std::_Placeholder&lt;3&gt;, std::_Placeholder&lt;4&gt;, std::_Placeholder&lt;5&gt;, std::_Placeholder&lt;6&gt;, std::_Placeholder&lt;7&gt;, std::_Placeholder&lt;8&gt;, std::_Placeholder&lt;9&gt;)&gt;}’) to type ‘void (*)(const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;)’
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:228:14: note: candidate: template&lt;class T, class P0, class P1&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1), T*) [with T = T; P0 = P0; P1 = P1; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:228:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 3)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:234:14: note: candidate: template&lt;class T, class P0, class P1, class P2&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1, P2), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:234:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 4)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:240:14: note: candidate: template&lt;class T, class P0, class P1, class P2, class P3&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1, P2, P3), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:240:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 5)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:246:14: note: candidate: template&lt;class T, class P0, class P1, class P2, class P3, class P4&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:246:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 6)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:252:14: note: candidate: template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4, P5), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4, P5), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:252:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 7)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:258:14: note: candidate: template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5, class P6&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4, P5, P6), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4, P5, P6), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:258:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 8)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:264:14: note: candidate: template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4, P5, P6, P7), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; P7 = P7; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4, P5, P6, P7), T* t)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:264:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h: In substitution of ‘template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7&gt; message_filters::Connection message_filters::Signal9&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;::addCallback&lt;T, P0, P1, P2, P3, P4, P5, P6, P7&gt;(void (T::*)(P0, P1, P2, P3, P4, P5, P6, P7), T*) [with T = const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P0 = const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P1 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P2 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P3 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P4 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P5 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P6 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P7 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;]’:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40:   required from ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+/opt/ros/eloquent/include/message_filters/synchronizer.h:298:40:   required from ‘message_filters::Connection message_filters::Synchronizer&lt;Policy&gt;::registerCallback(const C&amp;) [with C = std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;; Policy = message_filters::sync_policies::ExactTime&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;]’
+/workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:24:89:   required from here
+/opt/ros/eloquent/include/message_filters/signal9.h:264:14: error: forming pointer to reference type ‘const std::shared_ptr&lt;const sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’
+/opt/ros/eloquent/include/message_filters/signal9.h: In instantiation of ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’:
+/opt/ros/eloquent/include/message_filters/synchronizer.h:298:40:   required from ‘message_filters::Connection message_filters::Synchronizer&lt;Policy&gt;::registerCallback(const C&amp;) [with C = std::_Bind&lt;void (ExactTimeSubscriber::*(ExactTimeSubscriber*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;, std::shared_ptr&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt; &gt;) const&gt;; Policy = message_filters::sync_policies::ExactTime&lt;sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;]’
+/workspaces/hfss-v3-ros2/test_filters/src/synchronizer/src/exact_time.cpp:24:89:   required from here
+/opt/ros/eloquent/include/message_filters/signal9.h:270:14: note: candidate: template&lt;class C&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = C; M0 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::Temperature_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]
+   Connection addCallback( C&amp; callback)
+              ^~~~~~~~~~~
+/opt/ros/eloquent/include/message_filters/signal9.h:270:14: note:   template argument deduction/substitution failed:
+/opt/ros/eloquent/include/message_filters/signal9.h:280:40: error: wrong number of template arguments (9, should be 1)
+     return addCallback&lt;const M0ConstPtr&amp;,
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                      const M1ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M2ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M3ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M4ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M5ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M6ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M7ConstPtr&amp;,
+                      ~~~~~~~~~~~~~~~~~~ 
+                      const M8ConstPtr&amp;&gt;(std::bind(callback, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+                      ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make[2]: *** [CMakeFiles/exact_time.dir/src/exact_time.cpp.o] Error 1
+make[1]: *** [CMakeFiles/exact_time.dir/all] Error 2
+make: *** [all] Error 2
+---
+Failed   &lt;&lt;&lt; synchronizer [2.56s, exited with code 2]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/55153">srubs_r</a> on 2020-09-15 16:03:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Your callback has the wrong signature. The message filter callback must take in a reference to a <code>const std::shared_ptr&lt;const...&gt;&amp;</code>, whereas you have just a <code>const std::shared_ptr&lt;&gt;</code> Change your callback declaration line to this:</p>
+
+<pre><code>void topic_callback(
+  const sensor_msgs::msg::Temperature::ConstSharedPtr&amp; tmp_1,
+  const sensor_msgs::msg::Temperature::ConstSharedPtr&amp; tmp_2) const
+</code></pre>
+
+<p>Then it will compile.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20134"></a> on 2020-09-15 19:18:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the answer, this helped me to get started with the package and compile a similar minimal example like the one above. However, this example still does not work as expected for me in ROS2 on ubuntu. Somehow, the callback function is never reached even though I can check that the messages that reach the subscribers themselves have the exact same timestamp. This might be a problem with the message_filters package itself I fear. I posted a question about this which is awaiting moderation here:</p>
+
+<p><a href="https://answers.ros.org/question/366440/ros-2-message_filters-timesynchronizer-minimal-example-does-not-reach-callback-function/">https://answers.ros.org/question/366440/ros-2-message_filters-timesynchronizer-minimal-example-does-not-reach-callback-function/</a></p>
+
+<p>I would be happy if you could verify that I am not a bot and make the question open for the public and maybe also help me with it by quickly reproducing the issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64120">sttobia</a> on 2020-11-27 04:15:04 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Even after changing the callback&#39;s arguments to <code>const sensor_msgs::msg::Temperature::ConstSharedPtr&amp;</code>, your subscription node won&#39;t work. You declare <code>sync_</code> as a local variable in <code>ExactTimeSubscriber</code>&#39;s constructor, but <code>sync_</code> should be declared as a member variable of <code>ExactTimeSubscriber</code>&#39;, otherwise it goes out-of-scope.</p>
+
+<p>The following works.</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;cstring&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+#include &quot;sensor_msgs/msg/temperature.hpp&quot;
+#include &quot;message_filters/subscriber.h&quot;
+#include &quot;message_filters/time_synchronizer.h&quot;
+
+using std::placeholders::_1;
+using std::placeholders::_2;
+
+class ExactTimeSubscriber : public rclcpp::Node
+{
+public:
+  ExactTimeSubscriber()
+      : Node(&quot;exact_time_subscriber&quot;)
+  {
+    subscription_temp_1_.subscribe(this, &quot;temp_1&quot;);
+    subscription_temp_2_.subscribe(this, &quot;temp_2&quot;);
+
+    sync_ = std::make_shared&lt;message_filters::TimeSynchronizer&lt;sensor_msgs::msg::Temperature, sensor_msgs::msg::Temperature&gt;&gt;(subscription_temp_1_, subscription_temp_2_, 3);
+    sync_-&gt;registerCallback(std::bind(&amp;ExactTimeSubscriber::topic_callback, this, _1, _2));
+  }
+
+private:
+  void topic_callback(const sensor_msgs::msg::Temperature::ConstSharedPtr&amp; tmp_1, const sensor_msgs::msg::Temperature::ConstSharedPtr&amp; tmp_2) const
+  {
+    const char *temp_1 = std::to_string(tmp_1-&gt;temperature).c_str();
+    const char *temp_2 = std::to_string(tmp_2-&gt;temperature).c_str();
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;I heard: &#39;%s&#39; and &#39;%s&#39;&quot;, temp_1, temp_2);
+  }
+  message_filters::Subscriber&lt;sensor_msgs::msg::Temperature&gt; subscription_temp_1_;
+  message_filters::Subscriber&lt;sensor_msgs::msg::Temperature&gt; subscription_temp_2_;
+  std::shared_ptr&lt;message_filters::TimeSynchronizer&lt;sensor_msgs::msg::Temperature, sensor_msgs::msg::Temperature&gt;&gt; sync_;
+};
+
+int main(int argc, char *argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;ExactTimeSubscriber&gt;());
+  rclcpp::shutdown();
+
+  return 0;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/73014">kas</a> on 2021-04-07 02:57:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

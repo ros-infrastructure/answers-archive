@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Memory management in callback for Octomap - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/336648">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Memory management in callback for Octomap</h2>
+      <div class="question">
+        <p>In the project i am working on, there is a ROS node and a C++ object pair. ROS node creates the object, listens to the subscribed topics and updates the object variables accordingly. Following is a similar class to the class of the object.</p>
+
+<p>treeEvaluator.h</p>
+
+<pre><code>class treeEvaluator
+{
+private:
+    octomap::OcTree* treeOct;
+
+public:
+    treeEvaluator();
+    void update_tree(octomap::OcTree* receivedTree);
+};
+</code></pre>
+
+<p>and update_tree function of treeEvaluator.cpp is as follows</p>
+
+<pre><code>void treeEvaluator::update_tree(octomap::OcTree* receivedTree)
+{
+    treeOct = receivedTree;
+}
+</code></pre>
+
+<p>then i have to use the &quot;treeOct&quot; for some further calculations. </p>
+
+<p>In the ROS node side i have created a object of treeEvaluator and uses callback as follows,</p>
+
+<pre><code>treeEvaluator evaluatorObject = treeEvaluator();
+
+void mapCallback(const octomap_msgs::Octomap::ConstPtr &amp;msg)
+{
+    octomap::AbstractOcTree* tree = octomap_msgs::msgToMap(*msg);
+    octomap::OcTree* tree_oct = dynamic_cast&lt;octomap::OcTree*&gt;(tree);
+    evaluatorObject.update_tree(tree_oct);
+}
+</code></pre>
+
+<p>I found this snippet from the email thread of the octomap (tried to link but cannot find the exact thread) and modified it to my need. since i was able to get this to work, now i&#39;m wondering whether it is legit. I was not able look into the msgToMap function to see whether it has a &#39;new&#39; inside it, so this is my question,</p>
+
+<p>Do i have to delete the &#39;tree&#39; and &#39;tree_oct&#39; pointers inside the mapCallBack manually after</p>
+
+<pre><code>evaluatorObject.update_tree(tree_oct);
+</code></pre>
+
+<p>line? (would it cause a memory leak if not?) In the normal case it wont be needed since those may have to be used inside the node. But i only use them to convert the msg to Map and then update the object. they are not used inside the ROS node after that. This callback gets called frequently as octomap updates frequently.</p>
+
+<p>Thanks</p>
+
+<p>(PS : i&#39;m trying to run this on a Raspberry Pi, so lesser memory usage, better)</p>
+
+<p><strong>___ UPDATE 1___</strong> </p>
+
+<p>It turned out to be a memory leak in the end. I had to implement two such nodes and after 1/2 hr of simulating, everything started lagging. Checking the &quot;top&quot; in terminal showed that one ROSNode had used around 49% of memory (7.7 GB) while other had around 42% of memory (6.6GB).</p>
+
+        <div class="owner"><p>Asked by <a href="/users/48641">KalanaR</a> on 2019-11-02 05:54:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Finally managed to solve the issue myself.</p>
+
+<p>The issue was with the pointer usage of the Octree created inside the callback. It needed to be deleted but since i passed it to the &quot;evaluatorObject&quot; by pointer i was not sure where i had to delete it. (inside object or inside callback). Because of this, i decided to use smart pointers. &quot;std::shared_ptr&quot; to be exact.</p>
+
+<p>i changed the callback from</p>
+
+<pre><code>void mapCallback(const octomap_msgs::Octomap::ConstPtr &amp;msg)
+{
+    octomap::AbstractOcTree* tree = octomap_msgs::msgToMap(*msg);
+    octomap::OcTree* tree_oct = dynamic_cast&lt;octomap::OcTree*&gt;(tree);
+    evaluatorObject.update_tree(tree_oct);
+}
+</code></pre>
+
+<p>to </p>
+
+<pre><code>void mapCallback(const octomap_msgs::Octomap::ConstPtr &amp;msg)
+{
+    std::shared_ptr&lt;octomap::OcTree&gt; tree = std::shared_ptr&lt;octomap::OcTree&gt; (dynamic_cast&lt;octomap::OcTree*&gt; (octomap_msgs::msgToMap(*msg)));
+    evaluatorObject.update_tree(tree);
+}
+</code></pre>
+
+<p>and it solved the issue.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/48641">KalanaR</a> on 2020-03-25 02:07:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I am already using the shared pointer; however, still get the same error 
+my callback function is </p>
+
+<pre><code>    void Planner::octomapCallback(const octomap_msgs::Octomap::ConstPtr &amp;binary_msg)
+{
+    octomap::OcTree* tree_oct = dynamic_cast&lt;octomap::OcTree*&gt;(octomap_msgs::msgToMap(*binary_msg));
+    fcl::OcTree* tree = new fcl::OcTree(std::shared_ptr&lt;const octomap::OcTree&gt;(tree_oct));
+    // fcl::OcTree* tree =  new fcl::OcTree(std::shared_ptr&lt;octomap::OcTree&gt; (dynamic_cast&lt;octomap::OcTree*&gt; (octomap_msgs::msgToMap(*binary_msg)))); together
+
+    // Update the octree used for collision checking
+    updateOctotree(std::shared_ptr&lt;fcl::CollisionGeometry&gt;(tree));
+    replan();
+    delete tree;
+    tree_oct-&gt;clear();
+}
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/76126">hesham</a> on 2022-12-13 03:51:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>that didn&#39;t solve it for me</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/76126">hesham</a> on 2022-12-13 03:57:48 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>cartesian path cancelation in middle of execution - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/359531">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>cartesian path cancelation in middle of execution</h2>
+      <div class="question">
+        <p>Hi everyone, 
+I am facing an issue while trying to use cartesian paths with moveit. 
+I am developing a GUI for my robot, which includes functionalities  to achieve <code>stop</code> <code>pause</code> and <code>continue</code>  for robot control. </p>
+
+<p>I am using a staubli arm(tx260). I can  stop active motions by using <code>/stop_motion</code> 
+ service provided by industrial_core.  It works well when I use joint space methods. But when I use this service to stop Cartesian paths it cracks the program.  I have tried to understand the reason but failed so far. </p>
+
+<p>Right after calling <code>/stop_motion</code>  service
+in log I sometimes see; </p>
+
+<pre><code>[ERROR] [1597395259.432551613]: Failed to initialize message
+[ WARN] [1597395259.432589447]: Failed sent joint point, will try again
+</code></pre>
+
+<p>This most probably occurs because Cartesian paths are denser and I call service  <code>/stop_motion</code> right away
+cutting the message initialization. </p>
+
+<p>After I call <code>/stop_motion</code> service  I also call <code>move_group.stop()</code> 
+which results in; </p>
+
+<pre><code>[ INFO] [1597395259.441869902]: Received event &#39;stop&#39;
+[ INFO] [1597395259.441915581]: Cancelling execution for 
+[ INFO] [1597395259.441944588]: Stopped trajectory execution.
+[ INFO] [1597395259.442181566]: Controller  successfully finished
+[ INFO] [1597395259.442224900]: Completed trajectory execution with status PREEMPTED ...
+[ INFO] [1597395259.442394479]: Execution completed: PREEMPTED
+</code></pre>
+
+<p>which looks ok. 
+But the problem occurs when I want to continue the path. In every motion command I keep a copy of initial goal, so the continue function just tries to move robot to there.
+But when I call <code>move_group.execute(myplan);</code> 
+Trajectory wont be executed and I have to restart the program to control robot. 
+I will be glad to hear if someone can show me what are possible mistakes I am doing here; </p>
+
+<p>more information can be provided in case it is needed.</p>
+
+<p>Edit for answer of @fvd; </p>
+
+<p>There is really not much of  error outputs excepts those two lines of my original question.</p>
+
+<p>Now the exact function that I use is below  Whenever pause is called(Through GUI) <code>/stop_motion</code>
+service is utilized to stop robot immediately and the 2 ros params are used to define the logic of pause, continue, 
+After pause , the robot goal is reset and preempted, with the continue a new plan is being planned from the current pose to original goal(in base<em>link frame), so I think it should be not related to it start pose being to far from the current one. Please note that `robot</em>tcp<em>goal</em>in<em>tool</em>space` is not actually a pose , but distances to travel in x,y,z coordinates in tool space, </p>
+
+<pre><code>bool RobotController::moveEndEffectortoGoalinToolSpace(geometry_msgs::Pose robot_tcp_goal_in_tool_space,
+                                                       moveit::planning_interface::MoveGroupInterface *move_group_ptr_, tf::TransformListener *listener_) {
+
+    bool returnMoveitResult = false;
+    // get given goal position(in tool_link frame)
+    geometry_msgs::Pose msg_robot_goal_in_tool_link;
+    msg_robot_goal_in_tool_link.position = robot_tcp_goal_in_tool_space.position;
+
+    // we will trasnform the given goal from tool_link to base_link
+    tf::Pose tf_robot_goal_in_tool_link;
+    tf::poseMsgToTF(msg_robot_goal_in_tool_link, tf_robot_goal_in_tool_link);
+
+    // get transform between tool_link and base_link
+    tf::StampedTransform tool_to_base_link_transform;
+    // lookup transform (this should be cached, since it’s probably static)
+    listener_-&gt;lookupTransform(robot_base_link, robot_eef_link, ros::Time(0.0f), tool_to_base_link_transform);
+
+    // do the transform by multiplying transform matrices with goal pose in tool_link
+    tf::Pose tf_robot_goal_in_base_link;
+    tf_robot_goal_in_base_link = tool_to_base_link_transform * tf_robot_goal_in_tool_link;
+
+    // MOVEIT uses geometry_msgs type , so convert transformed goal pose to geometry_msgs
+    geometry_msgs::Pose msg_robot_goal_in_base_link;
+    tf::poseTFToMsg(tf_robot_goal_in_base_link, msg_robot_goal_in_base_link);
+
+    // we will do a linear plan between current pose and given target pose, so push the current pose to waypoint vector
+    std::vector&lt;geometry_msgs::Pose&gt; waypoints;
+    waypoints.push_back(move_group_ptr_-&gt;getCurrentPose().pose);
+
+    // Since we are moving along tool_link , the orintation of robot tcp shall not change
+    msg_robot_goal_in_base_link.orientation = move_group_ptr_-&gt;getCurrentPose().pose.orientation;
+    waypoints.push_back(msg_robot_goal_in_base_link);
+
+    // compute a cartesian path between target pose(in base_link) and current pose
+    moveit_msgs::RobotTrajectory trajectory;
+
+    // fraction is double between 0.0 and 1.0. It indicates the percentage of sucessfully planed path
+    double fraction = move_group_ptr_-&gt;computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
+
+    // stream how much percent of this cartesian path can be achieved
+    ROS_INFO(&quot;Visualizing plan for (Cartesian path) (%.2f%% acheived)&quot;, fraction * 100.0);
+
+    // We dont actually plan, but we need to set the trajectory of plan to calculated cartesian path
+    moveit::planning_interface::MoveGroupInterface::Plan my_plan;
+    my_plan.trajectory_ = trajectory;
+
+    // publish a path to visualize planned path
+    publishRobotTrajectory(move_group_ptr_, my_plan.trajectory_);
+
+    // Make sure that the planned path does not violate any joint rotation limit
+    isValidPlan(my_plan);
+
+    // Move the manipulator according to calculated cartesian(linear) path
+    returnMoveitResult = (move_group_ptr_-&gt;execute(my_plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
+
+    bool is_pause_motion_service_called;
+    node_handle_ptr_-&gt;getParam(&quot;is_pause_motion_service_called&quot;, is_pause_motion_service_called);
+
+    if (is_pause_motion_service_called) {
+        node_handle_ptr_-&gt;setParam(&quot;is_pause_motion_service_called&quot;, false);
+        volatile bool is_resume_motion_service_called;
+        bool temp;
+        node_handle_ptr_-&gt;getParam(&quot;is_resume_motion_service_called&quot;, temp);
+        is_resume_motion_service_called = temp;
+        while (!is_resume_motion_service_called) {
+            node_handle_ptr_-&gt;getParam(&quot;is_resume_motion_service_called&quot;, temp);
+            is_resume_motion_service_called = temp;
+            ROS_WARN(&quot;YOU HAVE PAUSED ROBOT IN MIDDLE OF CARTESIAN PATH EXECUTION, WAITING FOR CONTINUE BUTTON TO BE PRESSED !!!&quot;);
+            sleep(1.0);
+        }
+        {
+             waypoints.clear();
+             waypoints.push_back(move_group_ptr_-&gt;getCurrentPose().pose);
+             // Since we are moving along tool_link , the orintation of robot tcp shall not change
+             msg_robot_goal_in_base_link.orientation = move_group_ptr_-&gt;getCurrentPose().pose.orientation;
+             waypoints.push_back(msg_robot_goal_in_base_link);
+             // fraction is double between 0.0 and 1.0. It indicates the percentage of sucessfully planed path
+             fraction = move_group_ptr_-&gt;computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
+             my_plan.trajectory_ = trajectory;
+             // publish a path to visualize planned path
+             publishRobotTrajectory(move_group_ptr_, my_plan.trajectory_);
+             // Make sure that the planned path does not violate any joint rotation limit
+             isValidPlan(my_plan);
+             ROS_WARN(&quot;PLANNED A VALID PLAN AND GONNA CALL EXECUTE !!!&quot;);
+             // Move the manipulator according to calculated cartesian(linear) path
+             returnMoveitResult = (move_group_ptr_-&gt;execute(my_plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
+             ROS_WARN(&quot;CONTINUE HANDLED !!! &quot;);
+
+            node_handle_ptr_-&gt;setParam(&quot;is_resume_motion_service_called&quot;, false);
+        }
+    }
+
+    return returnMoveitResult;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/32821"></a> on 2020-08-14 04:11:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>It would probably be helpful if you posted the error message for the part where you say that the trajectory is not executed, and what &quot;the continue function&quot; does exactly. My guess is that the trajectory you try to &quot;continue&quot; on is not valid anymore.</p>
+
+<p>If you are executing a trajectory, pre-empting it during execution, and then send the same trajectory (or the <code>myplan</code> object that still contains the same trajectory) to execute, then the first points of the trajectory will be too far away from the current state of the robot and it will refuse to move.</p>
+
+<p>To fix this problem, either recalculate the cartesian path from the current state of the robot, or (less safe, probably less reliable and more manual work) remove the points from your trajectory that the robot has already executed.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/8631">fvd</a> on 2020-08-20 22:30:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for your answer, I have edited my question to include some more information. please comment if more is needed or something not clear</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32821">Fetullah Atas</a> on 2020-08-20 22:51:12 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

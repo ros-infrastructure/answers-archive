@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to extract depth data from rosbags(contains depth and RGB data) as picture frames - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/199432">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to extract depth data from rosbags(contains depth and RGB data) as picture frames</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/64626/how-to-extract-depth-data-from-rosbagscontains-depth-and-rgb-data-as-picture-f">https://robotics.stackexchange.com/questions/64626/how-to-extract-depth-data-from-rosbagscontains-depth-and-rgb-data-as-picture-f</a>.</p>
+        <p>I have a Bagfile containing Raw depth and RGB data. I converted the RGB data into images using the tutorial
+<a href="http://wiki.ros.org/rosbag/Tutorials/Exporting%20image%20and%20video%20data">http://wiki.ros.org/rosbag/Tutorials/Exporting%20image%20and%20video%20data</a>
+But when I used the same for converting raw depth to images, I get an error stating &quot; cannot convert 32FC1 to RGB8&quot;.
+This is my launch file:</p>
+
+<pre><code>&lt;launch&gt;
+ &lt;node pkg=&quot;rosbag&quot; type=&quot;play&quot; name=&quot;rosbag&quot; args=&quot;-d 2 $(find image_view)/test.bag&quot;/&gt;
+ &lt;node name=&quot;extract&quot; pkg=&quot;image_view&quot; type=&quot;extract_images&quot; respawn=&quot;false&quot; output=&quot;screen&quot; cwd=&quot;ROS_HOME&quot;&gt;
+   &lt;remap from=&quot;image&quot; to=&quot;/camera/depth_registered/image_rect&quot;/&gt;
+ &lt;/node&gt;
+</code></pre>
+
+<p></launch></p>
+
+<p>I went through Google for various suggestions given to do the same but I being a beginner find most of the solution vague or misleading and I end up confusing myself.</p>
+
+<p>I need to know whether my approach was right or should I do something else? If so what should I do exactly.Please  help me through this</p>
+
+        <div class="owner"><p>Asked by <a href="/users/21096">shravan</a> on 2014-12-13 15:32:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Probably late, but for the record: </p>
+
+<p>The topic that you are subscribing to has 32 bit depth - which can not be visualized by <em>image_viewer</em>. Try one of the other depth topics - I cannot recall right now which one could be seen.
+Try <code>rostopic list | grep depth</code> , <code>rostopic list</code> lists all of the published topics, while <code>grep depth</code> filters the output so that you only see the ones that have the word &quot;depth&quot; in them.</p>
+
+<p>Despite not being able to see the that topic you are subscribing to, you can use it in any of your nodes. Or maybe in RVIZ if you want to see the 3d points.</p>
+
+<p>Here is one example node that subscribes to <code>/camera/depth_registered/hw_registered/image_rect_raw</code> and <code>/camera/rgb/image_color</code> from a Turtlebot 1. It then saves the depth images as 16 bit png and tiff :</p>
+
+<p><a href="https://github.com/GERUNSJ/guardar_imagenes_turtlebot">Source and more</a></p>
+
+<pre><code>/* Este es un nodo de ROS Indigo para guardar imagenes de /camera/depth_registered/image_rect_raw
+ * y de /camera/rgb/color/image_rect_raw de un Turtlebot1 para luego procesarlas con otro programa. 
+ * Las de profundidad se guardan como unsigned int de 16 bits 
+ * y 1 canal, las de color se guardan como unsigned int de 8 bits en 3 canales.
+ * Se utiliza un suscriptor sincronizado para guardar el par de imagenes que estén más
+ * cercanas en el tiempo.
+ * LAS IMAGENES SE GUARDAN ADONDE SE EJECUTE EL NODO.
+ * ---------------------------------------------------------
+ * Creado por Fabricio Emder y Pablo Aguado en el 2016 */
+
+
+/* This is a ROS Indigo node for saving Turtlebot images from the /camera/depth_registered/image_rect_raw
+ * and /camera/rgb/color/image_rect_raw topics, for further processing outside of the program. 
+ * Depth images are saved as 1 channel 16 bit unsigned int PNGs (CV_16UC1), and 
+ * RGB images are saved as 3 channel 8 bit unsigned int PNGs (CV_8UC3).
+ * A synchronized subscriber is used, for saving the pair of images that are most closer in time.
+ * THE IMAGES ARE SAVED WHEREVER THE NODE IS RUN.
+ * Created by Fabricio Emder and Pablo Aguado - 2016
+ * */
+
+#include &lt;ros/ros.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;    // OpenCV
+#include &lt;sensor_msgs/Image.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/synchronizer.h&gt;
+
+
+/* La política de sincronización exacta NO FUNCIONA para los topics seleccionados, ya 
+ * que la Kinect o sus drivers no los están publicando con la misma marca temporal.
+ * Ver más en http://wiki.ros.org/message_filters 
+ * 
+ * Exact sychronization policy IS NOT WORKING for the topics used, because the kinect
+ * is not publishing them with the same timestamp. 
+ * See more in http://wiki.ros.org/message_filters  */
+
+//#define EXACT
+#define APPROXIMATE
+
+
+#ifdef EXACT
+#include &lt;message_filters/sync_policies/exact_time.h&gt;
+#endif
+#ifdef APPROXIMATE
+#include &lt;message_filters/sync_policies/approximate_time.h&gt;
+#endif
+
+
+
+using namespace std;
+//using namespace sensor_msgs;
+using namespace message_filters;
+
+
+// Contador para la numeración de los archivos.
+// Counter for filenames.
+unsigned int cnt = 1;
+
+
+
+// Handler / callback
+void callback( const sensor_msgs::ImageConstPtr&amp; msg_rgb , const sensor_msgs::ImageConstPtr&amp; msg_depth )
+{
+        //ROS_INFO_STREAM(&quot;Adentro del callback\n&quot;);
+      cv_bridge::CvImagePtr img_ptr_rgb;
+        cv_bridge::CvImagePtr img_ptr_depth;
+    try{
+        img_ptr_depth = cv_bridge::toCvCopy(*msg_depth, sensor_msgs::image_encodings::TYPE_16UC1);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+        ROS_ERROR(&quot;cv_bridge exception:  %s&quot;, e.what());
+        return;
+    }
+    try{
+        img_ptr_rgb = cv_bridge::toCvCopy(*msg_rgb, sensor_msgs::image_encodings::TYPE_8UC3);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+        ROS_ERROR(&quot;cv_bridge exception:  %s&quot;, e.what());
+        return;
+    }
+
+    cv::Mat&amp; mat_depth = img_ptr_depth-&gt;image;
+        cv::Mat&amp; mat_rgb = img_ptr_rgb-&gt;image;
+
+        char file_rgb[100];
+        char file_depth[100];
+
+        sprintf( file_rgb, &quot;%04d_rgb.png&quot;, cnt );
+        sprintf( file_depth, &quot;%04d_depth.png&quot;, cnt );
+
+        vector&lt;int&gt; png_parameters;
+        png_parameters.push_back( CV_IMWRITE_PNG_COMPRESSION );
+        /* We save with no compression for faster processing.
+         * Guardamos PNG sin compresión para menor retardo. */
+        png_parameters.push_back( 9 ); 
+
+        cv::imwrite( file_rgb , mat_rgb, png_parameters );
+        cv::imwrite( file_depth, mat_depth, png_parameters );
+
+        ROS_INFO_STREAM(cnt &lt;&lt; &quot;\n&quot;);
+        ROS_INFO_STREAM(&quot;Imágenes guardadas - &quot;
+                        &quot;Images saved\n&quot;);
+
+        cnt++;
+
+}
+
+
+
+
+
+int main(int argc, char** argv)
+{
+    // Initialize the ROS system and become a node.
+  ros::init(argc, argv, &quot;guardar_imagenes&quot;);
+  ros::NodeHandle nh;
+
+
+    message_filters::Subscriber&lt;sensor_msgs::Image&gt; subscriber_depth( nh , &quot;/camera/depth_registered/hw_registered/image_rect_raw&quot; , 1 );
+    message_filters::Subscriber&lt;sensor_msgs::Image&gt; subscriber_rgb( nh , &quot;/camera/rgb/image_rect_color&quot; , 1 );
+
+
+#ifdef EXACT
+    typedef sync_policies::ExactTime&lt;sensor_msgs::Image, sensor_msgs::Image&gt; MySyncPolicy;
+#endif
+#ifdef APPROXIMATE
+    typedef sync_policies::ApproximateTime&lt;sensor_msgs::Image, sensor_msgs::Image&gt; MySyncPolicy;
+#endif
+
+
+  // ExactTime or ApproximateTime take a queue size as its constructor argument, hence MySyncPolicy(10)
+  Synchronizer&lt;MySyncPolicy&gt; sync(MySyncPolicy(10), subscriber_rgb, subscriber_depth );
+  sync.registerCallback(boost::bind(&amp;callback, _1, _2));
+
+
+    while(ros::ok())
+    {
+        char c;
+
+        ROS_INFO_STREAM(&quot;\nIngrese &#39;a&#39; para guardar un par de imágenes o &#39;b&#39; para guardar 300 imágenes\n&quot;
+                        &quot;Enter &#39;a&#39; to save a pair of images or &#39;b&#39; to automatically save 300 images\n&quot;);
+        cin.get(c);
+        cin.ignore();
+        c = tolower(c);
+        ROS_INFO_STREAM(&quot;You entered &quot; &lt;&lt; c &lt;&lt; &quot;\n&quot;);
+
+        if( c == &#39;a&#39; )
+        {
+                /* Le damos el control a la función callback cuando haya imágenes.
+                * We give control to the callback function.*/
+                ros::spinOnce();    
+        }
+
+        else if( c == &#39;b&#39; )
+        {
+            unsigned int cnt_init = cnt;
+            while( cnt - cnt_init &lt; 300 )
+            {
+                ros::spinOnce();
+            }
+        }
+
+        else break;
+
+    }
+    ROS_INFO_STREAM(&quot;Cerrando nodo\nClosing node\n&quot;);
+
+  return 0;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/6283">aguadopd</a> on 2016-03-10 16:35:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>You can use my package to extract depth information from bagfile without losing precision:</p>
+
+<p><a href="https://github.com/JaouadROS/bagtodepth">https://github.com/JaouadROS/bagtodepth</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/17876">ROSkinect</a> on 2016-06-27 04:19:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Also if you need a python version of this , It will save each frame as an image
+<a href="https://github.com/nihalsoans91/Bag_to_Depth">https://github.com/nihalsoans91/Bag_to_Depth</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/37719">nihalsoans91</a> on 2018-09-25 01:38:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I had to make a small change to save 16 bit depth images into files.
+See <a href="https://answers.ros.org/question/313164/create-a-bag-out-of-16-bit-images/?answer=313173#post-id-313173">here</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36789">Avner</a> on 2019-01-21 17:23:07 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

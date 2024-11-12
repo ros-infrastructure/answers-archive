@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to verify publications using rostest? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/195054">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to verify publications using rostest?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/63336/how-to-verify-publications-using-rostest">https://robotics.stackexchange.com/questions/63336/how-to-verify-publications-using-rostest</a>.</p>
+        <p>I have several pieces of software in ROS, all of which are pretty thoroughly unit and integration tested. However, there&#39;s one aspect of testing within ROS that I have yet to accomplish with much success: Verifying publications.</p>
+
+<p>Note that I&#39;m still stuck in the dark ages of Fuerte, but I believe my question is relevant to more recent releases as well.</p>
+
+<p>I currently have several tests within rostest, which looks like this in my CMakeLists.txt:</p>
+
+<pre><code>rosbuild_add_executable(my_tests EXCLUDE_FROM_ALL ${MY_TESTS})
+rosbuild_add_gtest_build_flags(my_tests)
+rosbuild_add_rostest(${PROJECT_SOURCE_DIR}/test/node/node.test)
+</code></pre>
+
+<p>Running this with <code>make test</code> also runs a roscore (since node.test is a launch file), so these tests can make use of classes that require a connection to roscore. I&#39;d like to use this to verify publications, but it&#39;s not working reliably, which makes me think I&#39;m doing something wrong. As an example:</p>
+
+<pre><code>class TestSubscriber
+{
+    public:
+        TestSubscriber() : receivedMessage(false) {}
+
+        void callback(const std_msgs::Int32ConstPtr &amp;newMessage)
+        {
+            receivedMessage = true;
+            message = newMessage;
+        }
+
+        bool receivedMessage;
+        std_msgs::Int32ConstPtr message;
+}
+
+TEST(MyTest, TestPublication)
+{
+    // This class will publish on the &quot;output&quot; topic. It will create a node handle
+    // and advertise in its constructor.
+    MyPublishingClass publishingClass;
+
+    ros::NodeHandle nodeHandle;
+
+    TestSubscriber subscriber;
+    ros::Subscriber rosSubscriber = nodeHandle.subscribe(&quot;output&quot;,
+                                                         1,
+                                                         &amp;TestSubscriber::callback,
+                                                         &amp;subscriber);
+    ASSERT_EQ(1, rosSubscriber.getNumPublishers()); // This passes
+
+    publishingClass.publishMessage();
+
+    ros::spinOnce(); // Spin so that publication can get to subscription
+
+    EXPECT_TRUE(subscriber.receivedMessage); // This may or may not be true
+}
+</code></pre>
+
+<p>Depending on how the MyPublishingClass is written, this test may pass or fail due to that last line. To give a specific example, I have a class that reads through a bagfile and publishes specific topics. If that class publishes topics with:</p>
+
+<pre><code>publisher.publish(rosBagViewIterator-&gt;instantiate&lt;std_msgs::Int32&gt;());
+</code></pre>
+
+<p>the test passes. If instead the class publishes with:</p>
+
+<pre><code>publisher.publish(*rosBagViewIterator);
+</code></pre>
+
+<p>the test fails (even though the node still runs normally outside of the test, so I know that publication is actually happening). I have more examples of similar weirdness, but I&#39;m hoping this is enough to describe my problem.</p>
+
+<p>So, down to my questions:</p>
+
+<ol>
+<li>Why is this so finicky? I realize that it&#39;s basically a node subscribing to its own publication, but that shouldn&#39;t be a problem. Should it?</li>
+<li>Am I doing this wrong? Is there a better way to test ROS publications? Note that the class in question is not a complete ROS node, and cannot be tested as such.</li>
+</ol>
+
+        <div class="owner"><p>Asked by <a href="/users/20478">kyrofa</a> on 2014-10-15 12:50:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Thanks for the link Dirk! That is indeed exactly what I&#39;m doing-- hopefully I&#39;ll be able to narrow it down a bit more.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20478">kyrofa</a> on 2014-10-16 11:06:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi Kyle, did you manage to find out why the callback was inconsistent? I am having exactly the same problem. Let me know if you found something</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26292">DavidN</a> on 2016-09-12 04:32:19 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>There is a unit test covering exactly your use case (<a href="https://github.com/ros/ros_comm/blob/ebd9e491e71947889eb81089306698775ab5d2a2/test/test_roscpp/test/src/subscribe_star.cpp#L123">https://github.com/ros/ros_comm/blob/ebd9e491e71947889eb81089306698775ab5d2a2/test/test_roscpp/test/src/subscribe_star.cpp#L123</a>) which reliably passes. So I guess it must be something in your code - may be in the parts not posted here.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2575">Dirk Thomas</a> on 2014-10-15 15:31:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>For more complicated cases, here&#39;s what I use:</p>
+
+<pre><code>sensor_msgs::PointCloud2ConstPtr pcl;
+auto sub = nh.subscribe&lt;sensor_msgs::PointCloud2&gt;(&quot;scan&quot;, 10, [&amp;](const sensor_msgs::PointCloud2ConstPtr&amp; msg){pcl=msg;});
+
+// publish
+
+#define WAIT_FOR_MESSAGE(msg) \
+{ size_t i = 0;\
+  while (ros::ok() &amp;&amp; msg == nullptr &amp;&amp; i &lt; 100) \
+  { \
+    ros::spinOnce(); \
+    ros::WallDuration(0.01).sleep(); \
+    ++i;\
+  } \
+  if (i == 100) ADD_FAILURE(); \
+}
+
+WAIT_FOR_MESSAGE(pcl)
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/7736"></a> on 2020-03-18 14:30:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

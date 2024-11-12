@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Question about collision avoidance in OMPL motion planning library - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/37568">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Question about collision avoidance in OMPL motion planning library</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/41833/question-about-collision-avoidance-in-ompl-motion-planning-library">https://robotics.stackexchange.com/questions/41833/question-about-collision-avoidance-in-ompl-motion-planning-library</a>.</p>
+        <p>Hello!</p>
+
+<p>I am pretty new to the object-oriented C++ scene, but currently I am working on a project that has us planning paths for multiple UAVs on a single field.  We are supposed to have the UAVs reach waypoints without running into one another.  I am currently utilizing the RRT* Planner to draw waypoint routes from the UAV&#39;s starting position to the goal within the field.</p>
+
+<p>I was wondering, however, if anyone here had experience with trying to implement collision avoidance in a real time environment within the OMPL library.  I am having a heck of a time trying to figure out how to pass parameters between the RRT* class and my own code. </p>
+
+<p>Currently my state validity checking function looks like this</p>
+
+<pre><code>    bool isStateValid(std::vector&lt;UAV*&gt; otheruavs,UAV* currentUAV, const ompl::base::State *state)
+{
+    // Cast state type and set values to compare against
+    const ompl::base::SE2StateSpace::StateType *s = state-&gt;as&lt;ompl::base::SE2StateSpace::StateType&gt;();
+    double x=s-&gt;getX(), y=s-&gt;getY();
+
+    // set boolean accumulation variable
+    bool result = true;
+
+    // Fetch Array
+    // Compare against array
+    for (unsigned int i=0; i &lt; otheruavs.size(); i++)
+    {
+    UAV* curruav = otheruavs.at(i);
+    std::vector&lt;Point&gt; capoints = curruav-&gt;avoidancepoints;
+        for(unsigned int j=0; j &lt; capoints.size(); j++)
+        {
+        Point currpoint = capoints.at(j);
+        double currx = currpoint.getX();
+        double curry = currpoint.getY();
+
+        double dist = sqrt((x-currx)*(x-currx)+(y-curry)*(y-curry));
+        bool currresult = (dist &gt; BUFFER_ZONE);
+
+        result = currresult &amp;&amp; result;
+        }
+    }
+
+    return result;
+}
+</code></pre>
+
+<p>Basically it takes the current UAV and the other UAVs within the field.  It runs through the other UAV&#39;s avoidance points and makes sure that it is not placing a point within a certain range of any of the other uav&#39;s.</p>
+
+<p>I was hoping to somehow implement a timing function into this code, however, so that the position being verified is only checked against those positions of the other uavs around the same time index.  I cannot figure out how to do this, though, with the setup of the OMPL framework.  I realize this is sort of vague, but I don&#39;t know how to explain this further.  If anyone thinks they can help with some more information, I&#39;d be glad to give whatever you may want to see.</p>
+
+<p>Another issue is to do with bearings.  I would love to be able to limit the path so that it took into account the optimal turning angle of the UAV.  Any insight on how to do this?</p>
+
+<p>((I&#39;m sorry that this isn&#39;t really ROS related, but it is being implemented within ROS, and I did not know where else to ask this question &gt;&lt;))</p>
+
+<p>EDIT: Answered my own question!  I introduced a new parameter to the RRTstar class named &#39;parent&#39; and set the parent of whatever motion I am checking as that parameter.  I then iterate through the parents of the motion to count what it&#39;s index is within the tree.  It was a fairly easy fix ^^.
+New, fixed code</p>
+
+<pre><code>bool isStateValid(std::vector&lt;UAV*&gt; otheruavs,UAV* currentUAV,og::RRTstar* planner, const ompl::base::State *state)
+{
+    // Cast state type and set values to compare against
+    const ompl::base::SE2StateSpace::StateType *s = state-&gt;as&lt;ompl::base::SE2StateSpace::StateType&gt;();
+    double x=s-&gt;getX(), y=s-&gt;getY();
+
+    // Fetch parent motion
+    og::RRTstar::Motion* parent = planner-&gt;getparent();
+
+    int newindex = (parent == NULL) ? 1 : parent-&gt;node_index();
+
+    // set boolean accumulation variable
+    bool result = true;
+
+    // Fetch Array
+    // Compare against array
+    for (unsigned int i=0; i &lt; otheruavs.size(); i++)
+    {
+    UAV* curruav = otheruavs.at(i);
+    std::vector&lt;Point&gt; capoints = curruav-&gt;avoidancepoints;
+    // Initiate time index
+    int index = 0;
+        for(unsigned int j=0; j &lt; capoints.size(); j++)
+        {
+        Point currpoint = capoints.at(j);
+        double currx = currpoint.getX();
+        double curry = currpoint.getY();
+
+        double dist = sqrt((x-currx)*(x-currx)+(y-curry)*(y-curry));
+        bool currresult = (dist &gt; BUFFER_ZONE);
+
+        if (!currresult)
+        {
+            currresult = (abs(index-newindex) &gt; TIME_INDEX);
+        }
+
+        result = currresult &amp;&amp; result;
+
+        index++;
+        }
+    }
+
+    return result;
+}
+</code></pre>
+
+<p>And the Index Finding function (within the &#39;motion&#39; class in RRTstar header)</p>
+
+<pre><code>int node_index()
+        {
+            int index;
+            if (parent == NULL)
+            {
+                index = 0;
+            }
+            else
+            {
+                index = 1 + parent-&gt;node_index();
+            }
+            return index+1;
+        }
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2746">megan_starr9</a> on 2012-06-29 09:45:03 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hey, figured it out!  This can be closed ^^</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2746">megan_starr9</a> on 2012-07-02 09:38:38 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I presume the issue has been resolved in the meantime, but if not, please send this question on the OMPL mailing list.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1805">isucan</a> on 2012-10-25 05:07:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

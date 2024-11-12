@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to Reject an Action Goal - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/412354">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to Reject an Action Goal</h2>
+      <div class="question">
+        <p>I recently started to learn ROS and I have trouble Rejecting an Action Goal. </p>
+
+<p><strong>In a nutshell:</strong> 
+when the goal_callback function in the Action Server returns GoalResponse.REJECT, instead of GoalResponse.ACCEPT, the Action Client hangs.</p>
+
+<p><strong>More details:</strong></p>
+
+<ul>
+<li><p>ROS2 Humble distro on ubuntu 20.04 in docker container on Raspberry Pi 4B.</p></li>
+<li><p>Using the Action example in the ROS2 repository : <a href="https://github.com/ros2/examples/tree/rolling/rclpy/actions">code</a></p></li>
+<li><p>commands to run the server and client nodes</p>
+
+<blockquote>
+<pre><code>ros2 run examples_rclpy_minimal_action_server server
+ros2 run examples_rclpy_minimal_action_client client
+</code></pre>
+</blockquote></li>
+<li><p>both client and server nodes behave as expected: After the goal successfully completes, the client node is destroyed and I can rerun the client command in the same terminal window. The server node keeps running and successfully handles subsequent client goal requests.</p></li>
+<li><p>when I modify the goal_callback function in the server.py file from</p></li>
+</ul>
+
+<blockquote>
+<pre><code>def goal_callback(self, goal_request):
+    ...
+    return GoalResponse.ACCEPT
+</code></pre>
+</blockquote>
+
+<p>to</p>
+
+<blockquote>
+<pre><code>def goal_callback(self, goal_request):
+    ...
+    return GoalResponse.REJECT
+</code></pre>
+</blockquote>
+
+<p>the action server continues to work as expected, and the action client prints &#39;Goal rejected :(&#39; in the terminal window as expected, BUT the action client node is not destroyed.</p>
+
+<blockquote>
+<pre><code>  ros2 node list
+</code></pre>
+
+<p>shows that the client node as alive. Also the terminal window used to run the client does not return the prompt.</p>
+</blockquote>
+
+<p><strong>Questions:</strong></p>
+
+<ul>
+<li>What does the &quot;return GoalResponse.REJECT&quot; in the goal_callback function trigger ?</li>
+<li>How do I modify the action client code to destroy the client node once the goal is rejected ?</li>
+</ul>
+
+<p>Following are the action client and action server code:</p>
+
+<blockquote>
+<pre><code>from action_msgs.msg import GoalStatus
+from example_interfaces.action import Fibonacci
+
+import rclpy from rclpy.action import
+ActionClient from rclpy.node import Node
+
+
+class MinimalActionClient(Node):
+
+def __init__(self):
+    super().__init__(&#39;minimal_action_client&#39;)
+    self._action_client = ActionClient(self, Fibonacci, &#39;fibonacci&#39;)
+
+def goal_response_callback(self, future):
+    goal_handle = future.result()
+    if not goal_handle.accepted:
+        self.get_logger().info(&#39;Goal rejected :(&#39;)
+        return
+
+    self.get_logger().info(&#39;Goal accepted :)&#39;)
+
+    self._get_result_future = goal_handle.get_result_async()
+    self._get_result_future.add_done_callback(self.get_result_callback)
+
+def feedback_callback(self, feedback):
+    self.get_logger().info(&#39;Received feedback: {0}&#39;.format(feedback.feedback.sequence))
+
+def get_result_callback(self, future):
+    result = future.result().result
+    status = future.result().status
+    if status == GoalStatus.STATUS_SUCCEEDED:
+        self.get_logger().info(&#39;Goal succeeded! Result: {0}&#39;.format(result.sequence))
+    else:
+        self.get_logger().info(&#39;Goal failed with status: {0}&#39;.format(status))
+
+    # Shutdown after receiving a result
+    rclpy.shutdown()
+
+def send_goal(self):
+    self.get_logger().info(&#39;Waiting for action server...&#39;)
+    self._action_client.wait_for_server()
+
+    goal_msg = Fibonacci.Goal()
+    goal_msg.order = 10
+
+    self.get_logger().info(&#39;Sending goal request...&#39;)
+
+    self._send_goal_future = self._action_client.send_goal_async(
+        goal_msg,
+        feedback_callback=self.feedback_callback)
+
+    self._send_goal_future.add_done_callback(self.goal_response_callback)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    action_client = MinimalActionClient()
+
+    action_client.send_goal()
+
+    rclpy.spin(action_client)
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>.</p>
+
+<pre><code>import time
+
+from example_interfaces.action import Fibonacci
+
+import rclpy from rclpy.action import ActionServer, CancelResponse, GoalResponse 
+from rclpy.callback_groups import ReentrantCallbackGroup 
+from rclpy.executors import MultiThreadedExecutor 
+from rclpy.node import Node
+
+
+class MinimalActionServer(Node):
+
+def __init__(self):
+    super().__init__(&#39;minimal_action_server&#39;)
+
+    self._action_server = ActionServer(
+        self,
+        Fibonacci,
+        &#39;fibonacci&#39;,
+        execute_callback=self.execute_callback,
+        callback_group=ReentrantCallbackGroup(),
+        goal_callback=self.goal_callback,
+        cancel_callback=self.cancel_callback)
+
+def destroy(self):
+    self._action_server.destroy()
+    super().destroy_node()
+
+def goal_callback(self, goal_request):
+    &quot;&quot;&quot;Accept or reject a client request to begin an action.&quot;&quot;&quot;
+    # This server allows multiple goals in parallel
+    self.get_logger().info(&#39;Received goal request&#39;)
+    return GoalResponse.REJECT
+    #return GoalResponse.ACCEPT
+
+def cancel_callback(self, goal_handle):
+    &quot;&quot;&quot;Accept or reject a client request to cancel an action.&quot;&quot;&quot;
+    self.get_logger().info(&#39;Received cancel request&#39;)
+    return CancelResponse.ACCEPT
+
+async def execute_callback(self, goal_handle):
+    &quot;&quot;&quot;Execute a goal.&quot;&quot;&quot;
+    self.get_logger().info(&#39;Executing goal...&#39;)
+
+    # Append the seeds for the Fibonacci sequence
+    feedback_msg = Fibonacci.Feedback()
+    feedback_msg.sequence = [0, 1]
+
+    # Start executing the action
+    for i in range(1, goal_handle.request.order):
+        if goal_handle.is_cancel_requested:
+            goal_handle.canceled()
+            self.get_logger().info(&#39;Goal canceled&#39;)
+            return Fibonacci.Result()
+
+        # Update Fibonacci sequence
+        feedback_msg.sequence.append(feedback_msg.sequence[i] + feedback_msg.sequence[i-1])
+
+        self.get_logger().info(&#39;Publishing feedback: {0}&#39;.format(feedback_msg.sequence))
+
+        # Publish the feedback
+        goal_handle.publish_feedback(feedback_msg)
+
+        # Sleep for demonstration purposes
+        time.sleep(1)
+
+    goal_handle.succeed()
+
+    # Populate result message
+    result = Fibonacci.Result()
+    result.sequence = feedback_msg.sequence
+
+    self.get_logger().info(&#39;Returning result: {0}&#39;.format(result.sequence))
+
+    return result
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    minimal_action_server = MinimalActionServer()
+
+    # Use a MultiThreadedExecutor to enable processing goals concurrently
+    executor = MultiThreadedExecutor()
+
+    rclpy.spin(minimal_action_server, executor=executor)
+
+    minimal_action_server.destroy()
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+</blockquote>
+
+        <div class="owner"><p>Asked by <a href="/users/137390">versavel</a> on 2023-02-09 17:16:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I have a similar problem but with RCLCPP, following this question</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40719">Mrmara</a> on 2023-05-10 11:44:01 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

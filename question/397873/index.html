@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Redundant locations in URDF for joint position/effort/velocity limits - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/397873">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Redundant locations in URDF for joint position/effort/velocity limits</h2>
+      <div class="question">
+        <p>In ROS1 (and now in ROS2), position (and effort/velocity) limits were specified in the <a href="http://wiki.ros.org/urdf/XML/joint#Elements">Joint</a> URDF definition.</p>
+
+<p>I understand that the more flexible <ros2_control> tags in URDF allow the specification of limits for any user-defined interface as well, but in the specific case of position (and effort/velocity) limits, how are redundant values handled?</p>
+
+<p>For example, say I have a joint definition with position limits, as below:</p>
+
+<pre><code>  &lt;joint name=&quot;gripper_joint&quot; type=&quot;revolute&quot;&gt;
+    &lt;axis xyz=&quot;0 1 0&quot;/&gt;
+    &lt;parent link=&quot;base_link&quot;/&gt;
+    &lt;child link=&quot;gripper_link&quot;/&gt;
+    &lt;origin rpy=&quot;0 0 0&quot; xyz=&quot;0 0 0&quot;/&gt;
+    &lt;limit effort=&quot;1000.0&quot; lower=&quot;-1.57&quot; upper=&quot;1.57&quot; velocity=&quot;10.0&quot;/&gt;    &lt;!-- &lt;&lt;&lt; HERE --&gt;
+    &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+  &lt;/joint&gt;
+</code></pre>
+
+<p>And I also specify a <ros2_control> tag with a different set of position limits, as below:</p>
+
+<pre><code>  &lt;ros2_control name=&quot;gripper&quot; type=&quot;system&quot;&gt;
+    &lt;hardware&gt;
+      &lt;plugin&gt;gazebo_ros2_control/GazeboSystem&lt;/plugin&gt;
+    &lt;/hardware&gt;
+    &lt;joint name=&quot;gripper_joint&quot;&gt;
+      &lt;command_interface name=&quot;position&quot;&gt;
+        &lt;param name=&quot;min&quot;&gt;0.0&lt;/param&gt;             &lt;!-- &lt;&lt;&lt;&lt; HERE --&gt;
+        &lt;param name=&quot;max&quot;&gt;1.0&lt;/param&gt;             &lt;!-- &lt;&lt;&lt;&lt; HERE --&gt;
+        &lt;param name=&quot;initial_value&quot;&gt;0.5&lt;/param&gt;
+      &lt;/command_interface&gt;
+      &lt;state_interface name=&quot;position&quot;&gt;
+    &lt;/joint&gt;
+</code></pre>
+
+<p>What is the order of precedence by which these conflicting values are resolved?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/54063">alikureishy</a> on 2022-03-22 18:20:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>My understanding is that the <em>intent</em> is to have the following hierarchy for <code>ros2_control</code>:</p>
+
+<ol>
+<li>yaml config file (highest precedence)</li>
+<li><code>&lt;ros2_control&gt;</code> limit tags in the URDF</li>
+<li><code>&lt;joint&gt;</code> limit tags in the URDF (lowest precedence)</li>
+</ol>
+
+<p>That said, it has been a while since I&#39;ve looked through the code and at the time, this was still an &quot;in development&quot; feature of ros2_control. The last time I was reviewing the code, my impression was that only limits defined in the yaml file would be respected, and only if the controller was setup to respect them. </p>
+
+<p>There&#39;s a bit of discussion on <a href="https://github.com/ros-controls/ros2_control/pull/462">this draft PR</a> that may help shed some light. </p>
+
+<p>Maybe someone else can chime in with more recent insights.</p>
+
+<p>EDIT: adding a small note that may help for clarity - 
+I believe the intent is also to have checks to ensure that the higher precedence limits do not break the URDF limits; e.g. the <em>URDF should specify hardware limits</em> (e.g. the known max speed of a motor, the known end of travel on a joint) set by the manufacturer, the <em>yaml file would specify more conservative control limits</em> based on the user&#39;s needs (e.g. adding a safety margin around the end of travel)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/69938"></a> on 2022-03-23 18:15:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks @shonigmann! In regards to your recent edit, where would a developer enforce these limits? It appears to me that this information cannot be enforced via custom code at the hardware_interface::CommandInterface level, for a <a href="https://answers.ros.org/question/399397/how-to-enforce-joint-limits-specified-in-the-hardware_interfaceinterfaceinfo-struct-at-the-hardware_interface-level/">few reasons</a>. So, is it entirely the responsibility of controllers to enforce these limits? If this was enforced at the hardware_interface layer instead, it would not only be simpler but also save a lot of redundant checks from needing to be added to controllers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/54063">alikureishy</a> on 2022-04-21 19:42:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I can only speculate based on the implementation in ros(1)_control and the PRs I&#39;ve seen so far. But my understanding is that the intent is to have a <a href="https://github.com/ros-controls/ros2_control/pull/462/files#diff-a969cc041b4ead7c051905c1bf757fe51ccd4e68a4e7d958b8b98478c567e764R28-R40">standalone JointLimits structure</a> that captures your limits. At least <a href="https://raw.githubusercontent.com/destogl/ros2_control/72ee141986ee6f542974aca326f45d9eeb6c28d6/hardware_interface/doc/joint_limits_interface/JointLimitInterface.png">at some point the idea was to have hardware limits captured as part of the hardware initialization</a> but this was from a closed PR 1 year ago. From the latest PR, it looks like Controller limits would be initialized from the yaml config. Then the controller can have its own limit structure, then when writing commands to the hardware, both could be enforced (though perhaps in different steps). I don&#39;t actively develop ros2_control so I&#39;m reaching a bit here</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69938">shonigmann</a> on 2022-04-22 13:04:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

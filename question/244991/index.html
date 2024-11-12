@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Can I determine the topic which executed a callback in rosserial? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/244991">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Can I determine the topic which executed a callback in rosserial?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/76588/can-i-determine-the-topic-which-executed-a-callback-in-rosserial">https://robotics.stackexchange.com/questions/76588/can-i-determine-the-topic-which-executed-a-callback-in-rosserial</a>.</p>
+        <p>I have a few PWM input/output pairs connected to my Arduino Nano and defined in an array.</p>
+
+<pre><code>typedef struct {
+        char *name;
+        byte pin_in;
+        byte pin_out;
+        unsigned long rise_time;
+        unsigned long fall_time;
+        byte value_in;
+        byte value_out;
+        byte state;
+} control_t;
+
+control_t controls[]={
+     { .name=&quot;throttle&quot;, .pin_in=3, .pin_out=11, },
+     { .name=&quot;steering&quot;, .pin_in=4, .pin_out=10, },
+     { .name=&quot;transmission&quot;, .pin_in=5, .pin_out=9, },
+     { .name=NULL}
+};
+</code></pre>
+
+<p>I want to create a subscriber and publisher for each one so that the input value (from the physical control) is published and the output value (sent to the robot) can be subscribed.  I tried using classes but discovered that rosserial doesn&#39;t support using class methods for callbacks.  So I thought I could have one subscriber callback for all of the controls.  It just needs to know the topic used so that it can do a lookup on the control name and set the PWM output of the corresponding pin.  For example, publishing 123 to /myrobot/steering/set(?) should put the value 123 on pin 10.  (I also welcome help with topic names.)</p>
+
+<p>Is it possible to get the topic name (or ID?) inside the callback?  Or is there a better way to handle this?</p>
+
+<p>Thank you.</p>
+
+<p>--kyler</p>
+
+<p>[updates to keep them all together...]</p>
+
+<ol>
+<li><p>There is good info here on how classes are implemented in C++:  <a href="http://stackoverflow.com/questions/400257/how-can-i-pass-a-class-member-function-as-a-callback">http://stackoverflow.com/questions/400257/how-can-i-pass-a-class-member-function-as-a-callback</a></p></li>
+<li><p>boost::bind and boost::function (from #1) appear to do what I want.</p></li>
+<li><p>There is a (partial) Boost library for Arduino:  <a href="https://github.com/vancegroup/arduino-boost">https://github.com/vancegroup/arduino-boost</a></p></li>
+<li><p>C++11 can do lambda/anonymous functions.  C++11 still seems to be experimental for Arduino.</p></li>
+<li><p>I wonder if I should subclass the rosserial code to make it do what I need.</p></li>
+</ol>
+
+<p>I&#39;m going to try #4 first.  I welcome alternatives.</p>
+
+<p>[...]</p>
+
+<p>I punted and made another option:</p>
+
+<ol>
+<li> Use the preprocessor.</li>
+</ol>
+
+<p>I don&#39;t like that I have to both define and initialize the controls, but it&#39;s otherwise workable and should be easy to extend.</p>
+
+<pre><code>#define CONTROL(n, pi, po, ptmin, ptmax) \
+        static control_t control_ ## n = { name:(char *)#n, pin_in:pi, pin_out:po, pt_min:ptmin, pt_max:ptmax, }; \
+        void put_ ## n( const std_msgs::UInt8&amp; msg ) { \
+                sprintf(buf, &quot;put %s: %u&quot;, control_ ## n.name, msg.data); \
+                nh.logwarn(buf); \
+                control_ ## n.value_out = msg.data; \
+                analogWrite(control_ ## n.pin_out, control_ ## n.value_out); \
+        } \
+
+
+#define INIT_CONTROL(n) \
+        control_ ## n.next=controls; \
+        controls=&amp;control_ ## n; \
+        static ros::Subscriber&lt;std_msgs::UInt8&gt; n ## _sub(&quot;/&quot; #n &quot;/put&quot;, &amp;put_ ## n ); \
+        nh.subscribe(n ## _sub); \
+
+
+control_t *controls = NULL;
+
+CONTROL(throttle, 3, 11, 0, 0)
+CONTROL(transmission, 4, 10, 0, 0)
+CONTROL(steering, 5, 9, 110, 145)
+
+void setup()
+{
+        nh.initNode();
+
+        INIT_CONTROL(throttle);
+        INIT_CONTROL(transmission);
+        INIT_CONTROL(steering);
+[...]
+</code></pre>
+
+<p>(I added support for a min/max range so that I can revert to passthrough mode if a control moves out of the range.  IOW, if the steering wheel is moved, full control is passed to the local operator.</p>
+
+<p>I&#39;ve been a bit concerned about processing several 500 Hz PWM signals but it&#39;s working fairly well so far.  I need to add at least one more.)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/23170">kylerlaird</a> on 2016-10-04 20:06:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you not get around this by using some global class, that way it can be accessed in any function? Or if it is possible, pass the class as an argument to the callback function?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27952">JoshMarino</a> on 2016-10-04 22:51:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>No, I can&#39;t use a class function because ros::Subscriber (in rosserial) requires a plain function with no arguments (including &quot;this&quot;).  It looks like the Boost libraries make it possible to create new (argument-less) functions like this.  Doing this on Arduino will take some effort.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23170">kylerlaird</a> on 2016-10-05 08:24:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It might make more sense to define a custom message type that includes all three control signals, and publish and subscribe to that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2016-10-10 01:22:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank, ahendrix, it probably would make sense for the current situation.  But then I&#39;ll add some more more controls (perhaps splitting them over multiple Arduinos), and I&#39;ll have different nodes publishing to different controls.  It would be a pain to keep refactoring and compiling new message types</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23170">kylerlaird</a> on 2016-10-10 09:07:08 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <pre><code>ros::NodeHandle  nh;
+
+Servo servo;
+
+void servo_cb( const std_msgs::UInt16&amp; cmd_msg){
+  servo.write(cmd_msg.data); //set servo angle, should be from 0-180  
+  digitalWrite(13, HIGH-digitalRead(13));  //toggle led  
+}
+
+
+ros::Subscriber&lt;std_msgs::UInt16&gt; sub(&quot;servo&quot;, servo_cb);
+
+void setup(){
+  pinMode(13, OUTPUT);
+
+  nh.initNode();
+  nh.subscribe(sub);
+
+  servo.attach(8); //attach it to pin 8
+}
+
+void loop(){
+  nh.spinOnce();
+  delay(1);
+}
+</code></pre>
+
+<p>this is a typical rosserial subscriber function, based on this model, you can publish your physical control to the same topic with the adequate message type.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25880">zhibo</a> on 2016-10-05 08:37:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I believe the answer to my question is &quot;no.&quot;  You can only extract the data (and checksum, etc.) from the message passed to the callback.  There does not seem to be a clean way to use a single callback function for multiple subscribers in rosserial.</p>
+
+<p>The real solution is to update Subscriber in rosserial so that it handles arguments (like full ROS does).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/23170">kylerlaird</a> on 2016-10-09 21:16:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I am a bit late. But actually, it is possible to use a subscriber within a class with rosserial.</p>
+
+<p>The writing is a bit different than the usual ROS, it uses a template parameter.</p>
+
+<p>See the following example:</p>
+
+<pre><code>#include &lt;ros.h&gt;
+#include &lt;std_msgs/UInt8.h&gt;
+
+ros::NodeHandle nh;
+
+struct Control {
+  Control(byte out, char* topic)
+    : pin_out(out),
+      sub(topic, &amp;Control::callback, this)
+  {}
+  void init() {
+    nh.subscribe(sub);
+  }
+  void callback(const std_msgs::UInt8&amp; msg) {
+    analogWrite(pin_out, msg.data);
+  }
+
+  byte pin_out;
+  ros::Subscriber&lt;std_msgs::UInt8, Control&gt; sub;
+};
+
+Control throttle(1, &quot;throttle&quot;);
+Control transmission(2, &quot;transmission&quot;);
+Control steering(3, &quot;steering&quot;);
+
+void setup() {
+  nh.initNode();
+  throttle.init();
+  transmission.init();
+  steering.init();
+}
+
+void loop()
+{}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21983">rreignier</a> on 2017-05-20 02:55:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

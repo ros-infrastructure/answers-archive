@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Fusing ARTags poses with robot_localization - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/406006">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Fusing ARTags poses with robot_localization</h2>
+      <div class="question">
+        <p>Hello. </p>
+
+<p>I&#39;m on ROS Noetic on 20.04 LTS.</p>
+
+<p>I&#39;ll begin listing my problems and how I think about the solution and how it doesn&#39;t work. </p>
+
+<p>I&#39;ve been trying to make full 3D navigation system, for a mobile robot that&#39;s in a big open area with tags in certain locations. I used <code>rtabmap</code>
+ package for mapping and it takes the <code>odom</code> frame published by <code>robot_localization</code> and publishes the <code>map-&gt;odom</code> transform (according to the tf tree) <code>robot_localization</code> is used to fuse some of the sensors (wheel odom velocities, IMU orientations, and a bit of vo velocities as well)  It&#39;s been working fine. here&#39;s my <code>ekf_3d.yaml</code> config file.</p>
+
+<pre><code>frequency: 30
+sensor_timeout: 0.2
+two_d_mode: false
+transform_time_offset: 0.0
+transform_timeout: 0.0
+print_diagnostics: true
+debug: false
+publish_tf: true
+publish_acceleration: false
+
+map_frame: map
+odom_frame: odom
+base_link_frame: base_footprint
+world_frame: odom
+
+# x, y, z
+# roll, pitch, yaw
+# vx, vy, vz
+# vroll, vpitch, vyaw
+# ax, ay, az.
+
+odom0: /wheel_odom_with_covariance
+odom0_config: [false, false, false,
+                false, false, false,
+                true,  false, false,
+                false, false, true,
+                false, false, false]
+odom0_differential: false
+odom0_queue_size: 3
+#odom0_rejection_threshold: 15
+odom0_nodelay: false
+
+odom1: /zed2/rgbd_odom
+odom1_config: [false, false, false,
+                false, false, false,
+                false,  true, true,
+                false, false, false,
+                false, false, false]
+odom1_differential: false
+odom1_relative: false
+odom1_queue_size: 3
+#odom1_rejection_threshold: 15
+odom1_nodelay: false
+
+pose0: /pose_corrector
+pose0_config: [true, true, false,
+                false, false, false,
+                false,  false, false,
+                false, false, false,
+                false, false, false]
+pose0_differential: false
+pose0_queue_size: 3
+pose0_nodelay: false
+
+imu0: imu/data
+imu0_config: [false, false, false,
+              true,  true,  false,
+              false, false, false,
+              true,  true,  true,
+              true,  false, false]
+imu0_nodelay: false
+imu0_differential: false
+imu0_relative: true
+imu0_queue_size: 5
+imu0_remove_gravitational_acceleration: true
+
+process_noise_covariance: [0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.5,   0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.4,  0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]
+</code></pre>
+
+<p>But ultimately there was drift from <code>ground_truth</code> and the estimated pose. I have a set of ARTags in the map. It&#39;s actually a cuboid like pole with four sides each side has the same tag id. And that caused me headache. I tried publishing static tfs of these tags, there is total of 14 tags, so 14*4. I only worked with one four set for pole of id_1 for example and disregarded other detections. Wrote two nodes for two different experiments. </p>
+
+<ul>
+<li>One node tried to offset the <code>odom</code> frame based on estimated robot pose in <code>map</code> frame.
+I see <code>tag_id</code> &#39;s pose in <code>camera_frame</code> using the <code>ar_track_alvar</code>, get it in <code>base_frame</code>, invert that pose, and use pose transform to transform the robot&#39;s pose in the tag frame to robot pose in map frame, using that static tf (real transform of tag pose from map) of that &quot;estimated face of the four faces of that ID&quot; -takes breath-</li>
+</ul>
+
+<p>And then do more transforms to offset the <code>odom</code> frame from <code>map</code> frame. (Well that method didn&#39;t interface with <code>robot_localization</code> did it), the robot kept jumping heavily back and forth on detecting ARTags in the map. I began debugging heavily and saw that the method I used to identify which of the four faces I&#39;m looking at is not working properly also I thought that the one who&#39;s publishing the <code>map-&gt;odom</code> transform was <code>rtabmap</code> and maybe they both were trying to publish on same transform and that caused the mess. To try to keep it shorter I ditched this method and tried instead using the translations only to estimate the XYZ only of the robot instead of the full pose XYZ-XYZW.</p>
+
+<ul>
+<li>Knowing the pole&#39;s XYZ in the <code>map</code> frame, I publish static frame (I know I can store each tag position somehow somewhere but I kept the <code>ar_tag_poses</code> yaml file and publish the centers of the poles, I detect the ar<em>tag in the `camera</em>frame<code>transform it to the</code>base<em>frame<code>and invert that pose to get</code>base</em>frame<code>in</code>tag<em>id</em>frame<code>and push the the robot&#39;s pose in Z to offset that detection from the pole side to it&#39;s center roughly (because that&#39;s how the detected frame is oriented) and get that offset-ed tag pose (that should have roughly the XYZ of the pole center) in</code>map<em>frame<code>compared it with the real XYZ of that pole, then I know how much my rover needs to translate from it&#39;s previous position. I published the real pose on a</code>PoseWithCovarianceStamped<code>topic</code>/pose</em>corrector<code>and have the EKF listen to it (As seen above), however when listening to this topic the pose is still offset-ed a bit from the ground truth and the rover just jumps suddenly back and forth or when the publishing of the pose stops (as for robot is not facing a tag anymore) the rover keeps moving/sliding in RViz in the</code>odom` frame while it&#39;s apparently static in gazebo.</li>
+</ul>
+
+<p>It&#39;s been very frustrating so far I spent several days writing the code. and reading the wikis and answers here I think the pose fusion question has been answered and that&#39;s how I wrote my code at first seemed simple but it&#39;s very tedious.</p>
+
+<p>What I read is that I have to use two instances of ekf and that I&#39;ve never used or tried and thought it&#39;s only with GPS configurations.</p>
+
+<p>Also I don&#39;t know how to stop <code>rtabmap</code> from publishing <code>map-&gt;odom</code></p>
+
+<p>I already need rtabmap cause I&#39;m more familiar with it and use it for global obstacle detection.</p>
+
+<p>I&#39;m really confused with the plethora of suggestions. I just want to estimate the real rover position using the ar tags&#39; known poses and detected poses. And then used this estimate to correct my odom-&gt;base_link in the odom frame preferably leave my tfs (odom and map) on top of one another.</p>
+
+<p>Any idea how to do that?</p>
+
+<p>Thanks in advance</p>
+
+        <div class="owner"><p>Asked by <a href="/users/116664">asser19</a> on 2022-09-06 10:20:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>&quot;Also I don&#39;t know how to stop rtabmap from publishing map-&gt;odom&quot; -&gt; set <code>publish_tf:=false</code> parameter of rtabmap node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20914">matlabbe</a> on 2022-10-23 21:09:29 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

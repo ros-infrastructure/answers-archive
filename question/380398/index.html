@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Parameter Change and publishing to /parameter_events - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/380398">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Parameter Change and publishing to /parameter_events</h2>
+      <div class="question">
+        <p>I have been experimenting with ROS2 Params and have a question about the bidirectional nature of the /parameter<em>events topic and adding a parameterCallback using the add</em>on<em>set</em>parameters_callback().</p>
+
+<p>So I can see that everytime the set<em>parameters service is called we successfully go into the parameterCallback as long as we register it with the add</em>on<em>set</em>parameters_callback(). </p>
+
+<p>In my callback now,
+If I return the response as true, the parameter updates and there is a new message published on the /parameter<em>events topic
+If I return the response as false, the parameter does not update and no new message is published on the /parameter</em>events topic. </p>
+
+<p>This is all desired behavior, but I am trying to understand what is happening under the hood and after sifting through a lot of the code I am coming up short handed.</p>
+
+<p>So my questions are:</p>
+
+<ul>
+<li>Where are the parameters actually being stored and where in the code are they being updated on a successful call of a set_parameter service?</li>
+<li>Where is the publish to /parameter<em>events happening and does that have anything to do with the actual value stored in the parameter, or is it purely for notifications on parameter changes? If I publish a message directly to the /parameter</em>events topic using a different node and mimic the message I see published on a successful service call. No parameters are changed, which I half expected (probably stupidly)</li>
+</ul>
+
+<p>Insight into my current set up:</p>
+
+<p>param<em>callback - Main Node, that registers parameters we are changing and printing to screen
+param</em>client - Node that sets up a client and calls the /param<em>callback/set</em>parameters service
+param<em>publisher - Node that sets up a publisher and publishes directly to the /parameter</em>events topic</p>
+
+<h2>param_callback</h2>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;rcl_interfaces/msg/set_parameters_result.hpp&quot;
+
+class TestParamsCallback : public rclcpp::Node
+{
+public:
+    rcl_interfaces::msg::SetParametersResult parametersCallback(
+    const std::vector&lt;rclcpp::Parameter&gt; &amp;parameters)
+{
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Entered Param Callback&quot;);
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = false;
+    result.reason = &quot;&quot;;
+    for (const auto &amp;param : parameters)
+    {
+        if (param.get_name() == &quot;motor_device_port&quot;)
+        {
+            if (param.get_type() == rclcpp::ParameterType::PARAMETER_STRING)
+            {
+                if (param.as_string().rfind(&quot;/dev/tty&quot;, 0) == 0) // starts with
+                {
+                    motor_device_port_ = param.as_string();
+                    result.successful = true;
+                }
+                else
+                {
+                    result.reason = &quot;Not a Port&quot;;
+                }
+            }
+            else
+            {
+                result.reason = &quot;Incorrect Type&quot;;
+            }
+        }
+        if (param.get_name() == &quot;control_loop_frequency&quot;)
+        {
+            if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER)
+            {
+                if (param.as_int() &gt;= 1 &amp;&amp; param.as_int() &lt; 1000)
+                {
+                    control_loop_frequency_ = param.as_int();
+                    result.successful = true;
+                }
+                else
+                {
+                    result.reason = &quot;Out of Range&quot;;
+                }
+            }
+            else
+            {
+                result.reason = &quot;Incorrect Type&quot;;
+            }
+        }
+        if (param.get_name() == &quot;simulation_mode&quot;)
+        {
+            if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL)
+            {
+                simulation_mode_ = param.as_bool();
+                result.successful = true;
+            }
+            else
+            {
+                result.reason = &quot;Incorrect Type&quot;;
+            }
+        }
+    }
+    return result;
+}
+
+    TestParamsCallback() : Node(&quot;param_callback&quot;)
+    {
+        this-&gt;declare_parameter(&quot;motor_device_port&quot;, &quot;/dev/ttyUSB0&quot;);
+        this-&gt;declare_parameter(&quot;control_loop_frequency&quot;, 100);
+        this-&gt;declare_parameter(&quot;simulation_mode&quot;, false);
+
+        motor_device_port_ = this-&gt;get_parameter(&quot;motor_device_port&quot;).as_string();
+        control_loop_frequency_ = this-&gt;get_parameter(&quot;control_loop_frequency&quot;).as_int();
+        simulation_mode_ = this-&gt;get_parameter(&quot;simulation_mode&quot;).as_bool();
+
+        callback_handle_ = this-&gt;add_on_set_parameters_callback(
+            std::bind(&amp;TestParamsCallback::parametersCallback, this, std::placeholders::_1));
+
+        _timer = this-&gt;create_wall_timer(std::chrono::seconds(1),
+        std::bind(&amp;TestParamsCallback::timer_callback, this)
+        );
+    }
+
+    void timer_callback()
+    {
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Motor Device Port: %s&quot;, this-&gt;get_parameter(&quot;motor_device_port&quot;).as_string().c_str());
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Control Loop Frequency: %d&quot;, this-&gt;get_parameter(&quot;control_loop_frequency&quot;).as_int());
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Simulation Mode: %s&quot;, this-&gt;get_parameter(&quot;simulation_mode&quot;).as_bool() ? &quot;true&quot;:&quot;false&quot;);
+    }
+
+private:
+    std::string motor_device_port_;
+    int control_loop_frequency_;
+    bool simulation_mode_;
+
+    OnSetParametersCallbackHandle::SharedPtr callback_handle_;
+
+    rclcpp::TimerBase::SharedPtr _timer;
+};
+
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;TestParamsCallback&gt;();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<h2>param_client</h2>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;rcl_interfaces/srv/set_parameters.hpp&quot;
+#include &quot;rcl_interfaces/msg/parameter.hpp&quot;
+#include &quot;rcl_interfaces/msg/set_parameters_result.hpp&quot;
+
+
+class ParamClientNode : public rclcpp::Node
+{
+public:
+    ParamClientNode() : Node(&quot;param_client&quot;)
+    {
+        this-&gt;declare_parameter(&quot;loop_hz&quot;, 75);
+
+        auto param = rcl_interfaces::msg::Parameter();
+        param.name = &quot;control_loop_frequency&quot;;
+
+        param.value.type = 2;
+        param.value.integer_value = this-&gt;get_parameter(&quot;loop_hz&quot;).as_int();
+
+        _threads.push_back(std::thread(std::bind(&amp;ParamClientNode::callSetParameter, this, param)));
+    }
+
+    void callSetParameter(rcl_interfaces::msg::Parameter param)
+    {
+        auto client = this-&gt;create_client&lt;rcl_interfaces::srv::SetParameters&gt;(&quot;/param_callback2/set_parameters&quot;);
+        while(!client-&gt;wait_for_service(std::chrono::seconds(1)))
+        {
+            RCLCPP_WARN(this-&gt;get_logger(), &quot;Waiting for Server&quot;);
+        }
+
+        auto request = std::make_shared&lt;rcl_interfaces::srv::SetParameters::Request&gt;();
+        request-&gt;parameters.push_back(param);
+
+        auto future = client-&gt;async_send_request(request);
+
+        try
+        {
+            auto response = future.get();
+
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;Call Response: %d with Reason: %s&quot;, response-&gt;results.begin()-&gt;successful, response-&gt;results.begin()-&gt;reason.c_str());
+        }
+        catch(const std::exception&amp; e)
+        {
+            RCLCPP_ERROR(this-&gt;get_logger(), &quot;Service Call Failed&quot;);
+        }
+    }
+
+private:
+    std::thread _thread1;
+    std::vector&lt;std::thread&gt; _threads;
+};
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;ParamClientNode&gt;();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<h2>param_publisher</h2>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;rcl_interfaces/msg/parameter_event.hpp&quot;
+#include &quot;rcl_interfaces/msg/parameter.hpp&quot;
+
+class ParamPublisherNode : public rclcpp::Node 
+{
+public:
+    ParamPublisherNode() : Node(&quot;param_publisher&quot;) 
+    {   
+        _param_publisher = this-&gt;create_publisher&lt;rcl_interfaces::msg::ParameterEvent&gt;(&quot;parameter_events&quot;, 10);
+        _publisher_timer = this-&gt;create_wall_timer(std::chrono::seconds(5), std::bind(&amp;ParamPublisherNode::timerCallback, this));
+    }
+
+    void timerCallback()
+    {
+        auto msg = rcl_interfaces::msg::ParameterEvent();
+        auto param = rcl_interfaces::msg::Parameter();
+
+        msg.stamp = this-&gt;get_clock()-&gt;now();
+        msg.node = &quot;/param_callback2&quot;;
+
+        param.name = &quot;control_loop_frequency&quot;;
+        param.value.type = 2;
+        param.value.integer_value = 66;
+
+        msg.changed_parameters.push_back(param);
+
+        _param_publisher-&gt;publish(msg);
+
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Published&quot;);
+
+    }
+
+private:
+
+    rclcpp::Publisher&lt;rcl_interfaces::msg::ParameterEvent&gt;::SharedPtr _param_publisher;
+    rclcpp::TimerBase::SharedPtr _publisher_timer;
+};
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+
+    auto node = std::make_shared&lt;ParamPublisherNode&gt;(); // MODIFY NAME
+
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/26964">GusBus</a> on 2021-06-15 23:27:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

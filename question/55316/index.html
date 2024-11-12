@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>using the opencv particle filter ConDensation - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/55316">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>using the opencv particle filter ConDensation</h2>
+      <div class="question">
+        <p>I had a fair amount of trouble getting the OpenCV ConDensation particle filter working, largely because the transition matrix (DynamMatr) is not initialized by cvCreateConDensation and the english documentation doesn&#39;t seem to tell you so.  Unfortunately, the uninitialized matrix doesn&#39;t make it fail, it just make things work very badly, and I could not find a working example out there.  (The <a href="http://opencv.jp/sample/estimators.html">Japanese documentation</a> has an example that uses it, though.)</p>
+
+<p>Posting this code in an attempt to help the next sap like me who tries to implement a filter with the ConDensation API.  The API is now relegated to a &#39;legacy&#39; library, perhaps because it was hard to use before?  It works pretty well, actually.</p>
+
+<pre><code>// Example of how to use the OpenCV Particle Filter.
+// 
+// Stolen largely from morethantechnical.com&#39;s nice mouse_kalman project.
+//
+
+#include &lt;iostream&gt;
+#include &lt;vector&gt;
+
+#include &lt;opencv2/opencv.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;opencv2/video/tracking.hpp&gt;
+#include &lt;opencv2/legacy/legacy.hpp&gt;
+
+using namespace std;
+
+#define drawCross( center, color, d )                  \
+  line( img, cv::Point( center.x - d, center.y - d ),           \
+    cv::Point( center.x + d, center.y + d ), color, 2, CV_AA, 0);   \
+  line( img, cv::Point( center.x + d, center.y - d ),           \
+    cv::Point( center.x - d, center.y + d ), color, 2, CV_AA, 0 )
+
+struct mouse_info_struct { int x,y; };
+struct mouse_info_struct mouse_info = {-1,-1}, last_mouse;
+
+vector&lt;cv::Point&gt; mouseV, particleV;
+int counter = -1;
+
+// Define this to proceed one click at a time.
+//#define CLICK 1
+#define PLOT_PARTICLES 1
+
+void on_mouse(int event, int x, int y, int flags, void* param) {
+#ifdef CLICK
+  if (event == CV_EVENT_LBUTTONUP) 
+#endif
+  {
+    last_mouse = mouse_info;
+    mouse_info.x = x;
+    mouse_info.y = y;
+    counter = 0;
+  }
+}
+
+int main (int argc, char * const argv[]) {
+  cv::Mat img(650, 650, CV_8UC3);
+  char code = (char)-1;
+
+  cv::namedWindow(&quot;mouse particle&quot;);
+  cv::setMouseCallback(&quot;mouse particle&quot;, on_mouse, 0);
+
+  cv::Mat_&lt;float&gt; measurement(2,1); 
+  measurement.setTo(cv::Scalar(0));
+
+  int dim = 2;
+  int nParticles = 25;
+  float xRange = 650.0;
+  float yRange = 650.0;
+
+  float minRange[] = { 0, 0 };
+  float maxRange[] = { xRange, yRange };
+  CvMat LB, UB;
+  cvInitMatHeader(&amp;LB, 2, 1, CV_32FC1, minRange);
+  cvInitMatHeader(&amp;UB, 2, 1, CV_32FC1, maxRange);
+
+  CvConDensation* condens = cvCreateConDensation(dim, dim, nParticles);
+
+  cvConDensInitSampleSet(condens, &amp;LB, &amp;UB);
+
+  // The OpenCV documentation doesn&#39;t tell you to initialize this
+  // transition matrix, but you have to do it.  For this 2D example, 
+  // we&#39;re just using a 2x2 identity matrix.  I&#39;m sure there&#39;s a slicker 
+  // way to do this, left as an exercise for the reader.
+  condens-&gt;DynamMatr[0] = 1.0;
+  condens-&gt;DynamMatr[1] = 0.0;
+  condens-&gt;DynamMatr[2] = 0.0;
+  condens-&gt;DynamMatr[3] = 1.0;
+
+  for(;;) {
+
+    if (mouse_info.x &lt; 0 || mouse_info.y &lt; 0) {
+      imshow(&quot;mouse particle&quot;, img);
+      cv::waitKey(30);
+      continue;
+    }
+
+    mouseV.clear();
+    particleV.clear();
+
+    for(;;) {
+      code = (char)cv::waitKey(100);
+
+      if( code &gt; 0 )
+    break;
+
+#ifdef CLICK
+      if (counter++ &gt; 0) {
+    continue;
+      } 
+#endif
+
+      measurement(0) = mouse_info.x;
+      measurement(1) = mouse_info.y;
+
+      cv::Point measPt(measurement(0),measurement(1));
+      mouseV.push_back(measPt);
+
+      // Clear screen
+      img = cv::Scalar::all(100);
+
+      for (int i = 0; i &lt; condens-&gt;SamplesNum; i++) {
+
+    float diffX = (measurement(0) - condens-&gt;flSamples[i][0])/xRange;
+    float diffY = (measurement(1) - condens-&gt;flSamples[i][1])/yRange;
+
+    condens-&gt;flConfidence[i] = 1.0 / (sqrt(diffX * diffX + diffY * diffY));
+
+    // plot particles
+#ifdef PLOT_PARTICLES
+    cv::Point partPt(condens-&gt;flSamples[i][0], condens-&gt;flSamples[i][1]);
+    drawCross(partPt , cv::Scalar(255,0,255), 2);
+#endif
+
+      }
+
+      cvConDensUpdateByTime(condens);
+
+      cv::Point statePt(condens-&gt;State[0], condens-&gt;State[1]);
+      particleV.push_back(statePt);
+
+      // plot points
+      drawCross( statePt, cv::Scalar(255,255,255), 5 );
+      drawCross( measPt, cv::Scalar(0,0,255), 5 );
+
+      for (int i = 0; i &lt; mouseV.size() - 1; i++) {
+    line(img, mouseV[i], mouseV[i+1], cv::Scalar(255,255,0), 1);
+      }
+      for (int i = 0; i &lt; particleV.size() - 1; i++) {
+    line(img, particleV[i], particleV[i+1], cv::Scalar(0,255,0), 1);
+      }
+
+      imshow( &quot;mouse particle&quot;, img );
+    }
+
+    if( code == 27 || code == &#39;q&#39; || code == &#39;Q&#39; )
+      break;
+  }
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/1205">Tom Sgouros</a> on 2013-02-15 07:42:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This question is not at all related to ROS, so it does not belong here. Try <a href="http://answers.opencv.org/questions/">http://answers.opencv.org/questions/</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2573">georgebrindeiro</a> on 2013-02-15 08:21:36 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

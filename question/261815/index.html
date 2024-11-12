@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How can I access all static TF2 transforms? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/261815">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How can I access all static TF2 transforms?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80835/how-can-i-access-all-static-tf2-transforms">https://robotics.stackexchange.com/questions/80835/how-can-i-access-all-static-tf2-transforms</a>.</p>
+        <p>I have two nodes who each publish a single static TF2 transform (each with a different child frame) via tf2_ros.StaticTransformBroadcaster.sendTransform upon startup.  These are essentially configuration-based transforms; they never change for the entire roscore session.  When I later go to read/use these transforms, only one of the two is available (the one which happened to be published second).  <strong>How can I get access to both of them?</strong></p>
+
+<p>It seems that the StaticTransformBroadcaster merely publishes a tf2<em>msgs/TFMessage to /tf</em>static, and by the nature of topics, any previously-latched message is thereby destroyed for future subscribers of that topic.  I would have expected StaticTransformBroadcaster to do something more sophisticated -- like: 1) subscribe to /tf_static and receive any existing latched TFMessage 2) whenever a new transform is sent (via StaticTransformBroadcaster.sendTransform), append the new transform to the existing transforms on the latched message it had already received and then 3) publish the union TFMessage to the topic.  I suppose I can write this myself, but what is the anticipated use case for the existing StaticTransformBroadcaster?  Use only in systems with a single place that ever publishes static transforms, and only ever publishes all static transforms at once?  That seems very narrow and I don&#39;t see any documentation regarding these limitations apart from reading the source code.</p>
+
+<p>Here is a complete Python script to demo the issue:</p>
+
+<pre><code>import rospy
+import tf2_ros
+import geometry_msgs.msg
+
+rospy.init_node(&#39;tf_test&#39;)
+
+br = tf2_ros.StaticTransformBroadcaster()
+t = geometry_msgs.msg.TransformStamped()
+t.header.stamp = rospy.Time.now()
+t.header.frame_id = &quot;world&quot;
+t.child_frame_id = &quot;static_camera1&quot;
+t.transform.translation.z = 1
+t.transform.rotation.w = 1
+br.sendTransform(t)
+
+br2 = tf2_ros.StaticTransformBroadcaster()
+t2 = geometry_msgs.msg.TransformStamped()
+t2.header.stamp = rospy.Time.now()
+t2.header.frame_id = &quot;world&quot;
+t2.child_frame_id = &quot;static_camera2&quot;
+t2.transform.translation.x = 1
+t2.transform.rotation.w = 1
+br2.sendTransform(t2)
+
+rospy.spin()
+</code></pre>
+
+<p>With that script running, start RViz and add TF.  Observe that only static<em>camera2 is visible and static</em>camera1 is hidden.  Confirm that the information for static_camera1 is not present in the topic with</p>
+
+<pre><code>rostopic echo /tf_static
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/30235">BJP</a> on 2017-05-15 15:03:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Since it&#39;s a latched topic it&#39;s recommended to only have one Static Transform Publisher per process.</p>
+
+<p>You can resolve this by sending multiple transforms at once via a single broadcaster.</p>
+
+<p><code>br.sendTransform([t,t2])</code></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2017-05-16 18:59:09 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>That works when t and t2 are generated in a single process, but what about when they are generated in two separate nodes (two separate processes) as in the question? (the demo code is in a single node for brevity)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30235">BJP</a> on 2017-05-17 09:58:56 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>EDIT: This original answer is invalid because the treatment of multiple publishers within a node is different than the treatment of multiple publishers in different nodes (<a href="https://github.com/ros/ros_comm/issues/146">https://github.com/ros/ros_comm/issues/146</a>).  When the StaticTransformBroadcasters are actually put in separate nodes, both TFMessages are sent upon subscription to the topic.</p>
+
+<h2>ORIGINAL:</h2>
+
+<p>The other answer to this question does not support the requested use case of two nodes publishing (different) static transforms.  I solved this problem by writing my own StaticTransformManager to entirely replace tf2_ros.StaticTransformBroadcaster.  If all nodes use StaticTransformManager below instead of tf2_ros.StaticTransformBroadcaster, all static transforms will be available rather than just the most recently-published set.  This is accomplished by having the StaticTransformManager read all currently-available transforms from /tf_static and then including those transforms when it publishes a new transform on the same topic.</p>
+
+<p>Note that the preferred way to get an instance of StaticTransformManager is to call StaticTransformManager.getManager() rather than the constructor since there is no reason to have multiple instances of the underlying rospy.Subscriber and rospy.Publisher in a single node.</p>
+
+<pre><code>import rospy
+from geometry_msgs.msg import TransformStamped
+from tf2_msgs.msg import TFMessage
+from threading import Lock, Event
+
+mgr = None
+
+class StaticTransformManager:
+    @staticmethod
+    def getManager():
+        global mgr
+        if mgr is None:
+            mgr = StaticTransformManager()
+        return mgr
+
+    def __init__(self):
+        # A cache of child_frame_id -&gt; StampedTransform with that child_frame_id
+        self.transforms = dict()
+        self.transforms_lock = Lock()
+
+        # Information about an expected incoming transform and a callback to indicate it was received
+        self.expected_message = None
+        self.expected_message_lock = Lock()
+
+        self.subscriber = rospy.Subscriber(&quot;/tf_static&quot;, TFMessage, callback=self._onNewTransformSet, queue_size=10)
+        self.broadcaster = rospy.Publisher(&quot;/tf_static&quot;, TFMessage, queue_size=1, latch=True)
+
+    def _onNewTransformSet(self, msg):
+        # See if the incoming message contains the transform we&#39;re expecting from ourself
+        with self.expected_message_lock:
+            e = self.expected_message
+            # Check if we&#39;re expecting a transform
+            if e is not None:
+                # Check if the received transform matches the one we&#39;re expecting
+                tr = e[1]
+                if any([t.header.seq == tr.header.seq and t.header.stamp.secs == tr.header.stamp.secs and t.header.stamp.nsecs == tr.header.stamp.nsecs for t in msg.transforms]):
+                    # This message contains the expected transform
+                    e = e[0]
+                    self.expected_message = None
+                else:
+                    # This message does not contain the expected transform
+                    e = None
+
+        # Overwrite the appropriate transforms in the local cache
+        with self.transforms_lock:
+            for transform in msg.transforms:
+                self.transforms[transform.child_frame_id] = transform
+
+        # Confirm that the expected message has been processed
+        if e is not None:
+            e.set()
+
+    def updateTransform(self, t):
+        assert(isinstance(t, TransformStamped))
+
+        # Update our local cache of transforms and create a new message containing the entire set of transforms
+        msg = TFMessage()
+        with self.transforms_lock:
+            self.transforms[t.child_frame_id] = t
+            msg.transforms = list([self.transforms[child_frame_id] for child_frame_id in self.transforms])
+
+        # Keep trying to slot in our outgoing message as an anticipated incoming message
+        while True:
+            with self.expected_message_lock:
+                if self.expected_message is None:
+                    received_message_back = Event()
+                    self.expected_message = (received_message_back, t)
+                    break
+
+        # Actually release the transform set update as a latched message
+        self.broadcaster.publish(msg)
+
+        # Wait until we receive our own message back
+        if not received_message_back.wait(5):
+            rospy.logerr(&quot;StaticTransformManager did not receive its own message after publishing it on /tf_static&quot;)
+            raise Exception()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30235">BJP</a> on 2017-05-22 10:14:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

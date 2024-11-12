@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Under what circumstances will actionlib not mark a MoveBaseGoal as successful? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/240877">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Under what circumstances will actionlib not mark a MoveBaseGoal as successful?</h2>
+      <div class="question">
+        <p>I&#39;m using a <a href="http://wiki.ros.org/actionlib_tutorials/Tutorials/Writing%20a%20Simple%20Action%20Client%20(Python)">SimpleActionClient</a> to issue MoveBaseGoals to an instance of <a href="http://wiki.ros.org/move_base">/move_base</a> in a flat outdoor environment. If I have the &quot;xy_tolerance&quot; parameter for <a href="http://wiki.ros.org/base_local_planner?distro=kinetic">base<em>local</em>planner</a> set to ~0.35m or larger then everything works well without any problems. However, If I reduce the tolerance to 0.25m in an effort to improve navigational accuracy, actionlib stops recognising that it has successfully reached the goal - even if it is repeatably within this tolerance in both the X,Y and Z axis (not that there is a vertical tolerance from what I understand). See below for an example bag file</p>
+
+<p>In this case, the state of the goal remains stuck on &#39;1&#39; (labelled as ACTIVE) and will remain that way indefinitely until I manually cancel it. </p>
+
+<p>So my question is: since all I have changed to cause this behaviour is &quot;xy_tolerance&quot;, are there any hidden conditions that must be fulfilled for actionlib to move the state from 1 (ACTIVE) to 3 (SUCCEEDED) other than getting the robot within this distance of the goal point? Or am I likely just hitting the limit on how accurate ROS can be in an outdoor environment? The GPS I&#39;m using is accurate to 20mm, as is the global fused data (verified experimentally).</p>
+
+<p>I&#39;m aware that there are a few other questions that address this issue. However, for the most part they seem to experience this problem regardless, whereas I only see it if I lower &quot;xy_tolerance&quot;. So I believe the causes may be different.</p>
+
+<p>Any help or advice is appreciated.</p>
+
+<p><strong>UPDATE 1:</strong> I must have been using a slightly older version of move_base and actionlib because I recently updated all my ROS packages and now the goal detection is significantly worse, to the point where it almost never correctly detects if it&#39;s reached the goal point, even if it&#39;s well within tolerance.</p>
+
+<p><strong>UPDATE 2:</strong> As suggested by @David Lu I increased the yaw to Pi (3.14) and conducted a test run. While the larger yaw tolerance significantly increased the rate of goals being successfully recognised, there were still several instances where the robot was within both the X,Y <em>and</em> yaw tolerances and yet it <em>still</em> didn&#39;t correctly recognise reaching the goal. I&#39;ll upload the bag file shortly.</p>
+
+<p>I&#39;ve looked through the source code for the internal goal check (<a href="http://docs.ros.org/jade/api/base_local_planner/html/goal__functions_8cpp_source.html">goal_functions.cpp</a>) and I noticed that the function checks the last pose in the global path (which is just an array of poses) against the current global position, whereas I&#39;m using the original goal sent to the robot vs the current global position. So is it possible that the global path could have been re-calculated and ended up with a goal pose in a different place to the original?</p>
+
+<p><strong>UPDATE 3:</strong> As per @David Lu&#39;s suggestion (thanks for the help again!) I checked the end of the global path and the current goal:</p>
+
+<ul>
+<li>/move<em>base/current</em>goal</li>
+<li>/move<em>base/TrajectoryPlannerROS/global</em>plan</li>
+</ul>
+
+<p>Both almost perfectly match the goal I originally send to the SimpleActionServer (maybe out by 1mm) and if I&#39;ve read the source code right, actionlib checks the global path to see if it&#39;s reached the goal (rather than say checking the local path). So it&#39;s definitely reaching the goal, even by actionlib&#39;s own standards.</p>
+
+<p><strong>UPDATE 4:</strong> I don&#39;t think I&#39;ve solved the problem, but I&#39;ve learned a bit more about what&#39;s going on with my specific system. As mentioned, I&#39;m using a SimpleActionServer/Client to issue move goals to an instance of the /move<em>base node. All my goals are issued in the global /map frame (which fuses GPS data so It&#39;s accurate over long distances). By default the /move</em>base node plots a global path in the /map frame, but it plots the local path and issues move commands in the /odom frame, which is inaccurate and can drift quite badly over long distances. </p>
+
+<p>The kicker is, even if you issue a move goal in the /map frame, <strong>that will not necessarily be the goal the robot attempts to reach</strong>. The /move_base node deals with two goal related topics:</p>
+
+<ul>
+<li><strong>/move_base/goal</strong> The /move<em>base node publishes and subscribes to this topic, and this is the topic you or the SimpleActionServer can publish to in order to issue a move goal to the /move</em>base node. This should therefore always match the goal <strong>you as the user want the robot to reach.</strong></li>
+<li><strong>/move<em>base/current</em>goal</strong> This is a PoseStamped message that <strong>contains the goal the robot is actually trying to reach</strong> <em>after</em> it has been converted to the /odom frame. So if there is any drift between the /map and /odom frame, this goal will actually be in a different location. Also, from what I&#39;ve seen, this is the point that move_base node and the SimpleActionServer check to see if they got to within the required tolerance. </li>
+</ul>
+
+<p>So if the robot is within the tolerance of the goal specified in /move<em>base/current</em>goal it will mark the goal as succeeded, regardless of the distance to the goal you actually specified in /move_base/goal. I&#39;ve only roughly checked all this so I could be wrong or it could be something specific to my system. But hopefully it helps. </p>
+
+<p>The navigation parameters can be changed, so I&#39;ve changed the global<em>frame</em>id for the <a href="http://wiki.ros.org/base_local_planner?distro=kinetic">base<em>local</em>planner</a> from /odom to /map. This forces the local planner to operate in the /map frame, so the goal should be the same in both topics. After making this change I&#39;ve noticed a big improvement, its not perfect but most of the time it correctly marks the goal as succeeded if it got within tolerance. I still find that the local path drifts quite a bit, so my robot no longer travels in straight lines but that problem may be unrelated.</p>
+
+<h2>System Information</h2>
+
+<ul>
+<li><strong>OS:</strong> Ubuntu 14.04 (laptop), ROS Indigo Igloo (robot)</li>
+<li><strong>Robot:</strong> Clearpath Robotics Jackal UGV (real, not simulated)</li>
+<li><strong>Sensors:</strong> IMU, wheel encoders, high accuracy RTK GPS </li>
+<li><strong>Localization:</strong> package used is <a href="http://wiki.ros.org/robot_localization">robot_localization</a>. IMU and encoder data is fused in the /odom frame. IMU, encoder and GPS data is fused in the /map frame - this is the frame /move_base uses for navigation. I can provide the specific launch files if requested.</li>
+<li><strong>Navigation:</strong> I use the <a href="http://wiki.ros.org/jackal_navigation">jackal_navigation</a> package (version 2.2.2) to set up my navigation stack. I use the <a href="https://github.com/jackal/jackal/blob/indigo-devel/jackal_navigation/launch/odom_navigation_demo.launch">odom<em>navigation</em>demo.launch</a> file with the only changes being that I&#39;ve changed &quot;xy_tolerance&quot; as described above, and increased the size of my costmap to 120x120m. I&#39;ve also written my own SimpleActionClient which I use to issue move goals in the /map frame.</li>
+<li><strong>Frame tree:</strong> <a href="https://drive.google.com/open?id=0B1KZT92BcdVNYlZTT1JUc0VBYW8">tree</a></li>
+<li><strong>Example of error:</strong> <a href="https://drive.google.com/open?id=0B1KZT92BcdVNSGRiNEpTeUFmelE">example_data.bag</a>, I can provide an example of working data if requested.</li>
+</ul>
+
+        <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-08-02 00:07:00 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@David Lu?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-08-05 10:39:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I watched the bag and have no solid answers. Initial thought: what happens if you increase the yaw_tolerance to Pi? <a href="https://github.com/ros-planning/navigation/blob/jade-devel/base_local_planner/src/trajectory_planner_ros.cpp#L422">https://github.com/ros-planning/navigation/blob/jade-devel/base_local_planner/src/trajectory_planner_ros.cpp#L422</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19">David Lu</a> on 2016-08-06 13:50:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ll give it a shot and post the results as soon as I can. Thing is though, the robot never gets to the &quot;rotateToGoal&quot; part. So I think the error is in detecting that it&#39;s reached the correct X,Y,Z position.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-08-07 17:16:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Is there an appreciable difference between the end of the global path and the pose you sent?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19">David Lu</a> on 2016-08-21 17:36:44 UTC</p></div>
+</div>
+<div class="comment">
+              <p>That&#39;s exactly what I&#39;m wondering, because the path is essentially an array of poses, and the path is periodically re-plotted so it may well change. I&#39;ve gotten sidetracked with a different problem, but I fully intend to compare the original goal to the end of the path/current position ASAP.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-08-21 17:56:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Nope, almost no difference whatsoever. Doesn&#39;t matter if it&#39;s the end of the global pose or the pose in the /move_base/current_goal topic. They all match the goal I send.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-08-21 23:50:46 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hello @M@t , did you find a solution to your problem ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27848">Kiwa21</a> on 2016-09-19 12:18:28 UTC</p></div>
+</div>
+<div class="comment">
+              <p>No I haven&#39;t sorry, I&#39;ve been distracted by other aspects of my project/health issues so I simply haven&#39;t had the time to look into it further. I&#39;ll keep chipping away at it as and when I can though.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-09-20 15:54:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@M@t did u find a solution?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20666">dottant</a> on 2016-10-25 09:43:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve been bogged down with other work so I simply haven&#39;t had the time to properly work on this. I have found some improvements so I&#39;ve updated the question. TL;DR: try changing global_frame_id from /odom to /map in the base_local_planner parameters. Let me know if it helps you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-10-26 15:23:54 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

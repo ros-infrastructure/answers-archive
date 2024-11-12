@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>abb_robot_driver: Could not switch controllers. The hardware interface combination for the requested controllers is unfeasible. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/393116">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>abb_robot_driver: Could not switch controllers. The hardware interface combination for the requested controllers is unfeasible.</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I&#39;m trying to tweak <a href="https://gitlab.inria.fr/auctus/panda/velocity_qp">Velocity_QP</a> velocity controller to work with ABB YuMi as <a href="https://answers.ros.org/question/392956/how-to-interface-abb_robot_driver-with-a-high-level-velocity-controller/?answer=392960#post-id-392960">explained here</a>, at least one arm at the beginning.
+What I have tried so far is:</p>
+
+<ol>
+<li><p>Changing <code>config/velocity_qp.yaml</code> to look like this:</p>
+
+<pre><code>velocity_qp:
+     type: velocity_qp/YuMiController
+     arm_id: left_arm
+     joint_names:
+        - yumi_robl_joint_1
+        - yumi_robl_joint_2
+        - yumi_robl_joint_3
+        - yumi_robl_joint_4
+        - yumi_robl_joint_5
+        - yumi_robl_joint_6
+        - yumi_robl_joint_7
+     control_level : velocity
+     tip_link : &quot;gripper_l_finger_r&quot;
+     p_gains: [10, 10, 10, 10, 10, 10] 
+     p_gains_qd: [5, 5, 5, 5, 5, 5, 5] 
+     q_mean : [0.01 , -0.875, 0.0, -0.355, 0.0, 0.435, 0.0] # mean pos in radian
+     #  qdd_max : [15 , 7.5 , 10 , 12.5 , 15 , 20 , 20] # max acceleration, yumi has max vel, but not max ACC!
+     regularisation_weight : 1.0e-5
+</code></pre></li>
+<li><p>I changed the <code>include/velocity_qp/robot/panda_control.h</code> header to be <code>include/velocity_qp/robot/yumi_control.h</code>
+and look like:</p>
+
+<pre><code>#ifndef VELOCITY_QP_H
+#define VELOCITY_QP_H
+
+#pragma once
+
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;vector&gt;
+#include &lt;iostream&gt;
+#include &lt;fstream&gt;
+#include &lt;controller_interface/multi_interface_controller.h&gt;
+#include &lt;hardware_interface/joint_command_interface.h&gt;
+#include &lt;hardware_interface/robot_hw.h&gt;
+#include &lt;abb_egm_hardware_interface/egm_hardware_interface.h&gt;
+#include &lt;ros/node_handle.h&gt;
+#include &lt;ros/time.h&gt;
+#include &lt;velocity_qp/controller/controller.h&gt;
+
+namespace velocity_qp {
+
+class YuMiController : public controller_interface::MultiInterfaceController&lt;hardware_interface::VelocityJointInterface&gt;{  
+
+public:
+    /**
+    * @brief ABB YuMi initialization routine
+    */
+    bool init(abb::robot::EGMHardwareInterface*, ros::NodeHandle &amp;) override;
+
+    /**
+    * @brief ABB YuMi starting routine
+    */
+    void starting(const ros::Time&amp;) override;
+
+    /**
+    * @brief ABB YuMi stopping routine
+    */
+    void stopping(const ros::Time&amp;) override;
+
+    /**
+    * @brief ABB YuMi controller update routine
+    */
+    void update(const ros::Time&amp;, const ros::Duration&amp;) override;
+
+private:
+    Controller::Controller qp;
+
+    hardware_interface::VelocityJointInterface* velocity_joint_interface_;
+    // hardware_interface::PositionJointInterface* position_joint_interface_;
+
+    std::vector&lt;hardware_interface::JointHandle&gt; velocity_joint_handles_;
+    // std::vector&lt;hardware_interface::JointHandle&gt; position_joint_handles_;
+
+    std::string control_level = &quot;velocity&quot;;
+    std::vector&lt;std::string&gt; joint_names_;
+    int num_joints_;
+};
+
+}  // namespace velocity_qp
+
+#endif // VELOCITY_QP_H
+</code></pre></li>
+<li><p>Also I changed the source file <code>src/robot/panda_control.cpp</code> to be <code>src/robot/yumi_control.cpp</code>:</p>
+
+<pre><code>#include &lt;velocity_qp/robot/yumi_control.h&gt;
+#include &lt;cmath&gt;
+#include &lt;chrono&gt; 
+#include &lt;controller_interface/controller_base.h&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+#include &lt;ros/ros.h&gt;
+
+using namespace std;
+
+namespace velocity_qp{
+
+bool YuMiController::init(abb::robot::EGMHardwareInterface* robot_hw, ros::NodeHandle&amp; nh) {    
+
+// get joint names from the parameter server
+if (!nh.getParam(&quot;joint_names&quot;, joint_names_)) {
+    ROS_ERROR(&quot;yumi_control: Could not parse joint names&quot;);
+}
+
+num_joints_ = joint_names_.size();
+
+// Check Joint number
+if (num_joints_ &lt; 1) {
+    ROS_ERROR_STREAM(&quot;yumi_control: Zero joint names&quot;);
+    return false;
+}
+
+velocity_joint_interface_ = robot_hw-&gt;get&lt;hardware_interface::VelocityJointInterface&gt;();
+// position_joint_interface_ = robot_hw-&gt;get&lt;hardware_interface::PositionJointInterface&gt;();
+
+for (size_t i = 0; i &lt; num_joints_; ++i)
+{   
+    try
+    {
+        velocity_joint_handles_[i] = velocity_joint_interface_-&gt;getHandle(joint_names_[i]);
+        // position_joint_handles_[i] = position_joint_interface_-&gt;getHandle(joint_names_[i]);
+    }
+    catch (const hardware_interface::HardwareInterfaceException &amp;ex)
+    {
+        ROS_ERROR_STREAM(
+            &quot;yumi_control: Exception getting joint handles: &quot; &lt;&lt; ex.what());
+        return false;
+    }
+
+    return true;
+
+    Eigen::VectorXd q_init, qd_init;
+
+    q_init.resize(num_joints_);
+    qd_init.resize(num_joints_);
+
+    //Get robot current state
+    for (int i = 0; i &lt; num_joints_; i++)
+    {
+        q_init(i)  = velocity_joint_handles_[i].getPosition();
+        qd_init(i) = velocity_joint_handles_[i].getVelocity();
+    }
+
+    qp.init(nh, q_init, qd_init);
+
+}
+return true;}
+
+ void YuMiController::starting(const ros::Time&amp;)
+ {ROS_WARN_STREAM(&quot;Starting QP Controller on the real YuMi&quot;);}
+
+void YuMiController::stopping(const ros::Time&amp;)
+{ROS_WARN_STREAM(&quot;Stopping QP Controller on the real YuMi&quot;);}
+
+void YuMiController::update(const ros::Time&amp;, const ros::Duration&amp; period) {    
+
+//--------------------------------------
+// ROBOT STATE
+//--------------------------------------
+
+Eigen::VectorXd q_,qd_;
+q_.resize(num_joints_);
+qd_.resize(num_joints_);
+//Get robot current state
+for (int i =0 ; i&lt;num_joints_ ; i++)
+{
+    // velocity_joint_interface_-&gt;registerHandle(velocity_joint_handles_[i]);
+    q_(i) = velocity_joint_handles_[i].getPosition();
+    qd_(i) = velocity_joint_handles_[i].getVelocity(); 
+}
+// registerInterface(&amp;velocity_joint_interface_);
+Eigen::VectorXd joint_command_;
+joint_command_.resize(num_joints_);
+joint_command_ = qp.update(q_,qd_,period);
+
+if (control_level == &quot;velocity&quot;)
+{
+    for (size_t i = 0; i &lt; num_joints_; ++i)
+    {
+        velocity_joint_handles_[i].setCommand(joint_command_(i));
+    }
+ }
+
+    if (control_level == &quot;position&quot;)
+{
+    cout &lt;&lt; &quot;Not Implemented Yet!&quot; &lt;&lt; endl;
+    // for (size_t i = 0; i &lt; num_joints_; ++i)
+    // {
+    //     position_joint_handles_[i].setCommand(joint_command_(i));
+    // }
+}}}  // namespace velocity_qp
+
+PLUGINLIB_EXPORT_CLASS(velocity_qp::YuMiController,
+controller_interface::ControllerBase)
+</code></pre></li>
+<li><p>changed the <code>run.launch</code> file to be:</p>
+
+<pre><code> &lt;?xml version=&quot;1.0&quot; ?&gt;
+ &lt;launch&gt;
+ &lt;arg name=&quot;rviz&quot; default=&quot;true&quot; /&gt;
+ &lt;param name=&quot;rviz&quot; value=&quot;$(arg rviz)&quot; /&gt;
+
+&lt;!-- NameSpace --&gt;
+&lt;arg name=&quot;namespace&quot; default=&quot;/yumi/egm&quot; /&gt;
+&lt;param name=&quot;namespace&quot; value=&quot;$(arg namespace)&quot; /&gt;
+
+&lt;arg name=&quot;robot_ip&quot; default=&quot;192.168.125.1&quot; /&gt;
+
+&lt;!-- Load velocity_qp controllers --&gt;
+&lt;rosparam command=&quot;load&quot; file=&quot;$(find velocity_qp)/config/velocity_qp.yaml&quot;/&gt;
+&lt;rosparam command=&quot;load&quot; file=&quot;$(find velocity_qp)/config/velocity_qp.yaml&quot; ns=&quot;$(arg namespace)&quot;/&gt;
+
+&lt;!-- load the robot_description parameter before launching ROS-I nodes --&gt;
+&lt;param name=&quot;robot_description&quot; command=&quot;$(find xacro)/xacro &#39;$(find yumi_description)/urdf/yumi.urdf.xacro&#39;&quot; /&gt;
+
+&lt;!-- Run ABB Driver --&gt;
+&lt;include file=&quot;$(find abb_robot_bringup_examples)/launch/ex3_rws_and_egm_yumi_robot.launch&quot; &gt;
+    &lt;arg name=&quot;robot_ip&quot; value=&quot;$(arg robot_ip)&quot;/&gt;
+&lt;/include&gt;
+
+&lt;!-- Vel Controller --&gt;
+&lt;node pkg=&quot;controller_manager&quot; type=&quot;spawner&quot; name=&quot;qp_stopped&quot; args=&quot;--stopped velocity_qp&quot; ns=&quot;$(arg namespace)&quot;/&gt;
+
+&lt;!-- Joint state and robot state publisher calls --&gt;
+&lt;node name=&quot;yumi_joint_state_publisher&quot; pkg=&quot;joint_state_publisher&quot; type=&quot;joint_state_publisher&quot; &gt;
+    &lt;rosparam param=&quot;source_list&quot;&gt;[&quot;/yumi/rws/joint_states&quot;]&lt;/rosparam&gt;
+&lt;/node&gt; 
+
+&lt;!-- publish the robot state (tf transforms) --&gt;
+&lt;node name=&quot;robot_state_publisher&quot; pkg=&quot;robot_state_publisher&quot; type=&quot;robot_state_publisher&quot; output=&quot;screen&quot;/&gt;
+
+&lt;!-- == RViz == --&gt;
+&lt;group if=&quot;$(arg rviz)&quot;&gt;
+    &lt;node name=&quot;rviz&quot; pkg=&quot;rviz&quot; type=&quot;rviz&quot; args=&quot;-d $(find velocity_qp)/launch/yumi.rviz&quot;/&gt;
+&lt;/group&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>And I have done the corresponding changes to the <code>CMakeLists.txt</code>, and the <code>packages.xml</code> files to compile it correctly.</p></li>
+</ol>
+
+<h2>My problem:</h2>
+
+<p>At this step I can&#39;t switch the controller as it can&#39;t claim the resources (joints), and I don&#39;t know why! I&#39;m getting this error: 
+<code>Could not switch controllers. The hardware interface combination for the requested controllers is unfeasible.</code></p>
+
+<p>when I list the controllers I can see:</p>
+
+<pre><code>name: &quot;velocity_qp&quot;
+    state: &quot;initialized&quot;
+    type: &quot;velocity_qp/YuMiController&quot;
+    claimed_resources: 
+      - 
+        hardware_interface: &quot;hardware_interface::VelocityJointInterface&quot;
+        resources: []
+</code></pre>
+
+<p>Can you please tell me how I can make the controller claim the resources correctly? thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2021-12-20 13:59:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>There is a chance this is caused by EGM not being active yet, in which case <code>abb_robot_driver</code> will refuse to start (new) controllers.</p>
+
+<p>If that&#39;s the case, I would expect you see an error similar to the following in the console where you started <code>abb_robot_driver</code>:</p>
+
+<blockquote>
+<p>EGM is inactive! Refusing to start controller(s): [..]</p>
+</blockquote>
+
+<p>or</p>
+
+<blockquote>
+<p>EGM is active, but not in running mode (i.e. listening for command references)! Refusing to start controller(s): [..]</p>
+</blockquote>
+
+<p>can you check?</p>
+
+<hr>
+
+<p>Edit: I&#39;ve updated the title of your question to more accurately reflect what you are observing. Previously, you asked a question about a potential cause. It&#39;s better to ask about the &#39;symptoms&#39;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-12-21 04:01:44 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn Actually while other velocity controller types <code>velocity_controllers/JointTrajectoryController, velocity_controllers/JointGroupVelocityController</code> were able to load and claim the resources, <code>velocity_qp</code> velocity controller was able to load, but not able to claim the resources, I&#39;m not getting any error with EGM, neither <code>EGM is inactive! Refusing to start controller(s): [..]</code> nor <code>EGM is active, but not in running mode</code>, actually I&#39;m getting this error: <code>Could not switch controllers. The hardware interface combination for the requested controllers is unfeasible.</code> only while I try to switch the controller.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2021-12-21 05:22:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hello I&#39;m having the same issue, did you find a fix?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126182">DoubleA7</a> on 2022-12-06 00:39:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@DoubleA7 Can you check if the controller is loaded, running, able to claim the resources? and you have the EGM client PC (and of course EGM License) on the correct IP ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2022-12-06 05:32:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@bhomaidan EGM doesn&#39;t seem to turn on, I&#39;m getting an error on the flexpendant saying no data from UdpUc device.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126182">DoubleA7</a> on 2022-12-09 11:36:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@DoubleA7 then you might need to read this <a href="https://github.com/ros-industrial/abb_robot_driver/blob/master/abb_rws_state_publisher/README.md#troubleshooting">troubleshooting</a> section.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2022-12-09 11:53:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hey @bhomaidan, thanks for the help and patience, but,
+This did not solve the problem, RWS is running, and connected (Which tells me IP is right and I ran it from a browser), for some reason EGM service does not run. </p>
+
+<p><a href="https://justpaste.it/beq55">I get this when I list controllers</a>
+Says the controller is initialised but not running.</p>
+
+<p><a href="https://justpaste.it/crop8">The main moveit log</a></p>
+
+<p><a href="https://justpaste.it/3b1rv">This is the rostopic echo -c /yumi/egm/egm_states reading</a>
+Even if I run the following commands:</p>
+
+<pre><code>rosservice call /yumi/rws/sm_addin/start_egm_joint &quot;{}&quot;
+rosservice call /yumi/egm/controller_manager/switch_controller &quot;start_controllers:  
+[jnt_traj_vel_controller]
+stop_controllers: [&#39;&#39;]
+strictness: 3
+start_asap: false
+timeout: 0.0&quot;
+</code></pre>
+
+<p>At this point I think it&#39;s likely a problem I&#39;ve not anticipated to do with ROS or MoveIt or something I&#39;m not so experienced with. </p>
+
+<p>I&#39;m trying to run both arms at the same time via a piece of code that reads positions</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126182">DoubleA7</a> on 2022-12-12 16:44:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@bhomaidan, hello, 
+I forced the controller to be on, but it&#39;s something to do with the EGM connection.
+I fixed the Udpuc error by changing the port on robotstudio.
+On the terminal it says that 
+<code>Timed out while waiting for EGM feedback (did the EGM session end on the robot controller?)</code>
+the ROSTopic /yumi/egm/emg_states says that EGM is not active on either channel. </p>
+
+<p>So now, the jnt_traj_vel_controller is working and even reading desired positions, but the robot does not move. EGM appears to be inactive, however still sends that same message, implying it&#39;s actually active but not reporting to the rostopic.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126182">DoubleA7</a> on 2022-12-14 08:23:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@DoubleA7  did you buy the <a href="https://new.abb.com/products/3HAC054376-001/3hac054376-001">EGM License</a> from ABB?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2022-12-14 08:28:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@bhomaidan
+Yes, it worked before (a few months ago).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126182">DoubleA7</a> on 2022-12-14 08:52:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@DoubleA7 you need to reset the RAPID program pointers to main, and run the routines (please check that StateMachineAddin is installed), I use this <a href="https://gricad-gitlab.univ-grenoble-alpes.fr/pacbot_group/execution_pacbot/-/tree/main/yumi/yumi_motion_api">ros-package</a> to do that automatically</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2022-12-16 03:57:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just thought I&#39;d mention it here: <a href="https://github.com/sam-xl/abb_robot_driver_state_machine">sam-xl/abb_robot_driver_state_machine</a>. Might need some tweaking/extension for multi-motion-group systems though. See also the <a href="https://vimeo.com/showcase/9954564/video/767162098#t=35m10s">lightning talk at ROSCon22 about it</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-12-16 04:10:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@bhomaidan, I never figured it out, but I reinstalled the Robotware OS on the Yumi, and that fixed it (after all the ros config). Something must have been wrong with the rapid scripts / robot config. Just posting here in case someone comes looking for the same thing again. Thanks so much for your help.
+@gvdhoorn, thanks, I&#39;ll look into it. :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126182">DoubleA7</a> on 2022-12-16 10:41:10 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Huge delay in calling disconnect callback of an inactive publisher - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/12673">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Huge delay in calling disconnect callback of an inactive publisher</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/37155/huge-delay-in-calling-disconnect-callback-of-an-inactive-publisher">https://robotics.stackexchange.com/questions/37155/huge-delay-in-calling-disconnect-callback-of-an-inactive-publisher</a>.</p>
+        <p>Consider the following example:</p>
+
+<p><code></p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+
+void connectCallback(const ros::SingleSubscriberPublisher&amp;)
+{
+  ROS_INFO(&quot;connectCallback&quot;);
+}
+
+void disconnectCallback(const ros::SingleSubscriberPublisher&amp;)
+{
+  ROS_INFO(&quot;disconnectCallback&quot;);
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;test_node&quot;);
+  ros::NodeHandle nh;
+  ros::Publisher pub = nh.advertise&lt;std_msgs::String&gt;(&quot;talk&quot;, 1, &amp;connectCallback, &amp;disconnectCallback);
+  ros::Rate r(1);
+  while (nh.ok())
+  {
+    ROS_INFO(&quot;Number of subscribers: %zu&quot;, pub.getNumSubscribers());
+    ros::spinOnce();
+    r.sleep();
+  }
+  return 0;
+}
+</code></pre>
+
+<p></code></p>
+
+<p>When subscribing using <code>rostopic echo /talk</code>, <code>connectCallback</code> is called immediately. However, when shutting down the <code>rostopic</code> process, the reported number of subscribers is still 1 until <code>disconnectCallback</code> gets called about one minute later. Why? Is there any way to shorten this timeout?
+When the publisher is active (i.e. publishing something in the loop), <code>disconnectCallback</code> is called immediately.</p>
+
+<p>EDIT</p>
+
+<p>Here is another subscriber (different from <code>rostopic</code>) that I used for testing with the same result:
+<code></p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+
+void callback(const std_msgs::StringConstPtr&amp; msg)
+{
+  std::cout &lt;&lt; msg-&gt;data &lt;&lt; std::endl;
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;subscriber&quot;);
+  ros::NodeHandle nh;
+  ros::Subscriber sub = nh.subscribe(&quot;talk&quot;, 1, &amp;callback);
+
+  ros::Time start_time = ros::Time::now();
+  while (ros::ok() &amp;&amp; (ros::Time::now() - start_time).toSec() &lt; 10)
+  {
+    ros::spinOnce();
+  }
+  return 0;
+}
+</code></pre>
+
+<p></code></p>
+
+        <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2012-01-17 21:05:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@Lorenz: I tried that already, I&#39;ll edit the question to clarify this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2012-01-18 00:04:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would guess that the rostopic process does not shutdown correctly and after a minute, your node notices that the socket is invalid. I would write a simple roscpp node that subscribes, stays connected for a while and then shuts down. If that works, you know it&#39;s rostopic&#39;s fault.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21">Lorenz</a> on 2012-01-17 23:46:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I just tried using a self-made subscriber, same result.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2012-01-17 21:40:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>One guess would be that shutting down rostopic doesn&#39;t properly close the connection (although it should), so only when you try to publish the node realizes it&#39;s disconnected</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2012-01-17 21:21:29 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This is ticketed at <a href="https://code.ros.org/trac/ros/ticket/3403">https://code.ros.org/trac/ros/ticket/3403</a>. There I wrote:</p>
+
+<blockquote>
+<p>I&#39;ve noticed this issue with
+unsubscribe callbacks too. However,
+it&#39;s not true that they&#39;re never
+called; they <em>do</em> get called exactly
+60s after you subscribe.</p>
+
+<p>In practice this shouldn&#39;t normally be
+an issue. In each nodelet we use
+connect callbacks to control whether
+it hooks into a data source (camera or
+ROS topic). As long as it&#39;s getting
+data, it publishes some processed
+output. So if all subscribers to the
+output unsubscribe, the next call to
+publish() triggers the disconnect
+callback, which unhooks from the data
+source. So as long as you&#39;re streaming
+data, disconnects will be timely.</p>
+
+<p>It&#39;s still annoying and can cause odd
+behavior in practice - e.g. if the
+register nodelet doesn&#39;t get the tf
+data it needs, it can&#39;t publish(), so
+it takes the full 60s to disconnect.
+So I&#39;d like to see this fixed, or at
+least know why it happens.</p>
+</blockquote>
+
+<p>Generally this hasn&#39;t been an issue for us - if we need the disconnect callback called immediately, it&#39;s because we&#39;re shutting down a publisher that&#39;s continuously spewing data. Do you have a use case where you require a timely disconnect callback for an inactive publisher?</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/180">Patrick Mihelich</a> on 2012-01-18 09:30:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks Patrick, I&#39;ll mark your answer as accepted as the solution will come up in ticket 3403. Use case: a lazy node that subscribes to inputs if its output is needed and publishes dependent on the input data (object found). So if the object disappears, publish is not called. Similar to your tf ex.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2012-01-18 19:36:33 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I have updated Issue 3403 with a comment. Without having delved deep into the internals of roscpp, Maybe the reported issue might have something to do with the time a closed socket spends in the TIME_WAIT state, which is configured by the <strong>tcp_fin_timeout</strong> parameter, that defaults to 60s:</p>
+
+<pre><code>cat /proc/sys/net/ipv4/tcp_fin_timeout
+60
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2012-01-18 20:00:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

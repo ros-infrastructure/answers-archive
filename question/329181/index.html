@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>The `rospy.wait_for_message` method does not work in test case - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/329181">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>The `rospy.wait_for_message` method does not work in test case</h2>
+      <div class="question">
+        <p>I am trying to write some tests for my python node <code>my_node</code>. This node should start sending <code>Float64</code> messages with value <code>0.0</code> on the wheel command topics after it recieves a <code>MyMsg</code> message with a deflection field in z-axis set to higher than <code>0.005</code> (the threshold from param server). So I thought I would run the <code>my_node</code> node, create another node in the test file that would send this message with deflection exceeding the threshold, and then wait for the messages from the both wheel command topics and see if they are zero.</p>
+
+<p>I have confirmed that the <code>my_node</code> is running. The threshold parameter is on the param server and is read by the <code>my_node</code>. Also the wheels command topics are present in <code>rospy.get_published_topics(&#39;my_robot&#39;)</code> list. The test runs as expected until it gets to the <code>rospy.wait_for_message</code> where it gets stucked and the test ends with an error on the timeout.</p>
+
+<p>It seems to me like this should work (the whole test script is shown below). Can you see any reason why this does not work? Or how to debug further? </p>
+
+<p>the error:</p>
+
+<pre><code>Traceback (most recent call last):
+  File &quot;/home/linux/catkin_ws/src/my_package/tests/scripts/test_my_node.py&quot;, line 103, in &lt;module&gt;
+    rosunit.unitrun(&#39;my_package&#39;, &#39;test_my_node&#39;, TestMyNode)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rosunit/pyunit.py&quot;, line 99, in unitrun
+    result = create_xml_runner(package, test_name, result_file).run(suite)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rosunit/xmlrunner.py&quot;, line 261, in run
+    test(result)
+  File &quot;/usr/lib/python2.7/unittest/suite.py&quot;, line 70, in __call__
+    return self.run(*args, **kwds)
+  File &quot;/usr/lib/python2.7/unittest/suite.py&quot;, line 108, in run
+    test(result)
+  File &quot;/usr/lib/python2.7/unittest/case.py&quot;, line 393, in __call__
+    return self.run(*args, **kwds)
+  File &quot;/usr/lib/python2.7/unittest/case.py&quot;, line 329, in run
+    testMethod()
+  File &quot;/home/linux/catkin_ws/src/my_package/tests/scripts/test_my_node.py&quot;, line 89, in test_stop_messages_were_sent
+    left_wheel_msg = rospy.wait_for_message(&#39;/my_robot/joint_rear_left_wheel_controller/command&#39;, Float64)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/client.py&quot;, line 426, in wait_for_message
+    raise rospy.exceptions.ROSInterruptException(&quot;rospy shutdown&quot;)
+rospy.exceptions.ROSInterruptException: rospy shutdown
+[Testcase: testTestMyNode] ... ERROR!
+ERROR: max time [60.0s] allotted for test [TestMyNode] of type [my_package/test_my_node.py]
+  File &quot;/usr/lib/python2.7/unittest/case.py&quot;, line 329, in run
+    testMethod()
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rostest/runner.py&quot;, line 148, in fn
+    self.test_parent.run_test(test)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rostest/rostest_parent.py&quot;, line 132, in run_test
+    return self.runner.run_test(test)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/roslaunch/launch.py&quot;, line 684, in run_test
+    (test.time_limit, test.test_name, test.package, test.type))
+--------------------------------------------------------------------------------
+
+[ROSTEST]-----------------------------------------------------------------------
+
+
+SUMMARY
+ * RESULT: FAIL
+ * TESTS: 0
+ * ERRORS: 1
+ * FAILURES: 0
+</code></pre>
+
+<p>the test script:</p>
+
+<pre><code> #!/usr/bin/env python
+import subprocess
+import shlex
+import sys
+import signal
+import psutil
+import unittest
+
+import roslaunch
+import rospy
+import rosnode
+from my_msgs.msg import *
+from std_msgs.msg import Float64
+
+def kill_child_processes(parent_pid, sig=signal.SIGTERM):
+    try:
+        parent = psutil.Process(parent_pid)
+        print(parent)
+    except psutil.NoSuchProcess:
+        print(&quot;parent process not existing&quot;)
+        return
+    children = parent.children(recursive=True)
+    print(children)
+    for process in children:
+        print(&quot;try to kill child: &quot; + str(process))
+        process.send_signal(sig)
+
+class Roscore(object):
+    &quot;&quot;&quot;
+    roscore wrapped into a subprocess.
+    Singleton implementation prevents from creating more than one instance.
+    source: https://answers.ros.org/question/215600/how-can-i-run-roscore-from-python/?answer=292433#post-id-292433
+    &quot;&quot;&quot;
+    __initialized = False
+    def __init__(self):
+        if Roscore.__initialized:
+            raise Exception(&quot;You can&#39;t create more than 1 instance of Roscore.&quot;)
+        Roscore.__initialized = True
+    def run(self):
+        try:
+            self.roscore_process = subprocess.Popen([&#39;roscore&#39;])
+            self.roscore_pid = self.roscore_process.pid  # pid of the roscore process (which has child processes)
+        except OSError as e:
+            sys.stderr.write(&#39;roscore could not be run&#39;)
+            raise e
+    def terminate(self):
+        print(&quot;try to kill child pids of roscore pid: &quot; + str(self.roscore_pid))
+        kill_child_processes(self.roscore_pid)
+        self.roscore_process.terminate()
+        self.roscore_process.wait()  # important to prevent from zombie process
+        Roscore.__initialized = False
+
+class TestMyNode(unittest.TestCase):
+    def test_stop_messages_were_sent(self):
+        roscore = Roscore()
+        roscore.run()
+        rospy.sleep(0.1)
+
+        rospy.init_node(&#39;test_my_node&#39;,  log_level=rospy.DEBUG)
+        rospy.sleep(0.1)
+
+        rospy.set_param(&quot;/my_node/threshold&quot;, 0.005)
+
+        package = &quot;my_package&quot;
+        executable = &quot;my_node.py&quot;
+        # force the node name so that the param namespace is known
+        node = roslaunch.core.Node(package, executable, name=&quot;my_node&quot;)
+        launch = roslaunch.scriptapi.ROSLaunch()
+        launch.start()
+
+        process = launch.launch(node)
+        rospy.sleep(0.5)
+
+        print(&quot;|| ROS Node list: &quot;)
+        print(rosnode.get_node_names())
+        print(&quot;||&quot;)
+
+        pub = rospy.Publisher(&#39;/my_robot/info&#39;, MyMsg, queue_size=1)
+        rospy.sleep(0.1)
+
+        deflection_msg = MyMsg()
+        deflection_msg.deflection.z = 0.01
+        pub.publish(deflection_msg)
+        rospy.sleep(2.)
+
+        print(&quot;|| ROSTopic list: &quot;)
+        print(rospy.get_published_topics(&#39;my_robot&#39;))
+        print(&quot;||&quot;)
+
+        # Gets into timeouts
+        left_wheel_msg = rospy.wait_for_message(&#39;/my_robot/joint_rear_left_wheel_controller/command&#39;, Float64)
+        right_wheel_msg = rospy.wait_for_message(&#39;/my_robot/joint_rear_right_wheel_controller/command&#39;, Float64)
+
+        assert(left_wheel_msg.data == 0 and right_wheel_msg.data == 0)
+
+        process.stop()
+        roscore.terminate()
+
+
+if __name__ == &#39;__main__&#39;:
+    import rosunit
+    rosunit.unitrun(&#39;my_package&#39;, &#39;test_my_node&#39;, TestMyNode)
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/37695">kump</a> on 2019-07-24 02:43:05 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

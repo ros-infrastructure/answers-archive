@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publisher publish once and stops publishing - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/62507">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publisher publish once and stops publishing</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/51040/publisher-publish-once-and-stops-publishing">https://robotics.stackexchange.com/questions/51040/publisher-publish-once-and-stops-publishing</a>.</p>
+        <p>Hi all, </p>
+
+<p>I have the following code. It seems that I am able to publish the topics only once at start of node, after that the topic is not published anymore. Any ideas?</p>
+
+<pre><code>#!/usr/bin/env python
+import roslib; roslib.load_manifest(&#39;brsu_hmm_eid_observations&#39;)
+import rospy
+import collections
+
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Twist
+
+from brsu_hmm_eid_messages.msg import obs_base_x_vel_diff, obs_base_x_vel_cmd, obs_base_x_acc, obs_base_x_jerk # all contains float64 and Header.
+
+
+class get_obs_base_x_all():
+    def __init__(self):
+
+        self.duration_acc = 4
+        self.duration_jerk = 8
+
+        self.base_x_vel = collections.deque(maxlen = self.duration_jerk)
+        self.base_x_acc = collections.deque(maxlen = self.duration_jerk)
+
+        for i in xrange(self.duration_acc):
+            self.base_x_vel.append(0)
+
+        for i in xrange(self.duration_jerk):
+            self.base_x_acc.append(0)
+
+        self.base_x_vel_cmd = 0
+        self.base_x_vel_diff = 0
+        self.base_x_jerk = 0
+
+    def listener(self):
+
+        rospy.Subscriber(&quot;odom&quot;, Odometry, self.odom_callback)
+        rospy.Subscriber(&quot;cmd_vel&quot;, Twist, self.cmd_vel_callback)
+        #self.talker()
+
+    def odom_callback(self, msg):
+
+        t = rospy.Time.now().secs        
+        self.base_x_vel.append(msg.twist.twist.linear.x)
+
+        self.calc_base_x_acc(t)
+        self.calc_base_x_jerk(t)
+
+
+    def cmd_vel_callback(self, msg):
+
+        if msg.linear.x is None:
+            self.base_x_vel_cmd = 0
+        else:
+            self.base_x_vel_cmd = msg.linear.x
+
+        self.calc_base_x_vel_diff()
+
+    def calc_base_x_vel_diff(self):
+
+        self.base_x_vel_diff = self.base_x_vel_cmd - self.base_x_vel[self.duration_acc - 1]
+        #print &#39;vel_diff&#39;, self.base_x_vel_diff
+
+    def calc_base_x_acc(self, t):
+
+        diff = int(t) % self.duration_acc
+
+        if int(t) &lt; self.duration_acc:
+            self.base_x_acc = 0
+
+        elif diff == 0 :
+           acc_x = (self.base_x_vel[self.duration_acc - 1] - self.base_x_vel[0])/self.duration_acc
+           #print &#39;acc_x&#39;, acc_x
+           self.base_x_acc.append(acc_x)
+           #print self.base_x_acc[self.duration_jerk - 1]
+
+    def calc_base_x_jerk(self, t):
+
+        diff = int(t) % self.duration_jerk
+
+        if int(t) &lt; self.duration_jerk:
+            self.base_x_jerk = 0
+
+        elif diff == 0 :
+           #jerk_x = (self.base_x_acc[self.duration_jerk - 1] - self.base_x_acc[0])/self.duration_jerk
+           jerk_x = ((self.base_x_vel[self.duration_jerk - 1] - self.base_x_vel[0])/self.duration_jerk)/self.duration_jerk
+           #print &#39;jerk_x&#39;,jerk_x
+           self.base_x_jerk = jerk_x
+           #print self.base_x_jerk
+
+
+    def talker(self):
+        rospy.loginfo(&quot;Publishing obs_base_x_all&quot;)
+
+        time_now = rospy.Time.now().secs
+        pub1 = rospy.Publisher(&#39;/brsu_hmm_eid_observations/base_x_vel_cmd&#39;, obs_base_x_vel_cmd)#, latch=True)
+        pub2 = rospy.Publisher(&#39;/brsu_hmm_eid_observations/base_x_vel_diff&#39;, obs_base_x_vel_diff)
+        pub3 = rospy.Publisher(&#39;/brsu_hmm_eid_observations/base_x_acc&#39;, obs_base_x_acc)
+        pub4 = rospy.Publisher(&#39;/brsu_hmm_eid_observations/base_x_jerk&#39;, obs_base_x_jerk)
+
+        msg2send1 = obs_base_x_vel_cmd()
+        msg2send1.header.stamp.secs = rospy.Time.now().secs
+        msg2send1.x_cmd_vel = self.base_x_vel_cmd
+        pub1.publish(msg2send1)
+        print &#39;self.base_x_vel_cmd&#39;, self.base_x_vel_cmd
+
+        msg2send2 = obs_base_x_vel_diff()
+        msg2send2.header.stamp.secs = rospy.Time.now().secs
+        msg2send2.x_vel_diff = self.base_x_vel_diff
+        pub2.publish(msg2send2)
+        print &#39;self.base_x_vel_dif&#39;, self.base_x_vel_diff
+
+        msg2send3 = obs_base_x_acc()
+        msg2send3.header.stamp.secs = time_now
+        msg2send3.x_acc = self.base_x_acc[self.duration_jerk - 1]
+        pub3.publish(msg2send3)
+        print &#39;self.base_x_acc[self.duration_jerk - 1]&#39;, self.base_x_acc[self.duration_jerk - 1]
+
+        msg2send4 = obs_base_x_jerk()
+        msg2send4.header.stamp.secs = time_now
+        msg2send4.x_jerk = self.base_x_jerk
+        pub4.publish(msg2send4)
+        print &#39;self.base_x_jerk&#39;, self.base_x_jerk
+        rospy.sleep(1)
+
+        rospy.loginfo(&#39;published base x all&#39;)
+
+
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;brsu_hmm_eid_observations_node_x_all&#39;, anonymous=True)
+
+    gobxa = get_obs_base_x_all()
+
+    while not rospy.is_shutdown():
+        try:
+            gobxa.listener()
+            gobxa.talker()
+            rospy.spin()
+        except rospy.ROSInterruptException:
+            pass
+</code></pre>
+
+<p>At first I thought it is due to subscribing the cmd_vel topic, where values are only available when we give some. But it happens both when the the robot is moving and not. I think I missed something very trivial here, but I just do not know what is it. </p>
+
+<p>Please help me! Thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/349">whiterose</a> on 2013-05-09 23:28:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>It may be because you are calling rospy.spin() in your Main loop. According to the documentation on rospy.spin() (see <a href="http://ros.org/doc/groovy/api/rospy/html/">here</a> and search for &quot;spin&quot;) it &quot;<em>Blocks until ROS node is shutdown.</em>&quot; - which could explain why you are only seeing the first pass through the talker method..</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4820">Souldier</a> on 2013-05-10 02:47:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>As @Souldier said, ros, will block on the <code>rospy.spin()</code> call until ROS is shutdown.  As described <a href="http://www.ros.org/wiki/rospy/Overview/Initialization%20and%20Shutdown#Testing_for_shutdown">here</a>, this is mostly used to prevent your code from exiting until ROS is shutdown.  An equivalent method is to use a loop:</p>
+
+<pre><code>while not rospy.is_shutdown():
+  rospy.sleep(1.0)
+</code></pre>
+
+<p>You already have the loop, so don&#39;t need the call to <code>rospy.spin()</code>.  Just remove that call, and you should be fine.</p>
+
+<p>In C++ applications (using roscpp), you need to call either <code>ros::spin()</code> or <code>ros::spinOnce()</code> to ensure that ROS messages and callbacks are processed properly.  In python, this is not required.  The <code>rospy.spin()</code> call is just used to prevent your application from exiting early.</p>
+
+<p>For more discussion on this subject, see <a href="http://answers.ros.org/question/53394/writing-a-python-node-that-publishes-and-subscribes-to-topics-of-different-message-frequency/">here</a> and <a href="http://ros-users.122217.n3.nabble.com/rospy-version-of-spinOnce-td180442.html">here</a>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3925">Jeremy Zoss</a> on 2013-05-10 06:05:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>+1 for more detail</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4820">Souldier</a> on 2013-05-10 06:26:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thanks for solving my same problem</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36766">KSWang</a> on 2019-01-01 23:28:39 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

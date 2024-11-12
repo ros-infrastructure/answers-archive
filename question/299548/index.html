@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Sourcing of containerized ROS via docker-py - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/299548">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Sourcing of containerized ROS via docker-py</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88330/sourcing-of-containerized-ros-via-docker-py">https://robotics.stackexchange.com/questions/88330/sourcing-of-containerized-ros-via-docker-py</a>.</p>
+        <p>I want to run a docker container wrapping ROS indigo using <code>docker-py</code> without running a command.</p>
+
+<pre><code>&gt;&gt;&gt; import docker
+&gt;&gt;&gt; docker_client = docker.DockerClient(base_url=&#39;unix://var/run/docker.sock&#39;)
+&gt;&gt;&gt; container = docker_client.containers.run(image=&quot;osrf/ros:indigo-desktop-trusty&quot;, detach=True, tty=True)
+</code></pre>
+
+<p>According to <code>docker container ls</code> the container is running. <code>/ros_entrypoint.sh</code> as <code>COMMAND</code> made me think the entry point script is executed when the container is run.</p>
+
+<pre><code>CONTAINER ID        IMAGE                            COMMAND                  CREATED             STATUS              PORTS               NAMES
+69b97aa978f1        osrf/ros:indigo-desktop-trusty   &quot;/ros_entrypoint.s...&quot;   2 minutes ago       Up 2 minutes                            festive_lichterman
+</code></pre>
+
+<p>However when I call a ros command line tool in the container</p>
+
+<pre><code>&gt;&gt;&gt; logs = container.exec_run(cmd=&#39;rosparam list&#39;)
+&gt;&gt;&gt; print(logs)
+</code></pre>
+
+<p>I get this error</p>
+
+<pre><code>ExecResult(exit_code=126, output=&#39;rpc error: code = 2 desc = oci runtime error: exec failed: container_linux.go:247: starting container process caused &quot;exec: \\&quot;rosparam\\&quot;: executable file not found in $PATH&quot;\n\r\n&#39;)
+</code></pre>
+
+<p>with possible root cause that (a) the entry point script is not executed when the container is run or (b) that <code>exec_run()</code> is executed in another shell which has entry point script not executed.</p>
+
+<p>Does someone have an idea about how to reliably source the env when executing subsequent commands in docker containers using <code>docker-py</code>?</p>
+
+<p><strong>EDIT:</strong></p>
+
+<p>The behavior described above corresponds to the following docker command line observation. If one executes subsequent commands they are executed in separate bash session which lack sourcing of the environment. (<code>rosversion</code> does not depend on sourced environment and is executable.)</p>
+
+<pre><code>kromer@rc-019:~/ws_gitlab$ docker run --name roscli --rm -i -t -d osrf/ros:indigo-desktop-full bash
+ecd86cd4df75ff316738364fac64cd5afa43d7799e014b3e399dc1a58a2e1a66
+kromer@rc-019:~/ws_gitlab$ docker container ls
+CONTAINER ID        IMAGE                          COMMAND                  CREATED             STATUS              PORTS               NAMES
+ecd86cd4df75        osrf/ros:indigo-desktop-full   &quot;/ros_entrypoint.s...&quot;   3 seconds ago       Up 1 second                             roscli
+kromer@rc-019:~/ws_gitlab$ docker exec roscli rosparam
+rpc error: code = 2 desc = oci runtime error: exec failed: container_linux.go:247: starting container process caused &quot;exec: \&quot;rosparam\&quot;: executable file not found in $PATH&quot;
+</code></pre>
+
+<p>If one attaches to the containers initial bash session the environment is sourced and e.g. <code>rosparam</code> gives expected output:</p>
+
+<pre><code>kromer@rc-019:~/ws_gitlab$ docker run --name roscli --rm -i -t -d osrf/ros:indigo-desktop-full bash
+f6ab686c8477a14be65b1d16b66bf95fc94c92891c04551c94b8dad5662cd469
+kromer@rc-019:~/ws_gitlab$ docker attach roscli
+root@f6ab686c8477:/# rosparam
+rosparam is a command-line tool for getting, setting, and deleting parameters from the ROS Parameter Server.
+
+Commands:
+    rosparam set    set parameter
+    rosparam get    get parameter
+    rosparam load   load parameters from file
+    rosparam dump   dump parameters to file
+    rosparam delete delete parameter
+    rosparam list   list parameter names
+
+root@f6ab686c8477:/# exit
+exit
+kromer@rc-019:~/ws_gitlab$ docker container ls
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/30400">thinwybk</a> on 2018-08-03 07:39:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p><code>rosversion</code> does not seem to depend on sourcing: It can be called as subsequent command with <code>logs = container.exec_run(cmd=&#39;rosversion&#39;)</code> which gives a reasonable output <code>ExecResult(exit_code=64, output=&#39;Usage: rosversion &lt;package/stack&gt; or rosversion -d\n&#39;)</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30400">thinwybk</a> on 2018-08-03 10:06:24 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The probably most easy solution is to put the the call of <code>/ros_entrypoint.sh</code> in front of the actual command. (This works because <code>ros_entrypoint.sh</code> calls the argument passed...)</p>
+
+<pre><code>&gt;&gt;&gt; import docker
+&gt;&gt;&gt; docker_client = docker.DockerClient(base_url=&#39;unix://var/run/docker.sock&#39;)
+&gt;&gt;&gt; container = docker_client.containers.run(image=&quot;osrf/ros:indigo-desktop-trusty&quot;, detach=True, tty=True)
+&gt;&gt;&gt; logs = container.exec_run(cmd=&#39;/ros_entrypoint.sh rosparam list&#39;)
+&gt;&gt;&gt; print(logs)
+ExecResult(exit_code=1, output=&#39;ERROR: Unable to communicate with master!\n&#39;)
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30400">thinwybk</a> on 2018-08-06 04:44:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>The entrypoint listed in a Dockerfile is skipped unless the command is passed as an <em>array of strings</em> instead of one string (with spaces and whatnot). This is a bit of a weird behavior with docker that isn&#39;t obvious, but, you have to give it your command in such a way that it knows it can run it after the entrypoint and not in a subshell. See the CMD documentation here: <a href="https://docs.docker.com/engine/reference/builder/#cmd">https://docs.docker.com/engine/reference/builder/#cmd</a> . The same applies to the <code>command:</code> data in a docker-compoose file, and it looks like <code>docker-py</code> supports passing a python <code>list</code> instead of a <code>string</code> as well: <a href="https://docker-py.readthedocs.io/en/stable/containers.html">https://docker-py.readthedocs.io/en/stable/containers.html</a>.</p>
+
+<p>So, if you changed your code to:</p>
+
+<pre><code>&gt;&gt;&gt; logs = container.exec_run(cmd=[&#39;rosparam&#39;, &#39;list&#39;])
+&gt;&gt;&gt; print(logs)
+</code></pre>
+
+<p>I think you&#39;d have your entrypoint executed.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/36758">airhorns</a> on 2018-08-09 08:27:48 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>No, the entry point is not executed. Even with list syntax you get <code>ExecResult(exit_code=126, output=&#39;rpc error: code = 2 desc = oci runtime error: exec failed: container_linux.go:247: starting container process caused &quot;exec: \\&quot;rosparam\\&quot;: executable file not found in $PATH&quot;\n\r\n&#39;)</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30400">thinwybk</a> on 2018-08-10 05:22:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Dang. Is your ENTRYPOINT set in the Dockerfile with the array-of-strings style format? See the note at the bottom of this reference: <a href="https://medium.freecodecamp.org/docker-entrypoint-cmd-dockerfile-best-practices-abc591c30e21">https://medium.freecodecamp.org/docker-entrypoint-cmd-dockerfile-best-practices-abc591c30e21</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36758">airhorns</a> on 2018-08-10 14:08:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The entry point of the <a href="https://github.com/osrf/docker_images/blob/master/ros/indigo/ubuntu/trusty/ros-core/Dockerfile#L42">ROS indigo docker image (Dockerfile)</a> uses list syntax as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30400">thinwybk</a> on 2018-08-12 13:09:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Upon rereading your question I can clarify, my answer is wrong, oops! Docker never executes your entrypoint for commands invoked via <code>exec</code>. It&#39;s only used in the execution of the CMD at the init of the container. Are you using exec for running many commands in the same container though?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36758">airhorns</a> on 2018-08-13 15:57:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I use <code>run()</code> to run a single &quot;blocking&quot; command in a container. Several <code>exec_run()</code> are called in sequence to run &quot;non blocking&quot; commands in a single (obviously: different) container.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30400">thinwybk</a> on 2018-08-18 10:11:35 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

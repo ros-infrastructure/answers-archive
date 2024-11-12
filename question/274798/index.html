@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How are exceptions dealt with in callback ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/274798">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How are exceptions dealt with in callback ?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/83679/how-are-exceptions-dealt-with-in-callback">https://robotics.stackexchange.com/questions/83679/how-are-exceptions-dealt-with-in-callback</a>.</p>
+        <p>Hello,
+I&#39;m currently thinking about throwing an exception directly in a callback method if the message received is an error message (faulty sensor), which has been sent by the corresponding node in charge of reading that sensor.</p>
+
+<p>However, I need to make sure to understand how it exactly works before implementing this idea. Let&#39;s say that there are 5 different sensors each performing an initialization phase for 1 second to make sure they are behaving adequately. If it&#39;s the case, each node reading its corresponding sensor sends a message with the distance measured by the sensor after this initialization phase. If the sensor is faulty, the node sends a minus value instead (let say -1).</p>
+
+<p>Then, the main node in charge of gathering all the sensors&#39; data first wait for the initialization time + a small additional time to make sure all the messages have been sent on the corresponding topics and call afterwards all the callback with ros::spinOnce(). Let&#39;s pretend here for sake of simpliticy that the messages were received by the main node in a ascending order (if the sensors are enumerated from 1 to 5, the messages were received in that exact order). If the second sensor is faulty (hence the node did send a -1 value) and the callback determines its faultiness and throws an exception, what would happen to the other callbacks waiting to process the other messages in the queue ? Would they still be evaluated or would I have to call another time the ros::spinOnce() function in order to do so ?</p>
+
+<p>Thanks in advance for your help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/32205">ta</a> on 2017-11-02 03:22:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Throwing exception in a subscribing node for a bad sensor initialization in a different node is an unusual approach, I&#39;m curious if anyone can point to a major ros node that does that.  <a href="http://wiki.ros.org/roscpp/Overview/Exceptions">http://wiki.ros.org/roscpp/Overview/Exceptions</a> says &quot;roscpp throws exceptions only in truly unexpected, programmer error conditions.&quot;. </p>
+
+<p>But it is an interesting question so I set up an experiment and noticed some oddities with this- it looks like you can set up a try catch around ros::spin(), and then restart the spin after catching something.</p>
+
+<p>I&#39;m using timer callbacks rather than subscriber callbacks, perhaps they behave completely differently with exceptions.</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+
+ros::Time start;
+int count = 0;
+
+void printTimeDiff(const int i, const ros::TimerEvent&amp; e)
+{
+  ROS_INFO_STREAM(&quot;Callback &quot; &lt;&lt; i &lt;&lt; &quot; triggered &quot;
+      &lt;&lt; ros::Time::now() - start &lt;&lt; &quot; &quot;
+      &lt;&lt; (e.current_expected - start).toSec() &lt;&lt; &quot; &quot;
+      &lt;&lt; (e.current_real - start).toSec());
+}
+
+void callback1(const ros::TimerEvent&amp; e)
+{
+  count++;
+  printTimeDiff(1, e);
+  if (count == 4)
+  { 
+    ROS_WARN_STREAM(&quot;throwing exception&quot;);
+    throw 10;
+  }
+}
+
+void callback2(const ros::TimerEvent&amp; e)
+{     
+  printTimeDiff(2, e);
+}
+
+void callback3(const ros::TimerEvent&amp; e)
+{     
+  printTimeDiff(3, e);
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;test&quot;);
+  ros::NodeHandle n;
+  start = ros::Time::now();
+
+  ros::Timer timer1 = n.createTimer(ros::Duration(0.1), callback1);
+  ros::Timer timer2 = n.createTimer(ros::Duration(0.1), callback2);
+  // ros::Timer timer3 = n.createTimer(ros::Duration(0.5), callback3);
+
+  while (ros::ok())
+  {
+    try {
+      ros::spin();
+    }
+    catch (int e)
+    {
+      ROS_ERROR_STREAM(&quot;caught exception: &quot; &lt;&lt; e);
+    }
+  }
+  return 0;
+}
+</code></pre>
+
+<p>When I run the above neither callback is called after the exception, presumably I&#39;d have to set them both up again.  But if I change the timer2 duration to trigger the first callback <strong>after</strong> the exception occurs then it will trigger as expected.  Or if I uncomment timer3 (which is first triggered after the exception) then both timer2 and timer3 will be triggered after the exception.</p>
+
+<h1>Update using real subscribers</h1>
+
+<p>So the timer callbacks don&#39;t generalize, ros subscribers behave fine after an exception:</p>
+
+<pre><code>void printTimeDiff(const int i, const int j)
+{
+  ROS_INFO_STREAM(&quot;Callback &quot; &lt;&lt; i &lt;&lt; &quot; triggered &quot;
+      &lt;&lt; ros::Time::now() - start &lt;&lt; &quot; &quot; &lt;&lt; j);
+}
+
+void callback1(const std_msgs::Int32::ConstPtr&amp; e)
+{
+  count++;
+  printTimeDiff(1, e-&gt;data);
+  if (count == 4)
+  {
+    ROS_WARN_STREAM(&quot;throwing exception&quot;);
+    throw 10;
+  }
+}
+
+void callback2(const std_msgs::Int32::ConstPtr&amp; e)
+{
+  printTimeDiff(2, e-&gt;data);
+}
+
+void callback3(const std_msgs::Int32::ConstPtr&amp; e)
+{
+  printTimeDiff(3, e-&gt;data);
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;test&quot;);
+  ros::NodeHandle n;
+  start = ros::Time::now();
+
+  ros::Subscriber s1 = n.subscribe(&quot;topic1&quot;, 1, callback1);
+  ros::Subscriber s2 = n.subscribe(&quot;topic2&quot;, 1, callback2);
+  ros::Subscriber s3 = n.subscribe(&quot;topic3&quot;, 1, callback3);
+...
+</code></pre>
+
+<p>And some python to publish:</p>
+
+<pre><code>#!/usr/bin/env python
+
+import rospy
+
+from std_msgs.msg import Int32
+
+rospy.init_node(&#39;pub_ints&#39;)
+
+p1 = rospy.Publisher(&quot;topic1&quot;, Int32, queue_size=1)
+p2 = rospy.Publisher(&quot;topic2&quot;, Int32, queue_size=1)
+p3 = rospy.Publisher(&quot;topic3&quot;, Int32, queue_size=1)
+
+count = 0
+while not rospy.is_shutdown():
+    p1.publish(Int32(1))
+    p2.publish(Int32(2))
+    rospy.sleep(0.5)
+    count += 1
+    if (count % 5 == 0):
+        p3.publish(Int32(3))
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2017-11-02 10:14:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your answer and taking the time to set up this experiment. It&#39;s eyes opening. So, if message callbacks behave similarly (which I expect), I can not use them in my peculiar situation as several messages will be waiting on the topic when calling ros::spinOnce().</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32205">ta</a> on 2017-11-03 02:28:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I haven&#39;t tried it but you could resubscribe every subscriber and probably clear out whatever caused the exception to foul them up, but queued messages could be lost in the process.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2017-11-03 10:24:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I just tried this with real subscribers and they don&#39;t have the same problem, so you can throw exceptions in callbacks and catch them from spin and continue on and spin again without re-subscribing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2017-11-10 15:07:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>arv_camera_new() doesn't open the camera when called within a nodelet - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/283187">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>arv_camera_new() doesn't open the camera when called within a nodelet</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/85418/arv-camera-new-doesnt-open-the-camera-when-called-within-a-nodelet">https://robotics.stackexchange.com/questions/85418/arv-camera-new-doesnt-open-the-camera-when-called-within-a-nodelet</a>.</p>
+        <p>Platform Details:</p>
+
+<p>Ubuntu 14.04 LTS
+Linux Kernel 4.4.0-112-generic</p>
+
+<p>ROS Version: Indigo</p>
+
+<p>ROS Package: <code>camera_aravis</code> from here  - <a href="https://github.com/linknum23/camera_aravis">https://github.com/linknum23/camera_aravis</a> </p>
+
+<p>Aravis LIbrary -  <code>aravis-0.4.1</code> from here - <a href="http://ftp.acc.umu.se/pub/GNOME/sources/aravis/0.4/">http://ftp.acc.umu.se/pub/GNOME/sources/aravis/0.4/</a> . I have also tried version 0.5.11 with same results.</p>
+
+<p>Cameras used (Same behavior with all cameras and all are GigE cameras):</p>
+
+<ol>
+<li>IDS GV-527xFA-C</li>
+<li>Allied Vision Mako G-319C</li>
+<li>Allied Vision GT1930C</li>
+</ol>
+
+<p>Each camera is tested separately and is  powered through PoE (Power over Ethernet) and the Ethernet packet size has been set to 9000 MTU. </p>
+
+<p>Command to run after compiling the package: <code>rosrun camera_aravis camera_node</code></p>
+
+<p>The node then detects the camera and can print the device ID and also can access Vendor name and other camera specific parameters with Aravis API&#39;s. However, the call to <code>arv_camera_new()</code> in <strong>src/camera_nodelet.cpp</strong> returns NULL or doesn&#39;t return at all (hangs). </p>
+
+<p>After trying different debugging methods, I narrowed down the issue to Nodelet manager in <strong>src/camera_node.cpp</strong>.
+In the modified <strong>camera_node.cpp</strong> below, the <code>arv_camera_new()</code> function can detect the camera and return a camera object. </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;nodelet/loader.h&gt;
+#include &lt;camera_aravis/camera_nodelet.h&gt;
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;camera_node&quot;);
+  //nodelet::Loader manager(true);
+  //nodelet::M_string remappings;
+  //nodelet::V_string my_argv;
+  arv_update_device_list();
+  printf(&quot;Devices: %d\n&quot;, arv_get_n_devices());
+  ArvCamera *pCamera = arv_camera_new(NULL);
+  if(pCamera){
+    printf(&quot;Device Opened: %s\n&quot;,arv_camera_get_vendor_name(pCamera));
+  }
+  else{
+     printf(&quot;Device couldn&#39;t be opened\n&quot;);
+  }
+  //manager.load(ros::this_node::getName(), &quot;camera_aravis/CameraNodelet&quot;, remappings, my_argv);
+  ros::spin();
+}
+</code></pre>
+
+<p>As you can see, I have commented out the Nodelet Manager and directly calling the Aravis APIs to access the camera. I also wrote a separate non-ROS C++ program to use Aravis API&#39;s and can access the camera without any issues. </p>
+
+<p>Further more, the test scripts provided within aravis library (Ex: <strong>tools/arvcameratest.c</strong>) work fine and can connect and stream data from the cameras.</p>
+
+<p><strong>So, the symptoms can be bolied down to  <code>arv_camera_new()</code> and <code>arv_open_device()</code> (may be other similar APIs which I haven&#39;t tested)  can find the camera directly in the node, but not when called within the nodelet. Another thing to note is that, other API&#39;s such as <code>arv_get_n_devices()</code>, <code>arv_get_device_id()</code> work fine in both node and nodelet.</strong>  </p>
+
+<p>I have reproduced the issue with two machines with same platform and software versions mentioned above. Note that the code is directly taken from the <code>camera_aravis</code> github repo mentioned above and modifications are only done to <strong>camera_node.cpp</strong> as shown above while debugging.</p>
+
+<p>What might be going wrong? Anyone experienced similar issues with this package? Any help in debugging would be greatly appreciated. </p>
+
+<p><strong>EDIT:</strong></p>
+
+<p>After digging deeper into Aravis library(0.4.1) and glib (v2.0), I found out that the function <code>g_regex_split</code> behaves differently for a node and nodelet implementation. Below is the function call to <code>g_regex_split</code> in <code>arvgvdevice.c</code></p>
+
+<pre><code>tokens = g_regex_split (arv_gv_device_get_url_regex (), filename, 0);
+</code></pre>
+
+<p>For the filename string - <code>local:GV-527xFA-C_1_3_120.zip;70000000;3fd0</code>, the <code>tokens</code> after regex splitting when we try to open the camera in a node are shown below and they seem correct.</p>
+
+<pre><code>tokens[0] = &quot;&quot;
+tokens[1] = &quot;local:&quot;
+tokens[2] = &quot;GV-527xFA-C_1_3_120.zip&quot;
+tokens[3] = &quot;70000000&quot;
+tokens[4] = &quot;3fd0&quot;
+</code></pre>
+
+<p>The <code>tokens</code> after regex splitting when we try to open the camera in a nodelet, are</p>
+
+<pre><code>tokens[0] = &quot;l&quot;
+tokens[1] = &quot;o&quot;
+tokens[2] = &quot;c&quot;
+tokens[3] = &quot;a&quot;
+tokens[4] = &quot;l&quot;
+</code></pre>
+
+<p>Because of the wrong splitting in the second case, the xml file for camera is not being read and hence the aravis can&#39;t open the camera. </p>
+
+<p>I also noticed that there is a small test program in <code>test/regex_split.c</code> in the github repo of <code>camera_aravis</code> package which originated in this fork - <a href="https://github.com/vincentrou/camera_aravis.git">https://github.com/vincentrou/camera_aravis.git</a> (I have now switched my <code>camera_aravis</code> package to this fork). Perhaps the author created this test script to debug a similar issue? Although, there are no commits which talks about this issue. I have contacted the author.</p>
+
+<p>Does this mean glib library when used within nodelets (threads), behaves differently? I am very new to both glib and threading. So, any help to debug this issue is very much appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-19 23:12:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I was going to suggest making an issue on the main repo but it looks like that one isn&#39;t getting maintained, and there are many many forks with different variations- some of those may or may not have your issue.  Maybe you can get in contact with one of the fork authors that has made recent changes.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-02-20 13:27:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I have reached out to the fork author. Waiting for their response.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-20 13:52:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Have you tried using the tools provided with the underlying <a href="https://github.com/AravisProject/aravis">aravis</a> library? It has been awhile but from what I remember the library provides some basic camera viewer that I initially used to test to make sure the underlying library was working. Looking at their <a href="https://github.com/AravisProject/aravis">github</a> it seems like you could use the arv-viewer binary to test.</p>
+
+<p>Also I apologize for the state of camera_aravis, in my fork I tried to combine the features all of the useful camera_aravis forks but these has not been well tested. All of the cameras used for testing were from The Image Source.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/483">Link</a> on 2018-02-20 16:42:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the response. Yes, as mentioned in the question, the sample programs provided in the aravis library work fine. I am planning to use the nodelet architecture and that&#39;s what is causing the issues. Do I need to take care of anything in the nodelet?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-20 16:49:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I see it now. Sorry for the terrible knee jerk response on this. Lemme look back at how I was using this. I will try to find something that might be useful to ya.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/483">Link</a> on 2018-02-20 17:04:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I saw you tested with aravis 0.4 and 0.5.11. When testing 0.5.11 did you ensure 0.4 was completely removed? My hazy memory says that I added some changes that were specific to newer versions of aravis and I had to ensure aravis 0.4 was removed from my system before camera_aravis would link in 0.5.11</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/483">Link</a> on 2018-02-20 17:39:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I first tested with 0.5.11 and it didn&#39;t work. So, I switched to 0.4 and I have been using that now for most of my debugging. I did run uninstall script for 0.5.11 to remove it before using 0.4. Is there a way to ensure only one version is present in my system?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-20 17:54:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>find /usr -name &#39;<em>aravis</em>&#39; will show all of the libraries and other things installed by aravis</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/483">Link</a> on 2018-02-20 18:00:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Got this :
+/usr/local/share/doc/aravis</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-20 18:02:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Actually that folder is empty. Nothing related to aravis is in /usr</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-20 18:09:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hmm I guess it could be installed somewhere else. Maybe check what the install paths are set to when the configure script is run?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/483">Link</a> on 2018-02-20 20:39:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Link, please check the edit to the question details.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-20 23:07:03 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Here is a more up to date camera_aravis pkg :</p>
+
+<p><a href="https://github.com/labex-imobs3/camera_aravis">https://github.com/labex-imobs3/camera_aravis</a></p>
+
+<p>It works fine for us in nodelet.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/85">Vincent R</a> on 2018-02-22 06:50:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks. Even with the updated camera_aravis pkg, the issues exists since the problem is with glib as I have mentioned in the EDIT part of the question details.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-22 19:12:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Do you know why the &quot;regex_split.c&quot; test script was created in your package repo? Did you face a similar issue?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-22 19:15:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes I did this test because I also had this problem.
+But we use it now without problem on Ubuntu 16.04.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85">Vincent R</a> on 2018-02-27 03:51:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So, did you have a workaround for this issue in Ubuntu 14.04? What was your solution?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8061">Keerthi Raj</a> on 2018-02-27 11:08:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I did not find any solution for 14.04...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85">Vincent R</a> on 2018-02-28 08:01:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

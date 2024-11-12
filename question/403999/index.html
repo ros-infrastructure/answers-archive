@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Communication between rclpy client and rlcpp server - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/403999">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Communication between rclpy client and rlcpp server</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102149/communication-between-rclpy-client-and-rlcpp-server">https://robotics.stackexchange.com/questions/102149/communication-between-rclpy-client-and-rlcpp-server</a>.</p>
+        <p>I am working on converting a ros 1 (noetic) project to ros 2 (foxy). I am on Ubuntu 20.04 I am running into an issue where the python node call the service and the cpp node receives the request and fills out the response. The python node however never receives the response. Any</p>
+
+<p>Here is the function in the python node that calls the service</p>
+
+<pre><code>    def _adjust_time(
+        self,
+        time: rclpy.builtin_interfaces.msg.Time,
+        clock_convert: rclpy.client.Client,
+    ) -&gt; float:
+        &quot;&quot;&quot;Convert the ROS time to be compatible with the data time.&quot;&quot;&quot;
+        self.get_logger().info(&quot;Adjusting time&quot;)
+        req = TimeConversion.Request()
+        req.ros_time = time
+        future = clock_convert.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        rclpy.logging.get_logger().info(&quot;future complete&quot;)
+        res = future.result()
+        rclpy.logging.get_logger().info(f&quot;Converted time: {res}&quot;)
+        calendar = res.calendar
+        return _calendar_to_seconds(calendar)
+</code></pre>
+
+<p>Here is the cpp node</p>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;bus_msgs/srv/time_conversion.hpp&quot;
+
+#include &lt;time.h&gt;
+#include &lt;chrono&gt;
+
+// Modality enumeration
+enum ConversionMode
+{
+  WALL = 0,
+  MIDNIGHT = 1
+};
+
+std::chrono::system_clock::time_point start_time;
+ConversionMode mode;
+
+/*!
+ * \brief Creates a callback to convert a ros::time to a wall clock message
+ */
+bool conversionCallback(std::shared_ptr&lt;bus_msgs::srv::TimeConversion::Request&gt; req,
+                        std::shared_ptr&lt;bus_msgs::srv::TimeConversion::Response&gt; res)
+{
+  time_t updated_time;  // Time for conversion
+
+  // *** Conversion for midnight mode *** //
+  if (mode == ConversionMode::MIDNIGHT)
+  {
+    RCLCPP_INFO(rclcpp::get_logger(&quot;clock_conversion_node&quot;), &quot;Converting to midnight mode&quot;);
+    // Add the ros time seconds
+    std::chrono::system_clock::time_point update =
+        start_time + std::chrono::duration&lt;int, std::ratio&lt;1&gt; &gt;(req-&gt;ros_time.sec);
+
+    // Extract the time values
+    updated_time = std::chrono::system_clock::to_time_t(update);
+  }
+  else if (mode == ConversionMode::WALL)
+  {
+    RCLCPP_INFO(rclcpp::get_logger(&quot;clock_conversion_node&quot;), &quot;Converting to wall clock mode&quot;);
+    updated_time =
+        static_cast&lt;time_t&gt;(req-&gt;ros_time.sec);  // Note that this assumes time_t implemented as seconds from 1970
+  }
+  else
+  {
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;rclcpp&quot;), &quot;clock_conversion_node::conversionCallback() Unaccounted for mode&quot;);
+  }
+
+  // Create the response
+  struct tm* timeinfo = localtime(&amp;updated_time);
+  res-&gt;calendar.nanosec = req-&gt;ros_time.nanosec;
+  res-&gt;calendar.sec = timeinfo-&gt;tm_sec;
+  res-&gt;calendar.min = timeinfo-&gt;tm_min;
+  res-&gt;calendar.hour = timeinfo-&gt;tm_hour;
+  res-&gt;calendar.mday = timeinfo-&gt;tm_mday;
+  res-&gt;calendar.mon = timeinfo-&gt;tm_mon;
+  res-&gt;calendar.year = timeinfo-&gt;tm_year;
+  res-&gt;calendar.wday = timeinfo-&gt;tm_wday;
+  res-&gt;calendar.yday = timeinfo-&gt;tm_yday;
+  res-&gt;calendar.isdst = timeinfo-&gt;tm_isdst;
+  RCLCPP_INFO(rclcpp::get_logger(&quot;clock_conversion_node&quot;), &quot;Returning....&quot;);
+  RCLCPP_INFO_STREAM(rclcpp::get_logger(&quot;clock_conversion_node&quot;), &quot;Returning: &quot; &lt;&lt; req-&gt;ros_time.sec);
+  return true;
+}
+
+int main(int argc, char** argv)
+{
+  // Initialize ros and create a node handle
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared(&quot;clock_conversion_node&quot;);
+  // Create parameters for reading in
+  int mode_in = static_cast&lt;int&gt;(ConversionMode::WALL);
+  int mday_in = 1;    // Day of the month (1-31)
+  int mon_in = 2;     // Months since January (0-11)
+  int year_in = 122;  // Years since 1900
+
+  // Read in parameters
+  if (!node-&gt;get_parameter(&quot;mode&quot;, mode_in))
+  {
+    RCLCPP_INFO(node-&gt;get_logger(), &quot;Reading in mode from launch file.&quot;);
+    node-&gt;declare_parameter(&quot;mode&quot;);
+    node-&gt;get_parameter(&quot;mode&quot;, mode_in);
+  }
+  if (!node-&gt;get_parameter(&quot;start_mday&quot;, mday_in))
+  {
+    RCLCPP_INFO(node-&gt;get_logger(), &quot;Reading in start_mday from launch file.&quot;);
+    node-&gt;declare_parameter(&quot;start_mday&quot;);
+    node-&gt;get_parameter(&quot;start_mday&quot;, mday_in);
+  }
+  if (!node-&gt;get_parameter(&quot;start_mon&quot;, mon_in))
+  {
+    RCLCPP_INFO(node-&gt;get_logger(), &quot;Reading in start_mon from launch file.&quot;);
+    node-&gt;declare_parameter(&quot;start_mon&quot;);
+    node-&gt;get_parameter(&quot;start_mon&quot;, mon_in);
+  }
+  if (!node-&gt;get_parameter(&quot;start_year&quot;, year_in))
+  {
+    RCLCPP_INFO(node-&gt;get_logger(), &quot;Reading in start_year from launch file.&quot;);
+    node-&gt;declare_parameter(&quot;start_year&quot;);
+    node-&gt;get_parameter(&quot;start_year&quot;, year_in);
+  }
+
+  // Make a time value from the inputs
+  std::tm t{};
+  t.tm_year = year_in;
+  t.tm_mon = mon_in;
+  t.tm_mday = mday_in;
+  t.tm_hour = 0;
+  t.tm_min = 0;
+  t.tm_sec = 0;
+
+  // Calculate the conversion varlables
+  mode = static_cast&lt;ConversionMode&gt;(mode_in);
+  start_time = std::chrono::system_clock::from_time_t(std::mktime(&amp;t));
+
+  // Advertize the service
+  auto service = node-&gt;create_service&lt;bus_msgs::srv::TimeConversion&gt;(
+      &quot;clock_conversion_manager&quot;, std::bind(&amp;conversionCallback, std::placeholders::_1, std::placeholders::_2));
+  rclcpp::spin(node);
+}
+</code></pre>
+
+<p>and here is the output of a launch file that calls the python node</p>
+
+<pre><code>[clock_conversion_service-1] [INFO] [1658351829.517198174] [clock_conversion]: Reading in mode from launch file.
+[clock_conversion_service-1] [INFO] [1658351829.517288708] [clock_conversion]: Reading in start_mday from launch file.
+[clock_conversion_service-1] [INFO] [1658351829.517305416] [clock_conversion]: Reading in start_mon from launch file.
+[clock_conversion_service-1] [INFO] [1658351829.517316980] [clock_conversion]: Reading in start_year from launch file.
+[tpss_manager_node-2] [INFO] [1658351829.715188269] [tpss_manager]: Loading tpss file: /home/tim/bus_ws/install/bus_architecture/share/bus_architecture/config/tpssTest.csv
+[tpss_manager_node-2] [INFO] [1658351829.719875750] [tpss_manager]: Clock conversion service found.
+[tpss_manager_node-2] [INFO] [1658351829.720747675] [tpss_manager]: Service clock_conversion_manager available data: [(  0., 150., 20.) (100., 140., 15.) (200., 130., 10.) (300., 120.,  5.)
+[tpss_manager_node-2]  (400., 100.,  0.)] adjust_time: &lt;function main.&lt;locals&gt;.&lt;lambda&gt; at 0x7f8169ef90d0&gt;
+[tpss_manager_node-2] [INFO] [1658351829.721057999] [tpss_manager]: Creating service
+[tpss_manager_node-2] [INFO] [1658351842.110816704] [tpss_manager]: Received request for time: [  0. 100. 200. 300. 400.]
+[tpss_manager_node-2] [INFO] [1658351842.112627908] [tpss_manager]: Received request for power: [150. 140. 130. 120. 100.]
+[tpss_manager_node-2] [INFO] [1658351842.114431326] [tpss_manager]: Received request for energy: [20. 15. 10.  5.  0.]
+[tpss_manager_node-2] [INFO] [1658351842.115854425] [tpss_manager]: type of start &lt;class &#39;builtin_interfaces.msg._time.Time&#39;&gt;
+[tpss_manager_node-2] [INFO] [1658351842.116857113] [tpss_manager]: Prev: sec: 1 nanoseconds: 0 
+[tpss_manager_node-2] type of prevTime: (&lt;class &#39;int&#39;&gt;, &lt;class &#39;int&#39;&gt;)
+[tpss_manager_node-2] [INFO] [1658351842.118233539] [tpss_manager]: Next time sec: 2 nanosec: 0
+[tpss_manager_node-2] [INFO] [1658351842.119499642] [tpss_manager]: Prev: sec: 2 nanoseconds: 0 
+[tpss_manager_node-2] type of prevTime: (&lt;class &#39;int&#39;&gt;, &lt;class &#39;int&#39;&gt;)
+[tpss_manager_node-2] [INFO] [1658351842.120518706] [tpss_manager]: Next time sec: 3 nanosec: 0
+[tpss_manager_node-2] [INFO] [1658351842.121612174] [tpss_manager]: Adjusting time
+[clock_conversion_service-1] [INFO] [1658351842.122032875] [clock_conversion_node]: Converting to wall clock mode
+[clock_conversion_service-1] [INFO] [1658351842.122089857] [clock_conversion_node]: Returning....
+[clock_conversion_service-1] [INFO] [1658351842.122115792] [clock_conversion_node]: Returning: 1
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/86883">asmartbaby</a> on 2022-07-20 16:25:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>So I ended up figuring out what the problem was. The python function was nested in the callback of another service. Because I did not specify the callback group they defaulted to the same callback group which was mutually exclusive. I also did not specify a multi threaded executor so multiple callbacks could not be executed at the same time. Here is the article on callback groups if anyone else runs into this problem (<a href="https://docs.ros.org/en/foxy/How-To-Guides/Using-callback-groups.html">Using Callback groups</a>).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/86883">asmartbaby</a> on 2022-07-26 12:56:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the link.</p>
+
+<p>Would you be able to post the code that fixed it for you?</p>
+
+<p>Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101736">zsnafu</a> on 2022-09-09 14:40:46 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Creating continous tf broadcaster with Boost::Thread - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/187736">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Creating continous tf broadcaster with Boost::Thread</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/61157/creating-continous-tf-broadcaster-with-boostthread">https://robotics.stackexchange.com/questions/61157/creating-continous-tf-broadcaster-with-boostthread</a>.</p>
+        <p>This is a bit of a continuation from a previous question here:<a href="http://answers.ros.org/question/186678/using-tf-for-plotting-frames-in-rviz/">here</a>.</p>
+
+<p>Basically, I want to create a class that allows me to continuously publish frames to tf. I have no experience at all in multithreaded programming, but I found a decent introduction to Boost that I have been referencing. I have gotten my code to compile, but when I try to use the <code>plotf()</code> method it spits out the following error:</p>
+
+<pre><code>Adding a frame to be plotted
+Creating broadcasting thread
+Broadcasting 1 transforms    
+[FATAL] [1406225580.899040462]: ASSERTION FAILED
+        file = /opt/ros/hydro/include/ros/publisher.h
+        line = 108
+        cond = false
+        message = 
+    [FATAL] [1406225580.899232266]: Call to publish() on an invalid Publisher (topic [/tf])
+    [FATAL] [1406225580.899378655]: 
+</code></pre>
+
+<p>Here is my header file:</p>
+
+<pre><code>  #ifndef UTILITIES_H
+#define UTILITIES_H
+
+#include &lt;Eigen/Core&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;boost/thread.hpp&gt;
+
+class RvizPlotter{
+
+
+    class RvizFrame{
+        public:
+            std::string parentName;
+            std::string childName;
+            tf::Transform frame;
+            RvizFrame(tf::Transform frame, std::string parentName, std::string childName);
+    };
+std::vector&lt;RvizFrame&gt; frames;
+tf::TransformBroadcaster br;
+
+void broadcast();
+
+public:
+    RvizPlotter(int argc, char **argv);
+    void plotf(Eigen::Matrix4f f, std::string parentName, std::string childName);
+    void plotf(Eigen::Matrix4f f, std::string frameName);
+};
+
+#endif
+</code></pre>
+
+<p>And here is the source file:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;Eigen/Core&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;ur5/utilities.h&gt;
+
+RvizPlotter::RvizFrame::RvizFrame(tf::Transform frame, std::string parentName, std::string childName){
+  this-&gt;frame = frame; this-&gt;parentName = parentName; this-&gt;childName = childName;
+}
+
+void RvizPlotter::plotf(Eigen::Matrix4f h, std::string parentName, std::string childName){
+  printf(&quot;Adding a frame to be plotted\n&quot;);
+  tf::Transform frame;
+  frame.setOrigin(tf::Vector3(h(0,3), h(1,3), h(2,3)));
+  frame.setBasis(tf::Matrix3x3(h(0,0), h(0,1), h(0,2),
+                               h(1,0), h(1,1), h(1,2),
+                               h(2,0), h(2,1), h(2,2)));
+  frames.push_back(RvizPlotter::RvizFrame(frame, parentName, childName));
+}
+
+void RvizPlotter::plotf(Eigen::Matrix4f h, std::string frameName){
+  plotf(h,&quot;map&quot;,frameName);
+}
+
+void RvizPlotter::broadcast(){
+  printf(&quot;Broadcasting %d transforms\n&quot;,frames.size());
+  while(frames.size() &gt; 0)
+  {
+    for(int i = 0; i &lt; frames.size(); i++){
+      br.sendTransform(tf::StampedTransform(frames[i].frame, ros::Time::now(), frames[i].parentName, frames[i].childName));
+    }
+  }
+  boost::this_thread::sleep(boost::posix_time::millisec(100));
+}
+
+RvizPlotter::RvizPlotter(int argc, char **argv){
+  ros::init(argc, argv, &quot;plotter&quot;);
+  ros::NodeHandle node;
+
+  //Testing that frames do actually get pushed into vector
+  Eigen::Matrix4f h = Eigen::MatrixXf::Identity(4,4);
+  plotf(h,&quot;Frame&quot;);
+
+  printf(&quot;Creating broadcasting thread\n&quot;);
+  boost::thread* broadcastThread = new boost::thread(boost::bind(&amp;RvizPlotter::broadcast, this));
+}
+</code></pre>
+
+<p>Any ideas on what I&#39;m doing wrong?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/19735">rkeatin3</a> on 2014-07-24 14:19:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I am not sure what you code is supposed to do, maybe, there is a more elegant to create your desired behaviour....</p>
+
+<p>However, your problem is, that your <code>tf::TransformBroadcaster br;</code> is created before <code>ros::init</code>. As class member it  is implizitly instantiated:</p>
+
+<pre><code>    RvizPlotter::RvizPlotter(int argc, char **argv)
+// br is created implizitly at this point in the code
+{
+      ros::init(argc, argv, &quot;plotter&quot;);
+      ros::NodeHandle node;
+</code></pre>
+
+<p>Before <code>ros::init</code> and the first nodeHandle is created, it can not set up its internal publishers, i. e. is invalid.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4478">Wolf</a> on 2014-07-24 15:13:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>To expand on the previous answer a bit:</p>
+
+<p>ros::init should only be called once during a program, so you probably shouldn&#39;t call it inside your RvizPlotter, particularly if users are expected to instantiate more than one instance of it.</p>
+
+<p>Then you can simply require your users to call ros::init before creating any instances of your RvizPlotter, and your ordering problems are much easier to sort out.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2014-07-24 16:18:28 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

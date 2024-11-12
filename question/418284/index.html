@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Testing launch of Node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/418284">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Testing launch of Node</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103488/ros2-testing-launch-of-node">https://robotics.stackexchange.com/questions/103488/ros2-testing-launch-of-node</a>.</p>
+        <p>I&#39;ve been trying to write some tests for my package, but with not much success until now...</p>
+
+<p>I have a &quot;PelicanUnit&quot; node and in its constructor I require a path to a <em>.sdf</em> model: if that&#39;s not given, everything shuts down with a <strong>std::runtime_error</strong>.
+Now, using colcon test and <strong>Google Test</strong>, I&#39;ve been trying to write sort of like smoketests for successful and unsuccessful launches.
+The failing case has been a little tricky, but in the end I&#39;ve managed with this:</p>
+
+<pre><code>TEST(SmokeTests, ParseModelFailing) {
+     // Initialize RCLCPP
+     rclcpp::init(0, nullptr);
+     EXPECT_THROW(
+         {
+             try {
+                 PelicanUnit pelican;
+             } catch (const std::exception&amp; e) {
+                 EXPECT_STREQ(&quot;Agent model could not be parsed!&quot;, e.what());
+                 throw; // Re-throw the exception for Google Test to catch
+             }
+         }, 
+         std::runtime_error);
+     // Shutdown RCLCPP
+     rclcpp::shutdown(); 
+}
+</code></pre>
+
+<p>Unfortunately, I cannot find a way for the other test.</p>
+
+<p>Up until now I&#39;ve tried:</p>
+
+<ul>
+<li><p>launching the node from the test itself but I could not pass the config file I normally use with the standard launch file</p>
+
+<pre><code>TEST(SmokeTests, Main) {
+    // Useless, since the node itself does not parse arguments (?)
+    char  arg0[] = &quot;--params-file&quot;;
+    char  arg1[] = &quot;src/pelican/config/copter1.yaml&quot;; // TODO: use package share directory
+    char* argv[] = { &amp;arg0[0], &amp;arg1[0], NULL };
+    int   argc   = (int)(sizeof(argv) / sizeof(argv[0])) - 1;
+
+    // Initialization
+    rclcpp::init(argc, argv);
+
+    // Instantiation
+    rclcpp::Node::SharedPtr node = std::make_shared&lt;PelicanUnit&gt;();
+    rclcpp::executors::MultiThreadedExecutor executor;
+
+    executor.add_node(node);
+    executor.spin();
+
+    rclcpp::shutdown();
+}
+</code></pre></li>
+<li><p>using a test launch_file, which has been somewhat almost good, but the config file used has not been found and, most importantly, I&#39;m not sure I can use this as a proper test. I can only test that the command is launched, not that the node itself fires up smoothly...</p>
+
+<pre><code>TEST(SmokeTests, NodeStartingCorrectly) {
+    // Set the launch file path and arguments
+    const std::string pwd = &quot;source &quot;;
+    const std::string launch_command = &quot;ros2 launch pelican test_launch.launch.py&quot;;
+
+    // Run the launch command and check its exit status
+    std::system(pwd.c_str());
+    int exit_status = std::system(launch_command.c_str());
+    ASSERT_EQ(exit_status, 0);
+}
+</code></pre></li>
+</ul>
+
+<p>(launch file)</p>
+
+<pre><code>from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import PathJoinSubstitution, ThisLaunchFileDir
+
+
+def generate_launch_description():
+    config_pkg_share = FindPackageShare(&#39;pelican&#39;)
+    config_middleware = &#39;config/&#39;
+
+    ld =  LaunchDescription()
+
+    config_file = &#39;copter1.yaml&#39;
+
+    node = Node(
+            package=&#39;pelican&#39;,
+            executable=&#39;pelican_unit&#39;,
+            ros_arguments=[&#39;--params-file&#39;, 
+                           PathJoinSubstitution([config_pkg_share, config_middleware, config_file])]
+        )
+
+    ld.add_action(node)
+
+    return ld
+</code></pre>
+
+<p>Is there anyone that can provide some assistance or suggestions for this? Thank you!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/145981"></a> on 2023-08-08 16:14:11 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In the end I&#39;ve managed to do it like this:</p>
+
+<pre><code>TEST(SmokeTests, NodeStartingCorrectly) {
+    char  arg0[] = &quot;--ros-args&quot;;
+    char  arg1[] = &quot;--params-file&quot;;
+    char  arg2[] = &quot;test.yaml&quot;;
+    char* argv[] = { &amp;arg0[0], &amp;arg1[0], &amp;arg2[0], NULL };
+    int   argc   = (int)(sizeof(argv) / sizeof(argv[0])) - 1;
+
+    // Initialization
+    rclcpp::init(argc, argv);
+
+    // Instantiation
+    rclcpp::Node::SharedPtr node = std::make_shared&lt;PelicanUnit&gt;();
+    rclcpp::executors::MultiThreadedExecutor executor;
+
+    executor.add_node(node);
+
+    std::thread t(
+        [&amp;](){
+            ASSERT_NO_THROW(executor.spin(););
+        }
+    );
+
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    executor.cancel();
+    t.join(); // Wait for thread completion
+
+
+    rclcpp::shutdown();
+}
+</code></pre>
+
+<p>I have not found another way with <code>spin_some</code> or <code>spin_until_future_complete</code>, probably due to something related to these issues:</p>
+
+<ul>
+<li><a href="https://github.com/ros2/rclcpp/issues/1916">https://github.com/ros2/rclcpp/issues/1916</a></li>
+<li><a href="https://github.com/ros2/rclpy/issues/585">https://github.com/ros2/rclpy/issues/585</a></li>
+<li><a href="https://github.com/ros2/rclcpp/issues/1454">https://github.com/ros2/rclcpp/issues/1454</a></li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/145981"></a> on 2023-08-11 15:20:04 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

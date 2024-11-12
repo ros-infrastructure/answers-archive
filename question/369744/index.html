@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Simple path planning in 3D - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/369744">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Simple path planning in 3D</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I am looking for a simple example with provide a path finder from 3D occupancy map.</p>
+
+<p>I find that Moveit! exists to do this but there not simple example to try it.</p>
+
+<p>Can somenone advice me a example?</p>
+
+<p>Best regards </p>
+
+<p>Edit:</p>
+
+<p>I find a example of 3D path planning or collision avoidance:</p>
+
+<p>Here is the code I modified:</p>
+
+<pre><code>   /*
+ * Copyright 2017 Ayush Gaud 
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include &quot;ros/ros.h&quot;
+#include &lt;octomap_msgs/Octomap.h&gt;
+#include &lt;octomap_msgs/conversions.h&gt;
+#include &lt;octomap_ros/conversions.h&gt;
+#include &lt;octomap/octomap.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+#include &quot;visualization_msgs/Marker.h&quot;
+#include &lt;trajectory_msgs/MultiDOFJointTrajectory.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/Pose.h&gt;
+
+#include &lt;ompl/base/spaces/SE3StateSpace.h&gt;
+#include &lt;ompl/base/spaces/SE3StateSpace.h&gt;
+#include &lt;ompl/base/OptimizationObjective.h&gt;
+#include &lt;ompl/base/objectives/PathLengthOptimizationObjective.h&gt;
+// #include &lt;ompl/geometric/planners/rrt/RRTstar.h&gt;
+#include &lt;ompl/geometric/planners/rrt/InformedRRTstar.h&gt;
+#include &lt;ompl/geometric/SimpleSetup.h&gt;
+
+#include &lt;ompl/config.h&gt;
+#include &lt;iostream&gt;
+
+#include &quot;fcl/config.h&quot;
+#include &quot;fcl/octree.h&quot;
+#include &quot;fcl/traversal/traversal_node_octree.h&quot;
+#include &quot;fcl/collision.h&quot;
+#include &quot;fcl/broadphase/broadphase.h&quot;
+#include &quot;fcl/math/transform.h&quot;
+
+#include &lt;thread&gt;
+
+namespace ob = ompl::base;
+namespace og = ompl::geometric;
+
+
+// Declear some global variables
+
+//ROS publishers
+ros::Publisher vis_pub;
+ros::Publisher traj_pub;
+ros::Publisher oct_pub;
+
+class planner {
+public:
+    void init_start(void)
+    {
+        if(!set_start)
+            std::cout &lt;&lt; &quot;Initialized&quot; &lt;&lt; std::endl;
+        set_start = true;
+    }
+    void setStart(double x, double y, double z)
+    {
+        ob::ScopedState&lt;ob::SE3StateSpace&gt; start(space);
+        start-&gt;setXYZ(x,y,z);
+        start-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1)-&gt;setIdentity();
+        pdef-&gt;clearStartStates();
+        pdef-&gt;addStartState(start);
+    }
+    void setGoal(double x, double y, double z)
+    {
+        if(prev_goal[0] != x || prev_goal[1] != y || prev_goal[2] != z)
+        {
+            ob::ScopedState&lt;ob::SE3StateSpace&gt; goal(space);
+            goal-&gt;setXYZ(x,y,z);
+            prev_goal[0] = x;
+            prev_goal[1] = y;
+            prev_goal[2] = z;
+            goal-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1)-&gt;setIdentity();
+            pdef-&gt;clearGoal();
+            pdef-&gt;setGoalState(goal);
+            std::cout &lt;&lt; &quot;Goal point set to: &quot; &lt;&lt; x &lt;&lt; &quot; &quot; &lt;&lt; y &lt;&lt; &quot; &quot; &lt;&lt; z &lt;&lt; std::endl;
+            if(set_start)
+                plan();
+
+        }
+    }
+    void updateMap(std::shared_ptr&lt;fcl::CollisionGeometry&gt; map)
+    {
+        std::cout &lt;&lt; &quot;updateMap &quot; &lt;&lt;std::endl;
+        tree_obj = map;
+                std::cout &lt;&lt; &quot;updateMap end&quot; &lt;&lt;std::endl;
+
+    }
+    // Constructor
+    planner(void)
+    {
+        Quadcopter = std::shared_ptr&lt;fcl::CollisionGeometry&gt;(new fcl::Box(0.3, 0.3, 0.1));
+        fcl::OcTree* tree = new fcl::OcTree(std::shared_ptr&lt;const octomap::OcTree&gt;(new octomap::OcTree(0.1)));
+        tree_obj = std::shared_ptr&lt;fcl::CollisionGeometry&gt;(tree);
+
+        space = ob::StateSpacePtr(new ob::SE3StateSpace());
+
+        // create a start state
+        ob::ScopedState&lt;ob::SE3StateSpace&gt; start(space);
+
+        // create a goal state
+        ob::ScopedState&lt;ob::SE3StateSpace&gt; goal(space);
+
+        // set the bounds for the R^3 part of SE(3)
+        ob::RealVectorBounds bounds(3);
+
+        bounds.setLow(0,-20);
+        bounds.setHigh(0,20);
+        bounds.setLow(1,-20);
+        bounds.setHigh(1,20);
+        bounds.setLow(2,0);
+        bounds.setHigh(2,20);
+
+        space-&gt;as&lt;ob::SE3StateSpace&gt;()-&gt;setBounds(bounds);
+
+        // construct an instance of  space information from this state space
+        si = std::make_shared&lt;ompl::base::SpaceInformation&gt;(space);
+
+        start-&gt;setXYZ(0,0,0);
+        start-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1)-&gt;setIdentity();
+        // start.random();
+
+        goal-&gt;setXYZ(0,0,0);
+        prev_goal[0] = 0;
+        prev_goal[1] = 0;
+        prev_goal[2] = 0;
+        goal-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1)-&gt;setIdentity();
+        // goal.random();
+
+        // set state validity checking for this space
+        si-&gt;setStateValidityChecker(std::bind(&amp;planner::isStateValid, this, std::placeholders::_1 ));
+
+        // create a problem instance
+        pdef = ob::ProblemDefinitionPtr(new ob::ProblemDefinition(si));
+
+        // set the start and goal states
+        pdef-&gt;setStartAndGoalStates(start, goal);
+
+        // set Optimizattion objective
+        pdef-&gt;setOptimizationObjective(planner::getPathLengthObjWithCostToGo(si));
+
+        std::cout &lt;&lt; &quot;Initialized: &quot; &lt;&lt; std::endl;
+    }
+    // Destructor
+    ~planner()
+    {
+    }
+    void replan(void)
+    {
+
+        std::cout &lt;&lt; &quot;replan &quot; &lt;&lt;std::endl;
+
+
+        // if(path_smooth != NULL &amp;&amp; set_start)
+        {
+                    std::cout &lt;&lt; &quot;replan &quot; &lt;&lt;std::endl;
+
+            // std::cout &lt;&lt; &quot;Total Points:&quot; &lt;&lt; path_smooth-&gt;getStateCount () &lt;&lt; std::endl;
+
+            // if(path_smooth-&gt;getStateCount () &lt;= 2){
+        std::cout &lt;&lt; &quot;replan 2&quot; &lt;&lt;std::endl;
+
+                plan();
+                        std::cout &lt;&lt; &quot;replan 3&quot; &lt;&lt;std::endl;
+
+            // }else
+            // {
+            //  std::cout &lt;&lt; &quot;replan 4&quot; &lt;&lt;std::endl;
+
+            //  // for (std::size_t idx = 0; idx &lt; path_smooth-&gt;getStateCount (); idx++)
+            //  // {
+            //  //  if(!replan_flag)
+            //  //      replan_flag = !isStateValid(path_smooth-&gt;getState(idx));
+            //  //  else
+            //  //      break;
+
+            //  // }
+            //  std::cout &lt;&lt; &quot;replan 5&quot; &lt;&lt;std::endl;
+
+            //  if(replan_flag)
+            //      plan();
+            //  else
+            //      std::cout &lt;&lt; &quot;Replanning not required&quot; &lt;&lt; std::endl;
+            // // }
+        }
+    }
+
+    void plan(void)
+    {
+        std::cout &lt;&lt; &quot;plan0 &quot; &lt;&lt;std::endl;
+
+auto rtstart = new og::InformedRRTstar(si);
+        // create a planner for the defined space
+        ob::PlannerPtr plan(rtstart);
+
+        std::cout &lt;&lt; &quot;plan1 &quot; &lt;&lt; si &lt;&lt;std::endl;
+
+        std::cout &lt;&lt; &quot;plan1 &quot; &lt;&lt; plan &lt;&lt;std::endl;
+
+
+        // set the problem we are trying to solve for the planner
+        plan-&gt;setProblemDefinition(pdef);
+
+        std::cout &lt;&lt; &quot;plan2 &quot; &lt;&lt;std::endl;
+
+        // perform setup steps for the planner
+        plan-&gt;setup();
+                std::cout &lt;&lt; &quot;plan3 &quot; &lt;&lt;std::endl;
+
+
+        // print the settings for this space
+        si-&gt;printSettings(std::cout);
+
+        std::cout &lt;&lt; &quot;plan4&quot; &lt;&lt;std::endl;
+
+        // print the problem settings
+        pdef-&gt;print(std::cout);
+
+        std::cout &lt;&lt; &quot;plan &quot; &lt;&lt;std::endl;
+
+        // attempt to solve the problem within one second of planning time
+        ob::PlannerStatus solved = plan-&gt;solve(2);
+
+        std::cout &lt;&lt; &quot;plan &quot; &lt;&lt;std::endl;
+
+        if (solved)
+        {
+            // get the goal representation from the problem definition (not the same as the goal state)
+            // and inquire about the found path
+            std::cout &lt;&lt; &quot;Found solution:&quot; &lt;&lt; std::endl;
+            ob::PathPtr path = pdef-&gt;getSolutionPath();
+            og::PathGeometric* pth = pdef-&gt;getSolutionPath()-&gt;as&lt;og::PathGeometric&gt;();
+            pth-&gt;printAsMatrix(std::cout);
+            // print the path to screen
+            // path-&gt;print(std::cout);
+            trajectory_msgs::MultiDOFJointTrajectory msg;
+            trajectory_msgs::MultiDOFJointTrajectoryPoint point_msg;
+
+            msg.header.stamp = ros::Time::now();
+            msg.header.frame_id = &quot;world&quot;;
+            msg.joint_names.clear();
+            msg.points.clear();
+            msg.joint_names.push_back(&quot;Quadcopter&quot;);
+
+            for (std::size_t path_idx = 0; path_idx &lt; pth-&gt;getStateCount (); path_idx++)
+            {
+                const ob::SE3StateSpace::StateType *se3state = pth-&gt;getState(path_idx)-&gt;as&lt;ob::SE3StateSpace::StateType&gt;();
+
+                // extract the first component of the state and cast it to what we expect
+                const ob::RealVectorStateSpace::StateType *pos = se3state-&gt;as&lt;ob::RealVectorStateSpace::StateType&gt;(0);
+
+                // extract the second component of the state and cast it to what we expect
+                const ob::SO3StateSpace::StateType *rot = se3state-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1);
+
+                point_msg.time_from_start.fromSec(ros::Time::now().toSec());
+                point_msg.transforms.resize(1);
+
+                point_msg.transforms[0].translation.x= pos-&gt;values[0];
+                point_msg.transforms[0].translation.y = pos-&gt;values[1];
+                point_msg.transforms[0].translation.z = pos-&gt;values[2];
+
+                point_msg.transforms[0].rotation.x = rot-&gt;x;
+                point_msg.transforms[0].rotation.y = rot-&gt;y;
+                point_msg.transforms[0].rotation.z = rot-&gt;z;
+                point_msg.transforms[0].rotation.w = rot-&gt;w;
+
+                msg.points.push_back(point_msg);
+
+            }
+            traj_pub.publish(msg);
+
+
+      //       //Path smoothing using bspline
+
+            // og::PathSimplifier* pathBSpline = new og::PathSimplifier(si);
+            // og::PathSimplifierPtr pathBSpline(new og::PathSimplifier(si));
+            // path_smooth = new og::PathGeometric(dynamic_cast&lt;const og::PathGeometric&amp;&gt;(*pdef-&gt;getSolutionPath()));
+            // pathBSpline-&gt;smoothBSpline(*path_smooth,3);
+            // // std::cout &lt;&lt; &quot;Smoothed Path&quot; &lt;&lt; std::endl;
+            // // path_smooth.print(std::cout);
+
+
+            // //Publish path as markers
+
+            // visualization_msgs::Marker marker;
+            // marker.action = visualization_msgs::Marker::DELETEALL;
+            // vis_pub.publish(marker);
+
+            // for (std::size_t idx = 0; idx &lt; path_smooth-&gt;getStateCount (); idx++)
+            // {
+      //               // cast the abstract state type to the type we expect
+            //  const ob::SE3StateSpace::StateType *se3state = path_smooth-&gt;getState(idx)-&gt;as&lt;ob::SE3StateSpace::StateType&gt;();
+
+      //           // extract the first component of the state and cast it to what we expect
+            //  const ob::RealVectorStateSpace::StateType *pos = se3state-&gt;as&lt;ob::RealVectorStateSpace::StateType&gt;(0);
+
+      //           // extract the second component of the state and cast it to what we expect
+            //  const ob::SO3StateSpace::StateType *rot = se3state-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1);
+
+            //  marker.header.frame_id = &quot;world&quot;;
+            //  marker.header.stamp = ros::Time();
+            //  marker.ns = &quot;path&quot;;
+            //  marker.id = idx;
+            //  marker.type = visualization_msgs::Marker::CUBE;
+            //  marker.action = visualization_msgs::Marker::ADD;
+            //  marker.pose.position.x = pos-&gt;values[0];
+            //  marker.pose.position.y = pos-&gt;values[1];
+            //  marker.pose.position.z = pos-&gt;values[2];
+            //  marker.pose.orientation.x = rot-&gt;x;
+            //  marker.pose.orientation.y = rot-&gt;y;
+            //  marker.pose.orientation.z = rot-&gt;z;
+            //  marker.pose.orientation.w = rot-&gt;w;
+            //  marker.scale.x = 0.15;
+            //  marker.scale.y = 0.15;
+            //  marker.scale.z = 0.15;
+            //  marker.color.a = 1.0;
+            //  marker.color.r = 0.0;
+            //  marker.color.g = 1.0;
+            //  marker.color.b = 0.0;
+            //  vis_pub.publish(marker);
+            //  // ros::Duration(0.1).sleep();
+            //  std::cout &lt;&lt; &quot;Published marker: &quot; &lt;&lt; idx &lt;&lt; std::endl;  
+            // }
+
+            // // Clear memory
+            // pdef-&gt;clearSolutionPaths();
+            // replan_flag = false;
+
+        }
+        else
+            std::cout &lt;&lt; &quot;No solution found&quot; &lt;&lt; std::endl;
+    }
+private:
+
+    // construct the state space we are planning in
+    ob::StateSpacePtr space;
+
+    // construct an instance of  space information from this state space
+    ob::SpaceInformationPtr si;
+
+    // create a problem instance
+    ob::ProblemDefinitionPtr pdef;
+
+    // goal state
+    double prev_goal[3];
+
+    og::PathGeometric* path_smooth = NULL;
+
+    bool replan_flag = false;
+
+    std::shared_ptr&lt;fcl::CollisionGeometry&gt; Quadcopter;
+
+    std::shared_ptr&lt;fcl::CollisionGeometry&gt; tree_obj;
+
+    // Flag for initialization
+    bool set_start = false;
+
+    bool isStateValid(const ob::State *state)
+    {
+        // cast the abstract state type to the type we expect
+        const ob::SE3StateSpace::StateType *se3state = state-&gt;as&lt;ob::SE3StateSpace::StateType&gt;();
+
+        // extract the first component of the state and cast it to what we expect
+        const ob::RealVectorStateSpace::StateType *pos = se3state-&gt;as&lt;ob::RealVectorStateSpace::StateType&gt;(0);
+
+        // extract the second component of the state and cast it to what we expect
+        const ob::SO3StateSpace::StateType *rot = se3state-&gt;as&lt;ob::SO3StateSpace::StateType&gt;(1);
+
+        fcl::CollisionObject treeObj((tree_obj));
+        fcl::CollisionObject aircraftObject(Quadcopter);
+
+        // check validity of state defined by pos &amp; rot
+        fcl::Vec3f translation(pos-&gt;values[0],pos-&gt;values[1],pos-&gt;values[2]);
+        fcl::Quaternion3f rotation(rot-&gt;w, rot-&gt;x, rot-&gt;y, rot-&gt;z);
+        aircraftObject.setTransform(rotation, translation);
+        fcl::CollisionRequest requestType(1,false,1,false);
+        fcl::CollisionResult collisionResult;
+        fcl::collide(&amp;aircraftObject, &amp;treeObj, requestType, collisionResult);
+
+        return(!collisionResult.isCollision());
+    }
+
+    // Returns a structure representing the optimization objective to use
+    // for optimal motion planning. This method returns an objective which
+    // attempts to minimize the length in configuration space of computed
+    // paths.
+    ob::OptimizationObjectivePtr getThresholdPathLengthObj(const ob::SpaceInformationPtr&amp; si)
+    {
+        ob::OptimizationObjectivePtr obj(new ob::PathLengthOptimizationObjective(si));
+        // obj-&gt;setCostThreshold(ob::Cost(1.51));
+        return obj;
+    }
+
+    ob::OptimizationObjectivePtr getPathLengthObjWithCostToGo(const ob::SpaceInformationPtr&amp; si)
+    {
+        ob::OptimizationObjectivePtr obj(new ob::PathLengthOptimizationObjective(si));
+        obj-&gt;setCostToGoHeuristic(&amp;ob::goalRegionCostToGo);
+        return obj;
+    }
+
+};
+
+
+void octomapCallback(const octomap_msgs::Octomap::ConstPtr &amp;msg, planner* planner_ptr)
+{
+
+
+    //loading octree from binary
+     // const std::string filename = &quot;/home/rrc/power_plant.bt&quot;;
+     // octomap::OcTree temp_tree(0.1);
+     // temp_tree.readBinary(filename);
+     // fcl::OcTree* tree = new fcl::OcTree(std::shared_ptr&lt;const octomap::OcTree&gt;(&amp;temp_tree));
+
+
+    // convert octree to collision object
+    octomap::OcTree* tree_oct = dynamic_cast&lt;octomap::OcTree*&gt;(octomap_msgs::msgToMap(*msg));
+    fcl::OcTree* tree = new fcl::OcTree(std::shared_ptr&lt;const octomap::OcTree&gt;(tree_oct));
+
+    // Update the octree used for collision checking
+    planner_ptr-&gt;updateMap(std::shared_ptr&lt;fcl::CollisionGeometry&gt;(tree));
+    planner_ptr-&gt;replan();
+}
+
+
+void octomapLoad( planner* planner_ptr)
+{
+
+
+    std::cout &lt;&lt; &quot;load data&quot; &lt;&lt;std::endl;
+    // loading octree from binary
+     const std::string filename = &quot;/home/xavier/Downloads/fr_079.bt&quot;;
+     octomap::OcTree temp_tree(0.1);
+     temp_tree.readBinary(filename);
+     fcl::OcTree* tree = new fcl::OcTree(std::shared_ptr&lt;const octomap::OcTree&gt;(&amp;temp_tree));
+
+
+    octomap_msgs::Octomap octomap ;
+    octomap.binary = 1 ;
+    octomap.id = 1 ;
+    octomap.resolution =0.05 ;
+    octomap.header.frame_id = &quot;/map&quot;;
+    octomap.header.stamp = ros::Time::now();
+    bool res = octomap_msgs::fullMapToMsg(temp_tree, octomap);
+    //octomap.data = td_vector_to_py_list(octomap.data)  ;
+    oct_pub.publish(octomap) ;
+
+
+    // Update the octree used for collision checking
+    planner_ptr-&gt;updateMap(std::shared_ptr&lt;fcl::CollisionGeometry&gt;(tree));
+    planner_ptr-&gt;replan();
+
+}
+
+void odomCb(const nav_msgs::Odometry::ConstPtr &amp;msg, planner* planner_ptr)
+{
+    planner_ptr-&gt;setStart(msg-&gt;pose.pose.position.x, msg-&gt;pose.pose.position.y, msg-&gt;pose.pose.position.z);
+    planner_ptr-&gt;init_start();
+}
+
+void startCb(const geometry_msgs::PointStamped::ConstPtr &amp;msg, planner* planner_ptr)
+{
+    planner_ptr-&gt;setStart(msg-&gt;point.x, msg-&gt;point.y, msg-&gt;point.z);
+    planner_ptr-&gt;init_start();
+}
+
+void goalCb(const geometry_msgs::PointStamped::ConstPtr &amp;msg, planner* planner_ptr)
+{
+    planner_ptr-&gt;setGoal(msg-&gt;point.x, msg-&gt;point.y, msg-&gt;point.z);
+}
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;octomap_planner&quot;);
+    ros::NodeHandle n;
+    planner planner_object;
+
+    ros::Subscriber octree_sub = n.subscribe&lt;octomap_msgs::Octomap&gt;(&quot;/octomap_binary&quot;, 1, boost::bind(&amp;octomapCallback, _1, &amp;planner_object));
+    ros::Subscriber odom_sub = n.subscribe&lt;nav_msgs::Odometry&gt;(&quot;/bebop2/odometry_sensor1/odometry&quot;, 1, boost::bind(&amp;odomCb, _1, &amp;planner_object));
+    ros::Subscriber goal_sub = n.subscribe&lt;geometry_msgs::PointStamped&gt;(&quot;/clicked_point&quot;, 1, boost::bind(&amp;goalCb, _1, &amp;planner_object));
+    // ros::Subscriber start_sub = n.subscribe&lt;geometry_msgs::PointStamped&gt;(&quot;/start/clicked_point&quot;, 1, boost::bind(&amp;goalCb, _1, &amp;planner_object));
+
+    vis_pub = n.advertise&lt;visualization_msgs::Marker&gt;( &quot;visualization_marker&quot;, 0 );
+    traj_pub = n.advertise&lt;trajectory_msgs::MultiDOFJointTrajectory&gt;(&quot;waypoints&quot;,1);
+
+    oct_pub = n.advertise&lt;octomap_msgs::Octomap&gt;(&quot;oct_msg&quot;,1);
+
+
+
+    std::cout &lt;&lt; &quot;OMPL version: &quot; &lt;&lt; OMPL_VERSION &lt;&lt; std::endl;
+
+    std::thread t([&amp;planner_object](){
+        while(1) {
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        octomapLoad(&amp;planner_object);
+
+        }
+
+    });
+
+    t.detach();
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>The code crash just after the plan-&gt;setup() with Segmentation fault (core dumped). 
+I draw the octomap in rviz, it seems to be loaded properly.</p>
+
+<p>Is there a way to debug that?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/67329">dev4all12358</a> on 2021-01-18 03:58:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

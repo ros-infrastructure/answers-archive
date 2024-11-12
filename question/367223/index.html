@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Do Timers run in different threads? [roscpp] - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/367223">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Do Timers run in different threads? [roscpp]</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97786/do-timers-run-in-different-threads-roscpp">https://robotics.stackexchange.com/questions/97786/do-timers-run-in-different-threads-roscpp</a>.</p>
+        <p>I&#39;m wondering if I&#39;m setting up different timers, do they run in different threads using roscpp? The background is that one Timer callback is taking a longer time to be executed and, therefore, I want to run it at a lower frequency. But it should not interrupt the execution frequency of <code>ros::spin()</code> (because of the callbacks there) and the other Timer callback. </p>
+
+<p>So my open questions are:</p>
+
+<ul>
+<li>Do different Timer callbacks run in different threads?</li>
+<li>Do callback functions of the same Timer run in different threads or what is happening if the frequency of a Timer is too high and execution of callback takes longer than this?</li>
+<li>Do Timers run in a different thread than <code>ros::spin()</code>, or is <code>ros::spin()</code> setting the minimal time? From what I&#39;ve read, this is the case and the Timer is executed during <code>ros::spin()</code>. If callbacks during <code>ros::spin()</code> take longer than the Timer duration, what will happen?</li>
+<li>And as a possible solution: If I switch to AsyncSpinner, does this also affect the Timer callbacks?</li>
+</ul>
+
+<p>What I&#39;m doing now is described in this solution: <a href="https://answers.ros.org/question/53055/ros-callbacks-threads-and-spinning/?answer=53088#post-id-53088">https://answers.ros.org/question/53055/ros-callbacks-threads-and-spinning/?answer=53088#post-id-53088</a></p>
+
+<blockquote>
+<p>Typically, if you want to do
+time-consuming computations such as
+&quot;leg detection&quot;, the callbacks are
+definitively not the place to do it.</p>
+
+<p>Just, copy your data to a LegDetector
+object instance and call in your main
+thread the method that will do the
+heavy work.</p>
+</blockquote>
+
+<p>However, how should this not block my other callbacks? I&#39;m calling the computational intense function during <code>while(ros::ok())</code> and it is blocking the ROS spinner and, therefore, every other callback. So what is the intention behind this solution?</p>
+
+<p>Sources:
+<a href="http://wiki.ros.org/roscpp/Overview/Timers">http://wiki.ros.org/roscpp/Overview/Timers</a>
+<a href="https://roboticsbackend.com/roscpp-timer-with-ros-publish-data-at-a-fixed-rate/">https://roboticsbackend.com/roscpp-timer-with-ros-publish-data-at-a-fixed-rate/</a> :</p>
+
+<blockquote>
+<p>Once created, the timer will return so
+the following of the code will be
+executed. It will then, in another
+thread, call the callback every X
+seconds, where X is the first
+parameter you gave to the Timer.</p>
+</blockquote>
+
+<p><a href="https://answers.ros.org/question/240388/do-topic-callbacks-and-timer-callbacks-run-in-the-same-thread/">https://answers.ros.org/question/240388/do-topic-callbacks-and-timer-callbacks-run-in-the-same-thread/</a> :</p>
+
+<blockquote>
+<p>No, topicCallback and timerCallback
+cannot be executed in parallel, as
+long as you are using single-threaded
+spinning. For example, if you are
+using an AsyncSpinner, callbacks are
+called from multiple threads and
+additional care needs to be taken.</p>
+</blockquote>
+
+        <div class="owner"><p>Asked by <a href="/users/35086">prex</a> on 2020-12-08 06:17:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>After spending quite some time looking for information about ROS callback queues, multi-threaded spinners and timers, I think I can answer my questions. Seems like the ROS documentation could be improved on this side. </p>
+
+<p>A very useful article about multi-threaded spinners and multiple callback queues can be found here: <a href="https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f">https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f</a></p>
+
+<p>As known, ROS does some internal threading. It runs each subscriber in a receiver thread and each timer in a timer thread. This allows to receive data independent of the spinner. However, these threads do not process the callback, they just collect it. For the subscriber, it adds an element to the subscriber queue and for the timer, it adds the timer callback to the callback queue. Timer callbacks end up in the same callback queue with subscriber callbacks.</p>
+
+<p>Now, on each spin the subscriber queue is added to the callback queue (number of elements to keep in describer queue can be set. If spinner has much lower frequency than incoming subscriber callbacks, they might be dropped). The complete callback queue is processed in first-in-first-out order. This means in each spin, every element in the callback queue gets processed.</p>
+
+<p>Callbacks should always be fast, because multiple of the same callback can end up in the queue if the subscriber queue is not limited to 1. For the timer to work properly, it is required that the spinner runs regularly at a fast frequency, because the ROS timer just adds elements to the callback queue when spin is called and might only execute it after other callbacks are processed.</p>
+
+<p>Also, for this reason, it makes sense to use timers instead of limiting the frequency of the spinner. Limiting the frequency means that callbacks can not be processed anymore just because of maybe one function which should be executed at a certain frequency. But the spinner does much more and we should not limit it.</p>
+
+<p>Since the spinner is a bottleneck if processing the callback queue takes too much time, it makes sense to use a multi-threaded spinner. If you use a multi-threaded spinner/ async spinner, keep in mind that a lock is applied for a specific callback (no concurrency per default) and multiple callbacks of the same type are not processed in parallel. However, if enough threads are available, the next unlocked callback of the queue will be called (<a href="https://stackoverflow.com/a/48544551/8623933">https://stackoverflow.com/a/48544551/8623933</a>) (<a href="https://roboticsbackend.com/ros-asyncspinner-example/">https://roboticsbackend.com/ros-asyncspinner-example/</a>
+). This also means that if a timer callback takes longer than the timer duration, it will start with a delay. No new timer callback will be added to the callback queue during this time (<a href="https://answers.ros.org/question/248656/does-callbacks-get-drop-from-queue-when-it-is-exceeded-it-expected-execution-time-by-too-much/">https://answers.ros.org/question/248656/does-callbacks-get-drop-from-queue-when-it-is-exceeded-it-expected-execution-time-by-too-much/</a>).</p>
+
+<p>For the case that there are processes which are more time critical and can not wait until the elements in front of the callback queue are processed, we can use multiple callback queues and assign subscribers and timers (<a href="http://docs.ros.org/en/diamondback/api/roscpp/html/structros_1_1TimerOptions.html">http://docs.ros.org/en/diamondback/api/roscpp/html/structros_1_1TimerOptions.html</a>) to them. There are different options of doing this. The gitconnected article linked above describes how to create another spinner in a new thread. Another option is to add an AsyncSpinner with its own callback queue in addition to a global callback queue as shown here: <a href="https://gist.github.com/bgromov/e6f5eb142346b3c88e9f96bce17eee92">https://gist.github.com/bgromov/e6f5eb142346b3c88e9f96bce17eee92</a></p>
+
+<p>So as a summary, the solution to my problem is to create an AsyncSpinner, which can process the timer callback in parallel so that it does not block the faster callbacks. If this is not enough, I would start using multiple callback queues for critical processes.</p>
+
+<p>Two more comments about spinners and how they process the callback queue:</p>
+
+<ul>
+<li><p>There are 2 steps for a spinner to execute a callback from the callback queue. First, it needs to get the callback from the queue, and second, it executes the callback. During the first step, there&#39;s a lock on the callback queue so that no other threads can access it at the same time. But once the callback is loaded, another callback can be loaded into another thread. Step 2 works in parallel. (Explained by the author of the gitconnect article)</p></li>
+<li><p>The AsyncSpinner should be able to continue executing a new spin (begin with a new callback queue) in parallel if a thread is available, even if one callback takes much more time. (See comment here: <a href="https://stackoverflow.com/a/48544551/8623933">https://stackoverflow.com/a/48544551/8623933</a>)</p></li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35086">prex</a> on 2020-12-10 12:06:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Very helpful write-up! Thanks for doing some research. Couple of quick notes:</p>
+
+<ol>
+<li>The threading model is quite different in <code>rospy</code> <a href="https://answers.ros.org/question/9543/rospy-threading-model/">https://answers.ros.org/question/9543/rospy-threading-model/</a></li>
+<li>Agree that the documentation on these things is not great. Reminder, this documentation is a wiki. Feel free to add your own contributions and edits.</li>
+</ol>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1272">jarvisschultz</a> on 2020-12-10 12:28:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks @jarvisschultz. I added the hint that I&#39;m talking about roscpp.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35086">prex</a> on 2020-12-10 12:43:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

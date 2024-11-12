@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why is spinOnce() right after publish() flaky? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/395699">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why is spinOnce() right after publish() flaky?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/101174/why-is-spinonce-right-after-publish-flaky">https://robotics.stackexchange.com/questions/101174/why-is-spinonce-right-after-publish-flaky</a>.</p>
+        <p>I have a simple C++ test code which contains a subscriber, a publisher and nothing else. I do the following:</p>
+
+<ol>
+<li>Set up subscriber <code>sub</code> with queue size 1.</li>
+<li>Set up publisher <code>pub</code> with queue size 1.</li>
+<li>Wait until <code>sub.getNumPublishers()</code> is 1 to make sure the two guys talked (wait up to 1 second).</li>
+<li><code>pub.publish(msg)</code></li>
+<li><code>std::thread t(&amp;ros::spinOnce);</code></li>
+</ol>
+
+<p>What&#39;s weird is that the publish call is flaky, i.e. in about 10% of cases, the subscriber callback isn&#39;t fired (regardless of how long I wait).</p>
+
+<p>I can&#39;t understand why that happens, because:</p>
+
+<ul>
+<li>I&#39;m running with sim_time set to true and nobody publishes the time, so time should not play a role.</li>
+<li>There are no other nodes running on this rosmaster.</li>
+<li>Both the subscriber and publisher are in the same process, so they should use intraprocess communication. Thus nothing like Nagle should play a role.</li>
+</ul>
+
+<p>My understanding of what <code>publish()</code> does is the following:</p>
+
+<ul>
+<li>Serialize the data</li>
+<li>Find all subscriber links</li>
+<li>Store the serialized data together with some other goodies in the subscriber link&#39;s callback queue.</li>
+</ul>
+
+<p>There&#39;s nothing obviously asynchronous here. Am I missing something? Or is it possible that  <code>sub.getNumPublishers()</code> shows 1 while the publisher and subscriber are not really yet connected? (but I wait 1 second for this to happen...).</p>
+
+<p>The only other explanation I can think of is that something else gets to the subscriber&#39;s queue. But what would that be? It is definitely not &quot;converted&quot; into calling the subscriber callback I registered because that&#39;s what I&#39;m checking and what fails.</p>
+
+<p>MWE:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;std_msgs/Header.h&gt;
+#include &lt;thread&gt;
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;test_flaky_publish&quot;);
+  ros::Time::setNow(ros::Time(0));
+  bool called = false;
+  ros::NodeHandle nh;
+  auto cb = [&amp;](const std_msgs::Header&amp;){called = true;};
+  ros::Subscriber sub = nh.subscribe&lt;std_msgs::Header, const std_msgs::Header&amp;&gt;(&quot;test&quot;, 1, cb);
+  ros::Publisher pub = nh.advertise&lt;std_msgs::Header&gt;(&quot;test&quot;, 1);
+  while (sub.getNumPublishers() == 0 &amp;&amp; ros::ok())
+    ros::WallDuration(0, 1000).sleep();
+  pub.publish(std_msgs::Header());
+  std::thread t(&amp;ros::spinOnce);
+  ros::WallDuration(0.5).sleep();
+  if (called)
+    ROS_INFO(&quot;called&quot;);
+  else
+    ROS_ERROR(&quot;not called&quot;);
+  if (t.joinable())
+    t.join();
+  return called ? 0 : 1;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/7736"></a> on 2022-02-05 18:47:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>Both the subscriber and publisher are in the same process, so they should use intraprocess communication.</p>
+</blockquote>
+
+<p>is that actually true in ROS 1? IIRC, that&#39;s something only nodelets do.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-02-06 03:10:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think that&#39;s true only for no-serialization comms. But no-tcp inside one process should work everywhere, even outside nodelets.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2022-02-06 05:27:22 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>After reading <a href="http://wiki.ros.org/roscpp/Internals">http://wiki.ros.org/roscpp/Internals</a> and a few source files, I think I got what is going on.</p>
+
+<p>The behavior depends on whether no-copy publishing (via shared_ptr messages) is used or not. In no-copy intraprocess publishing, the published message is directly put on the subscriber&#39;s callback queue. In intraprocess serialized pubsub connection (when you publish just a reference or a copy of the message), the callback queue of the subscriber is not directly updated from the publisher. It instead goes into the publisher output queue and waits for <code>PollManager</code> to move the callback from the publisher output queue to the subscriber callback queue.</p>
+
+<p>As referenced later in the source code analysis, the <code>PollSet</code> gets signaled right after a serialized message is put in the publisher output queue. The signaling is done via a pipe, which can be buffered in kernel. So I think this is what brings asynchronicity in the code.</p>
+
+<p>Relevant source lines:</p>
+
+<ul>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/publisher.cpp#L101">Publisher::publish() calls TopicManager::publish()</a></li>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/topic_manager.cpp#L747">TopicManager::publish() calls Publication::publish()</a></li>
+<li><code>Publication::publish()</code> has two options based on the type of the published message
+
+<ul>
+<li>if the published message is the no-copy shared pointer, <a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/publication.cpp#L441">IntraProcessSubscriberLink::enqueueMessage() is called directly</a></li>
+<li>if the published message is not no-copy, <a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/publication.cpp#L451">it is pushed to the publisher output queue</a>
+
+<ul>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/topic_manager.cpp#L753">right after <code>Publication::publish()</code> finishes, <code>TopicManager</code> signals the <code>PollSet</code></a></li>
+</ul></li>
+</ul></li>
+<li>The publication queue is asynchronously processed by the <code>PollManager</code>:
+
+<ul>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/topic_manager.cpp#L88">Registration of processPublishQueues() callback to PollManager</a></li>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/topic_manager.cpp#L158">TopicManager::processPublishQueues() calss Publication::processPublishQueue()</a></li>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/publication.cpp#L479">Publication::processPublishQueue() calls enqueueMessage()</a></li>
+<li><a href="https://github.com/ros/ros_comm/blob/f5fa3a168760d62e9693f10dcb9adfffc6132d22/clients/roscpp/src/libros/publication.cpp#L207">Publication::enqueueMessage() calls IntraProcessSubscriberLink::enqueueMessage()</a></li>
+</ul></li>
+<li>From now on both paths of no-copy and serialized messages meet again</li>
+<li><a href="https://github.com/ros/ros_comm/blob/3f8eca4a1f13996b33c03a5c4ee3a69fb0db3668/clients/roscpp/src/libros/intraprocess_subscriber_link.cpp#L83">IntraProcessSubscriberLink::enqueueMessage() calls IntraProcessPublisherLink::handleMessage()</a></li>
+<li><a href="https://github.com/ros/ros_comm/blob/3f8eca4a1f13996b33c03a5c4ee3a69fb0db3668/clients/roscpp/src/libros/intraprocess_publisher_link.cpp#L121">IntraProcessPublisherLink::handleMessage() calls Subscription::handleMessage()</a></li>
+<li><a href="https://github.com/ros/ros_comm/blob/3f8eca4a1f13996b33c03a5c4ee3a69fb0db3668/clients/roscpp/src/libros/subscription.cpp#L668">Subscription::handleMessage() adds a callback to the callback queues of all its registered callbacks</a></li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/7736"></a> on 2022-02-06 12:32:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>And yes, I verified that if you change the MWE to used <code>ConstPtr</code> messages on both the publisher and subscriber, the example is no longer flaky.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2022-02-06 12:36:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So to deflake the code, either switch to using pointer messages, or you can also put the following code after the <code>publish</code> call: <code>while (dynamic_cast&lt;ros::CallbackQueue*&gt;(nh.getCallbackQueue())-&gt;empty()) ros::WallDuration(0, 1000).sleep();</code>. But that&#39;s not the best solution, as it will only work in this minimal example where we know nobody else is publishing and we also know the dynamic type of the callback queue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2022-02-06 12:45:34 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>I believe I need multithreading help! Process has died [pid 31330, exit code -11... - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/333312">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>I believe I need multithreading help! Process has died [pid 31330, exit code -11...</h2>
+      <div class="question">
+        <p>I&#39;ve been trying to make use of <code>rosbag::Recorder</code> to programmatically record bag files through an Rviz panel widget. I decided the best way to accomplish this was to separate the GUI code from the actual collection of data, and subsequent translation into a .csv file to be analyzed offline, so I used an action to communicate between nodes. Originally I tried to just use <code>rosbag.write()</code> in the /joint_states callback, and in the /wrench callback, but ran into some race conditions (an error relating to free() popped up, seemed like fighting for the same memory block). I wasn&#39;t sure how to solve this... (maybe mutex..?), so I tried to save the incoming messages directly to a .csv file, which had problems of its own, notably the time stamps were difficult to decipher since the messages aren&#39;t published or received simultaneously.</p>
+
+<p>After all this, I found rosbag::Recorder. The problem I&#39;ve run into is that <code>rosbag::Recorder</code> has no way to stop recording, you just need to close the node. However, I can&#39;t put the <code>recorder.run()</code> command directly into my executeCallback since it&#39;s blocking, and only exits when the node is closed. So I have attempted multithreading, which seems to work fine except when I close the node, I get a strange message, which only appears when I have <code>thread_group.join_all()</code>, but without this command, the .bag file stays as .bag.active. The error which appears, and the code are below. </p>
+
+<pre><code>[ INFO] [1568812221.925664598]: bag server started
+Execute cb reached!
+Record Bag
+[ INFO] [1568812235.810963832]: Subscribing to /joint_states
+[ INFO] [1568812235.814695031]: Subscribing to /wrench
+[ INFO] [1568812235.817165194]: Recording to 2019-09-18-09-10-35.bag.
+Execute cb reached!
+Stopped recording
+[bag_server-1] process has died [pid 20260, exit code -11, cmd /home/joshua/catkin_ws/devel/lib/prop_data_collector/prop_data_collector_bag_server __name:=bag_server __log:=/home/joshua/.ros/log/8b15a9b2-da15-11e9-92b3-b8ca3a9f2c71/bag_server-1.log].
+log file: /home/joshua/.ros/log/8b15a9b2-da15-11e9-92b3-b8ca3a9f2c71/bag_server-1*.log
+[bag_server-1] restarting process
+process[bag_server-1]: started with pid [20288]
+[ INFO] [1568812241.256460079]: bag server started
+</code></pre>
+
+<p>And the code: </p>
+
+<pre><code>class recordNode{
+protected:
+    int argc;
+    char** argv;
+    ros::NodeHandle nh; 
+public:
+    recordNode(int argc, char** argv){
+        argc = argc;
+        argv = argv;
+        ros::init(argc,argv,&quot;RecordNode&quot;);
+
+        //options.prefix = &quot;~/catkin_ws/&quot;;
+
+    }
+    virtual ~recordNode(){
+
+    };
+    void closenode(){
+        ros::requestShutdown();
+        //ros::shutdown();
+    }   
+    void record(int argc, char** argv){
+
+        rosbag::RecorderOptions options;
+        options.topics.push_back(&quot;/joint_states&quot;);
+        options.topics.push_back(&quot;/wrench&quot;);
+        rosbag::Recorder recorder(options);
+        recorder.run();
+    }
+};
+class bagHandler{
+protected:
+    ros::NodeHandle nh_;
+    actionlib::SimpleActionServer&lt;prop_data_collector::bag_serverAction&gt; as_;
+    std::string action_name_;
+    // messages 
+    prop_data_collector::bag_serverFeedback feedback_;
+    prop_data_collector::bag_serverResult result_;
+    rosbag::Bag bag;
+    bool record = 0;
+    std::string prop_location;
+    bool wdone = 0;
+    bool jdone = 0;
+    sensor_msgs::JointState curJS;
+    geometry_msgs::WrenchStamped curW;
+    boost::shared_ptr&lt;recordNode&gt; recNode;
+    boost::thread_group thread_group;
+    int argc;
+    char** argv;
+
+
+public:
+    bagHandler(std::string name,int argc, char** argv):
+    as_(nh_, name, boost::bind(&amp;bagHandler::executeCB, this, _1), false), action_name_(name)
+    {
+        argc = argc;
+        argv = argv;
+        as_.start();
+        ROS_INFO(&quot;bag server started&quot;);
+        prop_location = ros::package::getPath(&quot;prop_data_collector&quot;);
+        recNode.reset(new recordNode(argc,argv));
+    }
+    ~bagHandler(){
+
+    }
+
+    void executeCB(const prop_data_collector::bag_serverGoalConstPtr &amp;goal){
+        std::cout &lt;&lt; &quot;Execute cb reached!&quot;&lt;&lt;std::endl;
+        if(goal-&gt;bagOperation == 1){// then record!
+            std::cout &lt;&lt; &quot;Record Bag&quot;&lt;&lt;std::endl;
+            record = 1;
+
+            thread_group.add_thread(new boost::thread(&amp;recordNode::record,recNode,argc,argv));
+            //thread_group.create_thread(recNode-&gt;record,argc,argv);
+            // below,attemped to use lambda function, doesn&#39;t work
+            //thread_group.create_thread([this]{recNode-&gt;record(argc,argv)});
+            //thread_group.add_thread(new boost::thread(recNode-&gt;record,argc,argv));
+            result_.success=true;
+            as_.setSucceeded(result_);
+
+        }else if(goal-&gt;bagOperation == 2){ // stop recording
+            std::cout &lt;&lt; &quot;Stopped recording&quot; &lt;&lt;std::endl;
+            record == 2;
+            recNode-&gt;closenode();
+            //recNode-&gt;~recordNode();
+            // NOTE: there&#39;s maybe no need to joint the threads, when we shutdown the node, execution
+            // of that thread is effectively stopped. There&#39;s nothing to join as that thread shares
+            // nothing with the main...?  
+            thread_group.join_all();
+            ros::requestShutdown();
+
+            //bag.close();
+        }else if(goal-&gt;bagOperation == 3){ // save
+            saveBagToCSV();
+            std::cout &lt;&lt; &quot;Save bag to csv&quot; &lt;&lt;std::endl;
+        }
+    }
+
+    //void jointStatesCallback(const ros::MessageEvent&lt;sensor_msgs::JointState&gt;&amp; event){
+    void jointStatesCallback(sensor_msgs::JointState jsmsg){
+        if(record ==1){
+            //bag.write(&quot;joint_states&quot;,event);
+            curJS = jsmsg;
+            //std::cout &lt;&lt; &quot;JS at: &quot;&lt;&lt; jsmsg.header.stamp.toSec() &lt;&lt;std::endl;
+            //std::cout &lt;&lt; &quot;JS rec&quot;&lt;&lt;std::endl;
+            jdone = 1;
+        }
+    }
+    //void wrenchCallback(const ros::MessageEvent&lt;geometry_msgs::WrenchStamped&gt;&amp; event)
+    void wrenchCallback(geometry_msgs::WrenchStamped wmsg){
+        if(record == 1){
+            //bag.write(&quot;wrench&quot;,event);
+            curW = wmsg;
+            //std::cout &lt;&lt; &quot;RECORDED WRENCH&quot;&lt;&lt; std::endl;
+            wdone = 1;
+        }
+    }
+    void saveBagToCSV(){
+}
+
+};
+
+int main(int argc, char** argv){
+    ros::init(argc, argv, &quot;bag_server&quot;);
+    ros::NodeHandle nh;
+    ros::AsyncSpinner spinner(0);
+    spinner.start();
+
+    bagHandler baghandler(&quot;bagHandler&quot;,argc,argv);
+
+    ros::Subscriber sub = nh.subscribe(&quot;joint_states&quot;,1000,&amp;bagHandler::jointStatesCallback,&amp;baghandler);
+    ros::Subscriber sub2 = nh.subscribe(&quot;wrench&quot;,1000,&amp;bagHandler::wrenchCallback,&amp;baghandler);
+    ros::waitForShutdown();
+    return 0;
+}
+</code></pre>
+
+<p>any assistance in figuring out where this error comes from would be very helpful, as well as any guidance in terms of whether I&#39;ve taken a reasonable approach. I should note that the code seems to work as desired, but the error isn&#39;t confidence inspiring. </p>
+
+<p>Thanks in advance,
+Josh</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28876">jbeck28</a> on 2019-09-18 08:46:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Not an answer, but perhaps #q318076 is related, as well as #q216866. And the linked <a href="https://github.com/osrf/nodelet_rosbag">osrf/nodelet_rosbag</a> has an action server interface that seems to be able to do what you want.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-09-18 09:01:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I looked into that nodelet, however I couldn&#39;t figure out how to use it as it&#39;s undocumented. I understand it&#39;s an action server... but I can&#39;t seem to send it goals or a subscriber list... or a mode. I&#39;m not entirely sure how it works. Any tips?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28876">jbeck28</a> on 2019-09-18 13:02:52 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

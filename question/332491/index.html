@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Geotag image - OpenCV-Mavros - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/332491">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Geotag image - OpenCV-Mavros</h2>
+      <div class="question">
+        <p>Hi, I have a drone with a pixhawk flight controller ans a raspberry pi as a companion computer. Pixhawk publish through mavros GPS information. I have a web cam connected to raspbery pi too. So I would like to write a ROS node that take a picture every one second and write exif data from mavros.
+I work with python. I need a little help to start coding an to choose a way to manage exif data.</p>
+
+<p>Right now I have the usb_cam publishing image at 1FPS and a node that subscribe to it, using openCV I manage to get the image and save it on a file. geotag data is the part that I need some help.</p>
+
+<p>Thank!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/32969">elgarbe</a> on 2019-09-07 09:46:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Have you managed to find any suitable solution? I&#39;m looking at the same problem... 
+I have been thinking into saving the location data to a file at the same time the picture is taken and trying to pós processing it latter.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37979">aureliokta</a> on 2019-10-20 10:06:50 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi, I&#39;ve managed to make it work with this code:</p>
+
+<pre><code>#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+from __future__ import print_function
+
+import message_filters
+import os
+import sys
+import rospy
+import cv2
+
+from PIL import Image
+import piexif
+
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import NavSatFix
+
+from fractions import Fraction
+from datetime import datetime
+
+# Constants that may change in multiple places
+MSG_QUEUE_MAXLEN = 50
+
+class mapping_hexa:
+
+  def __init__(self):
+    self.bridge = CvBridge()
+
+    # Me suscribo al tópico donde se envian las imágenes
+    self.image_sub = message_filters.Subscriber(&quot;/usb_cam/image_raw&quot;, Image)
+    # Me suscribo al tópico donde se envian los datos de odometría
+    self.gps_sub   = message_filters.Subscriber(&quot;/mavros/global_position/global&quot;, NavSatFix)
+
+    # Creo el objeto que sincroniza los mensajes recibidos
+    self.synchronizer = message_filters.ApproximateTimeSynchronizer(
+            [self.image_sub, self.gps_sub],
+            queue_size=MSG_QUEUE_MAXLEN,
+            slop=1)
+    self.synchronizer.registerCallback(self.make_image)
+
+  def rostime2floatSecs(self, rostime):
+    return rostime.secs + (rostime.nsecs / 1000000000.0)
+
+  def to_deg(self, value, loc):
+    &quot;&quot;&quot;convert decimal coordinates into degrees, munutes and seconds tuple
+    Keyword arguments: value is float gps-value, loc is direction list [&quot;S&quot;, &quot;N&quot;] or [&quot;W&quot;, &quot;E&quot;]
+    return: tuple like (25, 13, 48.343 ,&#39;N&#39;)
+    &quot;&quot;&quot;
+    if value &lt; 0:
+      loc_value = loc[0]
+    elif value &gt; 0:
+      loc_value = loc[1]
+    else:
+      loc_value = &quot;&quot;
+    abs_value = abs(value)
+    deg = int(abs_value)
+    t1 = (abs_value - deg) * 60
+    min = int(t1)
+    sec = round((t1 - min) * 60, 5)
+    return (deg, min, sec, loc_value)
+
+  def change_to_rational(self, number):
+    &quot;&quot;&quot;convert a number to rantional
+    Keyword arguments: number
+    return: tuple like (1, 2), (numerator, denominator)
+    &quot;&quot;&quot;
+    f = Fraction(str(number))
+    return (f.numerator, f.denominator)
+
+  def set_gps_location(self, file_name, lat, lng, altitude, gpsTime):
+    &quot;&quot;&quot;Adds GPS position as EXIF metadata
+    Keyword arguments:
+    file_name -- image file
+    lat -- latitude (as float)
+    lng -- longitude (as float)
+    altitude -- altitude (as float)
+    &quot;&quot;&quot;
+    lat_deg = self.to_deg(lat, [&quot;S&quot;, &quot;N&quot;])
+    lng_deg = self.to_deg(lng, [&quot;W&quot;, &quot;E&quot;])
+
+    exiv_lat = (self.change_to_rational(lat_deg[0]), self.change_to_rational(lat_deg[1]), self.change_to_rational(lat_deg[2]))
+    exiv_lng = (self.change_to_rational(lng_deg[0]), self.change_to_rational(lng_deg[1]), self.change_to_rational(lng_deg[2]))
+
+    gps_ifd = {
+      piexif.GPSIFD.GPSVersionID: (2, 0, 0, 0),
+      piexif.GPSIFD.GPSAltitudeRef: 0,
+      piexif.GPSIFD.GPSAltitude: self.change_to_rational(round(altitude)),
+      piexif.GPSIFD.GPSLatitudeRef: lat_deg[3],
+      piexif.GPSIFD.GPSLatitude: exiv_lat,
+      piexif.GPSIFD.GPSLongitudeRef: lng_deg[3],
+      piexif.GPSIFD.GPSLongitude: exiv_lng,
+      piexif.GPSIFD.GPSDateStamp: gpsTime
+    }
+
+    exif_dict = {&quot;GPS&quot;: gps_ifd}
+    exif_bytes = piexif.dump(exif_dict)
+    piexif.insert(exif_bytes, file_name)
+
+  def make_image(self, img_data, gps_data):
+    # log some info about the image topic
+    rospy.loginfo(&quot;img time_ %i&quot;, img_data.header.stamp.secs)
+    rospy.loginfo(&quot;gps time: %i&quot;, gps_data.header.stamp.secs)
+
+    try:
+      cv_img = self.bridge.imgmsg_to_cv2(img_data, &quot;bgr8&quot;)
+    except CvBridgeError as e:
+      print(e)
+
+    output_dir = &quot;../img/&quot;
+    jpg_quality = 100
+    compr = cv2.IMWRITE_JPEG_QUALITY;
+    quality = jpg_quality  # jpg quality is in [0,100] range, png [0,9]
+    params = [compr, quality]
+
+    print(gps_data.header.stamp)
+    picGpsTimeFlt = self.rostime2floatSecs(gps_data.header.stamp)
+    picNameTimeString = datetime.utcfromtimestamp(picGpsTimeFlt).strftime(&#39;%Y-%m-%dT%H:%M:%S.%fZ&#39;)
+    picSaveName = &quot;&quot;
+    picSaveName = picNameTimeString + &quot;.jpg&quot;
+    print(&quot;save image &quot;)
+    picPath = os.path.join(output_dir, picSaveName)
+    cv2.imwrite(picPath, cv_img, params)
+
+    picGpsTimeFlt =self.rostime2floatSecs(gps_data.header.stamp)
+    gpsTimeString = datetime.utcfromtimestamp(picGpsTimeFlt).strftime(&#39;%Y:%m:%d %H:%M:%S&#39;)
+    self.set_gps_location(picPath, lat=gps_data.latitude, lng=gps_data.longitude,
+                     altitude=gps_data.altitude, gpsTime=gpsTimeString)
+
+
+def main(args):
+  ic = mapping_hexa()
+  rospy.init_node(&#39;mapping_hexa&#39;, anonymous=True)
+  try:
+    rospy.spin()
+  except KeyboardInterrupt:
+    print(&quot;Shutting down&quot;)
+  cv2.destroyAllWindows()
+
+if __name__ == &#39;__main__&#39;:
+    main(sys.argv)
+</code></pre>
+
+<p>it need piexif package <a href="https://pypi.org/project/piexif/">https://pypi.org/project/piexif/</a>
+You have to run usb_cam on a terminal and mavros in a another terminal. Then run this script. Take a look at topics names.
+I&#39;m using a time synchronize in order to get the data synchronized.</p>
+
+<p>But I have a problem with my webcam (logitech c270). I can&#39;t take good pictures from the air. Pictures are moved or waved or dark or bright. Do you already test take image with the webcam from the drone?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/32969">elgarbe</a> on 2019-10-20 16:41:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

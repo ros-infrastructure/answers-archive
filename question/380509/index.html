@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Visualize global coordinate points as Markers in Rviz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/380509">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Visualize global coordinate points as Markers in Rviz</h2>
+      <div class="question">
+        <p>Hello all,</p>
+
+<p>I got a .csv file containing latitude and longitude coordinates of over 100 points. The goal is to form a LINE<em>STRIP from these points. Here&#39;s my <a href="https://drive.google.com/file/d/1e2NSlMVG9WI1-r6_gUVAFhpHL664_VpW/view?usp=sharing">code</a>. Here&#39;s my <a href="https://drive.google.com/file/d/1USsl7eOuzygoKfrQhHt8C70iuKwxPDer/view?usp=sharing">.csv file</a>. 
+The general idea of the code is to append all points to a marker object of LINE</em>STRIP type, and publish the object in the while loop.</p>
+
+<p>But it does not show anything, although using the same code idea, I can visualize simple points (x and y values of  <code>line_point</code> are of 0.0, 1.0, 2.0 , ...).</p>
+
+<p>I tried taking 2 points in the .csv file, form a LINE_STRIP marker, and publish it. But it still showed nothing.</p>
+
+<p>I then tried setting the <code>x</code> of the first point down to <code>1.xxxxxxxx</code>, and keep <code>y</code> of the first point, <code>x</code>, <code>y</code> of the second point the same (<code>x ~ 12.xxxxxxxx</code>; <code>y ~ 109.xxxxxx</code>). And this successfully showed.</p>
+
+<p>I guess there&#39;s something wrong with the current &quot;setting&quot;, when I can&#39;t visualize global coordinates this way.</p>
+
+<p>Please give some advice.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/73661">congphase</a> on 2021-06-17 00:39:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>What are you using to visualize the points? If it is RVIZ, then you need your coordinates to be in a cartesian coordinate system. Right now it is interpreting all your lat/lon points as as x/y in meters. This means it is interpreting that all your points are within a centimeter of each other.</p>
+
+<p>If you set RVIZ with the following settings, you will see that it is there, just all in a very small space:</p>
+
+<ul>
+<li>Fixed Frame (left panel): my_fixed_frame</li>
+<li>Distance (right panel): 0.05</li>
+<li>Focal Shape Size(right panel): 0.05</li>
+<li>Yaw (right panel): 0</li>
+<li>Pitch (right panel): 1.57</li>
+<li>Focal Point (right panel): 2.221;109.246;0</li>
+</ul>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16239409035438499.png" alt="image description"></p>
+
+<p>You need to convert from lat/lon to a cartesian coordinate system (such as UTM).</p>
+
+<p>Here is one such way to do that:</p>
+
+<p>Read the first point in and convert to utm. This will be the 0,0 point of my_fixed_frame. Convert all your points to utm while adding them to <code>marker.points</code> and subtract off the utm coordinates of the first point. This shifts the global utm coordinate of the point to a local coordinate. Publish the <code>utm</code> to <code>my_fixed_frame</code> transform. Publish the markers.</p>
+
+<p>Sample code for that method:</p>
+
+<pre><code>#!/usr/bin/env python
+
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
+import rospy
+import pandas as pd
+import utm
+import tf
+
+count = 0
+MARKERS_MAX = 100
+csv_file = &quot;/path/to/NT-all-points.csv&quot;
+
+rospy.init_node(&#39;lane_line_GT_node&#39;, anonymous=True)
+pub = rospy.Publisher(&#39;lane_line_GT&#39;, Marker, queue_size=10)
+df = pd.read_csv(csv_file)
+
+tf_bcast = tf.TransformBroadcaster()
+
+marker = Marker()
+marker.header.frame_id = &quot;my_fixed_frame&quot;
+marker.type = marker.LINE_STRIP
+marker.action = marker.ADD
+
+# marker scale
+marker.scale.x = 0.03
+marker.scale.y = 0.03
+marker.scale.z = 0.03
+
+# marker color
+marker.color.a = 1.0
+marker.color.r = 1.0
+marker.color.g = 1.0
+marker.color.b = 0.0
+
+# marker orientaiton
+marker.pose.orientation.x = 0.0
+marker.pose.orientation.y = 0.0
+marker.pose.orientation.z = 0.0
+marker.pose.orientation.w = 1.0
+
+# marker position
+marker.pose.position.x = 0.0
+marker.pose.position.y = 0.0
+marker.pose.position.z = 0.0
+
+# marker line points 
+marker.points = []
+
+# The first lat/lon will be our 0,0 point. Convert to utm
+utm_start = utm.from_latlon(df.at[0, &#39;latitude&#39;], df.at[0, &#39;longitude&#39;])
+
+for i in range(0, 127, 3):
+    line_point = Point()
+
+    # Get the UTM point of the lat/lon at index i
+    utm_ne = utm.from_latlon(df.at[i, &#39;latitude&#39;], df.at[i, &#39;longitude&#39;])
+
+    # Get the x,y of the i&#39;th point relative to the start point
+    line_point.x = utm_ne[0] - utm_start[0]
+    line_point.y = utm_ne[1] - utm_start[1]
+    line_point.z = 0
+
+    print(f&quot;[debug]: latitude: {line_point.x}; type: {type(line_point.x)}&quot;)
+    print(f&quot;[debug]: longitude: {line_point.y}; type: {type(line_point.y)}&quot;)
+
+    marker.points.append(line_point)
+
+while not rospy.is_shutdown():
+    print(&#39;[debug] running ... &#39;)
+
+    # Continually publish the utm-&gt;my_fixed_frame transform
+    tf_bcast.sendTransform(
+        (utm_start[0],utm_start[1],0),
+        (0,0,0,1),
+        rospy.Time.now(),
+        &quot;my_fixed_frame&quot;, # child
+        &quot;utm&quot;)  # parent
+
+    # Publish the Marker
+    pub.publish(marker)
+
+    rospy.sleep(0.5)
+</code></pre>
+
+<p>Hope this helps!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/74140">djchopp</a> on 2021-06-17 09:54:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you very much for such detailed help.</p>
+
+<p>I tried your code, it showed <a href="https://drive.google.com/file/d/1pQE52l8ZBB2DtWR5RXuVS4xqYLtjtyGH/view?usp=sharing">a straight line</a>. While the data in the .csv should have something <a href="https://drive.google.com/file/d/1ROnHtxMp_lt4Rpdl-MxEu8fJBb1GnPTD/view?usp=sharing">like this</a>.</p>
+
+<p>Everything in the code seems sensible, except this straight line. Do you get the same result?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73661">congphase</a> on 2021-06-17 21:36:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You have roughly a 100 meters of straight lines for your first 14 points. I think this is what you are seeing. Try zooming out in rviz and orient to a top down view. Because your path is long, you should increase your marker scale so you can see the whole path when zoomed out. I used <code>marker.scale.x = 1.0</code></p>
+
+<p>Note: Your points do not form a continuous path. There are large jumps between index 14-15, 15-16, 16-17, among others which will cause the visualization to have long straight lines to connect the discontinuities.</p>
+
+<p>Also the last 2 points are not close to your path.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/74140">djchopp</a> on 2021-06-18 09:18:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you a lot @djchopp, Sorry for the late response. I&#39;ll try again and update the result here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73661">congphase</a> on 2021-06-19 23:41:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to transform a laserscan message with TF? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/112011">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to transform a laserscan message with TF?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/56204/how-to-transform-a-laserscan-message-with-tf">https://robotics.stackexchange.com/questions/56204/how-to-transform-a-laserscan-message-with-tf</a>.</p>
+        <p>I am trying to transform a laserscan message from one frame to another. The purpose of this is to then merge the resulting laserscans into a single scan. So far I have the following code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+#include &lt;tf/tf.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;tf/transform_datatypes.h&gt;
+#include &lt;math.h&gt;
+#include &lt;sstream&gt;
+#include &lt;time.h&gt;
+#include &lt;geometry_msgs/PointStamped.h&gt;
+
+std::string target_frame = std::string(&quot;base_link&quot;);
+std::string source_topic = std::string(&quot;scan&quot;);
+std::string output_topic = std::string(&quot;base_scan&quot;);
+std::string source_frame = std::string(&quot;primesense1_depth_frame&quot;);
+
+ros::Publisher scan_pub;
+
+struct polar_point {
+    float r;
+    float theta;
+};
+
+void polar_to_tf_point(polar_point&amp; p_point, 
+    std::string frame_id, tf::Stamped&lt;tf::Point&gt;&amp; st_point)
+{
+    float x,y,z;
+    x = p_point.r*cos(p_point.theta);
+    y = p_point.r*sin(p_point.theta);
+    z = 0;
+    const tf::Point point = tf::Point(x,y,z);
+    st_point = tf::Stamped&lt;tf::Point&gt;(point, ros::Time::now(), frame_id);
+}
+
+void st_point_to_polar_point(tf::Stamped&lt;tf::Point&gt;&amp; st_point, polar_point&amp; point)
+{
+    float x = st_point.getX();
+    float y = st_point.getY();
+    float r = pow((pow(x,2)+pow(y,2)),0.5);
+    float theta = atan2(y,x);
+    point.r = r;
+    point.theta = theta;
+}
+
+void callback(const sensor_msgs::LaserScan&amp; original_msg)
+{
+    if(source_frame.compare(original_msg.header.frame_id) != 0)
+    {
+        return;
+    } 
+    float o_t_min, o_t_max, o_t_inc;
+    o_t_min = original_msg.angle_min;
+    o_t_max = original_msg.angle_max;
+    o_t_inc = original_msg.angle_increment;
+    int num_points = (int)2.0*o_t_max/o_t_inc;
+    sensor_msgs::LaserScan new_msg;
+    tf::TransformListener transformer;
+    for(int i=0; i&lt;num_points; i++)
+    {
+        float theta = o_t_min+i*o_t_inc;
+        float r = original_msg.ranges[i];
+        polar_point point;
+        point.r = r;
+        point.theta = theta;
+        tf::Stamped&lt;tf::Point&gt; old_point;
+        polar_to_tf_point(point, original_msg.header.frame_id, old_point);
+        tf::Stamped&lt;tf::Point&gt; st_point;
+        geometry_msgs::PointStamped old_g_point;
+        geometry_msgs::PointStamped st_g_point;
+        tf::pointStampedTFToMsg(old_point, old_g_point);
+        tf::pointStampedTFToMsg(st_point, st_g_point);
+        try{
+            transformer.transformPoint(target_frame,
+                 old_g_point, st_g_point);
+        }
+        catch(tf::TransformException ex)
+        {
+            continue;
+        }
+        tf::pointStampedMsgToTF(st_g_point, st_point);
+        st_point_to_polar_point(st_point, point);
+        new_msg.ranges[i] = point.r;
+        if(i == 0)
+        {
+            new_msg.angle_min = point.theta;
+        }
+        else if(i == num_points - 1)
+        {
+            new_msg.angle_max = point.theta;
+        }
+    }
+
+    new_msg.header = original_msg.header;
+    new_msg.header.frame_id = target_frame;
+    new_msg.angle_increment = original_msg.angle_increment;
+    new_msg.time_increment = original_msg.time_increment;
+    new_msg.scan_time = original_msg.scan_time;
+    new_msg.intensities = original_msg.intensities;
+    scan_pub.publish(new_msg);
+}
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;parbot_laserscan_tranform&quot;);
+    ros::NodeHandle n;
+
+    /*if(ros::param::get(&quot;target_frame&quot;, target_frame) &amp;&amp; 
+        ros::param::get(&quot;source_frame&quot;, source_frame) &amp;&amp; 
+            ros::param::get(&quot;source_topic&quot;, source_topic) &amp;&amp;
+                ros::param::get(&quot;output_topic&quot;, output_topic))
+    {
+    }   
+    else
+    {
+        ROS_INFO(&quot;laserscan_transform error!!!!&quot;);
+        ROS_INFO(target_frame.c_str());
+        ROS_INFO(source_frame.c_str());
+        ROS_INFO(source_topic.c_str());
+        ROS_INFO(output_topic.c_str());
+        return 1;
+    }*/ 
+
+    ros::Subscriber sub = n.subscribe(source_topic, 1, callback);
+    scan_pub = n.advertise&lt;sensor_msgs::LaserScan&gt;(output_topic, 1);
+
+    ros::spin();
+
+    return 0;
+}
+The 
+</code></pre>
+
+<p>The code now compiles and runs with the added try/catch but it never finds the transform. I am publishing a transform from base<em>link to primesense1</em>depth<em>frame via a TF to the primesense1</em>link which has a tf primesense1<em>depth</em>frame. I know that the TF&#39;s work because I can view them in rvis along with the laserscan messages from that sensor. Can anyone give me advice as to how to fix this?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4021">AlphaOne</a> on 2013-12-19 05:18:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You should always use a try catch statement when calling tf methods. If you catch the error and let it retry on the next message you will likely see it start working. You have not given tf a chance to accumulate messages in the listener&#39;s buffer. By retrying on subsequent messages you will give the buffer time to fill. </p>
+
+<p>There are several tf tutorials. This one is most relevant to your use case: <a href="http://wiki.ros.org/tf/Tutorials/tf%20and%20Time%20%28C%2B%2B%29">http://wiki.ros.org/tf/Tutorials/tf%20and%20Time%20%28C%2B%2B%29</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2013-12-19 07:56:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I tried a try catch but still doesn&#39;t work info in question</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4021">AlphaOne</a> on 2013-12-19 08:03:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The exception has a message which tells you what&#39;s wrong. You should try printing that out. And please actually do the tutorials. They are designed to teach you how to use the library and include hints on debugging things like this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2013-12-19 08:07:47 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Cannot exit node when pressing ctrl-c in while not rospy.is_shutdown() - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402751">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Cannot exit node when pressing ctrl-c in while not rospy.is_shutdown()</h2>
+      <div class="question">
+        <p>Hi everybody,</p>
+
+<p>I am using ROS 20 noetic on ubuntu 20.04.
+I try using my camera (Arducam IMX477 with usb adapter). I first created a node to acquire the frame and publish them on a topic with two services which allow me to change the resolution and save a frame.</p>
+
+<p>Here is the code <strong>ros_IMX477.py</strong> : </p>
+
+<pre><code>import rospy
+import os
+import sys
+from pathlib import Path
+
+import cv2
+import time
+import datetime
+import threading
+
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+bridge = CvBridge()
+
+# Initialize architecture
+FILE = Path(sys.argv[0]).resolve() # Get the full path of the file
+node_name = os.path.splitext(FILE.name)[0]
+
+import rospkg
+rospack = rospkg.RosPack()
+package = rospkg.get_package_name(FILE) # Get the package name
+ROOT = Path(package).resolve() # Get the full path of the package
+
+from vision.srv import CameraResolution, CameraResolutionResponse, CameraOnOff, CameraOnOffResponse
+
+# Topics to subscribe/publish
+camera_topic = &quot;/cam_2/color/image_raw&quot;
+
+# Define a camera handler
+class Camera_handler:
+
+    def __init__(self):
+        # Create the camera handler object
+
+        try:
+            entries = os.listdir(&quot;/dev&quot;)
+            num = min([int(entry[5:]) for entry in entries if &quot;video&quot; in entry])
+            src = &quot;/dev/video&quot;+str(num)
+            self.cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
+        except cv2.error as error:
+            print(&quot;[Error]: {}&quot;.format(error))
+
+        if not self.cap.isOpened():
+            print(&quot;Cannot open camera handler&quot;)
+            exit() 
+
+        # Init parameters
+        (self.ret, self.img) = self.cap.read()
+        self.idx = 1 # The number of frame grabbed
+        self.width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self.height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+
+        rospy.set_param(&#39;imx477&#39;, {&#39;width&#39;: self.width, &#39;height&#39;: self.height, &#39;fps&#39;: self.fps})
+
+        self.cam_pub = rospy.Publisher(camera_topic, Image, queue_size=1) # Publisher
+        print(&quot;Camera handler capturing %s at (%d,%d) %dFPS&quot; %(src, int(self.width),int(self.height),int(self.fps)))
+        self.ResolutionService = rospy.Service(&#39;setResolution&#39;, CameraResolution, self.setResolution)
+        self.CaptureService = rospy.Service(&#39;Capture&#39;, CameraOnOff, self.Capture)
+        self.mutex = threading.Semaphore()
+
+    def read(self):
+        self.mutex.acquire()
+        (self.ret, self.img) = self.cap.read()
+        if self.ret:
+            self.img = cv2.rotate(self.img, cv2.ROTATE_90_CLOCKWISE)
+            im = bridge.cv2_to_imgmsg(self.img, encoding=&quot;bgr8&quot;)
+
+            # Select one frame according to the index and publish it
+            im.header.stamp = rospy.get_rostime() # Set a timestamp
+            im.header.frame_id = &quot;frame_&quot; + str(self.idx)
+            im.header.seq = self.idx
+            self.cam_pub.publish(im) # Publish the frame
+            #rospy.loginfo(&quot;frame published&quot;)
+            self.idx+=1
+        self.mutex.release()
+
+    def setResolution(self, req):
+        resolution = round(req.resolution,1)
+        if resolution == 0.3:
+            width, height = 640, 480
+        elif resolution == 2:
+            width, height = 1920, 1080
+        elif resolution == 5:
+            width, height = 2592, 1944
+        elif resolution == 8:
+            width, height = 3840, 2160
+        elif resolution == 12:
+            width, height = 4032, 3040
+        else:
+            print(&quot;Required resolution %.1fMpx unavailable&quot; %resolution)
+            return CameraResolutionResponse(False)
+
+        try :
+
+            self.mutex.acquire()
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            # update attributes
+            self.width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            self.height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+            rospy.set_param(&#39;imx477&#39;, {&#39;width&#39;: self.width, &#39;height&#39;: self.height, &#39;fps&#39;: self.fps})
+
+            print(&quot;Parameters updated to (%d,%d) %dFPS&quot; %(int(self.width),int(self.height),int(self.fps)))
+            self.mutex.release()
+            return CameraResolutionResponse(True)
+        except:
+            self.mutex.release()
+            return CameraResolutionResponse(False)
+
+    def Capture(self, req):
+        self.mutex.acquire()
+        (self.ret, self.img) = self.cap.read()
+        if self.ret:
+            self.img = cv2.rotate(self.img, cv2.ROTATE_90_CLOCKWISE)
+            filepath = str(req.path)+&#39;/&#39;+&#39;led_&#39;+str(datetime.datetime.now())+&#39;.jpg&#39;
+            cv2.imwrite(filepath, self.img)
+            self.mutex.release()
+            rospy.loginfo(&quot;Image saved in %s&quot; %filepath)
+            return CameraOnOffResponse(True)
+        else:
+            rospy.loginfo(&quot;Failed saving frame&quot;)
+            self.mutex.release()
+            return CameraOnOffResponse(False)
+
+    def release(self):
+        self.cap.release()
+        print(&quot;VideoCapture released&quot;)
+
+
+
+def IMX477_usb():
+    # Create the camera controller
+    imx = Camera_handler()
+    while not rospy.is_shutdown():
+        imx.read()
+    imx.release()
+
+
+if __name__ == &#39;__main__&#39;:
+
+    rospy.init_node(node_name, anonymous = False)
+    print(&quot;Node %s initialized&quot; %rospy.get_name())
+    IMX477_usb()
+</code></pre>
+
+<p><strong>This code works well and then I try some image processing with another node subscribing to the topic /camera/color/image_raw</strong></p>
+
+<p>In this file I use the previous services, I set ros parameters, I use a callback and I have a while not rospy.is_shutdown() in my main().
+When I want to exit the node with ctrl-c, sometimes I am stuck in, sometimes not.
+With the idea that it may be a too long code I tried with another simpler code <strong>test.py</strong> :</p>
+
+<pre><code>import rospy
+import cv2
+import os
+import sys
+from pathlib import Path
+
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+
+
+# Topics to subscribe/publish
+camera_topic = &quot;/cam_2/color/image_raw&quot;
+
+# Initialize architecture
+FILE = Path(sys.argv[0]).resolve() # Get the full path of the file
+node_name = os.path.splitext(FILE.name)[0]
+
+bridge = CvBridge()
+
+&#39;&#39;&#39;
+def callback(frame):
+    global img
+    rospy.loginfo(&quot;callback in&quot;)
+    #frame = bridge.imgmsg_to_cv2(frame, desired_encoding=&quot;bgr8&quot;)
+    #frame = cv2.resize(frame, RESOLUTION)
+    #img = frame.copy()
+    rospy.loginfo(&quot;callback out&quot;)
+&#39;&#39;&#39;
+
+def main():
+    #global img
+    rospy.init_node(node_name, anonymous = False)
+    rospy.loginfo(&quot;Initializing node %s&quot; %rospy.get_name())
+
+    # Create the topic to send the detected frame for supervision
+    #cam_sub = rospy.Subscriber(camera_topic, Image, callback)
+
+    # Initialize the mission
+    frame = rospy.wait_for_message(camera_topic, Image)
+    img = bridge.imgmsg_to_cv2(frame, desired_encoding=&quot;bgr8&quot;)
+
+    rospy.loginfo(&quot;Node %s initialized&quot; %rospy.get_name())
+    while not rospy.is_shutdown():
+        rospy.loginfo(&quot;1st if in&quot;)
+        if not img is None:
+            rospy.loginfo(&quot;2nd if in&quot;)
+            rospy.loginfo(&quot;2nd if out&quot;)
+        rospy.loginfo(&quot;1st if out&quot;)
+    print(&quot;Exit&quot;)
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>I first tried with the callback and then without, the result is the same, when I am in the while, as soon as I press ctrl-c the processus stop immediatly but doesn&#39;t finish the loop to exit :</p>
+
+<pre><code>[INFO] [1655974791.801828]: 1st if in
+[INFO] [1655974791.803720]: 2nd if in
+[INFO] [1655974791.809516]: 2nd if out
+[INFO] [1655974791.813298]: 1st if out
+[INFO] [1655974791.815296]: 1st if in
+[INFO] [1655974791.816955]: 2nd if in
+[INFO] [1655974791.818450]: 2nd if out
+[INFO] [1655974791.820758]: 1st if out
+[INFO] [1655974791.823361]: 1st if in
+^C^C^C^C
+</code></pre>
+
+<p>I don&#39;t know the reason, may be I also kill the ros<em>IMX477.py node when pressing ctrl-c ?
+I tried using rospy.on</em>shutdown(my<em>hook) with my</em>hook function passing a global variable stop to True and setting my main loop to while not stop: [process] but still the same issue</p>
+
+<p>Does anyone have the solution or any idea ?
+Thanks for your time</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-06-23 04:07:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Your programming error is that you are consuming 100% of the cpu in the loop, and never giving the ros code a chance to run.</p>
+
+<p>All of your while loops <strong>must</strong> call rospy.sleep(n) or r.sleep(), where r is a rospy.Rate object. To get started, try n = 0.250.</p>
+
+<p>If you run <code>top</code> in a terminal window and see your rospy-based node consuming 100% cpu, you have a problem you need to fix.</p>
+
+<p>Edit: this advice applies to your publisher too.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-06-23 18:43:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for your reply</p>
+
+<p>My cpu is consuming around 60% of each cores (2 cores) when running the two nodes with a resolution of 640x480. In this resolution I can acquire frames at 80fps, I could reduce to 30fps with the rospy.Rate(30) but with such a frequence, the issue still occur. I want to perform image processing at real time, using n = 0.250 fix the issue but I can&#39;t use such a frequency.</p>
+
+<p>In fact, it only embarrass me when I want to kill the node, but need to understand why to not be locked in the future.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-06-24 03:54:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I don&#39;t understand your comment. In the code you show us, the while loop does not do any useful work (it only logs messages). You say Control-C works when looping at 4 Hz, but it does not work at 30 Hz? This is very unlikely.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-06-24 07:46:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I had the issue with a more complete code, but in order to check whether it was not my functions inside the loop which cause the problem, I removed everything to test with simple print. It appears that the issue was still there.</p>
+
+<p>I agree with you that is very unlikely but it is the case, at 4Hz it works, at 30Hz it doesn&#39;t.
+I put 3 videos at this <a href="https://github.com/loupdmer/IMX477_issue/tree/master/Forum_ros/test">GitHub link</a></p>
+
+<p>I am aware that is not a safe way to show you my issue, if you have another methods I am ok to use it.</p>
+
+<p>Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-06-28 07:55:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>My guess is that it is taking a long time to disconnect the subscriber, probably because your publisher is not responding to the ros request. Your publisher - which is a ros node - needs to sleep() or spin() as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-06-30 06:56:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sorry for my late response I haven&#39;t been able to rework on the topic yet.
+I will try this and come back soon, thank you for your help</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-07-06 02:16:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have tested something simple :
+In one terminal : roscore
+In a second terminal : the following code</p>
+
+<pre><code>import rospy
+
+def main():
+    rospy.init_node(&quot;test&quot;, anonymous = False)
+    rospy.loginfo(&quot;Initializing node %s&quot; %rospy.get_name())
+    r = rospy.Rate(50)
+
+    # Initialize the mission
+    rospy.loginfo(&quot;Node %s initialized&quot; %rospy.get_name())
+    while not rospy.is_shutdown():
+        rospy.loginfo(&quot;in&quot;)
+        rospy.loginfo(&quot;out&quot;)
+        r.sleep()
+    print(&quot;Exit&quot;)
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>If I do ctrl-c when only &quot;in&quot; is printed, it locks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-07-06 10:28:15 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

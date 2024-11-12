@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros_tutorials roscpp talker/listener loses first message or two - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/287548">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros_tutorials roscpp talker/listener loses first message or two</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/86360/ros-tutorials-roscpp-talker-listener-loses-first-message-or-two">https://robotics.stackexchange.com/questions/86360/ros-tutorials-roscpp-talker-listener-loses-first-message-or-two</a>.</p>
+        <p>This must&#39;ve been seen before...I ran into it while trying to track down a lost message from a command-line app which publishes one message then exits. I&#39;m running ros kinetic on Ubuntu 16.04.4. My colleague has duplicated the problem using the ros_tutorials, and even found it happens on indigo!</p>
+
+<p>I downloaded the ros_tutorials and when I run the listener then the talker, I see the first one or two messages are not received by the listener. Note: I am careful to start the listener many seconds before the talker, so I know it&#39;s sitting there waiting to receive messages on the topic.</p>
+
+<hr>
+
+<p>terminal 1:</p>
+
+<pre><code>$ rosrun roscpp_tutorials listener
+[ INFO] [1522884464.985198808]: I heard: [hello world 3]
+[ INFO] [1522884465.084941089]: I heard: [hello world 4]
+[ INFO] [1522884465.184948624]: I heard: [hello world 5]
+</code></pre>
+
+<p>terminal 2:</p>
+
+<pre><code>$ rosrun roscpp_tutorials talker
+[ INFO] [1522884464.684117550]: hello world 0
+[ INFO] [1522884464.784338065]: hello world 1
+[ INFO] [1522884464.884241317]: hello world 2
+[ INFO] [1522884464.984259097]: hello world 3
+[ INFO] [1522884465.084324610]: hello world 4
+[ INFO] [1522884465.184348827]: hello world 5
+^C[ INFO] [1522884465.284327998]: hello world 6
+</code></pre>
+
+<p>EDIT: The use case is I&#39;m using a command-line utility to inject a fault-notification DiagnosticStatus message onto /diagnostics, where the diagnostic_aggregator is already up and running, and other publishers have been publishing for some time. In this case it is important to not lose messages - it is not a &quot;emit sensor-data&quot; use case, and the service model cannot be used.</p>
+
+<p>FWIW the python talker/listener do not lose initial messages. The problem goes away if I put ros::Duration(1).sleep() between the call to advertise and the call to publish, but does not go away if I put a ros::Rate sleep() for 10 seconds between the advertise and the publish.</p>
+
+<p>Once the messages start flowing they all come through - it&#39;s the first one or two that get lost.</p>
+
+<p>EDIT2: The following code snippet in the talker seems to prevent initial packet loss.
+Advertising:</p>
+
+<pre><code>  ros::Publisher chatter_pub = n.advertise&lt;std_msgs::String&gt;(&quot;chatter&quot;, 10, true);
+
+  ros::Duration(0.5).sleep();
+  ros::spinOnce();
+  ros::Duration(0.5).sleep();
+</code></pre>
+
+<p>Inside the loop:</p>
+
+<pre><code>chatter_pub.publish(msg);
+ros::spinOnce();
+ros::Duration(0.5).sleep();
+</code></pre>
+
+<p>Something seems broken. Does anyone have any clues?</p>
+
+<p><strong>EDIT3:</strong> Per suggestion from @gvdhoorn I added chatter<em>pub.getNumSubscribers() between the ROS</em>INFO that prints what the talker is about to publish, and the actual publish.</p>
+
+<p>Talker output:</p>
+
+<pre><code>$ rosrun experiments talker1
+[ INFO] [1522935255.630339354]: hello world 0
+[ INFO] [1522935255.630375560]: Number of subscribers before publishng: 0
+[ INFO] [1522935255.730489884]: hello world 1
+[ INFO] [1522935255.730574901]: Number of subscribers before publishng: 0
+[ INFO] [1522935255.830478047]: hello world 2
+[ INFO] [1522935255.830555734]: Number of subscribers before publishng: 0
+[ INFO] [1522935255.930438125]: hello world 3
+[ INFO] [1522935255.930517228]: Number of subscribers before publishng: 1
+[ INFO] [1522935256.030550391]: hello world 4
+[ INFO] [1522935256.030636388]: Number of subscribers before publishng: 1
+</code></pre>
+
+<p>Listener output:</p>
+
+<pre><code>$ rosrun experiments listener2 
+[ INFO] [1522935255.931268459]: I heard: [hello world 3]
+[ INFO] [1522935256.031134685]: I heard: [hello world 4]
+</code></pre>
+
+<p>So it appears that it takes at least 300ms after advertise() for the listener to actually get subscribed to the talker.   A delay with ros::Rate(1).sleep) or ros::Duration(1).sleep() fixes the problem. The following code snippet placed after the advertise call is the final fix.</p>
+
+<pre><code>  while (0 == chatter_pub.getNumSubscribers()) {
+      ROS_INFO(&quot;Waiting for subscribers to connect&quot;);
+      ros::Duration(0.1).sleep();
+  }
+</code></pre>
+
+<p>Thanks for the help. Do you guys think I should update the talker wiki page with a note about this issue?</p>
+
+<p><strong>EDIT4</strong> in a command-line app experiement shows it is also important to call ros::shutdown() before returning from main, or the just-published message may not make it out before the node exits. ros::spinOnce is insufficient to ensure the published message gets out before the program exits.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2700">PaulBouchier</a> on 2018-04-04 18:35:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>I am careful to start the listener many seconds before the talker, so I know it&#39;s sitting there waiting to receive messages on the topic</p>
+</blockquote>
+
+<p>subscriptions still take time and msgs could be published before they are registered. If you add a <code>getNumSubscribers()</code> to the tutorial node, does it change?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 07:31:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the suggestion gvdhoorn. I updated the post with edit3 with a code snippet that waits until getNumSubscribers is non-zero, and that fixed it. I wonder if I should put a note on the wiki page for pub/sub tutorial</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2700">PaulBouchier</a> on 2018-04-05 08:50:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I believe this is not specific to this tutorial, but a general characteristic of how pub-sub works (or: is implemented in ROS). I wouldn&#39;t know where to put this on the wiki so that it gets the attention it deserves though, so perhaps adding a note to the tutorial would be ok.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 08:53:57 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Note also that the answer by @knxa is <em>the</em> answer here. I only provided one possible way to &quot;work around&quot; this characteristic of pub-sub.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 08:54:45 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This is not something broken.
+The published data is not stored anywhere. It&#39;s just published. If no one has yet subscribed, the message is lost.
+So it all depends on the order and timing of your nodes: when do the talker allow connections (advertise) and when do the listener actually subscribe.</p>
+
+<p>Normally you will want a design where it is not a problem if the first message it lost. Maybe it helps to think of the published data as a momentarily status for a sensor, say it might be a temperature reading.
+The interesting thing is the actual temperature, which is published with some interval and the first temperature reading is usually not important.</p>
+
+<p>However to some extend you can actually cache some data to help clients (listeners) keep up with the message stream.
+Read about queue sizes and the latch option <a href="http://wiki.ros.org/roscpp/Overview/Publishers%20and%20Subscribers#Publisher_Options">here</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29756">knxa</a> on 2018-04-05 01:42:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I would also note the utility of <a href="http://docs.ros.org/kinetic/api/roscpp/html/classros_1_1Publisher.html#ad56c8e954020290dcb87cd6bbd330a2b">ros::Publisher::getNumSubscribers()</a> in these cases.</p>
+
+<p>If it&#39;s important that at least <code>N</code> subscribers receive a msg, check for <code>N</code> subscribers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 01:45:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@PaulBouchier: as @knxa writes, this is probably &quot;by design&quot;. Pub-sub is anonymous by nature and there is no persistent msg store anywhere (by default), so late joiners will always miss out on msgs published before they connected. Latching can mitigate that to some extend, but it&#39;s fundamental. ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 01:47:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>.. If loss of messages is unacceptable, it might make more sense to use a synchronous interaction pattern (ie: one that requires both sender and receiver to be on-line at the same time, and known). Services or Actions could be alternatives then.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 01:47:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I edited the question to clarify the use case - the listener has been up a long time (diagnostic_aggregator). I can&#39;t use a service because I&#39;m injecting a fault onto /diagnostics from a command-line utility. Messages are lost even if listeners are up and a different pub has been sending to them.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2700">PaulBouchier</a> on 2018-04-05 08:06:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Data exchange between nodes is p2p, so other datastreams probably do not factor in (the fact that they are &#39;active&#39; does not matter, your subscribers will still need to establish a conx with the new publisher).</p>
+
+<p>If you can, please try adding the <code>getNumSubscribers()</code> before publishing, ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 08:08:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>.. just to see if that changes things. Using a latched publisher could also work, but you&#39;ll have to have your node stick around &quot;long enough&quot;, until all intended recipients have received it (not sure how to do that).</p>
+
+<p>All of this is speculation btw, so it&#39;d be good to check.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-05 08:08:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Guys you saved my day!!! Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40087">pse18_10</a> on 2019-03-21 03:05:31 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>As @gvdhoorn and @knxa noted, this is expected behavior (though perhaps surprising), because the advertise() call returns before the subscriber has made the socket connection to the publisher (which takes maybe 300ms). </p>
+
+<p>If you are writing a command-line app that has to publish something to a listener that is already running, there are two things you have to do:</p>
+
+<ol>
+<li>Insert the following code snippet between advertise() and publish()
+<pre><code>
+  while (0 == chatter_pub.getNumSubscribers()) {
+      ROS_INFO(&quot;Waiting for subscribers to connect&quot;);
+      ros::Duration(0.1).sleep();
+  }
+</code></pre></li>
+<li>Call ros::shutdown() before your program exits, to flush the published message to the subscriber</li>
+</ol>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2700">PaulBouchier</a> on 2018-04-05 10:31:07 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

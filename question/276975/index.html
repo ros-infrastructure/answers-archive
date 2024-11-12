@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>mavros set offboard mode - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/276975">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>mavros set offboard mode</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/84151/mavros-set-offboard-mode">https://robotics.stackexchange.com/questions/84151/mavros-set-offboard-mode</a>.</p>
+        <p>Hi,</p>
+
+<p>I&#39;m trying to control a pixhawk via mavros. I have written a test node which set the mode to offboard, arm the drone and send some <code>mavros/setpoint_velocity/cmd_vel</code> messages to change the z velocity. 
+When I run the node the arming works (motors start spinning) but that&#39;s it, nothing more. I can&#39;t find the problem, This is my first time using mavros, so it&#39;s all new for me.</p>
+
+<p><strong>EDIT</strong>
+While running my code I did <code>rostopic echo /mavros/state</code> which results in:</p>
+
+<pre><code>---
+header: 
+  seq: 6144
+  stamp: 
+    secs: 1512042153
+    nsecs: 557924943
+  frame_id: &#39;&#39;
+connected: True
+armed: True
+guided: False
+mode: &quot;STABILIZE&quot;
+system_status: 3
+---
+</code></pre>
+
+<p>So I believe that setting offboard mode isn&#39;t working.</p>
+
+<p>My code:</p>
+
+<pre><code>#include &quot;classheader_dronecontrol.hpp&quot;
+
+DroneControl::DroneControl(ros::NodeHandle n)
+{
+    initRos(n);
+}
+
+void DroneControl::initRos(ros::NodeHandle n)
+{
+    cout &lt;&lt; &quot;Start Initialising&quot; &lt;&lt; endl;
+    this-&gt;state_sub = n.subscribe&lt;mavros_msgs::State&gt;(&quot;mavros/state&quot;, 10, &amp;DroneControl::stateCallback, this);
+    this-&gt;arming_client = n.serviceClient&lt;mavros_msgs::CommandBool&gt;(&quot;mavros/cmd/arming&quot;);
+    this-&gt;set_mode_client = n.serviceClient&lt;mavros_msgs::SetMode&gt;(&quot;mavros/set_mode&quot;);
+    this-&gt;KFarucomarkerpos_sub = n.subscribe(&quot;droneposition&quot;, 1, &amp;DroneControl::droneControlCallback, this);
+    this-&gt;move_pub = n.advertise&lt;geometry_msgs::TwistStamped&gt;(&quot;mavros/setpoint_velocity/cmd_vel&quot;,10);
+
+    cout &lt;&lt; &quot;Initialising done!&quot; &lt;&lt; endl;
+
+    //the setpoint publishing rate MUST be faster than 2Hz
+    ros::Rate rate(20.0);
+
+    // wait for FCU connection
+    while(ros::ok() &amp;&amp; current_state.connected){
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    this-&gt;move_msg.twist.linear.z = 1.0;
+
+    //send a few setpoints before starting
+    for(int i = 100; ros::ok() &amp;&amp; i &gt; 0; --i){
+        this-&gt;move_pub.publish(this-&gt;move_msg);
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    this-&gt;offb_set_mode.request.custom_mode = &quot;OFFBOARD&quot;;
+    this-&gt;arm_cmd.request.value = true;
+    last_request = ros::Time::now();
+
+    this-&gt;set_mode_client.call(this-&gt;offb_set_mode);
+    this-&gt;offb_set_mode.response.mode_sent;
+    ROS_INFO(&quot;Offboard enabled&quot;);
+    this-&gt;move_pub.publish(this-&gt;move_msg);
+    ros::spinOnce();
+    this-&gt;arming_client.call(this-&gt;arm_cmd);
+    ROS_INFO(&quot;Vehicle armed&quot;);
+    this-&gt;move_pub.publish(this-&gt;move_msg);
+
+    for(int i = 100; ros::ok() &amp;&amp; i &gt; 0; --i){
+        this-&gt;move_pub.publish(this-&gt;move_msg);
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    ros::spinOnce();
+}
+
+void DroneControl::stateCallback(const mavros_msgs::State::ConstPtr&amp; msg)
+{
+    this-&gt;current_state = *msg;
+}
+</code></pre>
+
+<p><strong>EDIT2</strong></p>
+
+<p>I used the provided starting point by 0xd1ma and used his answer for following code. It&#39;s a small program where I used roll = 30°, pitch = 30°, yaw = 0° and throttle 0.9. The messages will be published 500 times. The drone (in gazebo) armed perfectly and moved for 5 seconds with a velocity of 0.25 in z-axes (just some test code to get him of the ground), after this the testDroneControl() function gets called, but the drone starts moving randomly and for sure not in the chosen direction.</p>
+
+<pre><code>void DroneControl::testDroneControl()
+{
+    ros::Rate rate(50.0);
+
+    this-&gt;cmd_att.pose.position.x = 0.0;
+    this-&gt;cmd_att.pose.position.y = 0.0;
+    this-&gt;cmd_att.pose.position.z = 0.0;
+
+    tf::Quaternion mav_orientation = tf::createQuaternionFromRPY(0.523598775, 0.523598775, 0 );
+
+    this-&gt;cmd_att.pose.orientation.x = mav_orientation.x();
+    this-&gt;cmd_att.pose.orientation.y = mav_orientation.y();
+    this-&gt;cmd_att.pose.orientation.z = mav_orientation.z();
+    this-&gt;cmd_att.pose.orientation.w = mav_orientation.w();
+
+    this-&gt;cmd_thr.data = 0.9;
+
+    for(int i=0; i&lt;500; i++){
+        cout &lt;&lt; this-&gt;cmd_att.pose.orientation &lt;&lt; endl;
+        cout &lt;&lt; &quot;-----&quot; &lt;&lt; endl;
+        cout &lt;&lt; this-&gt;cmd_thr.data &lt;&lt; endl;
+        cout &lt;&lt; &quot;-----&quot; &lt;&lt; endl;
+        this-&gt;cmd_att.header.stamp = ros::Time::now();
+        this-&gt;cmd_att.header.seq = i;
+        this-&gt;mav_att_pub.publish( cmd_att );
+        this-&gt;mav_thr_pub.publish( cmd_thr );
+        ros::spinOnce();
+        rate.sleep();
+    }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-11-30 06:36:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I worked more than a year ago with MAVROS. please, be not so strict, if something wrong.</p>
+
+<p>1) It is possible to control air MAVROS vehicle (PX4 stack) in offboard mode ONLY with position or attitude commands.
+I used the second one. Control attitude(roll, pitch, yaw) and throttle.</p>
+
+<pre><code>ros::Publisher mav_att_pub = nh.advertise&lt;geometry_msgs::PoseStamped&gt;( &quot;mavros/setpoint_attitude/attitude&quot;, 100 );
+ros::Publisher mav_thr_pub = nh.advertise&lt;std_msgs::Float64&gt;( &quot;mavros/setpoint_attitude/att_throttle&quot;, 100 );
+</code></pre>
+
+<p>current vehicle orientation you may take here:</p>
+
+<pre><code>ros::Subscriber mav_imu_data_sub = nh.subscribe&lt;sensor_msgs::Imu&gt;( &quot;mavros/imu/data&quot;, 100, mav_imu_data_callback );
+</code></pre>
+
+<p>send angles you may force the vehicle to change its position and orientation in XY plane.
+send throttle command from PID regulator with a distance or atm pressure sensor in the loop you may control altitude.</p>
+
+<p>2) you <strong>MUST</strong> periodically send commands to the vehicle because there are PX4 save timer witch change control mode from offboard to stabilize.</p>
+
+<p>3) use <a href="https://dev.px4.io/en/ros/mavros_offboard.html">this</a> one as starting point</p>
+
+<p>4) <strong>use</strong> save channel with RC control with kill and change mode switchers for emergency situations</p>
+
+<p>5) set stream rate
+   ros::ServiceClient stream_rate_client = nh.serviceClient<mavros_msgs::StreamRate>(&quot;mavros/set_stream_rate&quot;);</p>
+
+<pre><code>mavros_msgs::StreamRate streamRate;
+
+streamRate.request.stream_id = 0;
+streamRate.request.message_rate = 100;
+streamRate.request.on_off = 1;
+
+if (true == stream_rate_client.call(streamRate))
+{
+    ROS_INFO(&quot;OK. Stream rate set&quot;);
+}
+else
+{
+    ROS_INFO(&quot;Failed to call service: stream rate&quot;);
+}
+</code></pre>
+
+<p>6) use high speed (921600) for serial MAVLINK port and rosrate 50 or higher for control commands</p>
+
+<pre><code>ros::Rate rate( 50.0 );
+</code></pre>
+
+<p>7) count ROS messages and set ros::Time::now()</p>
+
+<p>full attitude and throttle msgs</p>
+
+<pre><code>// --------------------------------------
+// PUB
+// --------------------------------------
+ros::Publisher mav_att_pub = nh.advertise&lt;geometry_msgs::PoseStamped&gt;( &quot;mavros/setpoint_attitude/attitude&quot;, 100 );
+ros::Publisher mav_thr_pub = nh.advertise&lt;std_msgs::Float64&gt;( &quot;mavros/setpoint_attitude/att_throttle&quot;, 100 );
+
+// attitude
+geometry_msgs::PoseStamped cmd_att;
+//throttle
+std_msgs::Float64 cmd_thr;
+
+// Create attitude command message
+cmd_att.header.stamp = ros::Time::now();
+cmd_att.header.seq = count;
+cmd_att.pose.position.x = 0.0;
+cmd_att.pose.position.y = 0.0;
+cmd_att.pose.position.z = 0.0;
+
+// here your desired angles
+tf::Quaternion mav_orientation = tf::createQuaternionFromRPY( roll, pitch, yaw );
+
+cmd_att.pose.orientation.x = mav_orientation.x();
+cmd_att.pose.orientation.y = mav_orientation.y();
+cmd_att.pose.orientation.z = mav_orientation.z();
+cmd_att.pose.orientation.w = mav_orientation.w();
+
+mav_att_pub.publish( cmd_att );
+
+// here your throttle value a [0,1]
+cmd_thr.data = a;
+
+mav_thr_pub.publish( cmd_thr );
+
+++count;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/27403">0xd1ma</a> on 2017-11-30 09:30:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Can you be more specific with the altitude commands, so changing the velocity won&#39;t work in OFFBOARD mode?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-11-30 10:37:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I could not control using velocity commands</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27403">0xd1ma</a> on 2017-11-30 11:21:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Mmm.So if i understand your way or idea, You are going to orientate your drone by changing the angles of yaw, pitch and roll and then increase or decrease the throttle to move? So with this way you don&#39;t use a gps, or am I wrong?
+I suppose this is the same way with the APM firmware?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-11-30 11:43:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Do you think this would work on APM firmware? Because my pixhawk behaves extremely strange when using px4. I haven&#39;t not been able to find a way to search in on google.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-11-30 12:24:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>you may change angles and move in one plane.
+it was an indoor project. you may use GPS with standard position mode of PX4.
+I tried to use APM but prefer PX4.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27403">0xd1ma</a> on 2017-11-30 14:47:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://answers.ros.org/question/275417/suggestions-for-drone-simulator-with-ros-gazebo/#275550">try</a> to use GAZEBO simulation to debug your first steps</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27403">0xd1ma</a> on 2017-11-30 14:48:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>My first choice is also PX4, but at this moment I can&#39;t get it to work :/ Have already tested something in gazebo and will definitely keep using it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-11-30 17:29:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Can you look at my new edit (EDIT2)? I&#39;m really appreciating your help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-12-01 06:46:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@0xd1ma can you supplie me with an full working example code, so I can test if everything works? Because till now I haven&#39;t been able to get a single program working</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-12-03 08:55:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@MaximeRector the velocity control using <code>setpoint_velocity/cmd_vel</code> topic works as well. At least in simulation it works for me. I haven&#39;t tested it on the real copter yet.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23971">l4ncelot</a> on 2017-12-07 07:31:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@l4ncelot The velocity control works indeed. I tested it with a real copter and it works, but still need a bit of tweaking</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29590">MaximeRector</a> on 2017-12-08 04:26:18 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>problem with publish in fork() process - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/220760">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>problem with publish in fork() process</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/70344/problem-with-publish-in-fork-process">https://robotics.stackexchange.com/questions/70344/problem-with-publish-in-fork-process</a>.</p>
+        <p>When I use fork() function, then the publish function of Publisher do not work, do any one who has met this problem, I am grateful that you can tell me something, thanks :-)
+the code</p>
+
+<pre><code> #include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;sstream&gt;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;netinet/in.h&gt;
+
+void error(const char *msg)
+{
+    perror(msg);
+    exit(1);
+}
+/**
+ * This tutorial demonstrates simple sending of messages over the ROS system.
+ */
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;talker&quot;);
+
+  ros::NodeHandle nh;
+
+  ros::Publisher chatter_pub = nh.advertise&lt;std_msgs::String&gt;(&quot;chatter&quot;, 1000);
+
+  int sockfd, newsockfd, portno, pid;
+  socklen_t clilen;
+  struct sockaddr_in serv_addr, cli_addr;
+
+  if (argc &lt; 2) {
+      fprintf(stderr,&quot;ERROR, no port provided\n&quot;);
+      exit(1);
+  }
+
+  sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd &lt; 0)
+     error(&quot;ERROR opening socket&quot;);
+  bzero((char *) &amp;serv_addr, sizeof(serv_addr));
+  portno = atoi(argv[1]);
+  //portno = 8888;
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_addr.s_addr = INADDR_ANY;
+  serv_addr.sin_port = htons(portno);
+  if (bind(sockfd, (struct sockaddr *) &amp;serv_addr, sizeof(serv_addr)) &lt; 0)
+      error(&quot;ERROR on binding&quot;);
+  listen(sockfd,5);
+  clilen = sizeof(cli_addr);
+  while(ros::ok())
+  {
+      newsockfd = accept(sockfd, (struct sockaddr *) &amp;cli_addr, &amp;clilen);   
+      if (newsockfd &lt; 0)
+        error(&quot;ERROR on accept&quot;);
+    pid = fork();
+    if (pid &lt; 0)
+        error(&quot;ERROR on fork&quot;);
+    if (pid == 0)  {
+        close(sockfd);
+        std_msgs::String msg;
+       //ros::NodeHandle nh;
+       //ros::Publisher chatter_pub = nh.advertise&lt;std_msgs::String&gt;(&quot;chatter&quot;, 1000);
+       int n;
+       char buffer[256];
+       //while(ros::ok())
+       //{         
+           bzero(buffer,256);
+          n = read(newsockfd,buffer,255);
+          if (0 &gt; n) error(&quot;ERROR reading from socket&quot;);
+          else if(0 &lt; n)
+          {
+              msg.data = buffer;
+              ROS_INFO(&quot;%s&quot;, msg.data.c_str());
+              chatter_pub.publish(msg);
+              printf(&quot;Here is the message: %s\n&quot;,buffer);
+              n = write(newsockfd,&quot;I got your message&quot;,18);
+              if (n &lt; 0) error(&quot;ERROR writing to socket&quot;);
+          }
+          else ;
+        //dostuff(newsockfd, chatter_pub);
+        exit(0);
+    }
+    else close(newsockfd);
+  }
+  close(sockfd);
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/25069">wdsky2010</a> on 2015-11-11 08:34:38 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Well, do not use <code>fork()</code> in multi-threaded application unless you really know what you are doing. Please see <a href="http://www.linuxprogrammingblog.com/threads-and-fork-think-twice-before-using-them">Threads and fork(): think twice before mixing them</a>.</p>
+
+<p>Yes, <code>roscpp</code> is implicitly multi-threaded. There are at least two threads after invoking <code>ros::init()</code>, one is your main thread, while another belong to <code>PollManager</code> which essentially processes all incoming and outgoing messages by polling a list of sockets which were opened by publishers and subscribers.</p>
+
+<p>As stated on the man page <code>fork(2)</code> and also mentioned on the link above:</p>
+
+<blockquote>
+<p>The child process is created with a
+single thread—the one that called
+fork().  The entire virtual address
+space of the parent is replicated in
+the child, including the states of
+mutexes, condition variables, and
+other pthreads objects; the use of
+pthread_atfork(3) may be helpful for
+dealing with problems that this can
+cause.</p>
+</blockquote>
+
+<p>No wonder data is not published. The <code>PollManager</code> is not running because its thread was not created in the forked process and thus it is not polling socket descriptors for incoming or outgoing data.</p>
+
+<p>If you really want to mix this &#39;classical server approach&#39; and ROS code, then I would suggest to try initializing <code>roscpp</code> after the <code>fork()</code>. In this case make sure you are not using any ROS functionality before that, e.g. do not call <code>ros::ok()</code> as it relies on the initialization state of the <code>roscpp</code> library.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2873">Boris</a> on 2015-11-12 18:12:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Firstly, many thanks for you, and according to your very appreciate explanation, I have soled this problem by multi-threads rather than using fork(). :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25069">wdsky2010</a> on 2015-11-12 21:28:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>And what&#39;s more, I wonder if there is a good mechanism to make such a server, I want to make a server that can have more than one non-ROS clients, and the server should publish or subscribe topics. Thank you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25069">wdsky2010</a> on 2015-11-12 21:49:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Check these <a href="http://www.martinbroadhurst.com/server-examples.html">server examples</a>. Particularly take a look at threaded server example. One note though: since you are using ROS anyway which is heavily dependent on Boost, it would be a good idea to use boost threads instead of raw pthreads.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2873">Boris</a> on 2015-11-13 10:21:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thank you again :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25069">wdsky2010</a> on 2015-11-14 11:18:05 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

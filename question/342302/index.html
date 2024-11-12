@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2  rclpy   - Call a Service from inside a Service - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/342302">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2  rclpy   - Call a Service from inside a Service</h2>
+      <div class="question">
+        <p>I have an application where I would like to call a service (provided by different node) from inside a service provided by my node. However my service always hangs when waiting for the response even after the called service has completed.</p>
+
+<p>Closest thing I could find is this:
+<a href="https://answers.ros.org/question/46768/is-it-possible-to-call-a-ros-service-from-another-services-callback-function-in-the-same-node/">https://answers.ros.org/question/46768/is-it-possible-to-call-a-ros-service-from-another-services-callback-function-in-the-same-node/</a></p>
+
+<p>But rclpy does not have AsyncSpinner. It does have Multithreaded executor which I tried but it didn’t seem to change anything.</p>
+
+<p>Here is a minimum example demonstrating the problem:</p>
+
+<h1>A_node</h1>
+
+<pre><code>class A_node(Node):
+
+        def __init__(self):
+            super().__init__(&#39;A_node&#39;)
+            self.cli = self.create_client(SetBool, &#39;set_C_from_B&#39;)
+            print(&#39;started A_node&#39;)
+
+        def set_b(self):
+            req = SetBool.Request()
+            req.data = True
+            future = self.cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            result = future.result()
+            print(result)
+
+    def main(args=None):
+        rclpy.init(args=args)
+        node = A_node()
+        node.set_b()
+        rclpy.shutdown()
+
+    if __name__ == &#39;__main__&#39;:
+        main()
+</code></pre>
+
+<h1>B_node</h1>
+
+<pre><code>class B_node(Node):
+    def __init__(self):
+        super().__init__(&#39;B_node&#39;)
+        self.cli = self.create_client(SetBool, &#39;set_C&#39;)
+        self.set_C_srv = self.create_service(SetBool, &#39;set_C_from_B&#39;, self.set_C_from_B)
+        print(&#39;started B_node&#39;)
+
+    def set_C_from_B(self, request, response):
+        print(&#39;recieved request&#39;)
+        req = SetBool.Request()
+        req.data = request.data
+        print(&#39;calling C&#39;)
+        future = self.cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        result = future.result()
+        print(&#39;finished C&#39;)
+        response.success = result.success
+        print(&#39;Done&#39;)
+        return response
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = B_node()
+    rclpy.spin(node)
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<h1>C_node</h1>
+
+<pre><code>class C_node(Node):
+    def __init__(self):
+        super().__init__(&#39;C_node&#39;)
+        self.set_C_srv = self.create_service(SetBool, &#39;set_C&#39;, self.set_C)
+        self.C = False
+        print(&#39;started C_node&#39;)
+
+    def set_C(self, request, response):
+        print(&#39;recieved request&#39;)
+        self.C = request.data
+        print(f&#39;self.C = {self.C}&#39;)
+        response.success = True
+        print(&#39;Done&#39;)
+        return response
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = C_node()
+    rclpy.spin(node)
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>I would like A<em>node to call a service provided in B</em>node which in turn calls a service in C_node</p>
+
+<p>Procedure:</p>
+
+<ol>
+<li>Start C_node</li>
+<li>Start B_node</li>
+<li>Start A_node</li>
+</ol>
+
+<p>Output:
+A_node:</p>
+
+<pre><code>started A_node
+</code></pre>
+
+<p>B_node:</p>
+
+<pre><code>started B_node
+recieved request
+calling C
+</code></pre>
+
+<p>C_node:</p>
+
+<pre><code>started C_node
+recieved request
+self.C = True
+Done
+</code></pre>
+
+<p>It seems that B<em>node receives the request from A</em>node. It calls the service in C<em>node but hangs when waiting for the response. It appears that the service in C</em>node completes successfully.</p>
+
+<p>Background:</p>
+
+<p>A_node is simulating a service call from a roslibjs client in a web-browser interface implemented by the ROS2-web-bridge. Click button-&gt; call service</p>
+
+<p>B<em>node represents a Node that provides a Service that receives a list of setpoints and loops through the list calling “set</em>C” for each setpoint. </p>
+
+<p>C<em>node is simulating a Node that is effectively running a PID loop on a motor. The equivalent of the “set</em>C” Service sets the setpoint of the PID loop. </p>
+
+<p>I had this application working fine when the Service in B_node was instead implemented with a ROS2 Action server. Unfortunately, my application requires that I can call this functionality from a web-browser interface provided by the ROS2-web-bridge which currently does not support the Action library, so I converted it to a longish-running Service. I know that I am abusing the rules of Services by having a Service that doesn’t return “fast” but I am limited by ROS2-web-bridge in that regard. Maybe I am creating a bad design pattern and there is a better way to achieve “Action-like” functionality with only services.</p>
+
+<p>Platform is ROS2 Eloquent on Ubuntu 18.04 LTS</p>
+
+        <div class="owner"><p>Asked by <a href="/users/51145">mikelynders</a> on 2020-01-22 09:13:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This might be related to you: <a href="https://answers.ros.org/question/302037/ros2-how-to-call-a-service-from-the-callback-function-of-a-subscriber/">ros2-how-to-call-a-service-from-the-callback-function-of-a-subscriber</a></p>
+
+<p>But that question was asked ages ago, so maybe not.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/43713">johnconn</a> on 2020-01-22 10:01:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>thanks for sharing. Although it does not provide a method for &quot;calling a service within a service&quot; I was able to adapt the example in your link to something that works for the time being. Basically the service in B_node sets a self.pending_action and returns immediately. I added code to the spin() loop to check whether self.pending_action has been set. If it has, my routine is run (including the service calls). As the routine is no longer inside a call back, spin_until_future_complete() does not hang. This solution would probably require more work to handle more than one service as in this simple case.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51145">mikelynders</a> on 2020-01-22 13:38:50 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The problem is, that you can&#39;t use the spin_node_until_future_complete() command inside the outer callback. 
+The solution is to use an MultiThreadedExecutor and different callback groups.
+Then you can call the inner service by giving it a callback function (instead of waiting for the return code with spin_node_until_future_complete).</p>
+
+<p>If you want to wait for the result from the inner service call before the outer service callback finishes you need to block the thread with a while(return_from_inner_service == false) loop.
+This is important if your outer callback is from a service, because then you want to receive the inner service result and use it to compute the result of the outer service.
+But this is bad design, because you block the spin() call from the outer service. 
+Luckily we can still handle other callbacks with the MultiThreadedExecutor as long as we assign them to a different callback group.
+If the outer callback is from a topic you don&#39;t want to block the callback, just handle the inner service call inside the assigned callback function. It will execute asynchronous.</p>
+
+<p>Here is some code example in C++
+(assuming all necessary headers included and ROS services created)</p>
+
+<p>Create the MultiThreadedExecuter and an instance of the Node in main:</p>
+
+<pre><code>int main(int argc, char *argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor executor;
+    auto node = std::make_shared&lt;Communication&gt;();
+    executor.add_node(node);
+    executor.spin();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Create seperate Callback group and assign it to the inner service client (inside the Node/class constructor):</p>
+
+<pre><code>callback_group_input_ = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::MutuallyExclusive);
+get_input_client_ = this-&gt;create_client&lt;petra_core::srv::GetInput&gt;(&quot;GetInput&quot;, rmw_qos_profile_services_default, callback_group_input_);
+</code></pre>
+
+<p>Inside the outer callback from a topic or service, send the inner_request and define a callback for it:</p>
+
+<pre><code>int choice = -1;
+    auto inner_client_callback = [&amp;,this](rclcpp::Client&lt;petra_core::srv::GetInput&gt;::SharedFuture inner_future)
+        { 
+            auto result = inner_future.get();
+            choice = stoi(result-&gt;input);
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;[inner service] callback executed&quot;);
+        };
+    auto inner_future_result = get_input_client_-&gt;async_send_request(inner_request, inner_client_callback);
+</code></pre>
+
+<p>If it is necessary to wait inside the outer callback for the result block the thread:</p>
+
+<pre><code>// Wait for the result.
+    while (choice &lt; 0 &amp;&amp; rclcpp::ok())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+</code></pre>
+
+<p>I hope it helps you, or whoever has the same problem. I was stuck with this for weeks...</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/53868">Andreas Z</a> on 2020-05-18 05:56:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

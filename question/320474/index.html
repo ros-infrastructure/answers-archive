@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Correct usage of spin_once to receive multiple callbacks synchronized - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/320474">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Correct usage of spin_once to receive multiple callbacks synchronized</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91278/ros2-correct-usage-of-spin-once-to-receive-multiple-callbacks-synchronized">https://robotics.stackexchange.com/questions/91278/ros2-correct-usage-of-spin-once-to-receive-multiple-callbacks-synchronized</a>.</p>
+        <p>Hello everyone,</p>
+
+<p>I can&#39;t figure out which is the correct way of using <code>rclpy.spin_once()</code> to get the output from multiple existing callbacks at once. Right now I&#39;m using a simple while that loops until all callbacks have new values. Simplified code:</p>
+
+<pre><code>def __init__(self):
+     rclpy.init(args=None)
+     self.node = rclpy.create_node(self.__class__.__name__)
+     self.sub1 = self.node.create_subscription( ... obs1)
+     ...
+     self.sub6 = self.node.create_subscription( ... obs6)
+
+// callbacks
+def obs1(self, message):
+     self.obsJointStates[0] = message.position
+...
+def obs6(self, message):
+     self.obsJointStates[5] = message.position
+
+// This is the function that is called constantly in every new step (Reinforcement Learning)
+def take_observation(self): 
+    rclpy.spin_once(self.node)
+    while None in self.obsJointStates:
+        rclpy.spin_once(self.node)
+    self.obsJointStates = np.array([None, None, None, None, None, None])
+</code></pre>
+
+<p>Inside <code>take_observation</code> function, the while loop waiting for complete callbacks can loop around <strong>100</strong> times currently. I believe there has to be a solution to get <strong>fast</strong> callbacks and not use this hacky code. Meaning one single call to <code>spin_once()</code> or whatever it is, should be enough.</p>
+
+<p>Few things I tried with no success:</p>
+
+<ol>
+<li>Callback group</li>
+<li>Multithread executor</li>
+<li>Use timeout<em>sec in spin</em>once</li>
+</ol>
+
+<p>Any idea which is the correct approach? </p>
+
+<p>Thanks in advance,</p>
+
+<p>Nestor</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27382">nzlz</a> on 2019-04-06 06:05:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p><code>spin_once()</code> is typically used to integrate with another thing that needs the same thread (like if ROS and Qt need the main thread, they can take turns &quot;spinning&quot; to share the time), but can be used to do what you&#39;re doing.</p>
+
+<p>A better way to do this (in my opinion) would be to use a future and store the data in it and complete the future when the data set is completed, that way you can use:</p>
+
+<p><a href="https://github.com/ros2/rclpy/blob/1a6c662400aa8eaa578503748e2a16c2dde27d65/rclpy/rclpy/executors.py#L266-L269">https://github.com/ros2/rclpy/blob/1a6c662400aa8eaa578503748e2a16c2dde27d65/rclpy/rclpy/executors.py#L266-L269</a></p>
+
+<hr>
+
+<p>However, are you just waiting for &quot;at least one sample&quot; in each slot or do you want a matching set? I.e. do you want sequence number 1 of each reading? Put another way, what happens when <code>obs1()</code> gets called more than once before <code>obs6()</code> is called for the first time? Is that ok?</p>
+
+<hr>
+
+<p>More generally, however, this is something that is commonly needed and is traditionally covered in the <code>message_filters</code> package from ROS 1. This has been paritially ported to ROS 2, but I don&#39;t know the state of it:</p>
+
+<p><a href="https://github.com/ros2/message_filters/blob/master/src/message_filters/__init__.py">https://github.com/ros2/message_filters/blob/master/src/message_filters/_<em>init_</em>.py</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/10"></a> on 2019-04-08 18:38:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the feedback William,
+I thought <code>spin_until_future_complete</code> was intended to be used in <em>service calls</em>, I will give it a try.</p>
+
+<p><em>&gt; However, are you just waiting for &quot;at least one sample&quot; in each slot or do you want a matching set?</em></p>
+
+<p>I can get observation from different sets. This is solved using the timestamp of the messages and looping until the stamp has a higher value than a synchronization clock. Example code:</p>
+
+<pre><code># Check that the observation is not prior to the action
+# self.obsJointStates_stamp is an array[6], each element is filled in every callback (6 callbacks)
+# ros_clock gets a new value after the last of 6 joint publisher is executed (putting it simple)
+
+while None in self.obsJointStates or not all(i &gt;= ros_clock for i in self.obsJointStates_stamp):
+      self.executor.spin_once()
+last_observations = self.obsJointStates
+# reset helper variables obsJointStates and obsJointStates_stamp
+</code></pre>
+
+<p><code>spin_until_future</code> could simplify this check.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27382">nzlz</a> on 2019-04-08 21:59:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Isn&#39;t this what <code>message_filters</code> is supposed to solve?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-04-09 01:14:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes. However Im noticing the rclpy implementation of pub/sub is less stable than rclcpp, so this is turning to be a bigger issue than the original question. What i mean is that using <code>message_filters</code> the performance is not going to be any better than what it is now, and all we care is fast pub/sub rates.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27382">nzlz</a> on 2019-04-09 01:27:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It may not be better, but it would at least be more standardised, as the pattern(s) <code>message_filters</code> implements are common to many ROS nodes, so it makes sense to try and (re)use implementations as much as possible (if only to make those patterns more easily recognisable in your own code, instead of a custom implementation).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-04-09 03:55:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah, I think <code>message_filters</code> is the best solution, but in the meantime if my answer has addressed your original question, then please accept it. :+1:</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2019-04-10 15:22:30 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

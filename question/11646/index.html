@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>passing sensor_msgs::Image across different processes - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/11646">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>passing sensor_msgs::Image across different processes</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/35170/passing-sensor-msgsimage-across-different-processes">https://robotics.stackexchange.com/questions/35170/passing-sensor-msgsimage-across-different-processes</a>.</p>
+        <p>Hi All,</p>
+
+<p>I have a working ROS program that contains two nodes: </p>
+
+<ol>
+<li><p><strong>usb<em>cam</em>node</strong> (<code>/opt/ros/electric/stacks/bosch_drivers/usb_cam/src/usb_cam_node</code>) , and</p></li>
+<li><p>A node named <strong>B</strong> that processes videos with cv_bridge.</p></li>
+</ol>
+
+<p>The basic logic of this program is simple:</p>
+
+<ol>
+<li><p>usb<em>cam</em>node gets a video frame from the USB camera, and then publishes a message (of type <code>sensor_msgs::ImageConstPtr&amp; msg</code>) onto a topic to which B subscribes;</p></li>
+<li><p>B has a callback function that processes the frame upon receiving a message. This callback function looks like this:</p></li>
+</ol>
+
+<p><strong><code>callbackB(const sensor_msgs::ImageConstPtr&amp; msg){//Do image processing}</code></strong></p>
+
+<p>So far usb<em>cam</em>node and B are working fine on Ubuntu 10.10. </p>
+
+<p>Now I plan to move the image processing part within  <code>callbackB(const sensor_msgs::ImageConstPtr&amp; msg)</code> to a real-time task spawned by <a href="http://www.xenomai.org">Xenomai</a> APIs within B. B and this real-time task, say, R, are two different processes, although R is spawned within B. In this new version, <code>callbackB(const sensor_msgs::ImageConstPtr&amp; msg)</code> now only notifies R the receiving of <strong><code>msg</code></strong> and sends <strong><code>&amp;msg</code></strong> to R. Once R have <strong><code>&amp;msg</code></strong>, it is supposed to do the exactly same thing as the old version of callBackB() does. In my experiment, R can read some basic frame (image) info such as <strong><code>msg-&gt;height</code></strong>, which means R should get the correct (?) reference to the image via <strong><code>msg</code></strong>; However, the whole program crashes when <strong><code>cv_bridge::toCvCopy(msg, enc::BGR8);</code></strong> is called. </p>
+
+<p>I am confused here: It seems R gets the correct reference to <strong><code>msg</code></strong> (i.e., <strong><code>&amp;msg</code></strong>), as <strong><code>msg-&gt;height</code></strong> gets the correct value. Then why the whole program crashes when  <strong><code>cv_bridge::toCvCopy(msg, enc::BGR8);</code></strong> is called? In GDB, I did notice something related to segment fault when this call is executed. Is this related to the fact that <strong><code>msg</code></strong> is a &quot;smart pointer&quot; instead of a normal C++ pointer? Did I wrongly assume that B and R have the same address space? (But then why R can read <strong><code>msg-&gt;height</code></strong> correctly?)</p>
+
+<p>With Man Thanks,</p>
+
+<p>Tom</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1266">TomZ</a> on 2011-10-23 10:49:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p><code>RT_TASKS</code> spawned by <code>rt_task_create(..)</code> or similar can be considered threads, all within the same process. This would make <code>R</code> not a &quot;different process&quot; (Just realized this is an old question). Also: <code>cv_bridge::toCvCopy()</code> in a real-time task?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2486">ipso</a> on 2012-07-10 11:26:41 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>There are a couple of different things going on here.</p>
+
+<p>First, the function signature of your node B is indeed a smart pointer; note, however, that ROS messages have <em>value</em> semantics, meaning that the image is copied (over the network); this means that your node B has a copy of the image in its address space.</p>
+
+<p>By specifying B&#39;s callback to take an <code>ImageConstPtr</code>, you&#39;ve specified that the ROS machinery should (a) get the message over the wire (b) save it as a smart pointer, and (c) pass a copy of that smart pointer to your callback. (Recall that smart pointers do reference counting.)</p>
+
+<p>I can&#39;t speak to how Xenomai works; in general, a &quot;process&quot; is something with its own address space, not something that shares addresses; Xenomai may use that term a bit differently, or get around it using memory-mapped files or some other trick. I&#39;ll assume that B and R do, in fact, share an address space. </p>
+
+<p>Are you, in fact, passing <code>&amp;msg</code> to R? If so, that&#39;s likely your problem. Taking <code>&amp;msg</code> generates a raw pointer to a smart pointer; then, when B&#39;s callback finishes, it destroys <code>msg</code>, and the ROS worker threads destroy their copy (because the callback is done), and now <code>&amp;msg</code> points to a destroyed value, and you risk a segfault.</p>
+
+<p>The easy fix is to have your callback take an <code>ImagePtr</code>, not an <code>ImageConstPtr</code>, and then to pass the smart pointer to R, not a raw pointer; that way, everybody gets a reference, and when B&#39;s callback and ROS&#39; copies are destroyed, R still has a valid reference, with count 1.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/127">Mac</a> on 2012-07-10 11:19:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>actionlib done_cb does not get called/throws errors - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/225843">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>actionlib done_cb does not get called/throws errors</h2>
+      <div class="question">
+        <p>Hi everyone,</p>
+
+<p>after searching through quite a bit of code and questions I gave up and am now posting my question here. 
+I followed the SimpleActionClient/Server Tutorials to write an action for a robot to move from one pose to another (ROS Indigo@Ubuntu 14.04). This is used in a fairly large (and admittedly a little ugly) piece of code that also does some thread juggling and uses multiple Callback Queues. Most of the time, it does it&#39;s job and I&#39;m currently running it through a bunch of simulations with a simulated moving robot. While doing so (and only while in the simulations) I have been seeing error messages occasionally that seem to go back to line 443 in <a href="http://docs.ros.org/indigo/api/actionlib/html/simple__action__client_8h_source.html">simple<em>action</em>client.h</a>:</p>
+
+<pre><code>[ERROR] [1454599109.360150730]: Got a callback on a goalHandle that we&#39;re not tracking.                 This is an internal SimpleActionClient/ActionClient bug.                 This could also be a GoalID collision
+</code></pre>
+
+<p>As it mentioned there, I&#39;m putting this off as an internal actionClient bug. It does not affect me for the feedback (as in the link above) but for finished goals. I adapted to that by checking against DONE and LOST in my done_cb:</p>
+
+<pre><code>void nodeToCoordinateConverter::doneCB( const actionlib::SimpleClientGoalState&amp; state,
+                                    const flyToResultConstPtr&amp; result){
+ROS_DEBUG_STREAM(&quot;Finished in state &quot; &lt;&lt; state.toString());
+ROS_INFO_STREAM(&quot;Ended up at &quot; &lt;&lt; result-&gt;actual.x &lt;&lt; &quot; &quot; &lt;&lt; result-&gt;actual.y &lt;&lt; &quot; &quot; &lt;&lt; result-&gt;actual.z &lt;&lt; &quot; &quot; &lt;&lt; result-&gt;actual.yaw);
+
+if (state == actionlib::SimpleClientGoalState::SUCCEEDED)
+{
+    arrived = true;
+}
+else if (state == actionlib::SimpleClientGoalState::LOST)
+{
+    ROS_WARN(&quot;Goal is in state LOST, will assume that I reached the goal...&quot;);
+    arrived = true;
+}}
+</code></pre>
+
+<p>I&#39;m just mentioning this here in case it might be related to my actual problem.</p>
+
+<p>What happens occasionally is that the whole goal processing just freezes, not calling this callback. Right before setting my goal as succeeded, I give a short info that my goal succeeded like this:</p>
+
+<pre><code>ROS_INFO_STREAM(action_name_ &lt;&lt; &quot; succeeded!&quot;);
+// set the action state to succeeded
+as_.setSucceeded(result_);
+</code></pre>
+
+<p>And usually, my console output will look like this for a goal:</p>
+
+<pre><code>Getting status over the wire.
+fly_to succeeded!
+Trying to transition to WAITING_FOR_RESULT
+Transitioning CommState from ACTIVE to WAITING_FOR_RESULT
+Trying to transition to DONE
+Transitioning CommState from WAITING_FOR_RESULT to DONE
+Transitioning SimpleState from [ACTIVE] to [DONE]
+Finished in state SUCCEEDED
+Ended up at 32.0361 17.5783 1.502 2.74032
+</code></pre>
+
+<p>Where the second line is the last from my Server and the two last lines are the first from my client done_cb. Now, sometimes, this just stops for one agent after the message:</p>
+
+<pre><code>fly_to succeeded!
+</code></pre>
+
+<p>But I don&#39;t get any of the further down messages. I looked a little through the <a href="http://docs.ros.org/indigo/api/actionlib/html/simple__action__server__imp_8h_source.html">simple<em>action</em>server_imp.h</a> file and traced my call (through <a href="http://docs.ros.org/indigo/api/actionlib/html/server__goal__handle__imp_8h_source.html">here</a> and <a href="http://docs.ros.org/indigo/api/actionlib/html/action__server__imp_8h_source.html">here</a>) to publishing on some topic, nothing much can go wrong there (in my opinion). I know that on the other side, the first message</p>
+
+<pre><code>Trying to transition to WAITING_FOR_RESULT
+</code></pre>
+
+<p>Must come from the CommStateMachine<ActionSpec>::transitionToState call in /opt/ros/indigo/include/actionlib/client/comm<em>state</em>machine_imp.h:CommStateMachine<ActionSpec>::transitionToState:456 - but I don&#39;t know by what means.</p>
+
+<p>I tried reproducing the issue with command line calls on the live code, which was not successful. I could also provide a bag file with the issue showing up in it, but only via the /rosout topic, I did not log the actual messages of the action. It seems as if this issue comes up more often when I am using multiple instances of the action (in different namespaces), I observed it twice with four instances over the last hours.</p>
+
+<p>Can anyone give me a hint as to the code that subscribes to the topic? Maybe I can track my way through this from there on. Or is it possible that messages of this kind get lost somewhere (I am running something like 40 Nodes simultaneously on one machine in a simulation with four agents/namespaces)? Would it be worthwhile to look into logging the ROS<em>DEBUG</em>NAMED(&quot;actionlib&quot;,...); messages to see what is going on? I was actually not aware of the named kind of ROS output - I only get the errors as they go through to my console. Another option would be to log the action messages together with everything else. I have mixed feelings about this logging as the error occurs seldom and I am not sure how much information I gain (I mean: the messages should be published and received correctly, shouldn&#39;t they?).</p>
+
+<p>So, very long story short: any ideas are welcome as I am not sure what path to follow next.</p>
+
+<p>EDIT:</p>
+
+<p>Okay, as the last comment was not allowed (I think it was too long...) I post some recent findings here:
+The last lines of the server&#39;s log are:</p>
+
+<pre><code>^[[0m[ INFO] [1454773172.956473400]: fly_to succeeded!^[[0m
+^[[32m[DEBUG] [1454773172.956515650]: Setting the current goal as succeeded^[[0m
+^[[32m[DEBUG] [1454773172.956546544]: Setting status to succeeded on goal, id: /amy/abt_ros-134-1454773163.555971071, stamp: 1454773163.56^[[0m
+^[[32m[DEBUG] [1454773172.956574451]: Publishing result for goal with id: /amy/abt_ros-134-1454773163.555971071 and stamp: 1454773163.56^[[0m
+</code></pre>
+
+<p>As was expected by the fact that the message is actually sent.</p>
+
+<p>The last lines I get for the Client are:</p>
+
+<pre><code>^[[0m[ INFO] [1454773163.551571847]: Publishing first moveTo goal as: ( 35 , 10.5 , 1.506 ) yaw: 2.35619^[[0m
+^[[32m[DEBUG] [1454773163.551699910]: Required accuracy is: ( 1.5 , 1.5 , 0.5 ) yaw: 0.31416^[[0m
+^[[32m[DEBUG] [1454773163.551945179]: About to erase CommStateMachine^[[0m
+^[[32m[DEBUG] [1454773163.555478939]: Done erasing CommStateMachine^[[0m
+^[[32m[DEBUG] [1454773163.555674977]: about to start initGoal()^[[0m
+^[[32m[DEBUG] [1454773163.556015652]: Done with initGoal()^[[0m
+^[[32m[DEBUG] [1454773163.558569252]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773163.558609742]: Trying to transition to ACTIVE^[[0m
+^[[32m[DEBUG] [1454773163.558631585]: Transitioning CommState from WAITING_FOR_GOAL_ACK to ACTIVE^[[0m
+^[[32m[DEBUG] [1454773163.558654177]: Transitioning SimpleState from [PENDING] to [ACTIVE]^[[0m
+</code></pre>
+
+<p>Whereas other goals that do finish look like this:</p>
+
+<pre><code>^[[0m[ INFO] [1454773160.349206781]: Publishing first moveTo goal as: ( 31.5 , 10.5 , 1.506 ) yaw: 0^[[0m
+^[[32m[DEBUG] [1454773160.349223828]: Required accuracy is: ( 1.5 , 1.5 , 0.5 ) yaw: 0.31416^[[0m
+^[[32m[DEBUG] [1454773160.349244607]: IN DELETER^[[0m
+^[[32m[DEBUG] [1454773160.349259305]: About to erase CommStateMachine^[[0m
+^[[32m[DEBUG] [1454773160.349280568]: Done erasing CommStateMachine^[[0m
+^[[32m[DEBUG] [1454773160.349303461]: about to start initGoal()^[[0m
+^[[32m[DEBUG] [1454773160.349345827]: Done with initGoal()^[[0m
+^[[32m[DEBUG] [1454773160.350522335]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773160.350566057]: Trying to transition to ACTIVE^[[0m
+^[[32m[DEBUG] [1454773160.350591909]: Transitioning CommState from WAITING_FOR_GOAL_ACK to ACTIVE^[[0m
+^[[32m[DEBUG] [1454773160.350619932]: Transitioning SimpleState from [PENDING] to [ACTIVE]^[[0m
+^[[32m[DEBUG] [1454773160.350739302]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773160.400728027]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773160.450234468]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773160.550241432]: Got a feedback!^[[0m
+...
+^[[32m[DEBUG] [1454773162.050359701]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773162.150345064]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773162.201512206]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773162.250420929]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773162.334908110]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773162.350394690]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773162.400757659]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773162.450445664]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773162.550481850]: Got a feedback!^[[0m
+^[[32m[DEBUG] [1454773162.601050233]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773162.650661680]: Getting status over the wire.^[[0m
+^[[32m[DEBUG] [1454773162.650703955]: Trying to transition to WAITING_FOR_RESULT^[[0m
+^[[32m[DEBUG] [1454773162.650729598]: Transitioning CommState from ACTIVE to WAITING_FOR_RESULT^[[0m
+^[[32m[DEBUG] [1454773162.650774651]: Trying to transition to DONE^[[0m
+^[[32m[DEBUG] [1454773162.650794228]: Transitioning CommState from WAITING_FOR_RESULT to DONE^[[0m
+^[[32m[DEBUG] [1454773162.650814431]: Transitioning SimpleState from [ACTIVE] to [DONE]^[[0m
+^[[32m[DEBUG] [1454773162.650841823]: Finished in state SUCCEEDED^[[0m
+</code></pre>
+
+<p>The &quot;Got a feedback!&quot;-Part is actually the only thing that happens in the feedback_cb. So as it seems to me, in the case where this hangs I just don&#39;t get any messages for the goal, even though the goal correctly finishes (and sends at least two feedback messages up until there).</p>
+
+        <div class="owner"><p>Asked by <a href="/users/5000">jmueller</a> on 2016-02-04 10:57:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>So, I actually tried the idea of logging the action messages together with the remaining stuff in a bag file - and at least for 50 runs (each one taking about 6 Minutes +starting/shutdown, bagfile parsing) the not calling issue did not occur. Could it be the fact that there are now 2 subscribers?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5000">jmueller</a> on 2016-02-05 02:10:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Okay, I take that back: it still occurs. Interestingly, all the messages of the action just stop, all that is, but the status messages.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5000">jmueller</a> on 2016-02-06 04:38:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Okay, I left that in my head a little and noticed: I can actually find that I don&#39;t get feedback and send the goal again when I get no feedback for significantly longer than I would expect. Not exactly the cleanest way, but I will see if this works...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5000">jmueller</a> on 2016-02-10 05:06:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>In Case anyone stumbles upon this: It seems as if the &quot;goal handle not tracked&quot; issue only arises with rather large processor loads. Looking at the feedback messages can be used to get around not getting messages, even though it&#39;s not the nicest way. For now, this seems to work for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5000">jmueller</a> on 2016-02-19 02:14:13 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

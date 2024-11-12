@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Slow reading from many rosbags in python. No speedup from parallelization. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374301">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Slow reading from many rosbags in python. No speedup from parallelization.</h2>
+      <div class="question">
+        <p>Hi everyone, I&#39;ve run into a performance issue with slow read speeds when reading from many rosbag files. For context, all these results were gathered on my personal machine with a WD SN750 SSD (quoted max sequential read speed around 3400 MB/s) and an Intel i7 4-core (8 threads). I am using ROS Noetic on Ubuntu 20.04 for the read experiments I describe below, but the rosbag files were generated in a docker image running ROS Kinetic on Ubuntu 16.04.</p>
+
+<p>I&#39;ve setup a small python test program which sequentially opens 81 different bag files, reads all messages from a single odometry topic in that bag file, and stores the data in a python list. It does not do any other processing with the data after this. Here are the results when I run that program in a single-threaded manner:</p>
+
+<ul>
+<li>Number of workers: 1</li>
+<li>Bag file count, total size (MB), avg size (MB): 81, 532.4, 6.6</li>
+<li>Total time (s): 9.639</li>
+<li>Time per file (s): 0.119</li>
+<li>Throughput (MB/s): 55.2</li>
+</ul>
+
+<p>Note that the &quot;throughput&quot; reported here is likely a gross over-estimate of the true number since I am only reading a very small subset of the full data stored in each bag file. This number was computed as total<em>size / total</em>time.</p>
+
+<p>I monitored CPU and I/O performance with <code>htop</code> and <code>iotop</code> respectively while this ran. The I/O impact appeared almost negligible, but I noticed the CPU usage was at 100% of a single CPU thread. The 7 remaining threads were idle (besides some light background use). Since this seemed to be a CPU bottleneck, I tried parallelizing the operation with the Python <code>concurrent</code> library by using a separate thread to load and read each bag file. Here are the results:</p>
+
+<ul>
+<li>Number of workers: 8</li>
+<li>Bag file count, total size (MB), avg size (MB): 81, 532.4, 6.6</li>
+<li>Total time (s): 10.985</li>
+<li>Time per file (s): 0.136</li>
+<li>Throughput (MB/s): 48.5</li>
+</ul>
+
+<p>So parallelizing the operation actually resulted in slightly decreased performance, even though each bagfile is entirely independent from the others. I also still saw 100% utilization on only a single CPU thread while the other 7 threads sat idle. However, the utilization was now divided over 8 python threads with each thread consuming roughly 12.5%. </p>
+
+<p>It seems like the Python rosbag API might not support being parallelized in this way, but I am not familiar those kind of implementation details. In the past I&#39;ve tried converting to other data formats (e.g. HDF5) and gotten better read performance, but performing the conversion takes some time and has other disadvantages. Any ideas what may be causing this, and/or potential solutions to improve read speed?</p>
+
+<p>I can post the full test script as well if anyone is interested.</p>
+
+<p>Thanks,
+Charlie</p>
+
+        <div class="owner"><p>Asked by <a href="/users/72157">cahartsell</a> on 2021-03-18 19:09:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>This turned out to be a limitation of the Python threading model, not the rosbag API. Python supports multi-threading, but all threads must execute on the same core Python interpreter process though the Global Interpreter Lock (GIL). Essentially a single Python process is restricted to a single CPU core regardless of the thread count. This is useful for I/O-limited tasks which spend a lot of time blocked in wait queues, but not very useful for CPU-limited tasks. For more info, see <a href="https://realpython.com/python-gil/">https://realpython.com/python-gil/</a></p>
+
+<p>The best way around this (that I&#39;ve found so far) is to use multiple Python processes. I modified my test script to use Python&#39;s <code>multiprocessing</code> library instead of the <code>concurrent</code> library and got the following results:</p>
+
+<ul>
+<li>Number of workers: 8 </li>
+<li>Bag file count, total size (MB), avg size (MB): 81, 532.4, 6.6 </li>
+<li>Total time (s): 2.439 </li>
+<li>Time per file (s): 0.030 </li>
+<li>Throughput (MB/s): 218.3</li>
+</ul>
+
+<p>I&#39;m still not blown away by the read speed of the rosbag API and open to any suggestions for further improvements, but I think this answers my original question.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/72157">cahartsell</a> on 2021-04-12 17:50:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Charlie,</p>
+
+<p>I am also trying to use multiprocessing to speed up reading multiple bag files. I have been getting this error:</p>
+
+<pre><code>Exception in thread Thread-3:
+Traceback (most recent call last):
+  File &quot;/usr/lib/python3.6/multiprocessing/pool.py&quot;, line 463, in _handle_results
+    task = get()
+  File &quot;/usr/lib/python3.6/multiprocessing/connection.py&quot;, line 251, in recv
+    return _ForkingPickler.loads(buf.getbuffer())
+ModuleNotFoundError: No module named &#39;tmp33pnvn34&#39;
+</code></pre>
+
+<p>According to <a href="https://github.com/ros/ros_comm/issues/823">this</a> issue, it seems like the way the rosbag API unpacks this doesn&#39;t play nice with the way multiprocess serializes data between workers/processes. </p>
+
+<p>But you seem to have gotten it to work! I was hoping you might be able to provide some assistance, or post a code snippet so I can see where I went wrong.</p>
+
+<p>Cheers,
+Sam</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79972">slapkan</a> on 2021-08-05 15:08:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi Sam,</p>
+
+<p>I remember running into some serialization errors, but I don&#39;t remember the specific exception message. At first I was trying to pass complete ROS message objects between the separate processes which didn&#39;t work. Instead, I had to extract the information I wanted from the ROS message, store it in a python list (numpy array or similar would probably also work), then return the python list from the worker process to the main process. </p>
+
+<p>The python script I used to run the tests for this post is available here:</p>
+
+<p><a href="https://gist.github.com/cahartsell/f813b415ae28c26010e03108b4aaf8e1">https://gist.github.com/cahartsell/f813b415ae28c26010e03108b4aaf8e1</a></p>
+
+<p>You&#39;ll need to supply your own bag files if you want to run it, but hopefully it&#39;s clear how I was able to run with multi-processing.</p>
+
+<p>Thanks,
+Charlie</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72157">cahartsell</a> on 2021-08-06 10:39:41 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

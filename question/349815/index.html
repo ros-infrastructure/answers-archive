@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Make the update loop in ros_control to wait until controller &quot;A&quot; or &quot;B&quot; has obtained a goal - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/349815">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Make the update loop in ros_control to wait until controller &quot;A&quot; or &quot;B&quot; has obtained a goal</h2>
+      <div class="question">
+        <p>I have written a hardware interface with ros<em>control for an already implemented controller. With the simulation that is connected to this interface, when I launch the controller manager and other nodes, the robot falls on the ground since my controller &quot;A&quot; (a gravitycompensated...) is either not enabled or has not yet received a goal because of which the command</em>efforts are near zero. </p>
+
+<p>But the moment I proceed to a flexbe-state where controller &quot;A&quot; receives a goal, the correct joint effort commands become available and the robot gets up from the ground.</p>
+
+<p>Is there a way that I make the update look in the hardware interface to wait until controller &quot;A&quot; has received a goal, so that it doesn&#39;t continue with the loop and send zero efforts to the robot? or any other way, perhaps with the controller manager and etc.</p>
+
+<p>My controller interface in the cpp file looks like the following. </p>
+
+<pre><code>#include &lt;muj_hw.h&gt;
+#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;fstream&gt;
+
+ROBOTHardwareInterface::ROBOTHardwareInterface(ros::NodeHandle&amp; nh) : nh_(nh) {
+    init();
+    controller_manager_.reset(new controller_manager::ControllerManager(this, nh_));
+    loop_hz_=1000;
+    //ac(&quot;muj_simread_joint_state&quot;, true);
+
+    ros::Duration update_freq = ros::Duration(1.0/loop_hz_);
+
+
+    read_client  = nh_.serviceClient&lt;amira_mujoco_py_sim::JointsState&gt;(&quot;read_joint_state&quot;);
+    write_client = nh_.serviceClient&lt;amira_mujoco_py_sim::JointsState&gt;(&quot;write_joint_state&quot;);    
+    non_realtime_loop_ = nh_.createTimer(update_freq, &amp;ROBOTHardwareInterface::update, this);
+
+}
+
+ROBOTHardwareInterface::~ROBOTHardwareInterface() {
+}
+
+void ROBOTHardwareInterface::init() {
+
+    //ac(server_name, spinn);
+    num_joints_=7;
+    joint_names_[0]=&quot;joint1&quot;;   
+    joint_names_[1]=&quot;joint2&quot;;
+    joint_names_[2]=&quot;joint3&quot;;
+    joint_names_[3]=&quot;joint4&quot;;   
+    joint_names_[4]=&quot;joint5&quot;;
+    joint_names_[5]=&quot;joint6&quot;;
+    joint_names_[6]=&quot;joint7&quot;;
+
+
+    for (int i = 0; i &lt; num_joints_; ++i) {
+        // Create joint state interface
+        hardware_interface::JointStateHandle    jointStateHandle (joint_names_    [i],
+                                                                 &amp;joint_position_ [i],
+                                                                 &amp;joint_velocity_ [i],
+                                                                 &amp;joint_effort_   [i]);
+        // Create position joint interface
+        hardware_interface::JointHandle    jointPositionHandle (jointStateHandle, &amp;joint_position_command_[i]);
+        hardware_interface::JointHandle    jointVelocityHandle (jointStateHandle, &amp;joint_velocity_command_[i]);
+        hardware_interface::JointHandle    jointEffortHandle   (jointStateHandle, &amp;joint_effort_command_  [i]);
+
+        joint_state_interface_.registerHandle(jointStateHandle);
+        position_joint_interface_.registerHandle(jointPositionHandle);
+        velocity_joint_interface_.registerHandle(jointVelocityHandle);
+        effort_joint_interface_.registerHandle(jointEffortHandle);
+      }
+
+    // Registering all joints interfaces    
+    registerInterface(&amp;joint_state_interface_);
+    registerInterface(&amp;position_joint_interface_);
+    registerInterface(&amp;velocity_joint_interface_);
+    registerInterface(&amp;effort_joint_interface_);
+}
+
+void ROBOTHardwareInterface::update(const ros::TimerEvent&amp; e) {
+    elapsed_time_ = ros::Duration(e.current_real - e.last_real);
+    read();
+    controller_manager_-&gt;update(ros::Time::now(), elapsed_time_);
+    write(elapsed_time_);
+}
+
+void ROBOTHardwareInterface::read() {   
+    read_client.waitForExistence();
+    bool success = read_client.call(j_state_srv_read);
+    for (int i = 0; i &lt; num_joints_; ++i) {
+        joint_position_[i] = j_state_srv_read.response.j_state_res.position[i];
+        joint_velocity_[i] = j_state_srv_read.response.j_state_res.velocity[i];
+        joint_effort_  [i] = j_state_srv_read.response.j_state_res.effort  [i];
+    }
+
+                                  }
+
+void ROBOTHardwareInterface::write(ros::Duration elapsed_time) {
+
+    j_state_srv_write.request.j_state_req.effort  = {(float) joint_effort_command_[0],
+                                                     (float) joint_effort_command_[1],
+                                                     (float) joint_effort_command_[2],
+                                                     (float) joint_effort_command_[3],
+                                                     (float) joint_effort_command_[4],
+                                                     (float) joint_effort_command_[5],
+                                                     (float) joint_effort_command_[6]
+                                                            };
+    write_client.waitForExistence();
+    bool success = write_client.call(j_state_srv_write);
+
+                                                               }
+
+
+
+int main(int argc, char** argv) 
+{
+    ros::init(argc, argv, &quot;mujoco_py_hardware_interface&quot;);
+    ros::NodeHandle nh;
+    ROBOTHardwareInterface ROBOT(nh);
+    ros::AsyncSpinner spinner(4);
+    spinner.start();
+    ros::waitForShutdown();
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/52921">azerila</a> on 2020-04-18 07:06:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi @azerila,</p>
+
+<p>Have you considered the possibility of using a <a href="http://wiki.ros.org/roscpp/Overview/Services">Service</a> client to listen to the <a href="http://wiki.ros.org/controller_manager#Services">controller_manager</a> node with <code>controller_manager/list_controllers</code>?</p>
+
+<p>You can iterate though the <a href="http://docs.ros.org/api/controller_manager_msgs/html/srv/ListControllers.html">list of controllers</a> in the callback, search your controller <code>name</code> and check its <code>state</code> as &quot;running&quot;. Just place this loop in a while true loop that only stops when the state is &quot;running&quot;. With this set up you will block the execution until the controller you want is up and running.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34184">Weasfas</a> on 2020-04-20 08:55:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi @Weasfas ,
+The problem is even if one of the controller&#39;s are active, when it has not yet recieved any goal from a higher level interface, it does not generate torques that would compensate for gravity. If there is an easy way that I keep one controller always running which would only compensate for gravity and superpose its torques with other controllers, it would have also been good.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52921">azerila</a> on 2020-04-20 12:20:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Mm, well it depends on how you fetch your goals in the interface. I mean you can have the low level control interface provided by ROS_control and implement the logic you want in a high level control node that provide a good effort value before all other controllers start working. Besides that, have you considered using position controllers instead of an effort one?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34184">Weasfas</a> on 2020-04-20 14:09:58 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

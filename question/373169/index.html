@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Mistakes using service and client in same node (ROS2, Python) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/373169">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Mistakes using service and client in same node (ROS2, Python)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98471/mistakes-using-service-and-client-in-same-node-ros2-python">https://robotics.stackexchange.com/questions/98471/mistakes-using-service-and-client-in-same-node-ros2-python</a>.</p>
+        <p>Hello, I am new to ROS2 and working on making a package for communicating with 8 Bit MCUs (arduinos) which seems to have been left behind by ROS2. </p>
+
+<p>I have made a service which simply uses pyserial to send a message to the Arduino then receive and return the response. This service works fine however I am trying to make another layer of services which use that service as a client and that is where I am not quite getting it. Below is an example where I am trying to create another service for reading the oxygen sensor, which must use the serial service to request from the sensor and then get the return value. My problem is that I am not really getting how to make the async calls or use/setup the client node inside of the service node and haven&#39;t found a good example of this. Additionally, the message send (service request) works but it is specifically getting the return value back that I don&#39;t have down. </p>
+
+<p>The code is below, I believe most of the issues and the solution should be in the callback<em>sense</em>oxygen method. </p>
+
+<pre><code>#!/usr/bin/env python3
+import sys
+import rclpy
+from rclpy.node import Node
+from functools import partial
+
+from garden_interfaces.srv import OxygenSense
+from garden_interfaces.srv import SerialMessage
+
+class SenseOxygenServerNode(Node):
+    def __init__(self):
+        super().__init__(&quot;sense_oxygen_server&quot;) 
+        self.server_ = self.create_service(
+            OxygenSense, &quot;sense_oxygen&quot;, self.callback_sense_oxygen)
+        self.get_logger().info(&quot;starting sense oxygen server&quot;)
+
+    def callback_sense_oxygen(self, request, response):
+        # create and send serial service request
+        msg = &quot;rdo2&quot;
+        skey = &quot;oxgn&quot;
+        self.call_send_recieve_canopy_server(msg, skey)
+        call_result = future.result()
+
+        # create sensor service response
+        if (call_result.success):
+            response.success = call_result.success
+            response.concentration = call_result.reply_data
+            response.unit = &quot;%&quot;
+
+        return response
+
+    def call_send_recieve_canopy_server(self, message, success_key):
+        # create client 
+        client = self.create_client(SerialMessage, &quot;send_recieve_canopy&quot;)
+        while not client.wait_for_service(1.0):
+            self.get_logger().warn(&quot;waiting for canopy server...&quot;)
+        # create request
+        request = SerialMessage.Request()
+        request.message = message
+        request.success_key = success_key
+        # send request asyncronously
+        future = client.call_async(request)
+        # create callback for the future
+        future.add_done_callback(partial(self.callback_call_send_recieve_canopy_server, message=message, success_key=success_key))
+
+        #return future
+
+    def callback_call_send_recieve_canopy_server(self, future, message, success_key):
+        try:
+            response = future.result()
+            self.get_logger().info(&quot;success message here&quot;)
+            return response
+
+        except Exception as err:
+            self.get_logger().error(&quot;service call failed %r&quot; % (err))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = SenseOxygenServerNode()
+    rclpy.spin(node)
+    rclpy.shutdown()
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-03-02 22:30:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You&#39;ll need to add a second node that you attach the &quot;send_recieve_canopy&quot; client to instead of attaching it to the &quot;self&quot; node object. The issue I think you&#39;re running into is that the &quot;self&quot; node cannot spin until that callback is finished. So by creating a second private node, you can independently spin that node inside the callback of the &quot;self&quot; node.</p>
+
+<p>At least that&#39;s what I have to do in rclcpp. So it should be very similar in rclpy.</p>
+
+<p>Let me know if you need a more concrete example.</p>
+
+<p>Edit 1:</p>
+
+<p>Here an example:</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+from example_interfaces.srv import AddTwoInts
+
+
+class ServiceNode(Node):
+    def __init__(self):
+        super().__init__(&#39;main_node&#39;)
+        self.sub_node = rclpy.create_node(&#39;sub_node&#39;)
+        self.server = self.create_service(AddTwoInts, &#39;example_service&#39;, self.add_two_ints_callback)
+        self.sub_client = self.sub_node.create_client(AddTwoInts, &#39;add_two_ints&#39;)
+
+    def add_two_ints_callback(self, request: AddTwoInts.Request, response: AddTwoInts.Response):
+        self.sub_client.wait_for_service()
+        sub_request = AddTwoInts.Request()
+        sub_request.a = request.a
+        sub_request.b = request.b
+        future = self.sub_client.call_async(sub_request)
+        rclpy.spin_until_future_complete(self.sub_node, future)
+        if future.result() is not None:
+            result: AddTwoInts.Response = future.result()
+            self.get_logger().info(&#39;Result of add_two_ints: {}&#39;.format(result.sum))
+            response.sum = result.sum
+            return response
+        else:
+            self.get_logger().error(&#39;Exception while calling service: {}&#39;.format(future.exception()))
+
+
+if __name__ == &#39;__main__&#39;:
+    rclpy.init()
+    node = ServiceNode()
+    rclpy.spin(node)
+    rclpy.shutdown()
+</code></pre>
+
+<p>To show it works, first in a terminal start </p>
+
+<pre><code>$ ros2 run demo_nodes_cpp add_two_ints_server
+</code></pre>
+
+<p>in another terminal run this example node.
+In yet another terminal run</p>
+
+<pre><code>$ ros2 run demo_nodes_cpp add_two_ints_client -s example_service
+</code></pre>
+
+<p>Hope that answers your question.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30013">ChuiV</a> on 2021-03-04 16:00:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>thanks that makes sense, an example would be awesome. Do you mean to make a whole different &quot;class&quot; for that node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-03-04 17:03:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Looks great thank you I will give that a shot</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-03-04 20:52:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So I can run your example fine (although the last command worked but didn&#39;t actually hit the test node for me) so I just ran as: </p>
+
+<pre><code>$ ros2 service call /example_service example_interfaces/srv/AddTwoInts &quot;{a: 1, b: 2}&quot;
+</code></pre>
+
+<p>which returned 3 as expected. <strong>However what is strange is that I cannot get essentially the same code to work on my own inner service.</strong> </p>
+
+<p>I thought it may be something simple due to your example using the same interface as the inner service and mine basically translating one into another so I made sure I wasn&#39;t making any mistakes there and then eventually just made them the same interface to test but still it just hangs after sending the request. The inner service processes the request fine but for some reason it never makes it back to the outer service.</p>
+
+<p>Additionally the inner returns when called in a manner similar to my command above, as well as in a basic async client node.</p>
+
+<p>Any ideas where I might look? happy to share my inner service code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-03-06 20:01:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Just want to double check that you&#39;re calling the sub-service spin on the sub node.. ie from my example:</p>
+
+<pre><code>rclpy.spin_until_future_complete(self.sub_node, future)
+</code></pre>
+
+<p>instead of </p>
+
+<pre><code>rclpy.spin_until_future_complete(self, future)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30013">ChuiV</a> on 2021-03-08 09:31:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It wasn&#39;t this but was very close, I was missing the <code>.sub_node</code> in the initialization </p>
+
+<p>really appreciate the help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-03-09 03:50:16 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

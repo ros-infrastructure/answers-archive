@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Best practices for using ros_control (hardware_interface) to send different data types to a PLC controller? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/360383">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Best practices for using ros_control (hardware_interface) to send different data types to a PLC controller?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/96936/best-practices-for-using-ros-control-hardware-interface-to-send-different-data">https://robotics.stackexchange.com/questions/96936/best-practices-for-using-ros-control-hardware-interface-to-send-different-data</a>.</p>
+        <p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15984460788110036.jpg" alt="image description">  </p>
+
+<p>I&#39;m using the ROS(Kinetic) navigation stack with an industrial AGV and a Siemens S7 PLC as the central controller. The motors and encoders are interfaced to the PLC. Currently the PLC communicates with ROS over TCP/IP sockets using ros<em>control and the diff</em>drive_controller plugin. This has worked well so far to receive odom feedback and send the corresponding wheel velocity commands.   </p>
+
+<p>Now I plan to send some extra information to the PLC, such as current waypoint, pose, goal status etc as part of the “telegram” (in the Write method). This additional data may not really make sense to be represented in the joint space so I’m unsure if a custom hardware interface such as the ones written for force-torque sensors, IMUs etc might make sense here. This information is internally published on various topics from different nodes and has to be inserted into the PC-PLC real time communication.  </p>
+
+<p>My understanding is that the controller plugin has to implement all the ROS related non realtime communication so that it is real time safe. The read and write methods implement the realtime specific communication to and from the hardware.  </p>
+
+<ol>
+<li><p>Could I introduce multiple subscribers in the diff<em>drive</em>controller plugin to gather this extra data from the ROS side? I notice that the cmd<em>vel callback in diff</em>drive_controller uses a Command object to “writeFromNonRT”.  </p></li>
+<li><p>Could I extend this struct to include other datatypes and perform a similar write function from multiple subscriber callbacks? If so, is there a way to ensure all of the callbacks are executed within the control loop “update” cycle? Or am I over complicating this?   </p></li>
+</ol>
+
+<p>How do I go about achieving this in a way that can be easily extended for newer data that I might want to send to the hardware (PLC)?  </p>
+
+        <div class="owner"><p>Asked by <a href="/users/37504">curi_ROS</a> on 2020-08-26 07:48:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>Could I introduce multiple subscribers in the diff_drive_controller plugin to gather this extra data from the ROS side?</p>
+</blockquote>
+
+<p>I would not try to fudge this into the <code>diff_drive_controller</code>.</p>
+
+<p>That would make no sense to me: <code>diff_drive_controller</code> has a very narrowly defined scope and responsibility. Would it make sense for it to know/have to deal with the <em>current waypoint</em> or the <em>goal status</em>?</p>
+
+<blockquote>
+<p>Now I plan to send some extra information to the PLC, such as current waypoint, pose, goal status etc as part of the “telegram” (in the Write method). [..]. This information is internally published on various topics from different nodes and has to be inserted into the PC-PLC real time communication. </p>
+</blockquote>
+
+<p>In the end, <code>ros_control</code> is a <em>resource management</em> framework. The job of the controller manager, together with the <code>hardware_interface</code> is to make sure no two plugins claim the same resources at the same time. In most cases, concurrent read is OK, but concurrent write is not. Typical examples of such plugins are the controllers in <code>ros_controllers</code>, which implement the type of controllers most people think of when hearing the words &quot;control&quot; (ie: PID and similar concepts from Control Engineering). But there is nothing which limits <code>ros_control</code> controllers to those kinds of controllers.</p>
+
+<blockquote>
+<p>This additional data may not really make sense to be represented in the joint space so I’m unsure if a custom hardware interface such as the ones written for force-torque sensors, IMUs etc might make sense here. </p>
+</blockquote>
+
+<p>It&#39;s actually perfectly fine to have your <code>hardware_interface</code> make resources available which do not fall in that category (and which are probably not &quot;in the joint space&quot; (whatever you mean by that)), but which are to be used to communicate different kinds of abstractions between the ROS / <code>ros_control</code> side and whatever representations the underlying hardware is comfortable with.</p>
+
+<p>So you could do the following:</p>
+
+<ul>
+<li>define ROS-agnostic data structures to encode the types of information you&#39;d like to exchange between your ROS application and the external hw</li>
+<li>come up with a &quot;resource&quot; which would naturally be the one maintaining/holding onto/owning instances of those data structures (example: a &quot;Cartesian frame resource&quot; could be responsible for maintaining a list of Cartesian coordinate frames which can be read/written from/to the underlying hw). This is really just to be able to reason about your abstraction. You <em>could</em> introduce a &quot;PLC resource&quot;, but I would probably go for something a bit more fine-grained, and more abstract (there is no reason any of the data you describe has to come from a PLC for instance)</li>
+<li>add <code>*Interface</code> and <code>*Handle</code> pairs for those resources (this is <code>ros_control</code> specific, look at the various implementations available in <code>ros_control</code> already)</li>
+<li>add the necessary infrastructure to your <code>hardware_interface</code> and expose it using the <code>*Interface</code> and <code>*Handle</code> you&#39;ve defined earlier (so add a way for your <code>hardware_interface</code> to read/write the list of Cartesian frames from/to your PLC and update whatever internal data structure you use to store that inside the <code>hardware_interface</code>)</li>
+<li>write controllers which <em>claim</em> the newly added <code>Handle</code>s to get access to the data structures inside the <code>hardware_interface</code> and which use <code>Publisher</code>s and <code>Subscriber</code>s to provide access to those resources (but in a real-time safe way, refer to the existing controllers to see how that can be done). These are of course not necessarily really &quot;controllers&quot;, but that&#39;s just <code>ros_control</code> nomenclature</li>
+<li>update your controller configuration (probably a <code>.yaml</code> file somewhere) to load the controllers you&#39;ve written, making sure to provide them with the configuration they need</li>
+</ul>
+
+<p>At this point you have a <code>hardware_interface</code> which loads the <code>diff_drive_controller</code> and <em>in addition</em> a bunch of other controllers (really: <em>plugins</em>) which together expose an interface to the resources of your PLC (which would include actuators, sensors and other types of (derived) data).</p>
+
+<p>Those controllers together expose a set of topics (and/or services and actions) which allow your ROS application access to the resources of your PLC (and if you&#39;d want to, the other way around).</p>
+
+<p>Some advantages of doing it this way:</p>
+
+<ol>
+<li>locality of changes: the interfaces, handles and messages/services/actions for a particular resource are all self-contained, and changes to them do not necessarily have to affect your <code>hardware_interface</code></li>
+<li>separation of concerns: the controllers are responsible for providing a ROS interface to the resources of your remote hw. The <code>hardware_interface</code> is responsible for communication with the hw itself</li>
+<li>extensibility: to expose additional resources, implement additional plugins when needed (for new resource types), or instantiate additional controllers (for existing types)</li>
+<li>configurability: don&#39;t want/need to expose resource type <code>X</code>? Simply don&#39;t load the controller</li>
+<li>reusability: happen to have a <code>hardware_interface</code> which doesn&#39;t talk to a PLC, but <em>is</em> capable of exposing the same <code>Interface</code>? You can now reuse the plugin/controller you wrote earlier</li>
+</ol>
+
+<p>There are a few more, but these are the bigger ones.</p>
+
+<blockquote>
+<p>How do I go about achieving this in a way that can be easily extended for newer data that I might want to send to the hardware (PLC)? </p>
+</blockquote>
+
+<p>This should now be obvious: by adding additional <code>*Interface</code> and <code>*Handle</code> classes, adding support for those to your <code>hardware_interface</code> and then creating more plugins (ie: controllers). But only if needed: if you already have a controller which is capable of working with the resource you&#39;d like to expose, you wouldn&#39;t need a new one of course.</p>
+
+<blockquote>
+<p>[..] am I over complicating this? </p>
+</blockquote>
+
+<p>Well, adding abstractions tends to increase complexity (almost paradoxical this statement), and if you look at the nr of steps I listed to add the infrastructure to your <code>hardware_interface</code>which would &quot;properly&quot; expose the additional information you want from your PLC, you could say it&#39;s a bit convoluted.</p>
+
+<p>In the end however I believe the benefits outweigh the costs, and experience also tells me it&#39;s worth the initial investment (adding support for new data types typically comes down to copy-paste almost). Especially re-use of controller plugins is a really nice way to end up with a flexible system, and the almost stand-alone nature of those plugins makes them relatively easy to manage and test as well.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-08-26 08:33:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>PS: make sure to use as generic representations as possible of the kinds of data you&#39;re looking to exchange (so don&#39;t add a <code>MyPlcMyAppFooBar</code>, but a <code>FooBar</code> handle and interface), and derive semantics about how <code>FooBar</code> is used in your application or in this specific configuration from topic names or other aspects. This reduces coupling and increases re-usability of your controllers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-08-26 08:38:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Two examples of the approach I describe:</p>
+
+<ul>
+<li><a href="https://github.com/gavanderhoorn/industrial_robot_status_controller">industrial_robot_status_controller</a></li>
+<li><a href="https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/tree/64ab483b550a1c079c70162d2d3c2eb21ecde76e/ur_controllers">ur_controllers</a></li>
+</ul>
+
+<p>The first provides an <code>Interface</code> and <code>Handle</code> for a <a href="http://docs.ros.org/api/industrial_msgs/html/msg/RobotStatus.html">industrial_msgs/RobotStatus</a> message (but as a ROS-agnostic data structure) <em>and</em> a controller to publish the contents of that data structure as a <code>RobotStatus</code> message.</p>
+
+<p>The second is part of the <code>UniversalRobots/Universal_Robots_ROS_Driver</code>, and exposes (among other things) the &quot;speed scaling&quot; value from UR controller as publications on a topic through the <a href="https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/blob/64ab483b550a1c079c70162d2d3c2eb21ecde76e/ur_controllers/src/speed_scaling_state_controller.cpp">SpeedScalingStateController</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-08-26 08:38:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for that quick and comprehensive answer! Some follow up questions:<br>
+1. Can multiple controller plugins be loaded to a single <code>hardware_interface</code> instance?<br>
+2. If so, do they run parallely at runtime?<br>
+2. Can individual controllers be run simultaneously at separate rates?<br>
+3. The examples you provide are really helpful! Do you have any examples of <code>Interface</code> and <code>Handle</code> written to send data From ROS To the Hardware?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37504">curi_ROS</a> on 2020-08-26 09:44:23 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>1. Can multiple controller plugins be loaded to a single <code>hardware_interface</code> instance?  </p>
+</blockquote>
+
+<p>No.</p>
+
+<p>But you can load multiple plugins into a single <code>ControllerManager</code>.</p>
+
+<p>(yes, this is pedantic, but it pays to be specific in this case: <code>hardware_interface</code>s do not load controllers, nor do they interact with them directly. <code>ControllerManager</code>s do).</p>
+
+<blockquote>
+<p>2. If so, do they run parallely at runtime?  </p>
+</blockquote>
+
+<p>Yes, of course.</p>
+
+<p>Provided you do not serialise them through locks or other control flow mechanisms.</p>
+
+<blockquote>
+<p>2. Can individual controllers be run simultaneously at separate rates?  </p>
+</blockquote>
+
+<p>Yes, but this is obviously limited by the rate the node which runs your <code>hardware_interface</code> and <code>ControllerManager</code> runs at.</p>
+
+<blockquote>
+<p>3. The examples you provide are really helpful! Do you have any examples of <code>Interface</code> and <code>Handle</code> written to send data From ROS To the Hardware?</p>
+</blockquote>
+
+<p>All controllers in <code>ros_controllers</code> except the <code>joint_state_controller</code> and the force-torque one?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-08-26 11:31:35 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

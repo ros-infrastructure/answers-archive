@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Understanding async spinner in ROS1 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/416539">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Understanding async spinner in ROS1</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>so I am trying to understand async spinner in ROS1. I know ROS1 is obsolete but unfortunately, my institution is still using it... </p>
+
+<p>I have noticed some weird behaviour which I would like that someone explains to me. I made a node which listens on a topic which publishes with rate 10 Hz. My callback function intentionally takes 1s to run. In the callback, I am printing the seq id of the received msg.  My callback queue is just 1.</p>
+
+<p>When I use ros::spin(), it is single-threaded, blocking behaviour, so I am getting msg: 1, 11, 21, 31 and so on...</p>
+
+<p>When I use:</p>
+
+<pre><code>  ros::AsyncSpinner spinner(10);
+  spinner.start();
+  ros::waitForShutdown();
+</code></pre>
+
+<p>instead of ross::spin(), I would expect to see msg: 1,2,3,4,5, and so on... but I am still getting 1, 11, 21, 31 and so on... Practically it looks that the async spinner is not launching new threads. The only issue I can think off is if the sleep in my callback is somehow blocking all threads. I tried to use ros::Duration(1.0).sleep(); and std::this<em>thread::sleep</em>for (std::chrono::seconds(1)); and both gives me the same behaviour. </p>
+
+<p><strong>So can someone please tell me what I am doing wrong with the AsyncSpinner?</strong></p>
+
+<p>PS: If you wonder why my code is so silly, it is part of a bigger project, I just tried my best to strip it to necessary basics to understand the AsyncSpinner.</p>
+
+<p>I am using Ubuntu 20.04 and I am running Noetic. </p>
+
+<p>The code:</p>
+
+<pre><code>#include &lt;chrono&gt; 
+#include &lt;thread&gt;    
+
+#include &lt;ros/ros.h&gt;
+
+#include &quot;sensor_msgs/BatteryState.h&quot;
+
+void BatteryCallback(const sensor_msgs::BatteryState::ConstPtr&amp; msg)
+{
+  ROS_INFO(&quot;Msg id:%d&quot;, msg-&gt;header.seq);
+  //ros::Duration(1.0).sleep();
+  std::this_thread::sleep_for (std::chrono::seconds(1));
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;battery_monitor&quot;);
+  ros::NodeHandle nh;
+
+  ros::Subscriber battery_sub = nh.subscribe(&quot;/fcs/battery_state&quot;, 1, BatteryCallback);
+
+  ROS_INFO(&quot;Battery monitor is running&quot;);
+  //ros::spin();
+  ros::AsyncSpinner spinner(10);
+  spinner.start();
+  ros::waitForShutdown();
+  return 0;
+}
+</code></pre>
+
+<p>CmakeList:</p>
+
+<pre><code>cmake_minimum_required(VERSION 3.0.2)
+project(battery_monitor)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  sensor_msgs
+)
+
+catkin_package(
+  CATKIN_DEPENDS roscpp sensor_msgs
+)
+
+include_directories(
+# include
+  ${catkin_INCLUDE_DIRS}
+)
+
+add_executable(battery_monitor src/battery_monitor.cpp)
+target_link_libraries(battery_monitor ${catkin_LIBRARIES})
+</code></pre>
+
+<p>Package.xml</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;package format=&quot;2&quot;&gt;
+  &lt;name&gt;battery_monitor&lt;/name&gt;
+  &lt;version&gt;1.0.0&lt;/version&gt;
+  &lt;description&gt;This package ...&lt;/description&gt;
+
+  &lt;maintainer email=&quot;L@M.com&quot;&gt;L&lt;/maintainer&gt;
+  &lt;license&gt;MIT&lt;/license&gt;
+
+  &lt;buildtool_depend&gt;catkin&lt;/buildtool_depend&gt;
+  &lt;build_depend&gt;roscpp&lt;/build_depend&gt;
+  &lt;build_depend&gt;sensor_msgs&lt;/build_depend&gt;
+
+  &lt;build_export_depend&gt;roscpp&lt;/build_export_depend&gt;
+
+  &lt;exec_depend&gt;roscpp&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;sensor_msgs&lt;/exec_depend&gt;
+&lt;/package&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/26644">mudrole1</a> on 2023-06-15 15:00:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>ROS is serializing the messages on the subscribe side. ROS is careful not to reorder messages from a publisher node. But the dispatch behavior is different between rospy and roscpp if there are multiple publishers to a topic.</p>
+
+<p>For roscpp, by default, the messages received from all publishers to a topic are serialized. The messages are passed to the callback <em>one at a time</em>. If the queue is full, the earliest-in-time message is discarded.</p>
+
+<p>For rospy, the subscribe side is taking both the publisher node and topic name into account. Messages arriving from a particular publisher node are queued and passed to the callback in order, but rospy will execute the callback in parallel to process multiple messages on a topic <em>if they are from different publisher nodes</em>.</p>
+
+<p>Update: rewrote this answer to clarify that rospy and roscpp can have different behavior. For roscpp, @gvdhoorn points out in the comments that it&#39;s possible to change the default behavior to request parallel execution of the callback.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-06-15 17:22:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Maybe, I need to add how do I test my node - I just publish topic from terminal where the header seq id (the one which I care) is increased automatically. When I echo the published topic, I see the msg are being published as 1,2,3,4, etc...  Here the problem is that the async spinner seems not to spawn any new threads and behaves exactly the same as ros::spin()</p>
+
+<p>Just in case, here is my testing command:</p>
+
+<pre><code>rostopic pub -r 10 /fcs/battery_state sensor_msgs/BatteryState &quot;header:
+  seq: 0
+  stamp: {secs: 0, nsecs: 0}
+  frame_id: &#39;&#39;
+voltage: 0.0
+temperature: 0.0
+current: 0.0
+charge: 0.0
+capacity: 0.0
+design_capacity: 0.0
+percentage: 0.0
+power_supply_status: 0
+power_supply_health: 0
+power_supply_technology: 0
+present: false
+cell_voltage: [0]
+cell_temperature: [0]
+location: &#39;&#39;
+serial_number: &#39;&#39;&quot;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26644">mudrole1</a> on 2023-06-16 08:19:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What I believe @Mike Scheutzow is referring to is this behaviour (from <a href="http://docs.ros.org/en/noetic/api/roscpp/html/structros_1_1SubscribeOptions.html#ad6bc756dc2e7971110d1efa37d8c60e0">here</a>):</p>
+
+<blockquote>
+<p>By default subscription callbacks are guaranteed to arrive in-order, with only one callback happening for this subscription at any given time.</p>
+</blockquote>
+
+<p>So even with a <code>MultiThreadedSpinner</code> or an <code>AsyncSpinner</code>, you will not see concurrent processing of callbacks for messages coming in on a single topic (or: via a single subscriber).</p>
+
+<p>If you want to allow messages for a specific subscription to be handled by different threads, you could set <code>SubscribeOptions::allow_concurrent_callbacks</code> to <code>true</code>:</p>
+
+<pre><code>ros::SubscribeOptions ops;
+ops.init&lt;sensor_msgs/BatteryState&gt;(&quot;/fcs/battery_state&quot;, 1, BatteryCallback);
+ops.allow_concurrent_callbacks = true;
+ros::Subscriber battery_sub = n.subscribe(ops);
+</code></pre>
+
+<p>(haven&#39;t compiled this, there could be syntax errors)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-16 08:43:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Please note that setting <code>allow_concurrent_callbacks</code> removes the &#39;guarantee&#39; that callbacks will happen in-order. If ordering of messages is important, <code>allow_concurrent_callbacks = true</code> might not be a good idea.</p>
+
+<p>And normally I wouldn&#39;t do this (ie: link to an external resource), but this is a pretty good article which goes into the details of <code>roscpp</code>&#39;s threading model: <a href="https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f">ROS Spinning, Threading, Queuing</a>. It discusses something similar right above the <em>Multi Callback queues</em> section.</p>
+
+<p>Note that what you describe would appear to be due to loss of messages as the incoming stream is not being processed fast enough. You configure a <code>queue_size</code> of only <code>1</code>, which might not be sufficient for the rate at which new messages are coming in.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-16 08:45:50 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

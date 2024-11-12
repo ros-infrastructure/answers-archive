@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>point-cloud from camera/camera_info/depth topics - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/413355">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>point-cloud from camera/camera_info/depth topics</h2>
+      <div class="question">
+        <p>I do like to use the <a href="https://wiki.ros.org/image_proc?distro=noetic">image_proc</a> to rectify a color image from a topic before using rectified color image to detect edges and then I want to use the (edges + the rectified depth image) to create a point-cloud of edges using <a href="https://wiki.ros.org/depth_image_proc?distro=noetic">depth<em>image</em>proc/point<em>cloud</em>xyzrgb</a>.</p>
+
+<p>The topics that I have are:</p>
+
+<ul>
+<li><code>/camera/color/camera_info</code></li>
+<li><code>/camera/color/image_raw</code></li>
+<li><code>/camera/depth/camera_info</code></li>
+<li><code>/camera/depth/image_rect_raw</code></li>
+</ul>
+
+<p>In addition to a topic for the edges image <code>/camera/edges</code></p>
+
+<p>My Launch File looks like this:</p>
+
+<pre><code>    &lt;launch&gt;
+      &lt;!--
+      To distinguish between the cases where the rgb image is
+      1280x1024 versus 640x480.  This affects the pipeline.
+      --&gt;
+      &lt;arg name=&quot;high_res_rgb&quot; default=&quot;true&quot;/&gt;
+
+      &lt;arg name=&quot;cloud_input_ns&quot; value=&quot;/camera/edges&quot;/&gt;
+
+      &lt;!-- Edge Detection Selected Lang --&gt;
+      &lt;arg name=&quot;py_nodes&quot; value=&quot;true&quot;/&gt;
+      &lt;arg name=&quot;in_topic_name&quot; value=&quot;/camera/color/color_downsampled&quot; if=&quot;$(arg high_res_rgb)&quot;/&gt;
+      &lt;arg name=&quot;in_topic_name&quot; value=&quot;/camera/color/image_rect_color&quot; unless=&quot;$(arg high_res_rgb)&quot;/&gt;
+      &lt;arg name=&quot;out_topic_name&quot; value=&quot;/camera/edges&quot;/&gt;
+
+      &lt;!-- Nodelet manager for this pipeline --&gt;
+      &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; args=&quot;manager&quot;
+            name=&quot;record_player_manager&quot; output=&quot;screen&quot;/&gt;
+
+      &lt;!-- Debayer and undistort the rgb image
+          TODO: this should be split into nodelets --&gt;
+      &lt;node 
+        pkg=&quot;image_proc&quot; 
+        type=&quot;image_proc&quot; 
+        name=&quot;ip_node1&quot; 
+        ns=&quot;/camera/color&quot;
+      /&gt;
+
+      &lt;!-- Edge Detection --&gt;
+      &lt;include file=&quot;$(find edge_detection)/launch/edge_detection.launch&quot;&gt;
+        &lt;arg name=&quot;py_nodes&quot; value=&quot;$(arg py_nodes)&quot;/&gt;
+        &lt;arg name=&quot;in_topic_name&quot; value=&quot;$(arg in_topic_name)&quot;/&gt;
+        &lt;arg name=&quot;out_topic_name&quot; value=&quot;$(arg out_topic_name)&quot;/&gt;
+      &lt;/include&gt;
+
+      &lt;!-- The depth image is already rectified and registered
+          to the camera optical frame, but stored in mm; convert it
+          to meters --&gt;
+      &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;metric_rect&quot; 
+            args=&quot;load depth_image_proc/convert_metric record_player_manager --no-bond&quot;&gt;
+        &lt;remap from=&quot;image_raw&quot; to=&quot;/camera/depth/image_rect_raw&quot;/&gt;
+        &lt;!-- &lt;remap from=&quot;image&quot; to=&quot;camera/depth/image&quot;/&gt; --&gt;
+      &lt;/node&gt;
+
+      &lt;!-- Downsample and crop rgb image before converting to cloud, if it&#39;s high res --&gt;
+      &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;downsample_rgb&quot;
+            args=&quot;load image_proc/crop_decimate record_player_manager --no-bond&quot;
+            if=&quot;$(arg high_res_rgb)&quot;&gt;
+        &lt;param name=&quot;decimation_x&quot; value=&quot;2&quot;/&gt;
+        &lt;param name=&quot;decimation_y&quot; value=&quot;2&quot;/&gt;
+        &lt;param name=&quot;width&quot; value=&quot;1280&quot;/&gt;
+        &lt;param name=&quot;height&quot; value=&quot;960&quot;/&gt;
+        &lt;remap from=&quot;camera&quot; to=&quot;camera/rgb&quot;/&gt;
+        &lt;remap from=&quot;camera_out&quot; to=&quot;$(arg cloud_input_ns)&quot;/&gt;
+        &lt;remap from=&quot;camera/color/image_raw&quot; to=&quot;camera/color/image_rect_color&quot;/&gt;
+        &lt;remap from=&quot;$(arg cloud_input_ns)/image_raw&quot; to=&quot;$(arg cloud_input_ns)/image_rect_color&quot;/&gt;
+      &lt;/node&gt;
+
+      &lt;!-- Convert it into a point cloud --&gt;
+      &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;cloudify&quot;
+            args=&quot;load depth_image_proc/point_cloud_xyzrgb record_player_manager --no-bond&quot;&gt;
+        &lt;remap from=&quot;/camera/depth/image_rect_raw&quot; to=&quot;/camera/depth/image&quot;/&gt;
+        &lt;remap from=&quot;/depth_registered/points&quot; to=&quot;camera/depth_registered/points&quot;/&gt;
+        &lt;remap from=&quot;/camera/edges&quot; to=&quot;$(arg cloud_input_ns)/image_rect_color&quot;/&gt;
+        &lt;remap from=&quot;/camera/color/camera_info&quot; to=&quot;$(arg cloud_input_ns)/camera_info&quot;/&gt;
+      &lt;/node&gt;
+    &lt;/launch&gt;
+</code></pre>
+
+<p>But I don&#39;t see any point cloud! can you please tell me how can I modify my launch file to show a point cloud of my edges? thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/71460">bhomaidan</a> on 2023-03-12 12:09:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

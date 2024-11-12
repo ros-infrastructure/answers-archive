@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to attach objects in robot state - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/391958">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to attach objects in robot state</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100692/how-to-attach-objects-in-robot-state">https://robotics.stackexchange.com/questions/100692/how-to-attach-objects-in-robot-state</a>.</p>
+        <p>I am planning a robot motion in two steps. So I can modify the boundary conditions of the target pose of the first step (orienation of gripper), if the planning of step two fails (bring part to target pose). Background is to handle parts of high varity in geometry without teaching.</p>
+
+<p>In a first development step I planned AND executed the steps subsequently. All motions worked fine and there were no collisions. Now, I observe some collisions in the second step in RViz but the motion is executed without recognition of the collision. Furthermore all of the end poses are correct. Planning algorithm is the same.</p>
+
+<p>Some background info of my code: I plan the first motion in classic way with</p>
+
+<pre><code>tubehandling.move_group.set_pose_target(targets[0])
+plan1 = tubehandling.move_group.plan()
+</code></pre>
+
+<p>If <code>plan1[0] == True</code> the next planning step follows. For this I get the joint angles of the last plannend point in plan1 and update with this angels the robot<em>start</em>state for the second planning:</p>
+
+<pre><code>target_joints = plan1[1].joint_trajectory.points[-1].positions
+target_joints = list(target_joints)
+robot_state = tubehandling.robot.get_current_state().joint_state.position
+robot_state = list(robot_state)
+# Update joint angles with planned robot state at gripping point
+robot_state[0:6] = target_joints[0:6]
+print(&quot;Robot end state (angles):&quot;)
+print(robot_state[0:6])
+
+robot_state = tuple(robot_state)
+robot_start_state = tubehandling.robot.get_current_state()
+robot_start_state.joint_state.position = robot_state
+
+# Set new start state for 2nd planning
+tubehandling.move_group.set_start_state(robot_start_state)
+</code></pre>
+
+<p>After this the planning follows WITH attached part and if <code>plan2[0] == True</code> the two plans are carried out.</p>
+
+<pre><code>tubehandling.move_group.set_pose_target(targets[1])
+tubehandling.attach_part(tubename) 
+plan2 = tubehandling.move_group.plan()
+tubehandling.detach_part(tubename)
+</code></pre>
+
+<p>Do I overlook something? Do I have to update somethin else? As usual, thanks in advance!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/85320">nicob</a> on 2021-12-01 02:45:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>It was possible for me to pinpoint the fault more. With the MotionPlanning - Trajectory Slider in RViz I recognized that the part is not correctly attached to the robot. I do not understand why it makes a difference if I attach the part to the robot when I am planning step by step. The function I am using is the same:</p>
+
+<pre><code># Attach a part to the robot
+def attach_part(self, part_name, timeout=4):
+    print(&quot;Attaching following object:&quot;)
+    print(part_name)
+
+    self.move_group.attach_object(part_name)
+
+    rospy.sleep(0.5)
+    # Wait for the planning scene to update.
+    return self.wait_for_state_update( part_name,
+        object_is_attached=True, object_is_known=False, timeout=timeout
+    )
+</code></pre>
+
+<p>Any ideas? Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85320">nicob</a> on 2021-12-01 05:56:11 UTC</p></div>
+</div>
+<div class="comment">
+              <p><code>print(tubehandling.scene.get_attached_objects())</code> shows the attached object correctly in the second planning.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85320">nicob</a> on 2021-12-01 08:50:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>One more comment...</p>
+
+<p>I think it is definitv a problem of an incomplete definition of the robot_state msg. The command <code>robot_start_state = tubehandling.robot.get_current_state()</code> seems not to return the attached objects in contrast to <code>tubehandling.move_group.set_start_state_to_current_state()</code>, which is setting the attached objects correct accordingly to the planning scene.</p>
+
+<p>Is there a comfortable way to update the attached objects to the robot_state msg from the planning interface by hand? Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85320">nicob</a> on 2021-12-01 09:52:56 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hello @nicob, </p>
+
+<p>Instead of adding multiple comments, I would suggest re-editing your question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63046">Ranjit Kathiriya</a> on 2021-12-02 04:02:33 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>After long hours of puzzling over the problem I found a working solution. Perhaps it is not the most elegant solution but it works...</p>
+
+<p>I get the attached-objects msg from the planning scene and appends it at the robot state. After that I had to modifiy the mesh_poses and frame_id to place the object in the right pose (not shown in the code fragment).</p>
+
+<pre><code># Attach part for creating attached object msg
+tubehandling.attach_part(tubename)
+attached_objects = tubehandling.scene.get_attached_objects()
+tubehandling.detach_part(tubename)
+# Remove part to prevent collision in planning
+tubehandling.remove_part(tubename)
+
+# Update the robot state with attached objects
+robot_start_state = tubehandling.robot.get_current_state()
+robot_start_state.joint_state.position = robot_state
+
+# Add attached object to robot state
+robot_start_state.attached_collision_objects.append(attached_objects[tubename])
+</code></pre>
+
+<p>I just attached one object.</p>
+
+<p>I hope the code fragment helps... Thanks!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/85320">nicob</a> on 2021-12-02 07:57:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

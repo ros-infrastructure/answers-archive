@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Multiple dynamic_reconfigure servers in the same node? [Python] - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/12158">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Multiple dynamic_reconfigure servers in the same node? [Python]</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/36107/multiple-dynamic-reconfigure-servers-in-the-same-node-python">https://robotics.stackexchange.com/questions/36107/multiple-dynamic-reconfigure-servers-in-the-same-node-python</a>.</p>
+        <p>It is possible to have multiple dynamic_reconfigure servers in the same node? </p>
+
+<p>When I try that I get this error message:
+<pre>Tried to advertise a service that is already advertised in this node</pre>
+Moreover, the first configuration server become unusable.</p>
+
+<h2>I though that it should be possible since a set of nodelets can run on the same node with different dynamic configuration servers. Or it is more complex than it seems?</h2>
+
+<p>Edit: Check a more updated question about this issue:  <a href="https://answers.ros.org/question/289040/multiple-instances-of-a-dynamic_reconfigure-server-in-the-same-client-node/">https://answers.ros.org/question/289040/multiple-instances-of-a-dynamic_reconfigure-server-in-the-same-client-node/</a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/356"></a> on 2011-11-30 03:09:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <h1>q289040 is similar and much more recent than this.</h1>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-05-04 15:26:30 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I believe you can define multiple servers using different <code>ros::NodeHandle</code> instances with separate subordinate namespaces. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25">joq</a> on 2012-03-28 09:46:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>This is exactly an example of what I was talking. Thanks joq. Just notice that two different node have to be created with different subnames.</p>
+
+<p>Thanks. In any case IHMO it is worthnote that multiple does not seem possible in python because the dynamic_reconfigure server implementation. See 
+<pre>
+$ head -70 <code>rospack find dynamic_reconfigure</code>/src/dynamic_reconfigure/server.py
+</pre>
+I propose a patch at the end of this response with some modification on this file to achieve this feature.</p>
+
+<p>I show a example code below about how could be done it with C++.</p>
+
+<pre>
+
+bool configure_server_callback_a(mypkg::myconfig &config, uint32_t level)
+{
+  return config;
+}
+
+bool configure_server_callback_b(mypkg::myconfig &config, uint32_t level)
+{
+  return config;
+}
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, "test_multiple_configure");
+
+  ros::NodeHandle nh_a("~/a");
+  ros::NodeHandle nh_b("~/b");
+
+  dynamic_reconfigure::Server<mypkg::myconfig> cfg_server_a(nh_a);
+  dynamic_reconfigure::Server<mypkg::myconfig> cfg_server_b(nh_b);
+
+  dynamic_reconfigure::Server<mypkg::myconfig>::CallbackType f_a, f_b;
+  f_a = boost::bind(configure_server_callback_a, _1, _2);
+  f_b = boost::bind(configure_server_callback_a, _1, _2);
+
+  cfg_server_a.setCallback(f_a);
+  cfg_server_b.setCallback(f_b);
+
+  ros::spin();
+}
+
+</pre>
+
+<p>To have multiple dynamic_reconfigure servers on the same node I propose the following patch for the dynamic_reconfigure source:</p>
+
+<pre>
+--- a/src/dynamic_reconfigure/server.py Sun Jan 15 19:33:19 2012 -0800
++++ b/src/dynamic_reconfigure/server.py Thu Aug 16 14:06:26 2012 +0200
+@@ -51,7 +51,7 @@
+ from dynamic_reconfigure.encoding import *
+ 
+ class Server(object):
+-    def __init__(self, type, callback):
++     def __init__(self, type, callback,namespace_prefix=""):
+         self.mutex = threading.Lock()
+         self.type = type
+         self.config = type.defaults.copy()
+@@ -61,17 +61,19 @@
+         self.callback = callback
+         self._clamp(self.config) 
+ 
++   self.namespace_prefix=("~/"+namespace_prefix+'/').replace('//','/')
++
+         # setup group defaults
+         self.config['groups'] = get_tree(self.description)
+         self.config = initial_config(encode_config(self.config), type.config_description)
+ 
+-        self.descr_topic = rospy.Publisher('~parameter_descriptions', ConfigDescrMsg, latch=True)
++        self.descr_topic = rospy.Publisher(self.namespace_prefix+'parameter_descriptions', ConfigDescrMsg, latch=True)
+         self.descr_topic.publish(self.description);
+-        
+-        self.update_topic = rospy.Publisher('~parameter_updates', ConfigMsg, latch=True)
++
++        self.update_topic = rospy.Publisher(self.namespace_prefix+'parameter_updates', ConfigMsg, latch=True)
+         self._change_config(self.config, type.all_level)
+         
+-        self.set_service = rospy.Service('~set_parameters', ReconfigureSrv, self._set_callback)
++        self.set_service = rospy.Service(self.namespace_prefix+'set_parameters', ReconfigureSrv, self._set_callback)
+ 
+     def update_configuration(self, changes):
+         with self.mutex:
+@@ -89,7 +91,7 @@
+ 
+     def _copy_to_parameter_server(self):
+         for param in extract_params(self.type.config_description):
+-            rospy.set_param('~' + param['name'], self.config[param['name']])
++            rospy.set_param(self.namespace_prefix+ param['name'], self.config[param['name']])
+ 
+     def _change_config(self, config, level):
+         self.config = self.callback(config, level)
+
+</pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/356"></a> on 2012-03-28 10:35:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>If you have not already, I recommend opening a Track enhancement ticket for your patch.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25">joq</a> on 2012-08-16 04:03:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Here it is: <a href="https://kforge.ros.org/dynamicreconfig/trac/ticket/10">https://kforge.ros.org/dynamicreconfig/trac/ticket/10</a>
+Regards.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/356">Pablo Iñigo Blasco</a> on 2012-08-16 21:16:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi in the tutorial &quot;<a href="http://wiki.ros.org/dynamic_reconfigure/Tutorials/SettingUpDynamicReconfigureForANode">http://wiki.ros.org/dynamic_reconfigure/Tutorials/SettingUpDynamicReconfigureForANode</a>&quot; there is no node handle specified in the code, does this means if you don’t give the constructor a handle it will use some default handle?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4120">Sentinal_Bias</a> on 2013-12-05 13:12:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That is the point that was being discussed in this question. As far as I tested (in fuerte) it was not possible to create multiple dynamic_reconfigure servers (in python) since you could not specify the url or namespace of the dynamic reconfigure server. Conversely, it is possible to do it in c++.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/356">Pablo Iñigo Blasco</a> on 2013-12-16 10:25:03 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I was doing something very similar. See <a href="https://gist.github.com/1059742">this gist</a> (and <a href="https://code.ros.org/trac/ros/ticket/3394">this ROS ticket</a> for why I didn&#39;t submit it). It&#39;s obsolete for me now, so I won&#39;t push on this. But in comparison to your patch, I also modified the _copy_from_parameter_server() and _change_config() methods.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/203">AndrewStraw</a> on 2012-08-16 21:39:01 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yep, thanks Andrew. I solved that and submitted a second version of the patch.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/356">Pablo Iñigo Blasco</a> on 2012-08-17 01:19:38 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

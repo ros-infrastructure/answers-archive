@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why does catkin build not consistently do the same thing? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/378338">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why does catkin build not consistently do the same thing?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99045/why-does-catkin-build-not-consistently-do-the-same-thing">https://robotics.stackexchange.com/questions/99045/why-does-catkin-build-not-consistently-do-the-same-thing</a>.</p>
+        <p><a href="https://catkin-tools.readthedocs.io/en/latest/migration.html"><em>The catkin build command builds each package in a workspace’s source space in isolation in order to prevent build-time cross-talk.</em></a></p>
+
+<p>I have a large workspace of ROS1 packages that builds with catkin<em>make. Sometimes other people with the same workspace will build and find that their build fails with some missing dependency in a CMakeLists.txt somewhere. I understand that catkin</em>make does non-isolated builds - so whether or not a dependency is available to a package is dependent on the order that the packages happen to built so lots of CMakeLists.txt ommissions are masked.</p>
+
+<p>I have tried building my workspace with <code>catkin build</code> and found that it does expose a lot of build errors <em>but</em> it doesn&#39;t give me consistent builds. If I run it several times in succession, more and more of the packages will be successfully built. If I run <code>catkin build &amp;&amp; catkin clean</code> several times, different numbers of packages will be successfully built.</p>
+
+<p>If packages are being built &quot;in isolation&quot; I would expect the same thing to happen each time I run <code>catkin build</code> since the build order should be irrelevant? Clearly I am mistaken in this understanding so my question is:</p>
+
+<p>What does packages being built &quot;in isolation&quot; mean? How is <code>catkin build</code> different to <code>catkin_make</code> ?</p>
+
+<p>Is there some way to build my packages that is determinstic/repeatable? So that I can have confidence that if it builds on one machine, it&#39;ll build on another?</p>
+
+<p>even if I run <code>catkin build --force-cmake &amp;&amp; catkin clean</code> I get inconsistent results.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/38953">LukeAI</a> on 2021-05-14 11:24:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please refrain from asking multiple questions in a single post.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-05-14 12:26:08 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I&#39;m only going to answer this part of your question:</p>
+
+<blockquote>
+<p>Is there some way to build my packages that is determinstic/repeatable?</p>
+</blockquote>
+
+<p>tl;dr: if you don&#39;t state your dependencies correctly, Catkin is free to start building pkgs, which may in fact depend on each other, in parallel, leading to compiler errors and ultimately failed and aborted builds.</p>
+
+<p>As the exact point in time where builds get aborted is (almost) stochastic (due to scheduling, CPU and IO performance, etc), and dependents typically will not need <em>everything</em> from dependencies, partial builds of dependencies may result in successful builds of (some) dependents.</p>
+
+<p>This leads to successive builds appearing to make progress, as more-and-more dependents will find their dependencies where they expect them, leading to those builds succeeding, leading to <em>their</em> dependents being able to start their build. Etc, etc.</p>
+
+<p>With enough iterations, the whole graph of dependencies gets built, until finally all dependencies are built and there are no more failures.</p>
+
+<p>As to the question: always running <code>catkin_make -j1</code> could help make things fail at almost the same place, however it&#39;s no guarantee, as other factors may still cause slight ordering differences in operations.</p>
+
+<hr>
+
+<p>Long version: the Catkin side to this is already largely deterministic I believe. It&#39;s the other parts which may not be.</p>
+
+<p>Catkin performs two main tasks before it asks CMake to build everything:</p>
+
+<ol>
+<li>discover all packages in your <code>src</code> space and construct a graph where the vertices are the packages and the edges encode dependencies (ie: if pkg <code>A</code> depends on <code>B</code>, there will be an edge between the vertices representing <code>A</code> and <code>B</code> expressing that dependency)</li>
+<li>run a <a href="https://en.wikipedia.org/wiki/Topological_sorting">topological sort</a> over that graph, to determine the <em>order</em> in which everything should be built which satisfies those dependencies</li>
+</ol>
+
+<p>Your packages state their dependencies using <code>build_depend</code>s in their manifests, which Catkin parses and then uses to build the graph. After the sort, it asks CMake to start the build by building the packages which:</p>
+
+<ol>
+<li>have no dependencies (rare),</li>
+<li>for which all dependencies are already built,</li>
+<li>depend only on packages present in an underlay (or its underlay, ad infinitum)</li>
+<li>do not depend <em>on each other</em></li>
+</ol>
+
+<p>for all of those, the order in which they are built does not really matter, as pkgs in category 1 don&#39;t depend on anything, in category 2 and 3 have all their dependencies ready and in category 4 cannot fail when built at the same time as they don&#39;t need anything from each other.</p>
+
+<p>After the first layer of packages has been built, Catkin moves up to the next, which will be packages which depend on (some, or all) of the packages it just built. This process then repeats, until the &quot;top&quot; package(s) is (are) built.</p>
+
+<p>Note: <em>only</em> the <code>build_depend</code> entries in your <code>package.xml</code> are taken into account, <em>not</em> the <code>setup.py</code> or <code>CMakeLists.txt</code> (actually, there&#39;s also <code>build_export_depend</code> et al., but I&#39;ll ignore those here, they don&#39;t significantly change the explanation).</p>
+
+<p>Now back to your question:</p>
+
+<blockquote>
+<p>Sometimes other people with the same workspace will build and find that their build fails with some missing dependency in a CMakeLists.txt somewhere. [..] If I run it several times in succession, more and more of the packages will be successfully built.</p>
+</blockquote>
+
+<p>As I wrote: only <code>package.xml</code> entries are used to create the graph. So it&#39;s entirely possible for a pkg <code>A</code> which depends on pkg <code>B</code>, but which does <em>not</em> state a <code>&lt;build_depend&gt;B&lt;/build_depend&gt;</code> to end up on the same &#39;layer&#39; of the graph and thus get built at the same time. Obviously this fails, as <code>A</code> does need <code>B</code> (Catkin can not really be blamed in such cases I believe: according to the information you provided, <code>A</code> and <code>B</code> fall into (<em>at least</em>) category <code>4</code> above).</p>
+
+<p>However, it&#39;s possible <code>A</code> can be <em>partly built</em>, perhaps because it only needs some parts of <code>B</code>, and <strong>this is where the non-determinism comes in</strong>: depending on how your operating system schedules the <code>cmake</code>, <code>make</code> and <code>gcc</code> processes, those &quot;some parts of <code>B</code>&quot; may or may not have already completed building.</p>
+
+<p>If they were finished by the time <code>A</code> tries to use them: you&#39;ll never know there was a problem with the <code>build_depend</code>s of <code>A</code>. If they were not finished, <code>A</code>&#39;s build will fail, probably with some sort of <code>#include</code> error, complaining <code>No such file of directory: &quot;B/some_include.h&quot;</code> and <code>B</code>s build is also aborted (together with any other jobs which may be running for other pkgs).</p>
+
+<p>A good example of this situation is packages which provide messages, services and/or actions. The headers are <em>generated</em> during the build, and it&#39;s imperative message generation has completed <em>before</em> other packages try to <code>#include</code> those files, or GCC (or whichever compiler you&#39;re using) will not be able to find the files and abort.</p>
+
+<blockquote>
+<p>If I run <code>catkin build &amp;&amp; catkin clean</code> several times, different numbers of packages will be successfully built.</p>
+</blockquote>
+
+<p>So where does the non-determinism come in, and why does restarting the build (sometimes) help?</p>
+
+<p>Each time you restart your build, <code>B</code>&#39;s build processes will get a little further before they are aborted due to <code>A</code>&#39;s build failing. At some point, enough of <code>B</code> will have finished for <code>A</code>&#39;s build to no longer fail (fi: the message headers <code>#include</code>d by <code>A</code> may have actually been generated by <code>B</code>&#39;s build). But how much of <code>B</code> succeeds is slightly non-deterministic, due to the stochasticity which results from OS process &amp; thread scheduling I mentioned above (it not only depends on available jobs in the build, but on all other processes on your machine fi).</p>
+
+<p>As to why <em>different numbers of packages</em> may succeed: a topological sort does not always have a unique solution, and in addition, again due to scheduling, there is a non-zero chance packages with the same or similar dependency sets will be scheduled &quot;at the same time&quot;, but really only start building at slightly different times. Together with the semi-randomness of tasks succeeding in dependencies (fi: <code>B</code>&#39;s tasks getting scheduled and/or aborted at slightly different times), this leads to a situation where packages on the same layer in the dependency graph not always progressing in the exact same way in their build. This can appear to be random, but should be explainable if total insight into scheduling of tasks, progress of the build, file system state, etc would be available.</p>
+
+<p>Disabling parallelism during the build (both process and thread) will significantly reduce these effects and likely cause failures in the same or similar spots. With <code>catkin_make</code>, this can be done with <code>catkin_make -j1</code>. <code>catkin_tools</code> supports similar flags.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-05-14 13:51:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Refer to #q217475 for why we have separate (or duplicated) places to store dependency information btw.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-05-14 14:00:39 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

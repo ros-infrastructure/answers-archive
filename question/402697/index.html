@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros2 topic keeping more than one message - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402697">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros2 topic keeping more than one message</h2>
+      <div class="question">
+        <p>I have a very difficult problem with a topic that for some reason keeps more than one message. My project is rather simple: I have a planner in which I can create targets and edit them. I have several nodes, one for changing each value of the target. List of my nodes:</p>
+
+<pre><code>/add_target  
+/change_comment  
+/change_target_index  
+/clear_state  
+/remove_target  
+/rename_target  
+/set_target  
+/toggle_select_target  
+/toggle_visible
+</code></pre>
+
+<p>Each node extends StateNode, which helps to keep the same state for each node. </p>
+
+<p>The idea is simple: a node receives a service call, for example /planner/rename_target, finds the specific target from the node&#39;s state, modifies it, and publishes new state to /planner/state. Each node is subscribed to /planner/state and sets the state to the message received. The idea is to keep the state consistent across all nodes, so each node has access to all state data and can modify it.</p>
+
+<p>I have set my quality of service profile to keep ONLY the latest message. However, my problem is that <strong>after using service calls to different nodes</strong>, sometimes when running for example </p>
+
+<pre><code>ros2 topic echo --qos-history keep_last --qos-depth 1 --qos-durability transient_local --qos-reliability reliable /planner/state
+</code></pre>
+
+<p>I receive <strong>multiple</strong> messages. The order of the messages changes randomly. The state of each node seems to be the same, BUT it seems there are <strong>old</strong> messages &quot;floating around&quot; in the topic. My qos should allow only the latest message to persist. </p>
+
+<p>For example, if I first service call twice</p>
+
+<pre><code>ros2 service call /planner/add_target mtms_interfaces/srv/AddTarget &quot;{target: {position:{x: 0.0,y: 0.0,z: 0.0}, orientation: {alpha: 0.0,beta: 0.0,gamma: 0.0}}}&quot;
+</code></pre>
+
+<p>my topic echo looks normal, but if I then </p>
+
+<pre><code>ros2 service call /planner/rename_target mtms_interfaces/srv/RenameTarget &quot;{name: &#39;Target-0&#39;, new_name: &#39;example&#39;}&quot;
+</code></pre>
+
+<p>suddenly my topic echo shows two messages. In one of the messages the target has not been modified, and in the other the target has been modified.</p>
+
+<p><strong>What could be the problem here?</strong></p>
+
+<p>Here are some examples of my nodes</p>
+
+<p>StateNode implementation:</p>
+
+<pre><code>class StateNode(Node):
+
+    def __init__(self, name):
+        super().__init__(name)
+
+        # Persist the latest sample.
+        qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.RELIABLE
+        )
+
+        self._state_publisher = self.create_publisher(
+            PlannerState,
+            &quot;/planner/state&quot;,
+            qos
+        )
+        self._state_subscriber = self.create_subscription(
+            PlannerState,
+            &#39;/planner/state&#39;,
+            self.state_updated,
+            10
+        )
+        self._state = None
+
+    def state_updated(self, msg):
+        self.get_logger().info(&#39;{} state updated, nof targets {}&#39;.format(self.get_name(), len(msg.targets)))
+        self._state = msg
+</code></pre>
+
+<p>RenameTargetNode implementation:</p>
+
+<pre><code>class RenameTargetNode(StateNode):
+
+    def __init__(self):
+        super().__init__(&#39;rename_target&#39;)
+        self.create_service(RenameTarget, &#39;/planner/rename_target&#39;, self.rename_target_callback)
+
+    def rename_target_callback(self, request, response):
+
+        state = self._state
+        if state is None:
+            response.success = False
+            return response
+
+        self.get_logger().info(&#39;Renaming {} to {}&#39;.format(request.name, request.new_name))
+
+        i = 0
+        for target in state.targets:
+
+            # Name already exists
+            if target.name == request.new_name:
+                response.success = False
+                return response
+
+            # Save index of target in case new_name is unique
+            if target.name == request.name:
+                i = state.targets.index(target)
+
+        state.targets[i].name = request.new_name
+
+        self._state_publisher.publish(state)
+
+        response.success = True
+        return response
+
+
+def main():
+    rclpy.init()
+
+    rename_target_node = RenameTargetNode()
+
+    rclpy.spin(rename_target_node)
+
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>AddTargetNode implementation</p>
+
+<pre><code>class AddTargetNode(StateNode):
+
+    def __init__(self):
+        super().__init__(&#39;add_target&#39;)
+        self.create_service(AddTarget, &#39;/planner/add_target&#39;, self.add_target_callback)
+
+    def first_available_target_name(self):
+        if self._state is None:
+            return &quot;Target-0&quot;
+
+        target_names = [target.name for target in self._state.targets]
+        idx = 0
+        while True:
+            target_name = &quot;Target-{}&quot;.format(idx)
+            if target_name not in target_names:
+                break
+            idx += 1
+        return target_name
+
+    def create_new_target(self, pose):
+        target = Target()
+
+        target.name = self.first_available_target_name()
+        target.type = &quot;Target&quot;
+        target.comment = &quot;&quot;
+        target.selected = False
+        target.target = False  # XXX: Misnomer
+        target.pose = pose
+
+        target.intensity = 100.0
+        target.iti = 100.0
+
+        return target
+
+    def add_target_callback(self, request, response):
+        self.get_logger().info(&#39;Incoming request&#39;)
+
+        target = self.create_new_target(
+            pose=request.target  # XXX: Misnomer
+        )
+
+        if self._state is None:
+            msg = PlannerState()
+            msg.targets = [
+                target
+            ]
+        else:
+            msg = self._state
+            msg.targets.append(target)
+
+        self._state_publisher.publish(msg)
+
+        response.success = True
+        return response
+
+
+def main():
+    rclpy.init()
+
+    add_target_node = AddTargetNode()
+
+    rclpy.spin(add_target_node)
+
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>System information:
+Ubuntu 20.04, kernel 5.14.0-1042-oem, x86_64</p>
+
+<p>I&#39;m running the ros nodes in one docker container created with osrf/ros:galactic-desktop.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108838">alqio</a> on 2022-06-22 06:50:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The problem here was that I had several publishers to the same topic with DurabilityPolicy.TRANSIENT_LOCAL, which is described as follows: &quot;the <strong>publisher</strong> becomes responsible for persisting samples for “late-joining” subscriptions.&quot; In practice this means that when a new subscriber joins, <strong>each</strong> publisher will send them their last message --&gt; subscriber receives multiple messages.</p>
+
+<p>There are several solutions for this, for example creating a master node that is subscribed to an inner state that is updated by each node, but only the master node is responsible for publishing the state &quot;outside&quot;.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/108838">alqio</a> on 2022-06-27 03:24:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>So this seems to come down to &quot;QoS applies to each individual pub-sub connection, not to <em>a topic</em>&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-06-27 04:10:58 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

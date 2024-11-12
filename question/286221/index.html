@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>create 2d occupancy grid map  by laser data - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/286221">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>create 2d occupancy grid map  by laser data</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/86079/create-2d-occupancy-grid-map-by-laser-data">https://robotics.stackexchange.com/questions/86079/create-2d-occupancy-grid-map-by-laser-data</a>.</p>
+        <p>i want  to create 2d occupancy grid map manually without using slam packages help me please with tutorials  or documentation to learn how i can do that 
+thank you</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-03-22 05:12:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>What do you mean by &quot;without slam packages&quot;? Are you trying to implement your own SLAM, or are you just wanting to make a very primitive map?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1086">allenh1</a> on 2018-03-26 09:45:34 UTC</p></div>
+</div>
+<div class="comment">
+              <p>i want just to create a simple map ( local map )for navigation to implement some  demonstration</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-03-26 11:20:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>hi,
+As long as the accurate poses of the robot are not known, you are not able to build a consistent map without using a SLAM  framework. Because all the measurements and controls (Range and odometry) are inherently uncertain. you can build a local map without changing the robot pose or a barely accurate map with small movements. Use follwing python codes to get started.</p>
+
+<p>build local map using <code>localmap.py</code></p>
+
+<pre><code>import bresenham
+from math import sin, cos, pi,tan, atan2,log
+import math
+from itertools import groupby
+from operator import itemgetter
+import tf
+import rospy
+import numpy as np
+from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PointStamped
+
+class localmap:
+    def __init__(self, height, width, resolution,morigin):
+        self.height=height
+        self.width=width
+        self.resolution=resolution
+        self.punknown=-1.0
+        self.localmap=[self.punknown]*int(self.width/self.resolution)*int(self.height/self.resolution)
+        self.logodds=[0.0]*int(self.width/self.resolution)*int(self.height/self.resolution)
+        self.origin=int(math.ceil(morigin[0]/resolution))+int(math.ceil(width/resolution)*math.ceil(morigin[1]/resolution))
+        self.pfree=log(0.3/0.7)
+        self.pocc=log(0.9/0.1)
+        self.prior=log(0.5/0.5)
+        self.max_logodd=100.0
+        self.max_logodd_belief=10.0
+        self.max_scan_range=1.0
+        self.map_origin=morigin
+
+
+
+    def updatemap(self,scandata,angle_min,angle_max,angle_increment,range_min,range_max,pose):
+
+        robot_origin=int(pose[0])+int(math.ceil(self.width/self.resolution)*pose[1])
+        centreray=len(scandata)/2+1
+        for i in range(len(scandata)):
+            if not math.isnan(scandata[i]):
+                beta=(i-centreray)*angle_increment
+                px=int(float(scandata[i])*cos(beta-pose[2])/self.resolution)
+                py=int(float(scandata[i])*sin(beta-pose[2])/self.resolution)
+
+                l = bresenham.bresenham([0,0],[px,py])
+                for j in range(len(l.path)):                    
+                    lpx=self.map_origin[0]+pose[0]+l.path[j][0]*self.resolution
+                    lpy=self.map_origin[1]+pose[1]+l.path[j][1]*self.resolution
+
+                    if (0&lt;=lpx&lt;self.width and 0&lt;=lpy&lt;self.height):
+                        index=self.origin+int(l.path[j][0]+math.ceil(self.width/self.resolution)*l.path[j][1])
+                        if scandata[i]&lt;self.max_scan_range*range_max:
+                            if(j&lt;len(l.path)-1):self.logodds[index]+=self.pfree
+                            else:self.logodds[index]+=self.pocc
+                        else:self.logodds[index]+=self.pfree                        
+                        if self.logodds[index]&gt;self.max_logodd:self.logodds[index]=self.max_logodd
+                        elif self.logodds[index]&lt;-self.max_logodd:self.logodds[index]=-self.max_logodd
+                        if self.logodds[index]&gt;self.max_logodd_belief:self.localmap[index]=100
+                        else:self.localmap[index]=0 
+                        self.localmap[self.origin]=100.0
+</code></pre>
+
+<p>use main function <code>main.py</code></p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+import roslib
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
+from nav_msgs.msg import OccupancyGrid
+import tf
+import math
+from math import sin, cos, pi,tan, atan2
+import numpy as np
+from pylab import *
+from itertools import groupby
+from operator import itemgetter
+import matplotlib.pyplot as plt
+from scipy import interpolate
+
+from localmap import localmap
+pose=[0.0,0.0,0.0]
+#***********************************************************************
+def handle_robot_pose(parent, child, pose):
+    br = tf.TransformBroadcaster()
+    br.sendTransform((pose[0], pose[1], 0), tf.transformations.quaternion_from_euler(0, 0, pose[2]), rospy.Time.now(), child,parent)
+
+#***********************************************************************
+def odometryCb(msg):
+    global pose
+    x=msg.pose.pose.position.x
+    y=msg.pose.pose.position.y
+    q0 = msg.pose.pose.orientation.w
+    q1 = msg.pose.pose.orientation.x
+    q2 = msg.pose.pose.orientation.y
+    q3 = msg.pose.pose.orientation.z
+    theta=atan2(2*(q0*q3+q1*q2),1-2*(q2*q2+q3*q3))
+    pose=[x,y,theta]
+
+#*********************************************************************** 
+def scanCb(msg):
+    print pose
+    py,px=[],[]
+    scandata=msg.ranges
+    angle_min=msg.angle_min
+    angle_max=msg.angle_max
+    angle_increment=msg.angle_increment
+    range_min=msg.range_min
+    range_max=msg.range_max 
+    m.updatemap(scandata,angle_min,angle_max,angle_increment,range_min,range_max,pose)
+    handle_robot_pose(&quot;map&quot;, &quot;odom&quot;, pose)
+
+#***********************************************************************    
+def mappublisher(m,height, width, resolution,morigin):
+    msg = OccupancyGrid()
+    msg.header.frame_id=&#39;map&#39;
+    msg.info.resolution = resolution
+    msg.info.width      = math.ceil(width/resolution)
+    msg.info.height     = math.ceil(height/resolution)
+    msg.info.origin.position.x=-morigin[0]
+    msg.info.origin.position.y=-morigin[1]
+    msg.data=m  
+    mappub.publish(msg)
+
+if __name__ == &quot;__main__&quot;:
+
+    rospy.init_node(&#39;main&#39;, anonymous=True) #make node 
+    rospy.Subscriber(&#39;/odom&#39;,Odometry,odometryCb)
+    rospy.Subscriber(&quot;/scan&quot;, LaserScan, scanCb)
+    mappub= rospy.Publisher(&#39;/map&#39;,OccupancyGrid,queue_size=1)
+
+    rate = rospy.Rate(10) # 100hz   
+
+    height, width, resolution=10,10,0.05
+    morigin=[width/2.0,height/2.0]
+    m=localmap(height, width, resolution,morigin)
+
+    while not rospy.is_shutdown():
+        mappublisher(m.localmap,height, width, resolution,morigin)
+        rate.sleep()    
+</code></pre>
+
+<p>Use supplementary script <code>bresenham.py</code></p>
+
+<pre><code>class bresenham:
+    def __init__(self, start, end):
+        self.start = list(start)
+        self.end = list(end)
+        self.path = []
+        self.toggle=0
+
+        if start[0]-end[0]+start[1]-end[1]==0:
+            return None
+
+        self.steep = abs(self.end[1]-self.start[1]) &gt; abs(self.end[0]-self.start[0])
+
+        if self.steep:
+            self.start = self.swap(self.start[0],self.start[1])
+            self.end = self.swap(self.end[0],self.end[1])
+
+        if self.start[0] &gt; self.end[0]:
+            self.toggle=1
+            #print &#39;flippin and floppin&#39;
+            _x0 = int(self.start[0])
+            _x1 = int(self.end[0])
+            self.start[0] = _x1
+            self.end[0] = _x0
+
+            _y0 = int(self.start[1])
+            _y1 = int(self.end[1])
+            self.start[1] = _y1
+            self.end[1] = _y0
+
+        dx = self.end[0] - self.start[0]
+        dy = abs(self.end[1] - self.start[1])
+        error = 0
+        derr = dy/float(dx)
+
+        ystep = 0
+        y = self.start[1]
+
+        if self.start[1] &lt; self.end[1]: ystep = 1
+        else: ystep = -1
+
+        for x in range(self.start[0],self.end[0]+1):
+            if self.steep:
+                self.path.append((y,x))
+            else:
+                self.path.append((x,y))
+
+            error += derr
+
+            if error &gt;= 0.5:
+                y += ystep
+                error -= 1.0
+
+        if self.toggle==1:
+            self.path.reverse()
+
+    def swap(self,n1,n2):
+        return [n2,n1]
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26769">Gayan Brahmanage</a> on 2018-03-26 13:53:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>that is exactly what i am looking for just to create a local map with small movements it s enough for me .  can you help me how i can do that</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-03-26 16:00:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>See the updated answer Good luck!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26769">Gayan Brahmanage</a> on 2018-03-26 16:26:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i will start with this script and reply you later 
+thank you very much</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-03-26 16:28:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>it is very helpful. thanks!
+could you mention that where did you get these code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40477">suho0515</a> on 2019-08-08 22:02:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>this was my own code, I think the original question has been posted a long time ago, Unfortunately, I don&#39;t have these codes anymore. Please try this code. This is a simple code with some math.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26769">Gayan Brahmanage</a> on 2019-08-08 22:44:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks again, i&#39;m gonna try it! can i ask you something? if i understand right, 
+the &quot;main.py&quot; get &quot;scan data&quot;, &quot;odom data&quot; and send these data to localmap function.
+after calculating &quot;somthing&quot; in localmap function, finally they publish map data.
+so... what &quot;localmap.py&quot; do? just drawing map? 
+and, is localization or navigation algorithm working in &quot;bresenham.py&quot;?</p>
+
+<p>sorry for too many question, but i really do wanna understand your work well.<br>
+if there is paper or article about this algorithms could you mention it?</p>
+
+<p>thanks again Gayan Brahmanage!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40477">suho0515</a> on 2019-08-08 23:50:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You can follow this <a href="https://www.coursera.org/lecture/robotics-learning/week-3-introduction-DFay8">tutorial</a> to understand the math behind the code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26769">Gayan Brahmanage</a> on 2019-08-09 00:14:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you very much :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40477">suho0515</a> on 2019-08-09 00:52:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i finally worked with this code. </p>
+
+<p>i&#39;ve changed 3 thing.</p>
+
+<ol>
+<li><p>odometry topic name to the name i&#39;m subscribed in main.py</p></li>
+<li><p>there is inf value in my lidar sensor data. so i changed parsing code in localmap.py.
+line 39, &quot;if not math.isnan(scandata[i]):&quot; to &quot;if not math.isinf(scandata[i]):&quot; </p></li>
+<li><p>in localmap.py line 65, if(j&lt;len(l.path)-1):self.logodds[index]+=self.pfree.
+sometimes the index value over the len(self.logodds)
+so i input &quot;if (index &lt; len(self.logodds)):&quot; before &quot;if scandata[i]&lt;self.max_scan_range*range_max:&quot;</p></li>
+</ol>
+
+<p>hope you guys get helped with it!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40477">suho0515</a> on 2019-08-09 06:02:53 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>after map being created how can we visualize the map online?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/101495">peyman1372</a> on 2022-04-13 03:21:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

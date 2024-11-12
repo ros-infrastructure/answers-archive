@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Rospy Parameter KeyError - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/305398">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Rospy Parameter KeyError</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/89248/rospy-parameter-keyerror">https://robotics.stackexchange.com/questions/89248/rospy-parameter-keyerror</a>.</p>
+        <p>I cannot get my code to get the parameters on my config file. I just do like it is on the tutorials but it does not work and I do not understand why. I believe it might be a namespace problem with rospy. I have never had this problem with C++.</p>
+
+<p>My Github with the whole code: <a href="https://github.com/renanmb/boat_pid_controller">https://github.com/renanmb/boat_pid_controller</a></p>
+
+<p>throttle_interpolator.py</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+
+from std_msgs.msg import Float64
+from boat_controller.msg import Drive
+
+# import some utils.
+import numpy as np
+import copy as copy
+
+class InterpolateThrottle:
+    def __init__(self):
+        self.rpm_input_topic   = rospy.get_param(&#39;~rpm_input_topic&#39;, &#39;/vesc/commands/motor/unsmoothed_speed&#39;)
+        self.rpm_output_left_topic  = rospy.get_param(&#39;~rpm_output_left_topic&#39;, &#39;/vesc/commands/motor/speed_left&#39;)
+        self.rpm_output_right_topic  = rospy.get_param(&#39;~rpm_output_right_topic&#39;, &#39;/vesc/commands/motor/speed_right&#39;)
+
+        self.servo_input_topic   = rospy.get_param(&#39;~servo_input_topic&#39;, &#39;/vesc/commands/servo/unsmoothed_position&#39;)
+        self.servo_output_topic  = rospy.get_param(&#39;~servo_output_topic&#39;, &#39;/vesc/commands/servo/position&#39;)
+
+        self.max_rpm_acceleration = rospy.get_param(&#39;/vesc/max_rpm_acceleration&#39;)
+        self.max_rpm = rospy.get_param(&#39;/vesc/vesc_driver/speed_max&#39;)
+        self.min_rpm = rospy.get_param(&#39;/vesc/vesc_driver/speed_min&#39;)
+        self.throttle_smoother_rate = rospy.get_param(&#39;/vesc/throttle_smoother_rate&#39;)
+        self.rpm_to_erpm_gain = rospy.get_param(&#39;/vesc/rpm_to_erpm_gain&#39;)
+
+        self.max_servo_speed = rospy.get_param(&#39;/vesc/max_servo_speed&#39;)
+        self.steering_angle_to_servo_gain = rospy.get_param(&#39;/vesc/steering_angle_to_servo_gain&#39;)
+        self.servo_smoother_rate = rospy.get_param(&#39;/vesc/servo_smoother_rate&#39;)
+        self.max_servo = rospy.get_param(&#39;/vesc/vesc_driver/servo_max&#39;)
+        self.min_servo = rospy.get_param(&#39;/vesc/vesc_driver/servo_min&#39;)
+
+        self.last_rpm = 0
+        self.desired_rpm = self.last_rpm
+
+        self.last_servo = rospy.get_param(&#39;/vesc/steering_angle_to_servo_offset&#39;)
+        self.desired_servo_position = self.last_servo
+
+        self.rpm_output_left = rospy.Publisher(self.rpm_output_left_topic, Float64,queue_size=1)
+        self.rpm_output_right = rospy.Publisher(self.rpm_output_right_topic, Float64,queue_size=1)
+        self.servo_output = rospy.Publisher(self.servo_output_topic, Float64,queue_size=1)
+
+        rospy.Subscriber(self.rpm_input_topic, Drive, self._process_throttle_command)
+        rospy.Subscriber(self.servo_input_topic, Float64, self._process_servo_command)
+
+        self.max_delta_servo = abs(self.steering_angle_to_servo_gain * self.max_servo_speed / self.servo_smoother_rate)
+        rospy.Timer(rospy.Duration(1.0/self.servo_smoother_rate), self._publish_servo_command)
+
+        self.max_delta_rpm = abs(self.rpm_to_erpm_gain * self.max_rpm_acceleration / self.throttle_smoother_rate) 
+
+        rospy.Timer(rospy.Duration(1.0/self.max_delta_rpm), self._publish_throttle_left_command)
+        rospy.Timer(rospy.Duration(1.0/self.max_delta_rpm), self._publish_throttle_right_command)
+
+        self._run()
+
+    def _run(self):
+        rospy.spin()
+
+    def _publish_throttle_left_command(self, evt):
+        desired_delta = self.desired_rpm_left-self.last_rpm_left
+        clipped_delta = max(min(desired_delta, self.max_delta_rpm), -self.max_delta_rpm)
+        smoothed_rpm = self.last_rpm_left + clipped_delta
+        self.last_rpm_left = smoothed_rpm
+        self.rpm_output_left.publish(Float64(smoothed_rpm))
+
+    def _publish_throttle_right_command(self, evt):
+        desired_delta = self.desired_rpm_right-self.last_rpm_right
+        clipped_delta = max(min(desired_delta, self.max_delta_rpm), -self.max_delta_rpm)
+        smoothed_rpm = self.last_rpm_right + clipped_delta
+        self.last_rpm_right = smoothed_rpm
+        self.rpm_output_right.publish(Float64(smoothed_rpm))
+
+    def _process_throttle_command(self,msg):
+        input_rpm_left = msg.data
+        input_rpm_right = msg.data
+        input_rpm_left = min(max(input_rpm_left, self.min_rpm), self.max_rpm)
+        input_rpm_right = min(max(input_rpm_right, self.min_rpm), self.max_rpm)
+        self.desired_rpm_left = input_rpm_left
+        self.desired_rpm_right = input_rpm_right
+
+    def _publish_servo_command(self, evt):
+        desired_delta = self.desired_servo_position-self.last_servo
+        clipped_delta = max(min(desired_delta, self.max_delta_servo), -self.max_delta_servo)
+        smoothed_servo = self.last_servo + clipped_delta
+        self.last_servo = smoothed_servo         
+        self.servo_output.publish(Float64(smoothed_servo))
+
+    def _process_servo_command(self,msg):
+        input_servo = msg.data
+        input_servo = min(max(input_servo, self.min_servo), self.max_servo)
+        self.desired_servo_position = input_servo
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        rospy.init_node(&#39;Throttle_Interpolator&#39;)
+            p = InterpolateThrottle()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>Error message:</p>
+
+<pre><code>Traceback (most recent call last):
+  File &quot;/home/renan/rostest_ws/src/boat_controller/src/throttle_interpolator.py&quot;, line 136, in &lt;module&gt;
+    p = InterpolateThrottle()
+  File &quot;/home/renan/rostest_ws/src/boat_controller/src/throttle_interpolator.py&quot;, line 28, in __init__
+    self.max_rpm_acceleration = rospy.get_param(&#39;/vesc/max_rpm_acceleration&#39;)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/client.py&quot;, line 465, in get_param
+    return _param_server[param_name] #MasterProxy does all the magic for us
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/msproxy.py&quot;, line 123, in __getitem__
+    raise KeyError(key)
+KeyError: &#39;/vesc/max_rpm_acceleration&#39;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/30864">renanmb</a> on 2018-10-10 10:17:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is anybody actually loading the parameters from <a href="https://github.com/renanmb/boat_pid_controller/blob/dde6498de58437de2fc213e104af7e0372456489/config/vesc.yaml">the yaml</a> in the parameter server? Do you have other nodes not in the repo setting them?</p>
+
+<p>If not, you could read them in?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-10 10:46:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>My other nodes loads its parameters just fine. I tried the command rosparam load and it does not work. It says the file does not exist.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30864">renanmb</a> on 2018-10-10 10:57:59 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Looking at the repo and your own comment it seems you might not be loading the parameters in this node / not running both nodes at the same time?</p>
+
+<p>Given the file a_location.yaml containing:</p>
+
+<pre><code>foo:
+  bar: [0.194717, -0.592676, 0.042564]
+</code></pre>
+
+<p>The python code to set a generic parameter in rospy should be:</p>
+
+<pre><code>#! /usr/bin/env python
+
+import yaml
+import rospy
+import rospkg
+
+
+def load_parameters():
+    rospack = rospkg.RosPack()
+    path_loc = rospack.get_path("a_pkg") + "/config/a_location.yaml"
+    with open(path_loc, 'r') as doc:
+        loc = yaml.load(doc)
+
+    x_foo_bar = loc["foo"]["bar"][0]
+    y_foo_bar = loc["foo"]["bar"][1]
+    z_foo_bar = loc["foo"]["bar"][2]
+
+    rospy.set_param("location", {'x': x_foo_bar, 'y': y_foo_bar, 'z': z_foo_bar})
+
+    # do something
+
+
+if __name__ == '__main__':
+    rospy.init_node('my_node', anonymous=True)
+    load_parameters()
+</code></pre>
+
+<p><strong>EDIT</strong>: let&#39;s redo the example for vesc.yaml</p>
+
+<pre><code>vesc:
+  max_rpm_acceleration: 0.123
+</code></pre>
+
+<pre><code>#! /usr/bin/env python
+
+import yaml
+import rospy
+import rospkg
+
+
+def load_parameters():
+    rospack = rospkg.RosPack()
+    path_loc = rospack.get_path("boat_pid_controller") + "/config/vesc.yaml"
+    with open(path_loc, 'r') as doc:
+        parameters_vesc = yaml.load(doc)
+
+    max_rpm_accel = parameters_vesc["vesc"]["max_rpm_acceleration"]
+
+    rospy.set_param("max_rpm_acceleration", max_rpm_accel)
+
+
+if __name__ == '__main__':
+    rospy.init_node('my_node', anonymous=True)
+    load_parameters()
+
+    # now that the parameters are loaded you can use them
+    p = InterpolateThrottle()
+    rospy.spin()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/37353">aPonza</a> on 2018-10-10 11:11:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>please, I would appreciate if you could provide the source of this information, so I can study it more. To be honest I did not understand anything.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30864">renanmb</a> on 2018-10-10 11:16:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I found this: <a href="http://docs.ros.org/indigo/api/rospy/html/rospy.client-pysrc.html#get_param">http://docs.ros.org/indigo/api/rospy/html/rospy.client-pysrc.html#get_param</a></p>
+
+<p>But it is pretty much what I was trying to do.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30864">renanmb</a> on 2018-10-10 13:22:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I don&#39;t understand if I answered your question. You&#39;re using kinetic, so use <a href="http://docs.ros.org/kinetic/api/rospy/html/rospy.client-pysrc.html#get_param">those docs</a>. My source is ROS projects on github, e.g. github dot com /Salman-H/pick-place-robot/kuka_arm/scripts/target_spawn.py</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-11 02:06:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You did not answer my question, because it still does not work.</p>
+
+<p>I tried to use roslaunch to set all parameter and I created this following question on stackoverflow as well: <a href="https://stackoverflow.com/questions/52764066/ros-kinetic-error-launching-parameters-cannot-marshal-none-unless-allow-none-is">https://stackoverflow.com/questions/52764066/ros-kinetic-error-launching-parameters-cannot-marshal-none-unless-allow-none-is</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30864">renanmb</a> on 2018-10-11 10:54:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I answered on stackexchange and edited this answer to provide an example that fits exactly your code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-12 02:42:01 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>I created this following question on stackoverflow as well</p>
+</blockquote>
+
+<p>why?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-10-12 04:47:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It was about the launch file, this forum was giving a server error to post another question. I also tried to use the roslaunch to avoid the KeyError.
+Thanks for the answer. They do not cite it anywhere on the wiki. So in python I basically have to make that for every parameter.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30864">renanmb</a> on 2018-10-12 05:47:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What @aPonza shows is <em>one particular way to load parameters using the Python API</em>.</p>
+
+<p>But I would just use a launch file if I were you. That is much more common, better understood and more scalable.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-10-12 05:50:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Agreed on the launch file, I arbitrarily assumed OP wanted to stay within the python code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-12 07:40:46 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

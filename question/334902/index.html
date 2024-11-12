@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Moveit control gripper instead of panda_link8 EFF - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/334902">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Moveit control gripper instead of panda_link8 EFF</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93505/moveit-control-gripper-instead-of-panda-link8-eff">https://robotics.stackexchange.com/questions/93505/moveit-control-gripper-instead-of-panda-link8-eff</a>.</p>
+        <p>I&#39;m currently trying to execute a grasp pose, which I computed using a CNN, on the Panda Emika Franka Robot using Moveit. Unfortunately, the <a href="https://github.com/ros-planning/panda_moveit_config">panda<em>moveit</em>config</a> and <a href="https://github.com/frankaemika/franka_ros">franka_ros</a> packages didn&#39;t specify the panda<em>hand link as a move</em>group end effector in their <code>urdf&#39;s/srdf&#39;s</code>. I, therefore, have to control the robot using the <code>panda_link8</code> joint instead. Based on the following topics <a href="https://answers.ros.org/question/198706/how-to-plan-moves-with-gripper-attached-to-arm/">how-to-plan-moves-with-gripper-attached-to-arm</a> and <a href="https://answers.ros.org/question/313637/openclose-end-effector-with-moveit-rviz/">openclose-end-effector-with-moveit-rviz</a>. I found two ways of solving my problem.</p>
+
+<ol>
+<li>Transform the grasp pose (using the tf2 package) in such a way that the <code>gripper centre</code> aligns with the computed grasp pose.</li>
+<li>Modify the <code>urdfs/srdf</code>provided by <a href="https://github.com/ros-planning/panda_moveit_config">panda<em>moveit</em>config</a> and <a href="https://github.com/frankaemika/franka_ros">franka_ros</a> to include an extra (virtual) link that ends in the middle of the gripper, making controlling the arm plus gripper easier. Virtual in the sense that it has no mass,  inertia, visual geometry and collision geometry.</li>
+</ol>
+
+<p><strong>UPDATE:</strong> I am currently using method 2.</p>
+
+<h1>Method 1: Use the tf2 package</h1>
+
+<p>Using the <code>tf2</code> package, I try to correct for the fact that I am planning using the <code>panda_link8</code> frame as the end effector. I do this by calculating the transformation between the <code>panda_link8</code> frame and the <code>gripper_center</code> frame (<code>trans_grip_center_p8</code>). I then transform the grasping pose which was computed initially in the <code>kinect2_rgb_optical_Frame</code> to the <code>panda_link8</code> frame. After the pose is expressed in the <code>panda_link8</code> frame I transform both the pose and the <code>trans_grip_center_p8</code> transformation message into a 4x4 homogeneous transformation matrix. I following take the inverse of the <code>trans_grip_center_p8</code>transformation matrix and multiply this with the pose. Lastly, I transform this new pose to the <code>panda_link0</code> frame, which is used as the reference frame in my move_group. Unfortunately, I did something wrong in my reasoning since using the new corrected pose (depicted in purple) the end effector still does not end up in the right pose (Depicted in blue).</p>
+
+<p><strong>What I tried:</strong>
+- Not taking the inverse.
+- Using the <code>self.tf2_buffer.transform</code> directly. And afterward setting the <code>pose.header.frame_id</code> to the old frame (Before the transform).</p>
+
+<h2>Wrong pose</h2>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15708136053734292.png" alt="image description">](/upfiles/15708151267919294.png)</p>
+
+<h2>Code</h2>
+
+<h3>Main code</h3>
+
+<pre><code>## Get transform between panda_link8 and gripper centre ##
+    try:
+        trans_grip_center_p8 = self.tf2_buffer.lookup_transform(&quot;panda_link8&quot;, &quot;gripper_center&quot;, rospy.Time(0))
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        return False
+
+    ## Get pose expressed in the panda_link8 frame ##
+    try:
+        pose_msg = self.tf2_buffer.transform(self.pose_msg, &quot;panda_link8&quot;, rospy.Duration(1))
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        return False
+
+    ## Transform grasp pose such that it aligns with the gripper_center frame ##
+    # This is needed since the move_group uses the panda_link8 frame as its
+    # end-effector.
+
+    ## Transform transformation to 4x4 homogeneous matrix ##
+    H_trans = conversions.transform_stamped_2_matrix(trans_grip_center_p8)
+    H_trans = tf_conversions.transformations.inverse_matrix(H_trans) # Use inverse to correct for planning in the wrong EEF
+    H_pose = conversions.pose_msg_stamped_2_matrix(pose_msg)
+
+    ## New Pose ##
+    pose_new = np.dot(H_trans, H_pose)
+    trans = tf_conversions.transformations.translation_from_matrix(pose_new)
+    rot = tf_conversions.transformations.quaternion_from_matrix(pose_new)
+    pose_msg.pose.position.x = trans[0]
+    pose_msg.pose.position.y = trans[1]
+    pose_msg.pose.position.z = trans[2]
+    pose_msg.pose.orientation.x = rot[0]
+    pose_msg.pose.orientation.y = rot[1]
+    pose_msg.pose.orientation.z = rot[2]
+    pose_msg.pose.orientation.w = rot[3]
+    # pose_msg = tf2_geometry_msgs.do_transform_pose(pose_msg, trans_grip_center_p8)
+
+    ## Get pose expressed in the panda_link0 frame ##
+    # Needed since the panda_link0 is the reference frame
+    # of the move group.
+    try:
+        pose_msg = self.tf2_buffer.transform(pose_msg, &quot;panda_link0&quot;, rospy.Duration(1))
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        return False
+
+    ## Display pose in panda_link0 frame ##
+    position = pose_msg.pose.position
+    orientation = pose_msg.pose.orientation
+    pose_array = [position.x, position.y, position.z, orientation.x, orientation.y, orientation.z, orientation.w]
+    rospy.logdebug(&quot;Grasp pose result in panda_link0: x={0}, y={1}, z={2}, q1={3}, q2={4}, q3={5} and q4={6}&quot;.format(*pose_array))
+
+    ## Publish transformed pose ##
+    self.pose_pub.publish(pose_msg)
+
+    ## Call grasp plan to pose service ##
+    result = self.plan_to_pose_srv(pose_msg.pose)
+
+    ## Test if successful ##
+    if result.success:
+        return True
+    else:
+        return False
+</code></pre>
+
+<h3>Used functions</h3>
+
+<pre><code>def transform_stamped_2_matrix(transform_stamped):
+    &quot;&quot;&quot;Generate 4x4 homogeneous transformation matrix from a transform_stamped msg.
+
+    Parameters
+    ----------
+    transform_stamped : geometry_msgs.msg.TransformStamped
+        Stamped transform.
+
+    Returns
+    -------
+    np.array()
+        Homogeneous 4x4 transformation matrix.
+    &quot;&quot;&quot;
+
+    ## Unpack transform stamped object ##
+    trans_obj = transform_stamped.transform.translation
+    rot_obj = transform_stamped.transform.rotation
+    trans = tf_conversions.transformations.translation_matrix(
+        [trans_obj.x, trans_obj.y, trans_obj.z])
+    rot = tf_conversions.transformations.quaternion_matrix(
+        [rot_obj.x, rot_obj.y, rot_obj.z, rot_obj.w])
+
+    ## Generate homogeneous transformation matrix ##
+    H = np.dot(trans, rot)
+
+    ## Return homogeneous transformation matrix ##
+    return H
+
+
+def pose_msg_stamped_2_matrix(pose_msg):
+    &quot;&quot;&quot;Generate 4x4 homogeneous transformation matrix from a pose_stamped msg.
+
+    Parameters
+    ----------
+    pose_msg : geometry_msgs.msgs.PoseStamped
+        Stamped pose message.
+
+    Returns
+    -------
+    np.array
+        Homogeneous 4x4 transformation matrix.
+    &quot;&quot;&quot;
+
+    ## Unpack transform stamped object ##
+    position_obj = pose_msg.pose.position
+    rot_obj = pose_msg.pose.orientation
+    trans = tf_conversions.transformations.translation_matrix(
+        [position_obj.x, position_obj.y, position_obj.z])
+    rot = tf_conversions.transformations.quaternion_matrix(
+        [rot_obj.x, rot_obj.y, rot_obj.z, rot_obj.w])
+
+    ## Generate homogeneous transformation matrix ##
+    H = np.dot(trans, rot)
+
+    ## Return homogeneous transformation matrix ##
+    return H
+</code></pre>
+
+<h1>Method 2: Modify the urdf/srdf in the franka<em>ros and panda</em>moveit_config packages</h1>
+
+<p>Add a extra <code>panda_gripper_center</code> (virtual) link to the <code>urdfs/srdf</code>provided by <a href="https://github.com/rickstaa/panda_moveit_config/commit/dbdc71657fb9c7294ca7df4ffc76cac332a58f97">panda<em>moveit</em>config</a> and <a href="https://github.com/rickstaa/franka_ros/commit/8512aeb067302816e22e4e0cff446434016d6293">franka_ros</a>. Following, in my <a href="https://github.com/rickstaa/panda_autograsp/blob/dbc552588c89fc511c9199e02ceb9a6fb3060b32/panda_autograsp/src/panda_autograsp/moveit_planner_server_ros.py#L110">control script</a> I set the movegroup end effector to this new (virtual) link.</p>
+
+<h2>Additional info</h2>
+
+<h3>Launch File</h3>
+
+<p>To start the robot I use the <code>demo.launch</code> file provided by the <a href="https://github.com/ros-planning/panda_moveit_config">panda<em>moveit</em>config</a>.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2019-10-08 10:56:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<pre><code>quat_pose = Quaternion(pose_msg.pose.orientation.w, pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z)
+</code></pre>
+</blockquote>
+
+<p>What sort of <code>Quaternion</code> is that? Eigen?</p>
+
+<blockquote>
+<p>Unfortunately, the panda_moveit_config and franka_ros packages didn&#39;t specify the panda_hand link as a move_group end effector in their urdf&#39;s/srdf&#39;s. I, therefore, have to</p>
+</blockquote>
+
+<p>why do you &quot;have to&quot;? I&#39;m not saying it&#39;s going to necessarily solve everything for you, but this is open-source. Clone the sources and add the end-effector to the moveit configuration.</p>
+
+<p>And can&#39;t you use <code>doTransform(..)</code> instead of manually transforming the <code>Pose</code> object? See #q261419 fi and the <a href="http://wiki.ros.org/tf2/Tutorials/Using%20stamped%20datatypes%20with%20tf2%3A%3AMessageFilter">linked tutorial</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-10-08 11:50:10 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>What sort of Quaternion is that? Eigen?</p>
+</blockquote>
+
+<p>Ah ofcourse, sorry. It is the Quaternion class of the <a href="https://kieranwynn.github.io/pyquaternion/">pyquaternion package</a>. I also tried it with the <code>tf_conversions</code> package:</p>
+
+<pre><code>quat_old = [pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w]
+quat_diff = [trans_p8_grip_center.transform.rotation.x, trans_p8_grip_center.transform.rotation.y, trans_p8_grip_center.transform.rotation.z, trans_p8_grip_center.transform.rotation.w]
+quat = tf_conversions.transformations.quaternion_multiply(quat_diff, quat_old)
+</code></pre>
+
+<p>but as expected this gives me the same result.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2019-10-08 12:46:23 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>why do you &quot;have to&quot;?</p>
+</blockquote>
+
+<p>Your right, sorry for that, I could have said that differently. I tried changing the <code>urdfs</code> and <code>srdfs</code>, but I resorted to the second method since I ran into some problems. I will first reference the sources you send me thanks a lot!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2019-10-08 12:50:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>With all your edits I&#39;m no longer sure you weren&#39;t already using <code>tf2_geometry_msgs.do_transform_pose(..)</code>. If so: sorry for the noise.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-10-08 13:35:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn No, thank you for your reply! I was updating the original code using the suggestions you made as the manual transform could indeed be replaced by `tf2_geometry_msgs.do_transform_pose(). But had to leave in the middle of it. Sorry for the confusion. The new code already gives the right EFF pose in some cases (See updated answer). I, therefore, think to start there was an error in the way I handled the quaternions.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2019-10-08 14:25:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn I managed to fix my problem by adding an extra virtual joint to the <code>urdf</code> and <code>srds</code> in the <a href="https://github.com/ros-planning/panda_moveit_config">panda_moveit_config</a> and <a href="https://github.com/frankaemika/franka_ros">franka_ros</a>. I am, however curious what goes wrong with my reasoning while using the tf2 library to correct for the fact that I am not planning in the <code>panda_gripper_center</code> frame but the <code>panda_link8</code> frame. I updated my question to depict my reasoning. Let me know if you see some immediate flaws in my reasoning. Otherwise, I will open a new ticket in the future if needed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2019-10-11 12:20:18 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In the end, I fixed my issue by using <strong>method 2</strong>. After changing the <code>urdf</code> and <code>srdf</code> files of <a href="https://github.com/ros-planning/panda_moveit_config">panda_moveit_config</a> and <a href="https://github.com/frankaemika/franka_ros">franka_ros</a> packages as was suggested by @gvdhoorn, I was able to plan for the gripper_center. The changes I made can be found on the following branches:</p>
+
+<ul>
+<li><a href="https://github.com/rickstaa/franka_ros/tree/add_gripper_center_link">rickstaa/franka_ros/tree/melodic-devel-panda_autograsp</a></li>
+<li><a href="https://github.com/rickstaa/panda_moveit_config/tree/add_virtual_gripper">rickstaa/panda_moveit_config/tree/melodic-devel-panda_autograsp</a></li>
+</ul>
+
+<p>With these changes one can now control the gripper relative to the end effector by setting the <code>move_group</code> end effector link to <code>panda_gripper_center</code>.</p>
+
+<pre><code>move_group = self.robot.get_group(&quot;panda_arm&quot;)
+move_group.set_end_effector_link(&quot;panda_gripper_center&quot;)
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40372">rickstaa</a> on 2019-10-11 12:13:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I had this problem in 2018 and solved it via what you call method 1. However, I&#39;m now trying to use the second way for an unrelated thing and looking through the changes in both files I can see you didn&#39;t really add <code>hand</code> as an end effector, because that was already the case. You added <code>gripper_center</code> and <code>gripper_center_xyz</code> as a link in the hand. This is different than using the tf2 frame called <code>panda_K</code>, the center of the internal cartesian impedance, which the franka emika team provides, because it&#39;s not set at runtime. Are you still using this method or did you manage to use the runtime change?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2020-02-07 11:21:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@aPonza Your correct, that is precisely what I did in the end and what I am still using now (see <a href="https://github.com/rickstaa/franka_ros/commits/melodic-devel-panda_autograsp">most recent version of my project</a>). I first added an extra <code>panda_gripper_center</code> (virtual) link to the <code>urdfs/srdf</code>provided by <a href="https://github.com/rickstaa/panda_moveit_config/commit/dbdc71657fb9c7294ca7df4ffc76cac332a58f97">panda_moveit_config</a> and <a href="https://github.com/rickstaa/franka_ros/commit/8512aeb067302816e22e4e0cff446434016d6293">franka_ros</a>. Following, in my <a href="https://github.com/rickstaa/panda_autograsp/blob/dbc552588c89fc511c9199e02ceb9a6fb3060b32/panda_autograsp/src/panda_autograsp/moveit_planner_server_ros.py#L110">control script</a> I set the movegroup end effector to this new (virtual) link. I did not yet try the runtime change you describe above. I updated the original question a little bit to make it more clear.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2020-02-18 03:00:55 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

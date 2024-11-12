@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS Navigation. Global Costmap clears obstacles behind robot. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/258668">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS Navigation. Global Costmap clears obstacles behind robot.</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80054/ros-navigation-global-costmap-clears-obstacles-behind-robot">https://robotics.stackexchange.com/questions/80054/ros-navigation-global-costmap-clears-obstacles-behind-robot</a>.</p>
+        <p>Hello!</p>
+
+<p>So I am starting out in ROS 2D navigation (with RTABMap), and I have managed to create a database, saving it, and then have the turtlebot navigate on it (following the RTABMap navigation demo). I am using an Astra camera (following the 3dsensor.launch with the Astra SDK), and using the depthimage<em>to</em>laserscan to produce a scan topic.</p>
+
+<p>Now, when I add a new obstacle in front of the camera, the global costmap updates and shows the area as an obstacle, wherever I place them, this is working fine. The problem is, that when I rotate the robot and it can no longer see the obstacle, the global costmap immediately updates and clears the obstacle from the map.</p>
+
+<p>I have tried reading the navigation stack documentation, and I thought that raytracing only clears obstacles if the laserscanner sees that there&#39;s an unblocked view on where the obstacle used to be. It seems that it is just clearing any obstacle that is no longer in the laser scanner field of view.</p>
+
+<p>I also tried going through the forum, but all the questions I could find were referring to actually clearing the obstacle (while my problem is that they are clearing when they shouldn&#39;t). Seems that the problem for most people is that the obstacles do not clear.</p>
+
+<p>The problem I am having is:</p>
+
+<ol>
+<li>The global costmap clears any obstacle that it cannot see, even if the obstacle is outside of the field of view of the laser scanner.</li>
+</ol>
+
+<p>Could someone provide me with some pointers to fix this? I tried changing the costmap_params (common, global), but the obstacles keep clearing.</p>
+
+<p>This is my costmap<em>common</em>params.yaml</p>
+
+<pre><code>max_obstacle_height: 0.60  # assume something like an arm is mounted on top of the robot
+
+# Obstacle Cost Shaping (http://wiki.ros.org/costmap_2d/hydro/inflation)
+robot_radius: 0.20  # distance a circular robot should be clear of the obstacle (kobuki: 0.18)
+# footprint: [[x0, y0], [x1, y1], ... [xn, yn]]  # if the robot is not circular
+
+map_type: voxel
+
+obstacle_layer:
+  enabled:              true
+  max_obstacle_height:  0.6
+  origin_z:             0.0
+  z_resolution:         0.2
+  z_voxels:             2
+  unknown_threshold:    15
+  mark_threshold:       0
+  combination_method:   1
+  track_unknown_space:  true    #true needed for disabling global path planning through unknown space
+  obstacle_range: 2.5
+  raytrace_range: 3.0
+  origin_z: 0.0
+  z_resolution: 0.2
+  z_voxels: 2
+  publish_voxel_map: false
+  observation_sources: bump
+  bump:
+    data_type: PointCloud2
+    topic: mobile_base/sensors/bumper_pointcloud
+    marking: true
+    clearing: false
+    min_obstacle_height: 0.0
+    max_obstacle_height: 0.15
+  # for debugging only, let&#39;s you see the entire voxel grid
+
+#cost_scaling_factor and inflation_radius were now moved to the inflation_layer ns
+inflation_layer:
+  enabled:              true
+  cost_scaling_factor:  5.0  # exponential rate at which the obstacle cost drops off (default: 10)
+  inflation_radius:     0.5  # max. distance from an obstacle at which costs are incurred for planning paths.
+
+static_layer:
+  enabled:              true
+</code></pre>
+
+<p>Thank you!</p>
+
+<p>EDIT1:
+So one of the problems was that I had not added the obstacle layer definition in the global<em>costmap</em>params.yaml.
+I changed it to this and it is now partly working:</p>
+
+<pre><code>global_costmap:
+   global_frame: /map
+   robot_base_frame: /base_footprint
+   update_frequency: 1.0
+   publish_frequency: 0.5
+   static_map: true
+   transform_tolerance: 0.5
+   plugins:
+     - {name: static_layer,            type: &quot;rtabmap_ros::StaticLayer&quot;}
+     - {name: obstacle_layer,          type: &quot;costmap_2d::VoxelLayer&quot;}
+     - {name: inflation_layer,         type: &quot;costmap_2d::InflationLayer&quot;}
+   obstacle_layer:
+      observation_sources: base_scan
+      base_scan: {data_type: LaserScan, sensor_frame: /camera_depth_frame, clearing: true, marking: true, topic: /scan}
+</code></pre>
+
+<p>This prevents the global costmap from clearing with NULL values.
+However, when the robot rotates 180 degrees, the obstacles behind also clear. Rotations under 90 degrees away from the obstacle do not cause the obstacles to clear.
+Is there any way around this?</p>
+
+<p>Here is the strangest thing. If I cover the sensor with my hand (causing NULL values), then rotating the robot 180 degrees does not clear the global costmap...
+Another weird thing is that if I set clearing to FALSE, the obstacles never clear in front, but it still clears the obstacles in the global costmap BEHIND the robot!
+What&#39;s going on!?</p>
+
+<p>EDIT2: The local costmap does work as expected (when adding the obstacle layer). I.e., it clears obstacles in front when they disappear, and keeps obstacles even when the camera is facing 180 degrees. I just want to have the same clearing/marking ability with the global costmap; I want the same because once in a while the robot gets stuck under very specific scenarios that we are testing.</p>
+
+<pre><code>local_costmap:
+   global_frame: odom
+   robot_base_frame: /base_footprint
+   update_frequency: 5.0
+   publish_frequency: 2.0
+   static_map: false
+   rolling_window: true
+   width: 4.0
+   height: 4.0
+   resolution: 0.05
+   transform_tolerance: 0.5
+   plugins:
+    - {name: obstacle_layer,      type: &quot;costmap_2d::VoxelLayer&quot;}
+    - {name: inflation_layer,     type: &quot;costmap_2d::InflationLayer&quot;}
+   obstacle_layer:
+      observation_sources: base_scan
+      base_scan: {data_type: LaserScan, sensor_frame: /camera_depth_frame, clearing: true, marking: true, topic: /scan}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-05 23:12:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>The problem seems to be on rtabmap side. Can you update your question with which version are you using (Indigo/Kinetic/source)? Can you show a screenshot of the map? Without the obstacle_layer, the obstacle should also stay in the global map. Maybe related to <a href="https://goo.gl/1VMX5A">https://goo.gl/1VMX5A</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20914">matlabbe</a> on 2017-04-06 08:10:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Dear matlabbe,</p>
+
+<p>I am using Ubuntu 16.04 with ros kinetic. Rtabmap (and rtabmap ros) was compiled from source from the github code.
+Unfortunately, I will not have access to screenshots until next week. It looks like a perfectly normal map (no weird arc behind like in the link).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-06 10:26:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Except that obstacles disappear when the robot is facing the opposite way from the obstacle.
+The screenshot would be similar to my previous [fixed] question here:
+ <a href="http://official-rtab-map-forum.67519.x6.nabble.com/Turtlebot-RTABMap-Demo-Path-through-Obstacle-td2905.html">http://official-rtab-map-forum.67519.x6.nabble.com/Turtlebot-RTABMap-Demo-Path-through-Obstacle-td2905.html</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-06 10:28:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It may be worth noting that this happens during localization mode. When I just want to navigate the map, and create new obstacles as I navigate a known map.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-06 10:30:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I will check next week by trying the flip_scan parameter set to true!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-06 10:55:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Also worth noting: without the obstacle layer added on the first EDIT, NULL laser scan topic values would clear any obstacles. E.g., an obstacle is added, costmap shows, I block the camera with my hand (without moving the robot) causing the topic to be null, and the costmap would clear the obstacle.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-06 11:05:12 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Dear Matlabbe,</p>
+
+<p>Thank you for your answer! I was able to fix it by setting:</p>
+
+<pre><code>&lt;node pkg=&quot;rtabmap_ros&quot; type=&quot;rtabmap&quot; name=&quot;rtabmap&quot;&gt;
+    &lt;param name=&quot;map_negative_poses_ignored&quot; type=&quot;bool&quot; value=&quot;true&quot;/&gt;
+    (...)
+&lt;/node&gt;
+</code></pre>
+
+<p>This way, the obstacles behind the robot no longer disappear (Ubuntu 16.04, ROS Kinetic, Rtabmap compiled from Source Feb 2017).</p>
+
+<p>Sadly, the &quot;better fix&quot; with:</p>
+
+<pre><code>&lt;node pkg=&quot;rtabmap_ros&quot; type=&quot;rtabmap&quot; name=&quot;rtabmap&quot;&gt;
+    &lt;param name=&quot;flip_scan&quot; type=&quot;bool&quot; value=&quot;true&quot;/&gt;
+    (...)
+&lt;/node&gt;
+</code></pre>
+
+<p>Did not work. Do you have any idea why?</p>
+
+<p>Thanks!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29270">enthusiast-robotics</a> on 2017-04-11 20:22:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

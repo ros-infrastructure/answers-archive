@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>std::ofstream - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10367">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>std::ofstream</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/32487/ros-answers-se-migration-stdofstream">https://robotics.stackexchange.com/questions/32487/ros-answers-se-migration-stdofstream</a>.</p>
+        <p>Hello everybody,</p>
+
+<p>I have a question regarding ROS launch files and writing a file using the standard library ofstream.</p>
+
+<p>I wrote a program that uses a camera. I want to store the runtime of some operations for further analysis and I put this data in a matrix made of standard vectors. Except for the writing of the files, everything works perfectly.</p>
+
+<p>When I load the parameters using &quot;rosparam load&quot; and then start my software using &quot;rosrun&quot;, everything works fine.</p>
+
+<p>If I start all the programs using a launch file, the file won&#39;t be neither created nor written to if it already exists. There is no problem with the file opening. And everything was working on Cturtle.</p>
+
+<p>What might be the problem?</p>
+
+<p>Thank you in advance</p>
+
+<p>Francesco</p>
+
+<p>Code:</p>
+
+<pre><code>#include &lt;std_msgs/Time.h&gt;  // ros::Time for the calculation of the ball detection runtime
+#include &lt;geometry_msgs/PointStamped.h&gt; // message type used for the communication with the OROCOS component
+#include &lt;std_msgs/Float32.h&gt; // message type used for publishing the runtime
+#include &lt;ros/ros.h&gt; // ros headers
+#include &lt;sensor_msgs/image_encodings.h&gt; // message type used for the CvBridge
+#include &lt;image_transport/image_transport.h&gt; // subscribe to and publish images
+#include &lt;cv_bridge/cv_bridge.h&gt; // convert from ROS image to opencv image
+#include &lt;opencv2/imgproc/imgproc.hpp&gt; // opencv headers
+#include &lt;opencv2/highgui/highgui.hpp&gt; // opencv headers
+// headers for storing the operation runtimes in a file
+#include &lt;vector&gt;
+#include &lt;iostream&gt;
+#include &lt;fstream&gt;
+#include &lt;CMgreenBallDetector.hpp&gt; // Ball detector header
+
+namespace enc = sensor_msgs::image_encodings;
+
+CMgreenBallDetector::CMgreenBallDetector (ros::NodeHandle &amp;n):
+                n_(n),
+                it_(n),
+                it2_(n),
+                it3_(n)
+{
+    // Set the variables to publish or not publish certain topics (0: not publish, another int: publish)
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/detectedBall&quot;, pub[0]);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/algorithmRuntime&quot;, pub[1]);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/thresholded&quot;, pub[2]);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/dilated&quot;, pub[3]);
+
+    if (pub[0] != 0)
+    {
+        // advertise a topic for the detected ball image
+        image_pub_ = it_.advertise (&quot;CMgreen_ball_detected&quot;, 1);
+    }
+
+    if (pub[2] != 0)
+    {
+        // advertise a topic for the thresholded image
+        image_pub2_ = it2_.advertise (&quot;thresholded&quot;, 1);
+    }
+
+    if (pub[3] != 0)
+    {
+        // advertise a topic for the dilated image
+        image_pub3_ = it3_.advertise (&quot;dilated&quot;, 1);
+    }
+
+    // subscribe to the color image topic delivered by the camera in order to detect the ball in it
+    image_sub_ = it_.subscribe (&quot;/camera/image_color&quot;, 1, &amp;CMgreenBallDetector::detectionCallback, this);
+
+    // advertise a topic for the data of the detected ball, i.e. ball center coordinates, ball radius and timestamp
+    pub_ball = n.advertise&lt;geometry_msgs::PointStamped&gt; (&quot;CMgreen_ball_data&quot;, 1);
+
+    if (pub[1] != 0)
+    {
+        // advertise a topic for the runtime
+        pub_runtime = n.advertise&lt;std_msgs::Float32&gt; (&quot;CMgbd_runtime&quot;, 1);
+    }
+
+    // Read the parameters from the parameter server
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/h_min&quot;, h_min);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/h_max&quot;, h_max);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/s_min&quot;, s_min);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/s_max&quot;, s_max);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/v_min&quot;, v_min);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/v_max&quot;, v_max);
+
+    // Define the ranges for the color filtering in the HSV color space
+    // green ball
+    hsv_min = cv::Scalar_&lt;double&gt;(h_min, s_min, v_min, 0);
+    hsv_max = cv::Scalar_&lt;double&gt;(h_max, s_max, v_max, 0);
+
+    // Get the camera resolution parameters
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/width&quot;, width);
+    this-&gt;n_.getParam (&quot;/CMgreenBallDetector/height&quot;, height);
+
+    // Set the size of the image
+    size = cv::Size_&lt;int&gt; (width, height);
+
+    hsv_img.create (size, CV_8UC3);
+    thresholded.create (size, CV_8UC1);
+    eroded.create (size, CV_8UC1);
+    dilated.create (size, CV_8UC1);
+
+    // initialize the count
+    count = 0;
+}
+
+// function called every time an image from the subscribed topic arrives
+void CMgreenBallDetector::detectionCallback (const sensor_msgs::ImageConstPtr&amp; msg)
+{
+    // grow the count
+    count++;
+
+    if (pub[1] != 0)
+    {
+        launch = ros::Time::now(); // get the time
+    }
+
+    //      img = NULL; // initialize the pointer to the image that will be read
+
+    start = ros::Time::now (); // get the time
+    // Convert image from ROS to opencv type
+    cv_bridge::CvImagePtr img_ptr;
+    try
+    {
+        img_ptr = cv_bridge::toCvCopy(msg, enc::BGR8);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+        ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+        return;
+    }
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+
+    start = ros::Time::now (); // get the time
+    // convert the image from BGR to HSV color space
+    cv::cvtColor (img_ptr-&gt;image, hsv_img, CV_BGR2HSV);
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    start = ros::Time::now (); // get the time
+    // thresholding of the image. Check if the image color values lie between the interval [hsv_min, hsv_max]. If yes, put a white pixel
+    // at the corresponding point in the thresholded image. If not, put a black pixel in there.
+    cv::inRange (hsv_img, hsv_min, hsv_max, thresholded);
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    start = ros::Time::now (); // get the time
+    // Erosion of the thresholded image, to remove the noise
+    cv::erode (thresholded, eroded, cv::Mat (), cv::Point (-1, -1), 1, cv::BORDER_CONSTANT, cv::morphologyDefaultBorderValue());
+    // Dilation of the image, to get back to the original size
+    cv::dilate (eroded, dilated, cv::Mat (), cv::Point (-1, -1), 1, cv::BORDER_CONSTANT, cv::morphologyDefaultBorderValue());
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    start = ros::Time::now (); // get the time
+    // calculate the white area of the thresholded image
+    sum = 0.0; // initialize the area
+    // Initialize variables for the calculation of the moments
+    sum_i = 0.0;
+    sum_j = 0.0;
+    for (int i = 0; i &lt; dilated.cols; i++)
+    {
+        for (int j = 0; j &lt; dilated.rows; j++)
+        {
+            tempPixelValue = dilated.data + dilated.step[0] * j + dilated.step[1] * i;
+            if (*tempPixelValue == (uchar)255) {
+                sum = sum + (double)(*tempPixelValue);
+                sum_i = sum_i + (double)i;
+                sum_j = sum_j + (double)j;
+            }
+        }
+    }
+
+    x_c = (double)255 * sum_i / sum;
+    y_c = (double)255 * sum_j / sum;
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    done = ros::Time::now(); // get the time
+    runtime = done.toNSec() - launch.toNSec(); // calculate the ball detection runtime
+
+    start = ros::Time::now (); // get the time
+    if (pub[1] != 0)
+    {
+        // publish the runtime
+        msg_runtime.data = runtime;
+        pub_runtime.publish (msg_runtime);
+
+        // give out some information about the detected ball
+        ROS_INFO (&quot;(%lf) Ball found in %lf s: x = %lf, y = %lf\n\r&quot;, (double)msg-&gt;header.stamp.toNSec (), runtime, x_c, y_c);
+    }
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    // if the white pixel area is big enough (so if the ball is assumed to be in the image)
+    if (sum &gt; (double)(500.0 * 255.0))
+    {
+        numOps = 10;
+
+        start = ros::Time::now (); // get the time
+        // put the needed data into the message
+        msg_ball.point.x = x_c;
+        msg_ball.point.y = y_c;
+        msg_ball.point.z = 0.0;
+        msg_ball.header.stamp = msg-&gt;header.stamp;
+        pub_ball.publish (msg_ball); // publish the message
+        end = ros::Time::now (); // get the time
+        // put the runtime in a vector
+        tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+        start = ros::Time::now (); // get the time
+        if (pub[0] != 0)
+        {
+            // Draw the ball center on the image
+            cv::circle (img_ptr-&gt;image, cv::Point (x_c, y_c), 3, cv::Scalar (0, 0, 255), -1, 8, 0);
+
+            // publish the image with the detected ball
+            image_pub_.publish(img_ptr-&gt;toImageMsg());
+        }
+        end = ros::Time::now (); // get the time
+        // put the runtime in a vector
+        tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+    }
+    else // else
+    {
+        numOps = 9;
+
+        start = ros::Time::now (); // get the time
+        if (pub[0] != 0) {
+            // publish the color image
+            image_pub_.publish(img_ptr-&gt;toImageMsg());
+        }
+        end = ros::Time::now (); // get the time
+        // put the runtime in a vector
+        tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+    }
+
+    start = ros::Time::now (); // get the time
+    if (pub[2] != 0)
+    {
+        // publish the thresholded image
+        thresholdedROS.header = img_ptr-&gt;header;
+        thresholdedROS.encoding = &quot;mono8&quot;;
+        thresholdedROS.image = thresholded;
+        image_pub2_.publish (thresholdedROS.toImageMsg ());
+    }
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    start = ros::Time::now (); //get the time
+    if (pub[3] != 0)
+    {
+        // publish the dilated image
+        dilatedROS.header = img_ptr-&gt;header;
+        dilatedROS.encoding = &quot;mono8&quot;;
+        dilatedROS.image = dilated;
+        image_pub3_.publish (dilatedROS.toImageMsg ());
+    }
+    end = ros::Time::now (); // get the time
+    // put the runtime in a vector
+    tempVector.push_back ((double)(end.toNSec () - start.toNSec ()));
+
+    timeOps.push_back (tempVector); // push the operation runtimes of this time step into a vector
+    tempVector.clear (); // clear the temporary vector
+
+
+    // Store the operation runtimes to a file
+    if (count == 500)
+    {
+        std::ofstream runtimeFile;
+        runtimeFile.open (&quot;cmg_operations_runtime.txt&quot;, std::ios::trunc);
+
+        if (!runtimeFile)
+        {
+            std::cout &lt;&lt; &quot;cmg_operations_runtime.txt could not be opened.&quot;;
+        }
+
+        for (int i = 0; i &lt; count; i++)
+        {
+            tempVector = timeOps[i];
+            for (int j = 0; j &lt; numOps; j++)
+            {
+                runtimeFile &lt;&lt; tempVector[j] &lt;&lt; &quot;;\t&quot;;
+            }
+            runtimeFile &lt;&lt; &quot;\n&quot;;
+            tempVector.clear ();
+        }
+        runtimeFile.close ();
+
+        std::cout &lt;&lt; &quot;Runtime data stored.&quot; &lt;&lt; std::endl;
+    }
+}
+
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;CMgreenBallDetector&quot;); // initialize the CMgreenBallDetector node
+
+    ros::NodeHandle n; // declare a node handle
+
+    CMgreenBallDetector CMgbd (n); // start the ball detector node with the node handle n
+
+    ros::spin(); // wait for callbacks until the node is destroyed
+
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/741">frferrara</a> on 2011-06-22 20:22:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You are writing a file to the current working directory. roslaunch changes that. Look in your .ros directory. You should find the file there.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2011-06-22 22:12:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks a lot! It was there!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/741">frferrara</a> on 2011-06-22 23:45:36 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

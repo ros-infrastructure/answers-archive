@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Integrating transmissions in ros_control using URDF - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/314182">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Integrating transmissions in ros_control using URDF</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/90297/integrating-transmissions-in-ros-control-using-urdf">https://robotics.stackexchange.com/questions/90297/integrating-transmissions-in-ros-control-using-urdf</a>.</p>
+        <p>We are using ros<em>control for controlling the arms of our robot (seven joints and seven actuators, simple transmission). However while launching the hardware</em>interface(along with the transmissions) node, it crashes. We have the hardware_interface working perfectly fine. </p>
+
+<p>I just want to know the best practice for implementing the transmissions using the TransmissionInterfaceLoader. Is there a working example somewhere ?</p>
+
+<p>Currently, for the transmissions we are following this <a href="https://answers.ros.org/question/202345/how-to-integrate-transmission-into-robothw/">procedure</a>. I think there is something wrong in the ActuatorToJointStateHandle(transmission<em>names, transmission, actuator</em>state<em>data, joint</em>state_data) in our case.</p>
+
+<p>Another question that I have is, if we are using the URDF for populating the interfaces, why do we still need to manually populate the actuator interfaces as well as the actuator and transmission names. Is there any example for the same ? </p>
+
+        <div class="owner"><p>Asked by <a href="/users/39742">RLaha</a> on 2019-01-30 03:10:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Let me share my experience about using the TransmissionInterfaceLoader. First, let me talk about the <strong>handles</strong>. For each joint or actuator, there are two handles directly related to them. One is the state handle which stores the states (position, vel, effort), and the type is JointStateHandle or ActuatorStateHandle. The other is the command handle, which has getCommand() and setCommand() methods, and the type is JointHandle or ActuatorHandle. </p>
+
+<p>For the <strong>TransmissionInterfaceLoader</strong>, it reads the URDF file and automatically creates the Actuator command (only)  interface, the Joint state/command interface, and the state/command transmissions, and all the related handles of course.</p>
+
+<p><strong>Usage:</strong> As users, we <strong>only</strong> need to manually create the <strong>ActuatorStateHandle</strong> for each actuator and the <strong>ActuatorStateInterface</strong>. And populate it using registerInterface() function to the RobotHW. Then the TransmissionInterfaceLoader will load other interfaces for us. </p>
+
+<p><strong>Note</strong>: We can manually populate the Actuator command interfaces and Joint command interfaces, although not required. But <strong>DO NOT</strong> populate a <strong>JointStateInterface</strong>. It will cause error (at least in Kinetic). <a href="https://github.com/ros-controls/ros_control/issues/260">Link</a> here. </p>
+
+<p>The reason for manually populating the actuator state interfaces is (in my understanding): in the RobotHW, we need to implement the method to get actuator states from the hardware. With the manually created actuator state handles, we can manually update the data linked to the state handles. And that is the only way to set the states of a state handle. </p>
+
+<p>About your questions. I cannot answer your first one due to lack of information. About your second question, we only need to populate the actuator state interface using the actuator names. The reason for this is explained above. The other interfaces optional (except JointStateInterface will cause error). </p>
+
+<p>I&#39;m attaching my miniature code here for someone who wants to use the TransmissionInterfaceLoader. It is incomplete, and some variable declarations may be missing.</p>
+
+<p>Header:</p>
+
+<pre><code>class PhenobotHW : public hardware_interface::RobotHW
+{
+public:
+    /**
+    * Create hardware instance, and read parameters
+    */
+    PhenobotHW(ros::NodeHandle nh, ros::NodeHandle private_nh, double target_control_freq);
+
+    // Connect hardware, initialize hardware interface functionalities. 
+    bool initializeHardware();
+
+    void updateJointsFromHardware();
+    void writeCommandsToHardware();
+private:
+    // Register Actuator interfaces with the RobotHW interface manager, for transmissions
+    void registerActuatorInterfaces();
+
+    // Load transmission information from URDF
+    bool loadTransmissions();
+   // ROS Control Actuator interfaces
+    hardware_interface::ActuatorStateInterface act_state_interface_;
+    hardware_interface::VelocityActuatorInterface velocity_act_interface_;  // Optional
+    // Transmission interfaces
+    transmission_interface::RobotTransmissions transmissions_;
+    transmission_interface::ActuatorToJointStateInterface* p_act_to_jnt_stat_;     // For Joint states
+    transmission_interface::JointToActuatorVelocityInterface* p_jnt_to_act_vel_;   // For velocity commands
+
+    /**
+    * Joint structure that is hooked to ros_control&#39;s InterfaceManager, to allow control via the controllers
+    */
+    struct Joint
+    {
+      double position;
+      double velocity;
+      double effort;
+      double command;
+
+      Joint() :
+        position(0), velocity(0), effort(0), command(0)
+      { }
+    }; 
+    Joint actuators_[3]; 
+}
+</code></pre>
+
+<p>Source:</p>
+
+<pre><code>PhenobotHW::PhenobotHW(ros::NodeHandle nh, ros::NodeHandle private_nh, double target_control_freq)
+    :
+    nh_(nh),
+    private_nh_(private_nh)
+{}
+
+bool PhenobotHW::initializeHardware()
+{
+  // Register interfaces with the RobotHW interface manager, allowing ros_control operation
+  registerActuatorInterfaces();
+  // Load transmission information from URDF
+  loadTransmissions();
+  return true;
+}
+
+ /**
+  * Register Joint interfaces with the RobotHW interface manager, for transmissions
+  */
+  void PhenobotHW::registerActuatorInterfaces()
+  {
+    using namespace hardware_interface;
+    // Head wheel actuator
+    ActuatorStateHandle act_state_handle_head(&quot;head_wheel_motor&quot;,
+                    &amp;actuators_[0].position, &amp;actuators_[0].velocity, &amp;actuators_[0].effort);
+    act_state_interface_.registerHandle(act_state_handle_head);
+
+    // Command handles are optional
+    ActuatorHandle act_handle_head(
+                    act_state_handle_head, &amp;actuators_[0].command);
+    velocity_act_interface_.registerHandle(act_handle_head);
+
+    // Register the actuator interfaces to the hardware interface
+    registerInterface(&amp;act_state_interface_);
+    registerInterface(&amp;velocity_act_interface_);//Again, optional
+  }
+
+/**
+* Load transmission information from URDF, this follows the API document page of TransmissionInterfaceLoader
+**/
+bool PhenobotHW::loadTransmissions()
+{
+  using namespace transmission_interface;
+  // Initialize transmission loader
+  try
+  {
+    transmission_loader_.reset(new TransmissionInterfaceLoader(this, &amp;transmissions_));
+  }
+  catch(const std::invalid_argument&amp; ex)
+  {
+    ROS_ERROR_STREAM(&quot;Failed to create transmission interface loader. &quot; &lt;&lt; ex.what());
+    return false;
+  }
+  catch(const pluginlib::LibraryLoadException&amp; ex)
+  {
+    ROS_ERROR_STREAM(&quot;Failed to create transmission interface loader. &quot; &lt;&lt; ex.what());
+    return false;
+  }
+  catch(...)
+  {
+    ROS_ERROR_STREAM(&quot;Failed to create transmission interface loader. &quot;);
+    return false;
+  } 
+
+  // Parse robot description
+  const std::string model_param_name = &quot;robot_description&quot;;
+  bool res = nh_.hasParam(model_param_name);
+  std::string robot_description = &quot;&quot;;
+  if (!res || !nh_.getParam(model_param_name, robot_description))
+  {
+    ROS_ERROR(&quot;Robot descripion couldn&#39;t be retrieved from param server.&quot;);
+    return false;
+  }
+
+  // Perform actual transmission loading
+  if (!transmission_loader_-&gt;load(robot_description)) {return false;}
+
+  ROS_INFO(&quot;Loaded transmissions from URDF&quot;);
+
+  // Get the transmission interfaces
+  p_act_to_jnt_stat_ = transmissions_.get&lt;ActuatorToJointStateInterface&gt;();
+  p_jnt_to_act_vel_ = transmissions_.get&lt;JointToActuatorVelocityInterface&gt;();
+  // Get the actuator command handle if needed
+  head_motor_handle_ = velocity_act_interface_.getHandle(&quot;head_wheel_motor&quot;);
+  return true;
+}
+
+/**
+* Pull latest speed and travel measurements from MCU, and store in joint structure for ros_control
+*/
+void PhenobotHW::updateJointsFromHardware()
+{
+  // TODO: Read status from the RoboteqController
+  // Testing routine now. 
+  // Set front wheel actuator states
+  actuators_[0].position = 100;
+  actuators_[0].velocity = 110;
+  actuators_[0].effort = 120;
+  // Propagate to joint spaces
+  p_act_to_jnt_stat_-&gt;propagate();
+  // ** The corresponding JointStateHandle will be updated. Use jointhandle.getPosition() to get the positon.
+}
+
+/**
+* Get latest velocity commands from ros_control via joint structure, and send to MCU
+*/
+void PhenobotHW::writeCommandsToHardware()
+{
+  // Use the data modified by Handle::setCommand()
+  // Propagate to actuator commands
+  p_jnt_to_act_vel_-&gt;propagate();
+
+  // get the actuator commands
+  double head_act_command = actuators_[0].command;
+   // Or use handle to get the actuator command
+  double head_act_command = head_motor_handle_.getCommand();
+  // TODO: Write to the controller
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40266">skyofyao@gmail.com</a> on 2019-07-14 01:10:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

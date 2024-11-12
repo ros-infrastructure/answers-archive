@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>PoseArray receiving data, not displaying in RViz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/189041">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>PoseArray receiving data, not displaying in RViz</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/61524/posearray-receiving-data-not-displaying-in-rviz">https://robotics.stackexchange.com/questions/61524/posearray-receiving-data-not-displaying-in-rviz</a>.</p>
+        <p>I am constructing a PoseArray message with a number of orientations (not from a sensor) and sending it to display on RViz. using <code>rostopic echo /poseArrayTopic</code>, I see that all the messages are being received and has the correct values.</p>
+
+<p>I believe the header is the issue, I have tried the following:
+ <code>poseArray.header.stamp = cloud-&gt;header.stamp;</code>
+<code>poseArray.header.frame_id = &quot;/map&quot;;</code>, running the code with/without specifying a fixed frame, setting the stamp to <code>ros::Time::now()</code>, none of which seemed to work.</p>
+
+<p>Anyone got an idea?</p>
+
+<p>Edit:
+from `rostopic echo /poseArrayTopic:</p>
+
+<pre><code> - 
+    position: 
+      x: 6.28499984741
+      y: 5.35500001907
+      z: 0.495000004768
+    orientation: 
+      x: -0.0
+      y: 0.668825093651
+      z: -0.417154147527
+      w: 0.615349828393
+  - 
+    position: 
+      x: 6.31500005722
+      y: 5.35500001907
+      z: 0.495000004768
+    orientation: 
+      x: -0.0
+      y: 0.237173257736
+      z: -0.912005751022
+      w: 0.334655578046
+</code></pre>
+
+<p>and etc.</p>
+
+<p>my TF Tree:
+<a href="https://www.dropbox.com/s/4079bf2go1po59k/frames.pdf">https://www.dropbox.com/s/4079bf2go1po59k/frames.pdf</a></p>
+
+<p>Edit: I decided to attach my full node code here. </p>
+
+<pre><code>ros::Publisher poseArrayPub;
+geometry_msgs::PoseArray poseArray; 
+
+void 
+cloud_cb (const sensor_msgs::PointCloud2ConstPtr&amp; cloud)
+{
+
+  sensor_msgs::PointCloud2 output_normals;
+  sensor_msgs::PointCloud2 cloud_normals;
+  sensor_msgs::PointCloud2 cloud_filtered;
+  pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud2 (new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+  pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;::Ptr cloud_pass (new pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;);
+  pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;::Ptr cloud_filtered2 (new pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;);   
+
+
+  pcl::fromROSMsg (*cloud, *cloud2);
+
+
+  poseArray.poses.clear(); // Clear last block perception result
+  poseArray.header.stamp = ros::Time::now();
+  poseArray.header.frame_id = &quot;/map&quot;;
+
+  ROS_INFO_STREAM(&quot;poseArray.header: frame=&quot; &lt;&lt; poseArray.header.frame_id);
+  // estimate normals
+  pcl::NormalEstimation&lt;pcl::PointXYZ, pcl::PointNormal&gt; ne;
+  ne.setInputCloud(cloud2);
+  ne.setKSearch (24);
+  pcl::PointCloud&lt;pcl::PointNormal&gt;::Ptr normals (new pcl::PointCloud&lt;pcl::PointNormal&gt;);
+  ne.compute(*normals);
+
+  // The number assignment in the for loop is not correct.... Can&#39;t tell why....
+  for(size_t i = 0; i&lt;normals-&gt;points.size(); ++i)
+  {
+    normals-&gt;points[i].x = cloud2-&gt;points[i].x;
+    normals-&gt;points[i].y = cloud2-&gt;points[i].y;
+    normals-&gt;points[i].z = cloud2-&gt;points[i].z;
+
+    geometry_msgs::PoseStamped pose;
+    geometry_msgs::Quaternion msg;
+
+    // extracting surface normals
+    tf::Vector3 axis_vector(normals-&gt;points[i].normal[0], normals-&gt;points[i].normal[1], normals-&gt;points[i].normal[2]);
+    tf::Vector3 up_vector(0.0, 0.0, 1.0);
+
+    tf::Vector3 right_vector = axis_vector.cross(up_vector);
+    right_vector.normalized();
+    tf::Quaternion q(right_vector, -1.0*acos(axis_vector.dot(up_vector)));
+    q.normalize();
+    tf::quaternionTFToMsg(q, msg);
+
+    //adding pose to pose array
+    pose.pose.position.x = normals-&gt;points[i].x;
+    pose.pose.position.y = normals-&gt;points[i].y;
+    pose.pose.position.z = normals-&gt;points[i].z;
+    pose.pose.orientation = msg;
+    poseArray.poses.push_back(pose.pose);
+  }
+
+  poseArrayPub.publish(poseArray);
+  ROS_INFO(&quot;poseArray size: %i&quot;, poseArray.poses.size()); //this outputs 92161
+
+}
+
+int main (int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init (argc, argv, &quot;normal_filter&quot;);
+  ros::NodeHandle nh;
+
+  ros::Rate loop_rate(60);
+
+  // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe (&quot;/point_cloud_centers&quot;, 1, cloud_cb);
+  poseArrayPub = nh.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/normal_vectors&quot;, 1);
+
+  // Spin
+  ros::spin();
+  loop_rate.sleep();
+}
+</code></pre>
+
+<p>Edit: the problem is in the numbers, as when I do a straightforward assignment like this: it runs fine.</p>
+
+<pre><code>  for (int i = 0; i &lt; 3; ++i) {
+    geometry_msgs::PoseStamped pose;
+    pose.pose.position.x = 0.0;
+    pose.pose.position.y = 0.0;
+    pose.pose.position.z = i;
+    pose.pose.orientation.x = 0.0;
+    pose.pose.orientation.y = 0.0;
+    pose.pose.orientation.z = 0.0;
+    pose.pose.orientation.w = 1.0;
+    poseArray.poses.push_back(pose.pose);
+  }
+</code></pre>
+
+<p>Edit: It&#39;s the number of messages im sending at once. The algorithm loops through the entire pc, which contains over 90,000 points. When I set the max limit to half of the point cloud, it works fine. There may be a limit...</p>
+
+        <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-05 14:55:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>poseArray.header.frame_id = &quot;/map&quot; will only work if the /map frame exists, i.e, if you are localizing your device/robot to some /map frame. poseArray.header.frame_id actually represents <strong>from where</strong> this pose is measured. So if I want to publish a pose five meters in front of my robot&#39;s head (which is indicated by a frame_id of &quot;camera_rgb_optical_frame), I would send a pose with position.z = 5.0 and set poseArray.header.frame_id =  &quot;/camera_rgb_optical_frame&quot;.</p>
+
+<p>Try setting the frame_id to to a frame you know exists, and also setting the fixed frame to this as well... Can&#39;t really say much more without more info (what frames exists, are you using a robot/device, ...)</p>
+
+<p>EDIT:
+I tried running this code and it worked for me, with only running openni_launch openni.launch on a kinect plugged into my computer. Perhaps you can give it a shot, or change poseArray.header.frame_id = &quot;/camera_rgb_optical_frame&quot;:</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from geometry_msgs.msg import PoseArray, Pose
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;pose_array&#39;)
+    r = rospy.Rate(60.0)
+    pub = rospy.Publisher(&quot;/poseArrayTopic&quot;, PoseArray)
+    while not rospy.is_shutdown():
+        poseArray = PoseArray()
+        poseArray.header.stamp = rospy.Time.now()
+        poseArray.header.frame_id = &quot;/camera_rgb_optical_frame&quot;
+        for i in range(1, 5):
+            somePose = Pose()
+            somePose.position.x = 0.0
+            somePose.position.y = 0.0
+            somePose.position.z = i
+
+            somePose.orientation.x = 0.0
+            somePose.orientation.y = 0.0
+            somePose.orientation.z = 0.0
+            somePose.orientation.w = 1.0
+
+            poseArray.poses.append(somePose)
+
+        pub.publish(poseArray)
+        r.sleep()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/10876">ahubers</a> on 2014-08-05 16:00:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi, thanks for the answer. To no avail, I have tried it with a known, published &quot;/map&quot; (my fixed frame), which I can see from my /tf tree. The poses are <em>not</em> coming from a sensor source. They are set by a set of calculations by code, which is displayed (correctly) using &quot;rostopic echo /poseArrayTopic&quot; as mentioned in the original post. It is not displaying in RViz. </p>
+
+<p>Could there be other reasons?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-05 17:24:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Can you post a snippet of your results from &quot;rostopic echo /poseArrayTopic&quot; and also maybe a screenshot of your tf tree (from running &quot;rosrun tf view_frames&quot;, then &quot;evince frames.pdf&quot;)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10876">ahubers</a> on 2014-08-05 17:31:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ve added the topic results and frames.pdf to my original post. Let me know what else might help! Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-06 08:27:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So I&#39;ve tried your script in your edit, it works perfectly for me also. Though one thing to notice is that in RViz, you can see (in the display panels) that you are receiving messages. I do not have that displaying in my RViz for my code. A second follow up question is, I have the PoseArray as a separate node than my main node, which provides 2 sources of information: a point cloud, and the fixed frame. Could this have contributed? should I move the entire piece of code into my main node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-06 14:15:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Added full code above.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-06 14:36:23 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

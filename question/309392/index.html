@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to properly use TF2 transform python interface - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/309392">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to properly use TF2 transform python interface</h2>
+      <div class="question">
+        <p>I&#39;m trying transform a point in my cameras FOV to the coordinate system of my world. </p>
+
+<p><a href="https://github.com/ros/geometry2/blob/melodic-devel/tf2_ros/src/tf2_ros/buffer_interface.py#L50">https://github.com/ros/geometry2/blob/melodic-devel/tf2_ros/src/tf2_ros/buffer_interface.py#L50</a></p>
+
+<p>I have calculated a distance in meters from the camera in x,y,z. How can I make the correct data type from the the x/y/z position and xyzw rotation of my camera?</p>
+
+<p>I&#39;ve tried to input a transformStamped() data type but I receive the error. </p>
+
+<blockquote>
+<p>File
+&quot;/opt/ros/kinetic/lib/python2.7/dist-packages/tf2<em>ros/buffer</em>interface.py&quot;,
+line 65, in transform
+    do<em>transform = self.registration.get(type(object</em>stamped))
+File
+&quot;/opt/ros/kinetic/lib/python2.7/dist-packages/tf2<em>ros/buffer</em>interface.py&quot;,
+line 204, in get
+    raise TypeException(&#39;Type %s if not loaded or supported&#39;% str(key))
+tf2<em>ros.buffer</em>interface.TypeException</p>
+</blockquote>
+
+<p>What type of data type am I supposed to be using? </p>
+
+        <div class="owner"><p>Asked by <a href="/users/37444">mwrighte38</a> on 2018-11-26 15:42:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I am also having this problem, did you manage to solve it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/39228">mateusguilherme</a> on 2021-02-01 11:02:38 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Okay, I spent <em>hours</em> trying to figure this out, and I solved it! I&#39;ll put my code below, but in general my approach is to use the <code>buffer.lookup_transform</code> to get the transform, AND the <code>broadcaster.sendTransform</code> to publish a transform. </p>
+
+<p>What this does is let me read a rosbag, re-publish any <code>/tf</code> or <code>/tf_static</code> messages, and then when it&#39;s time to convert frames I can use <code>rospy.Time.now()</code> and get the &quot;current&quot; transform, where &quot;current&quot; is whatever the most recently published transform is.</p>
+
+<p>You might have an issue if your first data appears <em>before</em> your first <code>/tf</code> or <code>/tf_static</code> message appears; if you find this to be the case then you can optionally drop that data. For my personal use case, it doesn&#39;t matter. I tried removing the try/catch in the hopes that it&#39;d speed up processing, but it didn&#39;t :(</p>
+
+<p>Here&#39;s the code, enjoy!</p>
+
+<pre><code>import argparse
+import rosbag
+import rospy
+import os.path
+import tf2_ros
+from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
+
+parser = argparse.ArgumentParser(description=&#39;Converts all pointclouds to a target frame.&#39;)
+parser.add_argument(&#39;input&#39;, type=str, help=&#39;Input Rosbag&#39;)
+parser.add_argument(&#39;output&#39;, type=str, help=&#39;Output Rosbag&#39;)
+
+args = parser.parse_args()
+
+# Force input/output files to be .bag files
+if &quot;.bag&quot; not in args.input:
+    print(&quot;Input file needs to have a *.bag ending&quot;)
+    exit()
+if &quot;.bag&quot; not in args.output:
+    print(&quot;Output file needs to have a *.bag ending&quot;)
+    exit()
+
+# Does the input file exist?
+if not os.path.isfile(args.input):
+    print(&quot;Input file cannot be found.&quot;)
+    exit()
+
+# Need to initialize a ROS node to do the conversion
+rospy.init_node(&quot;converter&quot;)
+
+# Setup the tf2 listener:
+buffer = tf2_ros.Buffer()
+listener = tf2_ros.TransformListener(buffer)
+
+# Setup the tf2 broadcaster
+broadcaster = tf2_ros.TransformBroadcaster()
+
+# What are you trying to transform to?
+target_frame = &quot;your_target_frame&quot;  # NOTE: You could use this as an input argument instead, for more flexibility!
+
+# Transform the data!
+with rosbag.Bag(args.output, &#39;w&#39;) as output:
+    for topic, msg, t in rosbag.Bag(args.input).read_messages():
+
+        # Inputs are copied as the basis for outputs
+        new_msg = msg
+
+        # Re-publish any /tf or /tf_static messages, so you can look those transforms up later
+        if topic == &quot;/tf&quot;:
+            for msg_tf in msg.transforms:
+                broadcaster.sendTransform(msg_tf)
+        if topic == &quot;/tf_static&quot;:
+            for msg_tf in msg.transforms:
+                broadcaster.sendTransform(msg_tf)
+
+        # For my use case, I&#39;m trying to transform PointCloud2 messages. You could switch on your own topic here.
+        if hasattr(new_msg, &#39;cloud&#39;):
+            try:
+                transform = buffer.lookup_transform(target_frame,
+                                                    msg.cloud.header.frame_id,
+                                                    rospy.Time.now(),
+                                                    rospy.Duration(0))
+                new_msg.cloud = do_transform_cloud(msg.cloud, transform)
+            except:
+                print(&quot;Failed to find a transform to &quot; + target_frame)
+                # Choosing to continue here because you&#39;ve got a cloud that wasn&#39;t transformed!
+                continue
+        # Output bag file has all the same topics in the input, but you&#39;re replacing the transformed messages!
+        output.write(topic, new_msg, t)
+
+# Don&#39;t forget to close the bag when you&#39;re done writing!
+output.close()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/85473">RoboticsChuck</a> on 2022-10-11 16:27:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

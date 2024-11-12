@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Odom frame initialized at 180 degrees to base_link - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/379563">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Odom frame initialized at 180 degrees to base_link</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>New to ROS, I am trying to build a map using lidar while driving my omni-directional robot around. Having issue with the /odom frame initializing in a position that is rotated by 180 degrees around the the X-axis relative to /base_link and /map frames. Unfortunately being a new forum user I don’t have enough karma to post a screenshot of rviz to provide extra information. </p>
+
+<p>When the robot drives in the X-axis a map is built as expected with subsequent laser scans being stiched together. However when driven in the Y-axis, because of the rotated /odom frame, the map “staggers”, superimposing elements of the building in the wrong position on the Y-axis, I believe this is because slam_toolbox expects the robot to be moving in the opposite direction than it really is and the toolbox is trying to match any features from the lidar it can. The /odom frame can also be seen in rviz drifting away from the origin in the Y axis instead of staying in the same place as it should be expected (ignoring the small amount of drift from accumulated error in odometry). </p>
+
+<p>See my launch file, URDF, and odometry publisher file below. At present /odom is calculated based on the /cmd_vel message. I know this is a crude approximation compared to encoders or an IMU; I haven’t had the chance to implement them yet. </p>
+
+<p><strong>I would like to isolate the reason that /odom is initialized at 180 degrees to /base_link and /map.</strong> All other frames (laser, base<em>link, map, base</em>footprint) are consistent with REP103/105</p>
+
+<p>I have poured over my code looking for a missing 180-rotation but my understanding is that slam_toolbox publishes the map-&gt;odom transformation and this appears to be confirmed when I run the command</p>
+
+<pre><code>ros2 run tf2_ros tf2_echo map odom
+</code></pre>
+
+<p>I get:</p>
+
+<pre><code>At time 1622759069.311130383
+- Translation: [0.000, 0.000, 0.000]
+- Rotation: in Quaternion [1.000, 0.000, 0.000, 0.000]
+</code></pre>
+
+<p>Which in Euler angles corresponds to a 180 degree rotation about the X axis. So this suggests to me that the 180-rotation is coming from slam_toolbox; is there some way to initialize the /odom frame to have the same orientation as the /map frame?  </p>
+
+<p>I did find <a href="https://answers.ros.org/question/235228/how-is-the-orientation-of-frame-odom-initialized/">one proposed solution</a> that suggests running</p>
+
+<pre><code>ros2 topic pub /set_pose geometry_msgs/PoseWithCovarianceStamped &#39;{header: {stamp: {sec: 0, nanosec: 0}, frame_id: &quot;odom&quot;}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0} }, covariance: [1,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,1]}}&#39;
+</code></pre>
+
+<p>However this did not change the /odom frame at all (regardless of what pose/orientation I chose). </p>
+
+<p>For context the robot is a 3 wheel omni-directional robot running on a Raspberry Pi 4, Ubuntu 20.04, ROS 2 Foxy. Using slam<em>toolbox, rplidar</em>ros, and teleop<em>twist</em>joy packages.</p>
+
+<p><strong>odometry_node.py</strong></p>
+
+<pre><code>import math
+from math import sin, cos, pi
+import rclpy
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+from rclpy.qos import qos_profile_services_default
+from rclpy.qos import QoSProfile
+from geometry_msgs.msg import Twist
+import tf2_ros
+import time 
+
+class OdomPublisher(Node):
+    def __init__(self):
+        super().__init__(&#39;odom_pub&#39;)
+
+        self.x = 0.0
+        self.y = 0.0
+        self.th = 0.0
+
+        self.vx = 0.0
+        self.vy = 0.0
+        self.vth = 0.0
+
+        self.publisher_ = self.create_publisher(
+            msg_type = Odometry, 
+            topic = &#39;/odom&#39;, 
+            qos_profile = qos_profile_services_default
+        )
+        self.subscription = self.create_subscription(
+            Twist,
+            &#39;cmd_vel&#39;,
+            self.velocity_listener_callback,
+            1)
+        self.subscription
+        qos_profile = QoSProfile(depth=10)   
+        self.odom_broadcaster = tf2_ros.TransformBroadcaster(self, qos=qos_profile)
+
+        self.current_time = time.time()
+        self.last_time = time.time()
+        timer_period = 0.1  # seconds
+        self.timer = self.create_timer(timer_period, self.timer_callback)
+        self.i = 0
+
+    def velocity_listener_callback(self, msg):
+        self.vx = msg.linear.y # teleop_joy for controller being used is not consisent with REP 103 so variables must be remapped
+        self.vy = msg.linear.x   
+        self.vth = msg.angular.z  
+
+    def timer_callback(self):
+        self.current_time = time.time()
+
+        dt = self.current_time - self.last_time
+        delta_x = (self.vx * cos(self.th) - self.vy * sin(self.th)) * dt
+        delta_y = (self.vx * sin(self.th) + self.vy * cos(self.th)) * dt
+        delta_th = self.vth * dt
+
+        self.x += delta_x
+        self.y += delta_y
+        self.th += delta_th
+
+        odom_quat = quaternion_from_euler(self.th, 0 , 0)  
+
+        t = tf2_ros.TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = &quot;odom&quot;
+        t.child_frame_id = &quot;base_link&quot;
+        t.transform.translation.x = self.x
+        t.transform.translation.y = self.y     
+        t.transform.translation.z = 0.0
+        t.transform.rotation.x = odom_quat[0] 
+        t.transform.rotation.y = odom_quat[1]
+        t.transform.rotation.z = odom_quat[2]
+        t.transform.rotation.w = odom_quat[3]
+        self.odom_broadcaster.sendTransform(t)
+
+        odom = Odometry()
+        odom.header.stamp = self.get_clock().now().to_msg()
+        odom.header.frame_id = &quot;odom&quot;
+        odom.child_frame_id = &quot;base_link&quot;
+
+        odom.pose.pose.position.x = self.x
+        odom.pose.pose.position.y = self.y      
+        odom.pose.pose.position.z = 0.0
+        odom.pose.pose.orientation.x = odom_quat[0]
+        odom.pose.pose.orientation.y = odom_quat[1]
+        odom.pose.pose.orientation.z = odom_quat[2]
+        odom.pose.pose.orientation.w = odom_quat[3]
+
+        odom.twist.twist.linear.x = self.vx
+        odom.twist.twist.linear.y = self.vy     
+        odom.twist.twist.angular.z = self.vth
+
+        self.publisher_.publish(odom)
+
+        self.last_time = self.current_time
+        time.sleep(.01)
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    odom_pub = OdomPublisher()
+
+    rclpy.spin(odom_pub)
+
+    odom_pub.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()  
+
+def quaternion_from_euler(roll, pitch, yaw):
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+
+    q = [0] * 4
+    q[0] = cy * cp * cr + sy * sp * sr
+    q[1] = cy * cp * sr - sy * sp * cr
+    q[2] = sy * cp * sr + cy * sp * cr
+    q[3] = sy * cp * cr - cy * sp * sr
+
+    return q   
+</code></pre>
+
+<p><strong>edm<em>robot</em>description.urdf</strong></p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;robot name=&quot;edm_robot&quot; xmlns:xacro=&quot;http://ros.org/wiki/xacro&quot;&gt;
+
+  &lt;!-- Define robot constants --&gt;
+  &lt;xacro:property name=&quot;base_radius&quot; value=&quot;0.25&quot;/&gt;
+  &lt;xacro:property name=&quot;base_height&quot; value=&quot;0.015&quot;/&gt;
+
+  &lt;xacro:property name=&quot;lidar_radius&quot; value=&quot;0.035&quot;/&gt;
+  &lt;xacro:property name=&quot;lidar_height&quot; value=&quot;0.025&quot;/&gt;
+  &lt;xacro:property name=&quot;lidar_zoff&quot; value=&quot;0.3&quot;/&gt;
+
+  &lt;xacro:property name=&quot;wheel_radius&quot; value=&quot;0.07&quot;/&gt;
+  &lt;xacro:property name=&quot;wheel_width&quot; value=&quot;0.04&quot;/&gt;
+  &lt;xacro:property name=&quot;wheel_gap&quot; value=&quot;0.025&quot;/&gt;
+  &lt;xacro:property name=&quot;wheel_zoff&quot; value=&quot;0.05&quot;/&gt;
+  &lt;xacro:property name=&quot;wheel_xoff&quot; value=&quot;0.12&quot;/&gt;
+
+  &lt;!-- Define some commonly used intertial properties  --&gt;
+  &lt;xacro:macro name=&quot;cylinder_inertia&quot; params=&quot;m r h&quot;&gt;
+    &lt;inertial&gt;
+      &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;${pi/2} 0 0&quot; /&gt;      
+      &lt;mass value=&quot;${m}&quot;/&gt;
+      &lt;inertia ixx=&quot;${(m/12) * (3*r*r + h*h)}&quot; ixy = &quot;0&quot; ixz = &quot;0&quot; iyy=&quot;${(m/12) * (3*r*r + h*h)}&quot; iyz = &quot;0&quot; izz=&quot;${(m/2) * (r*r)}&quot;/&gt; 
+    &lt;/inertial&gt;
+  &lt;/xacro:macro&gt;
+
+  &lt;!-- Robot Base --&gt;
+  &lt;link name=&quot;base_link&quot;&gt;
+    &lt;visual&gt;
+      &lt;geometry&gt;
+        &lt;cylinder radius=&quot;${base_radius}&quot; length=&quot;${base_height}&quot;/&gt;
+      &lt;/geometry&gt;
+      &lt;material name=&quot;Cyan&quot;&gt;
+        &lt;color rgba=&quot;0 1.0 1.0 1.0&quot;/&gt;
+      &lt;/material&gt;
+    &lt;/visual&gt;
+
+    &lt;collision&gt;
+      &lt;geometry&gt;
+        &lt;cylinder radius=&quot;${base_radius}&quot; length=&quot;${base_height}&quot;/&gt;
+      &lt;/geometry&gt;
+    &lt;/collision&gt;
+
+    &lt;xacro:cylinder_inertia m=&quot;15&quot; r=&quot;${base_radius}&quot; h=&quot;${base_height}&quot;/&gt;
+  &lt;/link&gt;
+
+   &lt;!-- Robot Footprint --&gt;
+  &lt;link name=&quot;base_footprint&quot;&gt;
+    &lt;xacro:cylinder_inertia m=&quot;0&quot; r=&quot;0&quot; h=&quot;0&quot;/&gt;
+  &lt;/link&gt;
+
+  &lt;joint name=&quot;base_joint&quot; type=&quot;fixed&quot;&gt;
+    &lt;parent link=&quot;base_link&quot;/&gt;
+    &lt;child link=&quot;base_footprint&quot;/&gt;
+    &lt;origin xyz=&quot;0.0 0.0 ${-(wheel_radius+wheel_zoff)}&quot; rpy=&quot;0 0 0&quot;/&gt;
+  &lt;/joint&gt;
+
+  &lt;!-- Lidar --&gt;
+  &lt;link name=&quot;laser&quot;&gt;
+    &lt;visual&gt;
+      &lt;geometry&gt;
+        &lt;cylinder radius=&quot;${lidar_radius}&quot; length=&quot;${lidar_height}&quot;/&gt;
+      &lt;/geometry&gt;
+      &lt;material name=&quot;Green&quot;&gt;
+        &lt;color rgba=&quot;0 1.0 0 1.0&quot;/&gt;
+      &lt;/material&gt;
+    &lt;/visual&gt;
+
+    &lt;collision&gt;
+      &lt;geometry&gt;
+        &lt;cylinder radius=&quot;${lidar_radius}&quot; length=&quot;${lidar_height}&quot;/&gt;
+      &lt;/geometry&gt;
+    &lt;/collision&gt;
+    &lt;xacro:cylinder_inertia m=&quot;.25&quot; r=&quot;${lidar_radius}&quot; h=&quot;${lidar_height}&quot;/&gt;
+  &lt;/link&gt;
+
+  &lt;joint name=&quot;lidar_joint&quot; type=&quot;fixed&quot;&gt;
+    &lt;parent link=&quot;base_link&quot;/&gt;
+    &lt;child link=&quot;laser&quot;/&gt;
+    &lt;origin xyz=&quot;0.0 0.0 ${lidar_zoff}&quot; rpy=&quot;0 0 ${-2*pi/3}&quot;/&gt;
+  &lt;/joint&gt;
+
+  &lt;!-- Wheels --&gt;
+  &lt;xacro:macro name=&quot;wheel&quot; params=&quot;prefix index&quot;&gt;
+    &lt;link name=&quot;${prefix}_link&quot;&gt;
+      &lt;visual&gt;
+        &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;${pi/2} 0 0&quot;/&gt;
+        &lt;geometry&gt;
+            &lt;cylinder radius=&quot;${wheel_radius}&quot; length=&quot;${wheel_width}&quot;/&gt;
+        &lt;/geometry&gt; 
+        &lt;material name=&quot;Red&quot;&gt;
+          &lt;color rgba=&quot;1.0 0.0 0.0 1.0&quot;/&gt;
+        &lt;/material&gt;
+      &lt;/visual&gt;
+
+      &lt;collision&gt;
+        &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;${pi/2} 0 0&quot;/&gt;
+        &lt;geometry&gt;
+          &lt;cylinder radius=&quot;${wheel_radius}&quot; length=&quot;${wheel_width}&quot;/&gt;
+        &lt;/geometry&gt;
+      &lt;/collision&gt;
+
+      &lt;xacro:cylinder_inertia m=&quot;0.5&quot; r=&quot;${wheel_radius}&quot; h=&quot;${wheel_width}&quot;/&gt;
+    &lt;/link&gt;
+
+    &lt;joint name=&quot;${prefix}_joint&quot; type=&quot;continuous&quot;&gt;
+      &lt;parent link=&quot;base_link&quot;/&gt;
+      &lt;child link=&quot;${prefix}_link&quot;/&gt;
+      &lt;origin xyz=&quot;${(base_radius+wheel_gap)*sin((1+index*4)*pi/6)} ${(base_radius+wheel_gap)*cos((1+index*4)*pi/6)} ${-wheel_zoff}&quot; rpy=&quot;0 0 ${pi*(4*index+1)/3}&quot;/&gt;
+      &lt;axis xyz=&quot;0 1 0&quot;/&gt;
+    &lt;/joint&gt;
+  &lt;/xacro:macro&gt;
+
+  &lt;xacro:wheel prefix=&quot;wheel_1&quot; index=&quot;1&quot; /&gt;
+  &lt;xacro:wheel prefix=&quot;wheel_2&quot; index=&quot;2&quot; /&gt;
+  &lt;xacro:wheel prefix=&quot;wheel_3&quot; index=&quot;3&quot; /&gt;
+
+  &lt;gazebo&gt;
+    &lt;plugin name=&quot;object_controller&quot; filename=&quot;libgazebo_ros_planar_move.so&quot;&gt;
+      &lt;commandTopic&gt;cmd_vel&lt;/commandTopic&gt;
+      &lt;odometryTopic&gt;odom&lt;/odometryTopic&gt;
+      &lt;odometryFrame&gt;odom&lt;/odometryFrame&gt;
+      &lt;odometryRate&gt;20.0&lt;/odometryRate&gt;
+      &lt;robotBaseFrame&gt;base_footprint&lt;/robotBaseFrame&gt;
+    &lt;/plugin&gt;
+  &lt;/gazebo&gt;
+&lt;/robot&gt;
+</code></pre>
+
+<p><strong>EDM.launch.py</strong></p>
+
+<pre><code>import os
+
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
+from launch import LaunchDescription
+from launch.substitutions import LaunchConfiguration, TextSubstitution, Command
+from launch.conditions import UnlessCondition, IfCondition
+from launch.actions import DeclareLaunchArgument
+
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    #teleop_twist
+    joy_config = LaunchConfiguration(&#39;joy_config&#39;)
+    joy_dev = LaunchConfiguration(&#39;joy_dev&#39;)
+    config_filepath = LaunchConfiguration(&#39;config_filepath&#39;)
+
+    # edm_robot_description
+    pkg_share = FindPackageShare(package=&#39;edm_robot_description&#39;).find(&#39;edm_robot_description&#39;)
+    default_model_path = os.path.join(pkg_share, &#39;src/description/edm_robot_description.urdf&#39;)
+
+    # slam_toolbox
+    use_sim_time = LaunchConfiguration(&#39;use_sim_time&#39;)
+    slam_params_file = LaunchConfiguration(&#39;slam_params_file&#39;)
+
+    return LaunchDescription([
+        #teleop_twist
+        DeclareLaunchArgument(&#39;joy_config&#39;, default_value=&#39;ps3-holonomic&#39;),
+        DeclareLaunchArgument(&#39;joy_dev&#39;, default_value=&#39;/dev/input/js0&#39;),
+        DeclareLaunchArgument(&#39;config_filepath&#39;, 
+            default_value=[
+                    TextSubstitution(text=os.path.join(get_package_share_directory(&#39;teleop_twist_joy&#39;), &#39;config&#39;, &#39;&#39;)),
+                    joy_config, 
+                    TextSubstitution(text=&#39;.config.yaml&#39;)]
+        ),
+        Node(
+            package=&#39;joy&#39;,
+            executable=&#39;joy_node&#39;, 
+            name=&#39;joy_node&#39;,
+            parameters=[{
+                &#39;dev&#39;: joy_dev,
+                &#39;deadzone&#39;: 0.2,
+                &#39;autorepeat_rate&#39;: 20.0}]
+        ),
+        Node(
+            package=&#39;teleop_twist_joy&#39;, 
+            executable=&#39;teleop_node&#39;,
+            name=&#39;teleop_twist_joy_node&#39;, 
+            parameters=[config_filepath]
+        ),
+
+        #edm_robot_description
+        DeclareLaunchArgument(name=&#39;gui&#39;, default_value=&#39;True&#39;,
+                                            description=&#39;Flag to enable joint_state_publisher_gui&#39;),
+        DeclareLaunchArgument(name=&#39;model&#39;, default_value=default_model_path,
+                                            description=&#39;Absolute path to robot urdf file&#39;),
+        Node(
+            package=&#39;robot_state_publisher&#39;,
+            executable=&#39;robot_state_publisher&#39;,
+            parameters=[{&#39;robot_description&#39;: Command([&#39;xacro &#39;, LaunchConfiguration(&#39;model&#39;)])}]
+        ),
+        Node(
+            package=&#39;joint_state_publisher&#39;,
+            executable=&#39;joint_state_publisher&#39;,
+            name=&#39;joint_state_publisher&#39;,
+            condition=UnlessCondition(LaunchConfiguration(&#39;gui&#39;))
+        ),
+        Node(
+            package=&#39;joint_state_publisher_gui&#39;,
+            executable=&#39;joint_state_publisher_gui&#39;,
+            name=&#39;joint_state_publisher_gui&#39;,
+            condition=IfCondition(LaunchConfiguration(&#39;gui&#39;))
+        ),
+
+        #online_sync_launch slam_toolbox
+        DeclareLaunchArgument(&#39;use_sim_time&#39;, default_value=&#39;true&#39;, description=&#39;Use simulation/Gazebo clock&#39;),
+        DeclareLaunchArgument(&#39;slam_params_file&#39;,
+                            default_value=os.path.join(get_package_share_directory(&quot;slam_toolbox&quot;),
+                                   &#39;config&#39;, &#39;mapper_params_online_sync.yaml&#39;),
+                            description=&#39;Full path to the ROS2 parameters file to use for the slam_toolbox node&#39;),
+        Node(
+            parameters=[
+            slam_params_file,
+            {&#39;use_sim_time&#39;: use_sim_time}
+            ],
+            package=&#39;slam_toolbox&#39;,
+            executable=&#39;sync_slam_toolbox_node&#39;,
+            name=&#39;slam_toolbox&#39;,
+            output=&#39;screen&#39;),
+
+        #rplidar.launch
+        Node(
+            name=&#39;rplidar_composition&#39;,
+            package=&#39;rplidar_ros&#39;,
+            executable=&#39;rplidar_composition&#39;,
+            output=&#39;screen&#39;, 
+            parameters=[{
+                &#39;serial_port&#39;: &#39;/dev/ttyUSB0&#39;,
+                &#39;serial_baudrate&#39;: 115200,  # A1 / A2
+                # &#39;serial_baudrate&#39;: 256000, # A3
+                &#39;frame_id&#39;: &#39;laser&#39;,
+                &#39;inverted&#39;: False,
+                &#39;angle_compensate&#39;: True,
+            }],
+        ),
+
+        Node(
+            package=&#39;calc_rpm&#39;,
+            executable=&#39;speed_node&#39;,
+            name=&#39;speed_node&#39;
+        ),
+        Node(
+            package=&#39;odometry_publisher&#39;,
+            executable=&#39;odometry_node&#39;,
+            name=&#39;odometry_node&#39;
+        ),
+    ])
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/75547">AnAssortmentOfAtoms</a> on 2021-06-03 22:52:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>why did you change x to y (self.vx = msg.linear.y )?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2980">Nachum</a> on 2021-12-12 03:57:21 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

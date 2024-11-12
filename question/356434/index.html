@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS 2 ActionServer callback causes subscriber to stop receiving - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/356434">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS 2 ActionServer callback causes subscriber to stop receiving</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/96440/ros-2-actionserver-callback-causes-subscriber-to-stop-receiving">https://robotics.stackexchange.com/questions/96440/ros-2-actionserver-callback-causes-subscriber-to-stop-receiving</a>.</p>
+        <p>I am building a single node which subscribes to receive Pose information. The subscriber callback updates class state fields (like self.x). This node also contains an ActionServer, which upon client request, will use the state information (which should be continually updated from the pose subscription) to execute a &quot;move_to.&quot; This action repeatedly publishes Twist information on a different topic. </p>
+
+<p>On startup, I can tell that the subscriber is working effectively, and the Node continually updates its pose successfully. However, once the ActionServer execution callback starts, I notice that the subscriber callback is never called, and as a result the pose state is never updated.</p>
+
+<p>I would like to create a Node which can continually receive new state information updates while it executes an action. Is this possible / am I going about this in the correct manner?</p>
+
+<p>Here is an abbreviated (extensive math removed) version of my Node definition:</p>
+
+<pre><code>class ActionSrv(Node):
+
+    def __init__(self):
+        super().__init__(&#39;action_srv&#39;)
+
+        self.action_server = ActionServer(
+            self,
+            CustomAction,
+            &#39;custom_action&#39;,
+            self.move_to_callback)
+
+        self.subscription = self.create_subscription(
+            Pose,
+            &#39;pose&#39;,
+            self.pose_callback,
+            10)
+
+        self.publisher = self.create_publisher(Twist, &#39;output&#39;, 10)
+
+        self.x_dest = 0.0
+        self.y_dest = 0.0
+        self.x = 0.0
+        self.y = 0.0
+        self.r = 999.99
+
+        self.twist = Twist()
+
+    def pose_callback(self, pose):
+        self.get_logger().info(&#39;Pose: %s&#39; % (pose))
+        self.x = pose.x
+        self.y = pose.y
+
+
+    def move_to_callback(self, goal_handle):
+        self.get_logger().info(&#39;Executing Custom Action...&#39;)  # once this code begins, fields such as self.x are never updated
+        self.x_dest = goal_handle.request.x_dest
+        self.y_dest = goal_handle.request.y_dest
+        self.r = self.get_distance()
+
+        feedback_msg = MoveTo.Feedback()
+
+        while self.r &gt; 0.2:
+
+            # perform calculations
+
+            # publish updates
+            self.publisher.publish(self.twist)
+
+            # give feedback
+            feedback_msg.x_curr = self.x
+            feedback_msg.y_curr = self.y
+            goal_handle.publish_feedback(feedback_msg)
+
+        goal_handle.succeed()
+
+        result = MoveTo.Result()
+        result.x_final = self.x
+        result.y_final = self.y
+        return result
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    server = ActionSrv()
+
+    rclpy.spin(server)
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/56114">exuberantshark</a> on 2020-07-04 13:44:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>rclpy is spinning your node on a single thread. While you are processing the action server request, the rclpy logic that would service node callbacks is blocked. </p>
+
+<p>You can fix this by using a <code>MultiThreadedExecutor</code>, which uses a pool of threads to service callbacks/goal requests. </p>
+
+<p>Example usage of <code>MultiThreadedExecutor</code> can be found in the ros2 examples <a href="https://github.com/ros2/examples/blob/master/rclpy/executors/examples_rclpy_executors/callback_group.py">repo</a></p>
+
+<hr>
+
+<p>EDIT: 
+This step was not needed, preserving it so answer comments make sense </p>
+
+<p><em>While in your <code>move_to_callback</code> polling loop, drop a <code>time.sleep(0.0)</code> to yield the thread, and then the  <code>MultiThreadedExecutor</code> should come in and service your subscription callback</em></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/43713">johnconn</a> on 2020-07-05 14:12:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you. This was a very helpful answer and my callbacks are working now. </p>
+
+<p>Note: I did not find that the <code>time.sleep(0.0)</code> addition was necessary for functionality. Does the sleep call create/force a definitive point for yielding the thread? Perhaps without it, my thread execution/scheduling is non-deterministic, but that did not happen to matter a lot for my application?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56114">exuberantshark</a> on 2020-07-06 12:43:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>it&#39;s not clear to me how python handles yielding threads, to be honest, I just parroted the first stack overflow answer I found on how to yield python threads. I&#39;ll edit that sleep out of my answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/43713">johnconn</a> on 2020-07-06 13:05:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@johnconn Thanks for pointing at those executor examples! Those have been really helpful.</p>
+
+<p>@exuberantshark Thank you for posing the question. I am facing a similar problem in wanting to use both a subscriber and an action server together in a single node but seeing that my subscriber calls being blocked after 3 calls. Using the <code>MultiThreadedExecutor</code> and adding nodes to it so the callbacks could be done in parallel (like the example johnconn linked to), I am still seeing that my subscriber runs 3 iteration before it stops updating even though a publisher is continually publishing. Did you see something similar as you were iterating before getting it your callbacks to work?</p>
+
+<p>EDIT: I couldn&#39;t post my entire script in one block. Apologies...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56049">jmaker</a> on 2020-07-07 12:32:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>class SimpleActionServer(Node):</p>
+
+<pre><code>    def __init__(self):
+        super().__init__(&#39;py_action_server&#39;)
+        self._action_server = ActionServer(
+            self,
+            Frame,
+            &#39;frame&#39;,
+            self.execute_callback)
+        self.current_frame = 0
+
+    def execute_callback(self, goal_handle):
+        self.get_logger().info(&#39;Executing goal...&#39;)
+        feedback_msg = Frame.Feedback()
+        feedback_msg.progress = self.current_frame
+
+        while self.current_frame &lt; goal_handle.request.order:
+
+            time.sleep(.5)
+            feedback_msg.progress = self.current_frame
+            self.get_logger().info(f&#39;Feedback: {feedback_msg.progress}&#39;)
+            goal_handle.publish_feedback(feedback_msg)
+
+        goal_handle.succeed()
+        result = Frame.Result()
+        result.response = self.current_frame
+        return result
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56049">jmaker</a> on 2020-07-07 12:34:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>class MinimalSubscriber(Node):</p>
+
+<pre><code>    def __init__(self,actionSever):
+        super().__init__(&#39;minimal_subscriber&#39;)
+        self.subscription = self.create_subscription(
+            Num,                                            
+            &#39;topic&#39;,
+            self.listener_callback,
+            1)
+        self.subscription
+        self.__window_name = &quot;sub&quot;
+        self.action_server = actionSever
+
+    def listener_callback(self, msg):
+        # subscriber updates current_frame from the publisher 
+        self.action_server.current_frame = msg.num
+        self.get_logger().info(&#39;I heard: &quot;%d&quot;&#39; % msg.num)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56049">jmaker</a> on 2020-07-07 12:34:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>def main(args=None):
+        rclpy.init(args=args)</p>
+
+<pre><code>    try:
+        py_action_server = SimpleActionServer()
+        py_sub = MinimalSubscriber(actionSever=py_action_server)
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(py_action_server)
+        executor.add_node(py_sub)
+
+        try:
+            executor.spin()
+        finally:
+            executor.shutdown()
+            py_action_server.destroy_node()
+
+    finally:
+        rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56049">jmaker</a> on 2020-07-07 12:34:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This is the output of the sub/action server node above when I have a publisher publishing increasing values without having an action client sending a request. After 3 iteration it freezes. </p>
+
+<pre><code>Current value: 0 updated value 0
+[INFO] [1594147488.305113087] [minimal_subscriber]: I heard: &quot;0&quot;
+Current value: 0 updated value 1
+[INFO] [1594147489.277334707] [minimal_subscriber]: I heard: &quot;1&quot;
+Current value: 1 updated value 2
+[INFO] [1594147490.262435445] [minimal_subscriber]: I heard: &quot;2&quot;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56049">jmaker</a> on 2020-07-07 13:47:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I think what posted works! I had a little bug that was unrelated to this. Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56049">jmaker</a> on 2020-07-07 14:13:43 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

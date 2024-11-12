@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>design question related to timing issues and number of nodes - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10063">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>design question related to timing issues and number of nodes</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/31825/design-question-related-to-timing-issues-and-number-of-nodes">https://robotics.stackexchange.com/questions/31825/design-question-related-to-timing-issues-and-number-of-nodes</a>.</p>
+        <p>Let say I have a fast sensor that I use to control an actuator. For instance an encoder and a DC motor. The controller loop has to be quite fast in order to ensure proper control. I read that ROS design philosophy is &quot;divide and conquer&quot;, i.e. small processes collaborating
+toward a goal. So here are 2 solutions:</p>
+
+<p>1) One process to read the encoder value and post the current position / speed on a topic. One process that reads voltage on a topic and pass it to the motor. One process to run the PID controller using both topics and one more to accept velocity / position commands.</p>
+
+<p>2) One single process that will do all of it in a tight loop, publish joint&#39;s position / velocity, and read position / velocity commands.</p>
+
+<p>Of course, which solution to choose might depend on the hardware. For instance, if both the encoder and the motor are connected to the same DAQ card it make sense to have a single process to handle all the hardware on that card and do the PID control as well. In that case, it might be a rather complex process, depending on the number of IOs on
+the card.</p>
+
+<p>But otherwise, assuming that the encoder and the motor are on independent hardware, which solution would be recommended? And how fast can a ROS process run?</p>
+
+<p>The problem get slightly more complex when several actuators are used at the same time, i.e. when doing inverse kinematics on a 12 DOF robotic arm. How would you suggest to design such a piece of hardware? 36 nodes (3 per DOF: encoder, motor and PID), and one more for the
+inverse kinematics? Or one big node only that would accept different types of commands (direct joint control, control the end effector, etc. and publish the joint positions).</p>
+
+<p>Other related scenario: on a robot, we have the odometer (updated every 10ms) and a gyro (updated every 5ms). I want to combine them both to obtain a more precise estimation of the robot&#39;s position. Here again there are 2 solutions, one with 3 processes (gyro, odo, and
+odoGyroPosSystem) and one with only one process that combines everything.</p>
+
+<p>In the second case, everything is neatly coupled in one process. Typically one thread to read from the gyro, one to read from the odometer, and the main thread to combine the information.</p>
+
+<p>With the first solution, I am curious to know what would happen. The gyro node would publish a new data every 5 ms? or packets would be aggregated and a listener would get several packets at once (jamming)?</p>
+
+<p>I will be grateful for all comments</p>
+
+        <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-05-25 15:01:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I would handle the odometer/gyro system like this:</p>
+
+<ul>
+<li><p>Create an odometer node that publishes nav_msgs/Odometry messages to the odom topic. You could publish a message every 10 ms, or you could have a publishing_frequency parameter. The odometer node&#39;s internal loop would update the odometry every 10 ms, but that odometry would be published at the frequency specified by the parameter.</p></li>
+<li><p>Create a gyro node that publishes sensor_msgs/Imu messages to the imu_data topic. The publishing frequency would be controlled in the manner described above.</p></li>
+<li><p>Run a robot_pose_ekf node, which subscribes to the odom and imu_data topics and publishes Kalman filtered output to the robot_pose_ekf/odom_combined topic.</p></li>
+</ul>
+
+<p>This arrangement makes the Kalman filtering independent of the hardware.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/274">Jim Rothrock</a> on 2011-05-25 15:52:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Hi Brice,</p>
+
+<p>You&#39;ve described two extremes of designing ROS systems: break it into tiny pieces with many communication channels, or pack everything into one monolithic process.  I can&#39;t give you the right answer; it depends on your specific needs and without experimenting there are too many unanswered questions.  However, I will try to give some suggestions for designing the system you&#39;ve described.</p>
+
+<p>You asked how quickly ROS can run.  I have seen ROS pass messages reliably at 1kHz, however, as the system load increases and the connection quality drops, ROS will start to drop messages.  I would suggest combining the PID controller, the encoder reader, and the voltage writer into a single process.  A PID controller can be sensitive to running at an inconsistent frequency, and there isn&#39;t a straightforward solution to dealing with dropped messages.</p>
+
+<p>The design does get trickier when you are controlling a full arm.  If you are writing an aggressive controller that is very sensitive to perturbations in timing, then you should keep it in a single process.  Dropped messages will cause intermittent problems with your controller, and it will be difficult to determine if the issue is dropped messages or a bug in your controller.</p>
+
+<p>If your full arm controller is &quot;simpler&quot;, then you can put it in a separate node.  Communicating over ROS will give you a few benefits.  The commands from the controller are easier to view or plot in realtime.  It&#39;s easier to change to a different full arm controller without taking down the PID controllers running the motors.  If your controller crashes, then it will only take down its own process.  By communicating over ROS you gain introspection, flexibility, and better error diagnostics.</p>
+
+<p>For your full arm control and inverse kinematics, I would suggest first separating the components into separate nodes, and then combining them into a single process if there are any issues.</p>
+
+<p>Best of luck with your system</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/46">sglaser</a> on 2011-06-02 13:06:57 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This is the same debate than the one between monolithic kernels (linux) and micro-kernels (i.e. QNX). This debate has been raging for years and is still unanswered... But it&#39;s good to know that ROS can pass messages at up to 1kHz in some cases.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-06-02 13:28:33 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

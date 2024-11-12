@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS MultiThreading example - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/185153">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS MultiThreading example</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/60661/ros-multithreading-example">https://robotics.stackexchange.com/questions/60661/ros-multithreading-example</a>.</p>
+        <p>Hello,</p>
+
+<p>I&#39;m currently working on a node that provides a service to other nodes but I noticed that being a server blocks the execution of the node until a Request. As my node needs to handle some callbacks, I read that a solution could be multithreading, and several good explanations on what&#39;s behind the hood, but I have trouble understanding how to use it.</p>
+
+<p>My case is the following : the nodes receives sensory information and publish a motor command. In most of the case, this is enough, but in certain conditions, another node will send a request for stopping. I thought a service would fit better than a topic, as it allows the requesting node to wait for the response before continuing.</p>
+
+<p>From my readings, I understand that I can declare a MultithreadSpinner or an AsyncSpinner, the second being non blocking.  How does that changes my usual node organisation (C++ pseudo code) :</p>
+
+<pre><code>int main()
+{
+     ros::init(...);
+     ros::NodeHandle nh;
+     MyClassController controller(nh, ...);
+     controller.run();
+}
+
+MyClassController::run()
+{
+    while(nh_.oh())
+    {
+        // Process Callbacks
+         ros::spinOnce()
+    }
+}
+
+MyClassController::callback1(ros::Datatype msg){ myClassAttribute = msg }
+MyClassController::myService(mypackage::mypackageserv req, mypackage::mypackageserv res){}
+(...)
+</code></pre>
+
+<p>Would it be something like :</p>
+
+<pre><code>int main()
+{
+     ros::init(...);
+     ros::NodeHandle nh;
+     MyClassController controller(nh, ...);
+     controller.run();
+}
+
+MyClassController::run()
+{
+    // Process Callbacks
+    myclassAsyncSpinner.start();
+    myclassAsyncSpinner.waitForShutdown();
+}
+
+MyClassController::callback1(ros::Datatype msg){ myClassAttribute = msg }
+MyClassController::myService(mypackage::mypackageserv req, mypackage::mypackageserv res){}
+(...)
+</code></pre>
+
+<p>In this case, how can I be sure the service will be processed separately from other callbacks  thus not block them?  I feel that I may be mixing multi threading and &quot;multi callback queuing&quot;, and the second is more relevant to my problem.</p>
+
+<p>To sum things up : could you show me or point me to MWE (Minimal Working Example) of nodes that use Muilti-threading (let&#39;s say with AsyncSpinner) and (at least) two Callback queues, or more specifically, a MWE of a node that provide a service and process callback in parallel ?</p>
+
+<p>Thanks for reading,</p>
+
+<p>EDIT :
+From reading again the Different Queues explanations, I think I get it a bit better : should I declare 2 node handles in myClassController, with their queues, and then subscribe / advertise explicitly my service to one and my callbacks to the other ? Do I also need a multithread spinner and pass them the specific queue ?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2176">Erwan R.</a> on 2014-07-07 04:32:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hello !</p>
+
+<p>My solution is finally the following (any comment welcome) :</p>
+
+<p>In node class definition :</p>
+
+<pre><code>class MyClass
+{
+    private :
+        ros::NodeHandle nhCall_;
+        ros::NodeHandle nhSrv_;
+        ros::CallbackQueue queueCall;
+        ros::CallbackQueue queueSrv;
+        ros::Subscriber first_sub;
+        ros::ServiceServer first_srv;
+        ros::Subscriber second_sub;
+        ros::Subscriber third_sub;
+        ros::Publisher first_pub;
+        (...)
+    public :
+        MyClass(ros::NodeHandle &amp;nh1, ros::NodeHandle &amp;nh2, ...);
+        ( ... Some Callbacks to handle message and service reception ...)
+        bool run();
+};
+</code></pre>
+
+<p>Class implementation :</p>
+
+<pre><code>#include &quot;MyClass.h&quot;
+
+MyClass::MyClass(ros::NodeHandle &amp;nh1, ros::NodeHandle &amp;nh2, ...)
+{
+    // ROS specific : topics, node handler
+    nhCall_ = nh1;
+    nhSrv_ = nh2;
+
+    // Subscriptions, Advertising
+    first_sub = nhCall_.subscribe(&quot;topicname1&quot;, 1, &amp;MyClass::callback1, this);
+    first_srv = nhSrv_.advertiseService(&quot;servicename&quot;, &amp;MyClass::servicecallback, this);
+    second_sub = nhCall_.subscribe(&quot;topicname2&quot;, 1, &amp;MyClass::callback2, this);
+    third_sub = nhCall_.subscribe(&quot;topicname3&quot;, 1, &amp;MyClass::callback3, this);
+
+    first_pub = nhCall_.advertise&lt;my_msgs::message&gt;(&quot;topicname4&quot;, 1);
+}
+
+// Callback Handling 
+void MyClass::callback1(my_msgs::message msg)
+{
+    // Do something
+}
+(...)
+
+bool MyClass::run()
+{
+
+    while(nhCall_.ok())  // We may check also for the other NodeHandle state
+    {
+        ros::spinOnce();
+    }
+
+    return true;
+}
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;mynode&quot;);
+    ros::NodeHandle nh_call;
+    ros::NodeHandle nh_srv;
+
+    MyClass mysupernode(nh_call, nh_srv, ...);
+    mysupernode.run();
+
+    return EXIT_SUCCESS;
+}
+</code></pre>
+
+<p>As said, advice or comment are welcome ! Hope this answer may be useful for people that need to do Multithreading in ROS nodes !</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2176">Erwan R.</a> on 2014-09-02 10:12:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Sorry, I am confused with the callbackqueue which you have defined as queueCall and queueSrv. But in the following codes you have not dealed with them, can each node recognize them?
+And why haven&#39;t you defined the spiner for these two threads?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28695">luffyfjx</a> on 2016-12-02 14:14:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Well, from quick digging into that old code, it appears that the Queues are not used at all. There is only one service provided by nhSrv and callbacks on nhCall. However the node is not used anymore, so don&#39;t rely too much on that example. It may not be up-to-date with latest distro (2 y old).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2176">Erwan R.</a> on 2016-12-21 11:52:33 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Either of the patterns in <a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning#Multi-threaded_Spinning">Multi-threaded Spinning</a> would work, when replacing the code block of</p>
+
+<pre><code>controller.run();
+</code></pre>
+
+<p>Both spinners shown create a pool of 4 threads, that will service your callbacks as they come in (on one queue, multiple callback queues are very specialized and likely unnecessary for most applications.)</p>
+
+<p>So if you&#39;re worried that your one long-running service will prevent one topic&#39;s message callbacks from being processed, you can create a spinner(2), which can serve two callbacks in parallel. The only difference is that MultiThreadedSpinner.spin() is <a href="http://stackoverflow.com/questions/5263143/what-is-the-definition-of-blocking-read-vs-non-blocking-read">blocking</a> similar to ros::spin(), while AsyncSpinner.spin() is not.</p>
+
+<p>HOWEVER, services are specifically intended to return quickly and not be long-running tasks, which is why you should consider using <a href="http://wiki.ros.org/actionlib#Overview">actionlib</a> clients/servers instead.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3632">paulbovbel</a> on 2014-09-02 15:10:08 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Hi there,</p>
+
+<p>Another solution for you is to use SimpleAction lib. So you write an action server that execute a callback that you can cancel from the client.
+Tell me if you need an example. You can find some doc here:
+<a href="http://wiki.ros.org/actionlib_tutorials/Tutorials/SimpleActionServer%28GoalCallbackMethod%29">http://wiki.ros.org/actionlib_tutorials/Tutorials/SimpleActionServer%28GoalCallbackMethod%29</a>
+<a href="http://wiki.ros.org/actionlib_tutorials/Tutorials/Writing%20a%20Callback%20Based%20Simple%20Action%20Client">http://wiki.ros.org/actionlib_tutorials/Tutorials/Writing%20a%20Callback%20Based%20Simple%20Action%20Client</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/49549">Guillaume.b-d</a> on 2019-11-19 03:19:08 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>&quot;ROS Spinning, Threading, Queuing
+Effective use of multi spinner threads, different queues in ROS&quot;
+<a href="https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f">https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/39671">cascais</a> on 2020-08-06 13:30:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

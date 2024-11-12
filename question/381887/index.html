@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>received a tcpros connection for nonexistent service - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/381887">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>received a tcpros connection for nonexistent service</h2>
+      <div class="question">
+        <p>I created a <a href="http://wiki.ros.org/navigation/Tutorials/Writing%20A%20Global%20Path%20Planner%20As%20Plugin%20in%20ROS">custom global planner</a> that <a href="https://answers.ros.org/question/374307/how-to-use-a-subscriber-in-a-global-planner-plugin/">copies a plan (calculated in a different node) through a service</a>. I have the service server set inside the node calculating the global plan.</p>
+
+<p>When I run the application I get the following error on the server&#39;s side:</p>
+
+<pre><code>[ERROR] [1625582846.614443975]: received a tcpros connection for a nonexistent service [/copier]
+</code></pre>
+
+<p>A thing to note is that, the callback function is not consistently called. My robot enters in recovery behavior as most of the time it takes too long for the service to be advertised. I believe this might be affecting it.</p>
+
+<p>The service is advertising inside a ticking function that ticks each time the global plan is available as follows:</p>
+
+<pre><code>void RosService::tick()
+{
+  //
+  //Unrelated codelines
+  //
+  node_handle_ = std::make_unique&lt;ros::NodeHandle&gt;();
+  ros::ServiceServer service = node_handle_-&gt;advertiseService(&quot;copier&quot;, copy);
+  ros::spinOnce();
+}
+</code></pre>
+
+<p>My client is written as follows in the global planner:</p>
+
+<pre><code>#include &lt;pluginlib/class_list_macros.h&gt;
+#include &quot;copy_planner.h&quot;
+
+//register this planner as a BaseGlobalPlanner plugin
+PLUGINLIB_EXPORT_CLASS(copy_planner::CopyPlanner, nav_core::BaseGlobalPlanner)
+
+using namespace std;
+
+//Default Constructor
+namespace copy_planner
+{
+
+  CopyPlanner::CopyPlanner()
+  {
+  }
+
+  CopyPlanner::CopyPlanner(std::string name, costmap_2d::Costmap2DROS *costmap_ros)
+  {
+    initialize(name, costmap_ros);
+  }
+
+  void CopyPlanner::initialize(std::string name, costmap_2d::Costmap2DROS *costmap_ros)
+  {
+    if (!initialized_)
+    {
+      costmap_ros_ = costmap_ros;            //initialize the costmap_ros_ attribute to the parameter.
+      costmap_ = costmap_ros_-&gt;getCostmap(); //get the costmap_ from costmap_ros_
+
+      // // initialize other planner parameters
+      n.param(&quot;step_size&quot;, step_size_, costmap_-&gt;getResolution());
+      world_model_ = new base_local_planner::CostmapModel(*costmap_);
+
+      // create a client for the path planning service
+      service_ = n.serviceClient&lt;copy_service::copier&gt;(&quot;copier&quot;);
+
+      // wait for the service to be advertised and available
+      service_.waitForExistence();
+
+      initialized_ = true;
+    }
+    else
+      ROS_WARN(&quot;This planner has already been initialized... doing nothing&quot;);
+  }
+
+  bool CopyPlanner::makePlan(const geometry_msgs::PoseStamped &amp;start, const geometry_msgs::PoseStamped &amp;goal, std::vector&lt;geometry_msgs::PoseStamped&gt; &amp;plan)
+  {
+    copy_service::copier srv;
+    geometry_msgs::PoseStamped pose_stamped;
+    // copy_service::copier path;
+
+    srv.request.isaac_plan.header.stamp = ros::Time::now();
+    srv.request.isaac_plan.poses.push_back(goal);
+
+    // sub = n.subscribe(&quot;isaac_plan&quot;, 1000, &amp;CopyPlanner::callback, this);
+
+    service_.call(srv);
+
+    if (srv.response.copied_plan.poses.size())
+    {
+      for (int i = 0; i &lt; srv.response.copied_plan.poses.size(); ++i)
+      {
+        pose_stamped.header.stamp = ros::Time::now();
+        pose_stamped.header.frame_id = &quot;map&quot;;
+
+        pose_stamped.pose = srv.response.copied_plan.poses[i].pose;
+
+        plan.push_back(pose_stamped);
+      }
+
+      return true;
+    }
+    else
+    {
+      return false;
+    }
+  }
+};
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/74848">jmyazbeck</a> on 2021-07-06 10:08:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I have the similar problem in python, have you got a solution?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/93587">waltergun</a> on 2023-01-30 16:37:27 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@waltergun I believe I had to lower the frequency on the client&#39;s side for which it requested the service, I had to reduce it quite drastically (order of 100). This is a bit counter intuitive but it worked well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/74848">jmyazbeck</a> on 2023-01-31 05:40:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Isn&#39;t the problem here <code>ros::ServiceServer</code>&#39;s ctor is called inside a callback / very limited scope?</p>
+
+<p>Similar to pub-sub, setting up server-client connections takes time. Recreating a service server every <code>N</code> milliseconds will not work reliably.</p>
+
+<p>The fact you &quot;<em>had to reduce it quite drastically (order of 100)</em>&quot; seems to support this: there just wasn&#39;t enough time for your client(s) to connect to your server. Hence the error message: &quot;<em>received a tcpros connection for a nonexistent service</em>&quot;: the server didn&#39;t exist any more by the time the client(s) were trying to reach it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-01-31 06:31:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn Thanks a lot for the info! I dont have my hands on the project anymore but I believe this makes sense, and I wish I knew that back then</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/74848">jmyazbeck</a> on 2023-02-04 05:57:36 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

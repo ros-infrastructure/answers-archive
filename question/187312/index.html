@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ratslam_ros (OpenRatSLAM): ratslam_lv node crashes/dies with exit code -4 when run from roslaunch - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/187312">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ratslam_ros (OpenRatSLAM): ratslam_lv node crashes/dies with exit code -4 when run from roslaunch</h2>
+      <div class="question">
+        <p>System: I am using ROS Hydro on Ubuntu 12.04 on an IBM Thinkpad.
+<br>Software: RatSLAMROS, an ROS port of OpenRatSLAM (I&#39;d include a link but the site won&#39;t let me because I&#39;m a noob. But it&#39;s easy to google)
+<br>Problem: RatslamROS crashes on launch</p>
+
+<p>How the problem presents: On using roslaunch to run RatSLAMROS, all the appropriate nodes open, but within a few seconds I receive the following crash message, and roslaunch proceeds to shut everything down:</p>
+
+<pre><code>================================================================================REQUIRED process [RatSLAMLocalViewCells-1] has died!
+process has died [pid 32270, exit code -4, cmd /home/robot/catkin_ws/devel/lib/ratslam_ros/ratslam_lv /home/robot/catkin_ws/devel/share/ratslam_ros/config/config_irataus.txt _image_transport:=compressed __name:=RatSLAMLocalViewCells __log:=/home/robot/.ros/log/98919cce-1042-11e4-bca8-0012f0baf8fa/RatSLAMLocalViewCells-1.log].
+log file: /home/robot/.ros/log/98919cce-1042-11e4-bca8-0012f0baf8fa/RatSLAMLocalViewCells-1*.log
+Initiating shutdown!
+===============================================================================</code></pre>
+
+<p>Reproducing the problem: I have a fresh install of ROS Hydro and have followed the exact instructions listed here (again, not allowed a real link) [google RatSLAMROS] multiple times. I did have to do one small workaround to get the code to compile, listed here [go to that last page, click issues, then click the 4th one. Link really woulda helped here too].</p>
+
+<p>What else I&#39;ve learned: 
+<br>I haven&#39;t been able to find any information about what &quot;exit code -4&quot; means, nor do the log files include any warnings or errors that would seem to indicate that something is wrong. The node simply dies when it reaches a certain point.</p>
+
+<p>I have isolated (I think) the problem to the ratslam_lv node. The roslaunch attempt no longer crashes when this node is removed from the .launch file. What&#39;s very strange is that the node only crashes when launched from a .launch file. When I launch all three nodes by hand, nothing crashes, though the program still doesn&#39;t work properly (only one of the three nodes displays proper output when data is given through a rosbag file). The node in question also fails when launched from a .launch file by itself.</p>
+
+<p>Since the log files were reporting no errors (only some warnings about settings, with assurance that the defaults would be used) (I will post these files if anyone asks for them but they&#39;re very lengthy so I&#39;m forgoing posting them for this initial asking) I decided to delve into the code of the ratslam<em>lv node and determine exactly where the code was crashing. Here is the source code for main</em>lv.cpp, the file that creates the ratslam_lv node (with output flags that I added):</p>
+
+<pre><code>
+/*
+ * openRatSLAM
+ *
+ * main_lv - ROS interface bindings for the local view cells
+ *
+ * Copyright (C) 2012
+ * David Ball (addres omitted) (1), Scott Heath (address omitted so ROS Answers will let me post) (2)
+ *
+ * RatSLAM algorithm by:
+ * Michael Milford (1) and Gordon Wyeth (1) ([address omitted))
+ *
+ * 1. Queensland University of Technology, Australia
+ * 2. The University of Queensland, Australia
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <omitted so ros answers will let me post>.
+ */
+
+#include <iostream>
+using namespace std;
+
+#include <opencv2/opencv.hpp>
+#include <opencv2/highgui/highgui.hpp>
+
+#include "utils/utils.h"
+
+#include <boost/property_tree/ini_parser.hpp>
+
+#include <ros/ros.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/CompressedImage.h>
+#include <ratslam_ros/ViewTemplate.h>
+#include <ros/console.h>
+
+#include <image_transport/image_transport.h>
+
+#include "ratslam/local_view_match.h"
+
+#if HAVE_IRRLICHT
+#include "graphics/local_view_scene.h"
+ratslam::LocalViewScene *lvs = NULL;
+bool use_graphics;
+#endif
+
+
+using namespace ratslam;
+ratslam::LocalViewMatch * lv = NULL;
+
+void image_callback(sensor_msgs::ImageConstPtr image, ros::Publisher * pub_vt)
+{
+  ROS_DEBUG_STREAM("LV:image_callback{" << ros::Time::now() << "} seq=" << image->header.seq);
+
+  static ratslam_ros::ViewTemplate vt_output;
+
+  lv->on_image(&image->data[0], (image->encoding == "bgr8" ? false : true), image->width, image->height);
+
+  vt_output.header.stamp = ros::Time::now();
+  vt_output.header.seq++;
+  vt_output.current_id = lv->get_current_vt();
+  vt_output.relative_rad = lv->get_relative_rad();
+
+  pub_vt->publish(vt_output);
+
+#ifdef HAVE_IRRLICHT
+  if (use_graphics)
+  {
+    lvs->draw_all();
+  }
+#endif
+}
+
+int main(int argc, char * argv[])
+{
+  ROS_INFO_STREAM(argv[0] << " - openRatSLAM Copyright (C) 2012 David Ball and Scott Heath");
+  ROS_INFO_STREAM("RatSLAM algorithm by Michael Milford and Gordon Wyeth");
+  ROS_INFO_STREAM("Distributed under the GNU GPL v3, see the included license file.");
+
+  if (argc < 2)
+  {
+    ROS_FATAL_STREAM("USAGE: " << argv[0] << " <config_file>");
+    exit(-1);
+  }
+  std::string topic_root = "";
+
+  boost::property_tree::ptree settings, ratslam_settings, general_settings;
+  read_ini(argv[1], settings);
+
+  get_setting_child(general_settings, settings, "general", true);
+  get_setting_from_ptree(topic_root, general_settings, "topic_root", (std::string)"");
+  get_setting_child(ratslam_settings, settings, "ratslam", true);
+  lv = new ratslam::LocalViewMatch(ratslam_settings);
+
+  if (!ros::isInitialized())
+  {
+    ros::init(argc, argv, "RatSLAMViewTemplate");
+  }
+  ros::NodeHandle node;
+
+  ros::Publisher pub_vt = node.advertise<ratslam_ros::ViewTemplate>(topic_root + "/LocalView/Template", 0);
+
+  image_transport::ImageTransport it(node);
+  cout << "I made it to flag 1!" << endl;
+  image_transport::Subscriber sub = it.subscribe(topic_root + "/camera/image", 0, boost::bind(image_callback, _1, &pub_vt));
+  cout << "I made it to flag 2!" << endl;
+
+#ifdef HAVE_IRRLICHT
+    boost::property_tree::ptree draw_settings;
+    get_setting_child(draw_settings, settings, "draw", true);
+    get_setting_from_ptree(use_graphics, draw_settings, "enable", true);
+    if (use_graphics)
+      lvs = new ratslam::LocalViewScene(draw_settings, lv);
+#endif
+
+  cout << "I made it to flag 3!" << endl;
+  ros::spin();
+  cout << "I made it to flag 4!" << endl;
+  return 0;
+}
+</code></pre>
+
+<p>When I run the code from rosrun, all 4 flags make an appearance (4 only shows up after I Ctr-C the program). But when run from the .launch file, only flag 1 is reached,  indicating that the crash occurs somewhere on this line:
+<pre><code>
+ image<em>transport::Subscriber sub = it.subscribe(topic</em>root + &quot;/camera/image&quot;, 0, boost::bind(image<em>callback, _1, &amp;pub</em>vt));</code></pre></p>
+
+<p>I&#39;m going to keep working at this myself, and I will update if I figure anything out, but in the mean time, any guesses would be appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/19804">jmlilly16</a> on 2014-07-21 14:06:11 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>did the &quot;/camera/image&quot;node exist?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23311">feixiao</a> on 2015-08-24 22:44:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Could you please tell me how to run Openratslam in buntu16.04 with ROSkinetic and Opencv3.4 ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40158">sunt40</a> on 2019-02-23 02:22:03 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

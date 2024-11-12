@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Python Multiprocessing to publish to multiple topics - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/119511">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Python Multiprocessing to publish to multiple topics</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/56644/python-multiprocessing-to-publish-to-multiple-topics">https://robotics.stackexchange.com/questions/56644/python-multiprocessing-to-publish-to-multiple-topics</a>.</p>
+        <p>I currently have a setup where I have about 10 shell scripts that listen to 10 different KNX addresses (using the shell command grouplisten) and publish their state to a ROS topic. These scripts can run in the background, so it&#39;s quite convenient to &#39;listen&#39; to the state of these devices.</p>
+
+<p>I tried to replace these 10 scripts with a single python program that basically does this:</p>
+
+<ol>
+<li><p>Declare a subprocess.Popen for each device, to listen to its knx device.</p>
+
+<blockquote>
+<pre><code>self.listen_stat = subprocess.Popen(self.cmds,stdout=subprocess.PIPE,preexec_fn=os.setsid)
+</code></pre>
+</blockquote></li>
+<li><p>Declare the node (in <code>__main__</code>) , and topic for each device ( in <code>device.__init__()</code>). </p>
+
+<blockquote>
+<pre><code>class DeviceProp:
+def __init__(self):
+  ...
+  self.pub = rospy.Publisher(self.name,Int32,latch=True)
+</code></pre>
+</blockquote></li>
+<li><p>Call a <code>talker</code> function like so:</p></li>
+</ol>
+
+<blockquote>
+<pre><code>try:
+  for device in device_props:
+       p = multiprocessing.Process(target=device.device_talker)
+       procs.append(p)
+       p.start()
+except (KeyboardInterrupt,rospy.ROSInterruptException,IOError) as e:
+    for p in procs:
+       p.join()
+</code></pre>
+</blockquote>
+
+<p>(The device_talker basically just publishes new data to <code>device.pub</code>)</p>
+
+<p>What happens is that the logs suggest data is being published, but I don&#39;t see anything on when I subscribe to those topics or if I do <code>rostopic echo</code>. If I run <code>rostopic pub</code> from a new shell, I get the data on the topic as expected. I&#39;ve also added a rospy.sleep(1) at multiple places (in loops too) so that even if I lose the first few messages, I <em>should</em> get the later ones. But I don&#39;t.</p>
+
+<p>Any suggestions on what I should do?
+(In case you are wondering why - I want to replace 10 scripts with 1 for easier code management. Also, Since I can store all address and device props in a yaml file, it will be trivial to add, or edit the configuration file).</p>
+
+        <div class="owner"><p>Asked by <a href="/users/11001">Mandar</a> on 2014-01-20 00:21:42 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I realize that I may be using the multiprocessing module wrong to share variables (the publisher for instance). It would be helpful if someone could suggest a way to fix that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/11001">Mandar</a> on 2014-01-20 02:52:46 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I managed to solve this problem (Note to self: Read the python docs). Turns out that a new process thread creates a copy of all the data from the parent, and I had not taken care of this properly.</p>
+
+<p>The way I solved it was thus: I called the <code>Popen</code> (listen_stat in this case) from the device method get_status:</p>
+
+<pre><code> def get_status(self):
+    varnum = 0  # for testing only
+    while not rospy.is_shutdown():
+       self.response_line = self.listen_stat.stdout.readline().split()
+       self.new_detect.value = int(self.response_line[varnum])
+</code></pre>
+
+<p>The important detail was declaring the variable <code>new_detect</code> as a <a href="http://docs.python.org/2/library/multiprocessing.html#sharing-state-between-processes">multiprocessing.Value()</a> and then calling this function instead for the multiprocess.</p>
+
+<pre><code>stat_procs = []
+for device in device_props:
+    sp = multiprocessing.Process(target=device.get_status)
+    stat_procs.append(sp)
+    sp.start()
+</code></pre>
+
+<p>The actual publisher then was just called in a normal loop:</p>
+
+<pre><code>try:
+    while not rospy.is_shutdown():
+        for device in device_props:
+            device.device_talker()
+except (KeyboardInterrupt,rospy.ROSInterruptException,IOError) as e:
+    for p in stat_procs:
+       p.join()
+</code></pre>
+
+<p>Hope this helps the others.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/11001">Mandar</a> on 2014-01-21 00:18:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi,
+I am trying to do the same thing. However, I want to create multiple publishers in a single ros node. But when I call the publish method inside a while loop, only the first called publisher is invoked.</p>
+
+<p>Could you please suggest suitable multi threading for this purpose ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30844">amarbanerjee23</a> on 2017-06-22 01:57:50 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

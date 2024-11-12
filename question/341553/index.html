@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Service Server and Client not working when launch by launch file - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/341553">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Service Server and Client not working when launch by launch file</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/94366/service-server-and-client-not-working-when-launch-by-launch-file">https://robotics.stackexchange.com/questions/94366/service-server-and-client-not-working-when-launch-by-launch-file</a>.</p>
+        <p>Hello all.</p>
+
+<p>I am using a pandas data frame to format instructions and the data frame is hosted in a service server. I then have a client that is imported into a position supervising node. The client is a member of the position supervisor class which obviously will pull then next instruction on command.</p>
+
+<p>If I run the parameter setup scripts and then rosrun each of these nodes then everything works as expected. However, I built a launch file and now every time the client is triggered to pull an instruction I get an error saying that the client is receiving a null response from the server.</p>
+
+<p>Error:</p>
+
+<pre><code>[ERROR] [1578864176.167369]: Error processing request: local variable &#39;resp&#39; referenced before assignment
+[&#39;Traceback (most recent call last):\n&#39;, &#39;  File &quot;/opt/ros/melodic/lib/python2.7/dist-packages/rospy/impl/tcpros_service.py&quot;, line 629, in _handle_request\n    response = convert_return_to_response(self.handler(request), self.response_class)\n&#39;, &#39;  File &quot;/home/mhyde/arm_cws/src/arm_data_frame/src/nodes/dataFrameServer.py&quot;, line 66, in handleRequest\n    return resp\n&#39;, &quot;UnboundLocalError: local variable &#39;resp&#39; referenced before assignment\n&quot;]
+[ERROR] [1578864176.177881]: bad callback: &lt;bound method positionSupervisor.arduinoStateCallback of &lt;__main__.positionSupervisor object at 0x7fbb19878650&gt;&gt;
+Traceback (most recent call last):
+  File &quot;/opt/ros/melodic/lib/python2.7/dist-packages/rospy/topics.py&quot;, line 750, in _invoke_callback
+    cb(msg)
+  File &quot;/home/mhyde/arm_cws/src/position_supervisor/src/nodes/positionSupervisor.py&quot;, line 99, in arduinoStateCallback
+    self.pullInstruction()
+  File &quot;/home/mhyde/arm_cws/src/position_supervisor/src/nodes/positionSupervisor.py&quot;, line 52, in pullInstruction
+    self.instruction = self.instructionClient.client()
+  File &quot;/home/mhyde/arm_cws/src/arm_data_frame/src/arm_data_frame/dataFrameClient.py&quot;, line 52, in client
+    return coor.motionType, coor.xCoor, coor.yCoor, coor.zCoor, coor.velFac, coor.accFac
+AttributeError: &#39;NoneType&#39; object has no attribute &#39;motionType&#39;
+</code></pre>
+
+<p>Again, if I rosrun the dataFrameServer and the positionSupervisor and then manually publish to /arduinoState then everything works perfectly. I only get this error if I launch the dataFrame and Supervisor in a launch file.</p>
+
+<p>Launch File:</p>
+
+<pre><code>&lt;launch&gt;
+    &lt;node name=&quot;dataFrameServer&quot; pkg=&quot;arm_data_frame&quot; type=&quot;dataFrameServer.py&quot; /&gt;
+    &lt;node name=&quot;positionSupervisorParams&quot; pkg=&quot;position_supervisor&quot; type=&quot;positionSupervisorParams.py&quot; /&gt;
+    &lt;node name=&quot;positionSupervisor&quot; pkg=&quot;position_supervisor&quot; type=&quot;positionSupervisor.py&quot; /&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>I did try removing nodes from the launch file and it appears the issue is coming from including the position supervisor in the launch file. When I remove it, run the launch file, and then rosrun the positionSupervisor then everything works well.</p>
+
+<p>Below is the code for everything involved. I don&#39;t think the param files are casuing the issues.</p>
+
+<p>Server:</p>
+
+<pre><code>#!/home/mhyde/vEnvs/rosPy/bin/python
+
+&#39;&#39;&#39;
+ROS Service - Server:
+
+Feeds Coors from the CSV File to
+the Data Handler upon service request.
+
+Implements a Pandas DataFrame to contain
+Coor information as well as actuator
+and motion commands.
+&#39;&#39;&#39;
+
+import rospy
+from arm_msgs.srv import instructionPass, \
+    instructionPassResponse
+from pandas import DataFrame, read_csv
+
+
+class server(object):
+    &#39;&#39;&#39;
+    Coor Distributor
+
+    topic =  /instructionPass
+    node  =  /instructionPassServer
+    &#39;&#39;&#39;
+
+    def __init__(self, filePath):
+        self.roboRoutine = DataFrame(read_csv(filePath, sep=&quot;,&quot;))
+        self.index = 0
+        self.instructionCount = 0
+
+    def countInstructions(self):
+        &#39;&#39;&#39;
+        Counts the amount of Coors
+        in routine
+        &#39;&#39;&#39;
+        self.instructionCount = self.roboRoutine.shape[0]
+
+    def checkIndex(self):
+        &#39;&#39;&#39;
+        Checks the current index after each service
+        and sets the index back to 0 to start
+        the routine over again
+        &#39;&#39;&#39;
+        print &#39;Index: %d&#39; % self.index
+        if self.index &lt; self.instructionCount - 1:
+            self.index += 1
+        else:
+            self.index = 0
+
+    def handleRequest(self, req):
+        &#39;&#39;&#39;
+        Service Handle Function:
+
+        Requeset Message Type - Boolean
+        Any message from the client will trigger the function
+        &#39;&#39;&#39;
+        if req.request == True:
+            resp = instructionPassResponse()
+            resp.motionType, resp.xCoor, resp.yCoor, resp.zCoor, resp.velFac, resp.accFac = self.roboRoutine.values[
+                self.index, :]
+
+            self.checkIndex()
+
+        return resp
+
+    def runServer(self):
+        &#39;&#39;&#39;
+        Single method callable function.
+        Starts the ROS Server as long as
+        it is called in an initiated node
+        &#39;&#39;&#39;
+        self.countInstructions()
+        rospy.Service(&#39;instructionPass&#39;, instructionPass, self.handleRequest)
+        rospy.spin()
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        print &#39;Server Running ... &#39;
+        rospy.init_node(&#39;dataFrameServer&#39;)
+        serv = server(
+            &quot;~/arm_cws/src/arm_data_frame/data/testCoordinates.csv&quot;)
+        serv.runServer()
+    except rospy.ROSInterruptException():
+        pass
+</code></pre>
+
+<p>Client:</p>
+
+<pre><code>#!/home/mhyde/vEnvs/rosPy/bin/python
+
+&#39;&#39;&#39;
+ROS Service - Client:
+
+Requests coordinates from the CSV File
+to the Data Distributer upon service request.
+
+&#39;&#39;&#39;
+
+import sys
+import rospy
+from arm_msgs.srv import instructionPass
+
+
+class dataFrameClient(object):
+    &#39;&#39;&#39;
+    Actual Client for the /instructionPass Service.
+    Perpetually pulls coordinates from the dataFrame
+    and feeds them to the motorPosePublisher
+    &#39;&#39;&#39;
+
+    def requestCoordinate(self, request):
+        &#39;&#39;&#39;
+        Function Docstring
+        &#39;&#39;&#39;
+        rospy.wait_for_service(&#39;instructionPass&#39;)
+        try:
+            srvReq = rospy.ServiceProxy(&#39;instructionPass&#39;, instructionPass)
+            resp = srvReq(request)
+            return resp
+        except rospy.ServiceException, error:
+            rospy.loginfo(&#39;Service Call Failed: %s&#39; % error)
+
+    def usage(self):
+        &#39;&#39;&#39;
+        Simple Error Check in Client Request
+        &#39;&#39;&#39;
+        return &#39;%s [req]&#39; % sys.argv[0]
+
+    def client(self):
+        &#39;&#39;&#39;
+        Client Implementation
+        &#39;&#39;&#39;
+        req = False
+        if len(sys.argv) == 1:
+            req = True
+        else:
+            print self.usage()
+        print &quot;Requesting Coordinate ... &quot;
+        coor = self.requestCoordinate(req)
+        return coor.motionType, coor.xCoor, coor.yCoor, coor.zCoor, coor.velFac, coor.accFac
+
+if __name__ == &#39;__main__&#39;:
+    client = dataFrameClient()
+    print client.client()
+</code></pre>
+
+<p>Position Supervisor Node:</p>
+
+<pre><code>#!/home/mhyde/vEnvs/rosPy/bin/python
+
+&#39;&#39;&#39;
+node = /motorPosePub
+pubTopic = /motorPoseSteps
+subTopic = /arduinoState
+
+Listens to arduino for ready state then implements
+other methods to pull and convert the next coordinate
+into the respective arm angles and steps.
+&#39;&#39;&#39;
+
+import rospy
+from std_msgs.msg import Empty
+from arm_msgs.msg import motorSteps
+from arm_msgs.msg import motorAngles
+from arm_data_frame.dataFrameClient import dataFrameClient
+from position_supervisor.geometryUtil import geometryUtil
+
+
+class positionSupervisor(object):
+    &#39;&#39;&#39;
+    Pulls coordinates from the distributer and updates
+    the current desired position for the arduino node.
+    &#39;&#39;&#39;
+
+    def __init__(self):
+
+        self.instruction = []
+
+        self.instructionClient = dataFrameClient()
+        self.geometryUtil = geometryUtil()
+
+        self.stepMsg = motorSteps()
+        self.angleMsg = motorAngles()
+
+        self.stateSub = rospy.Subscriber(
+            &#39;arduinoState&#39;, Empty, callback=self.arduinoStateCallback)
+        self.anglePub = rospy.Publisher(
+            &#39;motorPoseAngles&#39;, motorAngles, queue_size=10)
+        self.stepPub = rospy.Publisher(
+            &#39;motorPoseSteps&#39;, motorSteps, queue_size=10)
+
+        rospy.spin()
+
+    def pullInstruction(self):
+        &#39;&#39;&#39;
+        Pulls the next instruction from the data frame
+        and appends it to a class member for other functions
+        to access.
+        &#39;&#39;&#39;
+        self.instruction = self.instructionClient.client()
+
+    def setMotionType(self):
+        &#39;&#39;&#39;
+        Updates ROS motionType param to define the current
+        robot motion mode.
+        &#39;&#39;&#39;
+        rospy.set_param(&#39;motionType&#39;, self.instruction[0])
+
+    def updatePV(self):
+        &#39;&#39;&#39;
+        Updates the coordinates of the position vector
+        for motor angle and step calculations.
+        &#39;&#39;&#39;
+        self.geometryUtil.vector.xCoor = self.instruction[1]
+        self.geometryUtil.vector.yCoor = self.instruction[2]
+        self.geometryUtil.vector.zCoor = self.instruction[3]
+
+    def setVelAcc(self):
+        &#39;&#39;&#39;
+        Sets ROS params which scale the velocity and
+        acceleration of the motors. This number is a
+        percentage of the default (max) value.
+        &#39;&#39;&#39;
+        rospy.set_param(&#39;velocityFactor&#39;, self.instruction[4])
+        rospy.set_param(&#39;accelerationFactor&#39;, self.instruction[5])
+
+    def defineAngles(self):
+        &#39;&#39;&#39;
+        Uses geometryUtil to return the equivalent
+        angles of each motor
+        &#39;&#39;&#39;
+        self.angleMsg.baseAngle, self.angleMsg.mainAngle, self.angleMsg.secAngle, \
+            self.angleMsg.toolAngle = self.geometryUtil.returnAngles()
+
+    def defineSteps(self):
+        &#39;&#39;&#39;
+        Uses geometryUtil to return the equivalent
+        steps of each motor
+        &#39;&#39;&#39;
+        self.stepMsg.baseStep, self.stepMsg.mainStep, self.stepMsg.secStep, \
+            self.stepMsg.toolStep = self.geometryUtil.returnSteps()
+
+    def arduinoStateCallback(self, arduinoState):
+        &#39;&#39;&#39;
+        Updates coordinate when Arduino is ready.
+        &#39;&#39;&#39;
+        self.pullInstruction()
+        self.setMotionType()
+        self.updatePV()
+        self.setVelAcc()
+        self.defineSteps()
+        self.defineAngles()
+        self.publish()
+
+    def publish(self):
+        &#39;&#39;&#39;
+        Publishes the steps to the motorPoseSteps topic
+        for the arduino to read.
+        &#39;&#39;&#39;
+        self.stepPub.publish(self.stepMsg)
+        rospy.loginfo(self.stepMsg)
+        self.anglePub.publish(self.angleMsg)
+        rospy.loginfo(self.angleMsg)
+
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;positionSupervisor&#39;, anonymous=True)
+    positionSupervisor()
+</code></pre>
+
+<p>I did see a similar problem on the ROS forums that was caused by naming issues but I can&#39;t see that as an issue here. If anyone has any suggestions for solving the issue or if you need me to revise my question for clarity please let me know. Thank you for any input!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/46645">mhyde64</a> on 2020-01-12 16:31:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>We see this in your &quot;Server&quot; script:</p>
+
+<blockquote>
+<pre><code>if __name__ == &#39;__main__&#39;:
+    try:
+        [..]
+        serv = server(
+            &quot;~/arm_cws/src/arm_data_frame/data/testCoordinates.csv&quot;)
+        [..]
+</code></pre>
+</blockquote>
+
+<p>you are using a relative path for <code>filePath</code>.</p>
+
+<p><code>roslaunch</code> changes the <code>CWD</code> for all nodes before starting them. See #q235337 for a previous Q&amp;A about this, and the links to the <code>roslaunch</code> documentation where this is explained.</p>
+
+<p>So this will work with <code>rosrun</code>, but not with <code>roslaunch</code>.</p>
+
+<p>If you want to know more about it, please search ROS Answers with Google (append <code>site:answers.ros.org</code> to your query).</p>
+
+<p>To make things work: use absolute paths, and to avoid hard-coding an absolute path into your scripts, use the <code>$(find &lt;your_pkg_name&gt;)</code> <a href="http://wiki.ros.org/roslaunch/XML/#substitution_args">substitution</a> arg supported by <code>roslaunch</code>. That would allow you to use <em>package relative</em> paths.</p>
+
+<p>But you of course don&#39;t have to use that. As long as the parameter contains an absolute path, it should work.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-01-12 17:10:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>You might actually want to add some checking and error handling if the <code>.csv</code> cannot be found / opened. Right now the code only deals with the &quot;happy path&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-12 17:16:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That is a good point. I have a few exceptions that I need to work into this program still. </p>
+
+<p>Let me play around with your solution (I have a bit of reading to do) and I&#39;ll be sure to come back and verify it.</p>
+
+<p>Thanks so much !</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46645">mhyde64</a> on 2020-01-12 20:43:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Actually, here&#39;s something I realized. </p>
+
+<p>The error persists regardless of if I open the dataFrame with a launch file or rosrun. The error only occurs when I include the positionSupervisor in the launch file. This node does not care about the filepath nor does the filepath care about this node. </p>
+
+<p>I was able to include <code>&lt;param name=&quot;filePath&quot; value=&quot;$(find arm_data_frame)/testCoordinates.csv/&gt;</code> to my launch file and the nodes still work with rosrun but it did not fix my issue with launching. Again, the issue only happens if positionSupervisor (which contains the client) is included in the launch file. </p>
+
+<p>Any other ideas?</p>
+
+<p>The whole project is public on GitHub if you want to check it out there:
+<a href="https://github.com/HydeMikhail/Friday_Robotic_Arm">https://github.com/HydeMikhail/Friday_Robotic_Arm</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46645">mhyde64</a> on 2020-01-12 21:05:45 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>The problem was in :</p>
+
+<pre><code>def client(self):
+        &#39;&#39;&#39;
+        Client Implementation
+        &#39;&#39;&#39;
+        req = False
+        if len(sys.argv) == 1:
+            req = True
+        else:
+            print self.usage()
+        print &quot;Requesting Coordinate ... &quot;
+        coor = self.requestCoordinate(req)
+        return coor.motionType, coor.xCoor, coor.yCoor, coor.zCoor, coor.velFac, coor.accFac
+</code></pre>
+
+<p>Apparently <code>len(sys.argv)</code> did not equal 1. I should have realized the error message I was receiving was the one that was included in the code. That&#39;s what I get for not fully understanding code before I use it.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/46645">mhyde64</a> on 2020-01-13 18:26:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;ve marked your answer to be the accepted answer, as it would seem to be the actual cause of the problem you reported.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-14 06:15:06 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

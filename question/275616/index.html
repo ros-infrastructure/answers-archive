@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[HELP] Problem with point cloud messages! - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/275616">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[HELP] Problem with point cloud messages!</h2>
+      <div class="question">
+        <p>Hi all,</p>
+
+<p>I&#39;m struggling with this bug since two days and I&#39;m really going crazy, so I hope that you can give me good hints on what can cause this strange behaviour. </p>
+
+<p>I&#39;m working with gazebo, where I created an apartment-like environment and a mobile robot. The robot is equipped with an RGB-D camera and a <a href="http://gazebosim.org/tutorials?tut=logical_camera_sensor&cat=sensors&branch=logical_camera">logical_camera</a>.</p>
+
+<p>To get the &quot;images&quot; from the logical camera I wrote a gazebo plugin, as explained in the tutorial, and I slightly modified the message to also contain the models bounding boxes:</p>
+
+<blockquote>
+<pre><code>void LogicalCameraPlugin::OnUpdate(){
+     msgs::LogicalCameraImage logical_image;
+     semantic_map_benchmarking::LogicalCameraImage msg;
+     logical_image = this-&gt;parentSensor-&gt;Image();
+     gazebo::rendering::ScenePtr scene = gazebo::rendering::get_scene();
+     if (!scene || !scene-&gt;Initialized())
+         return;
+
+     msg.header.stamp = ros::Time::now();
+     msg.header.frame_id = &quot;logical_camera_link&quot;;
+
+     msg.pose.position.x = logical_image.pose().position().x();
+     ...
+
+     int number_of_models = logical_image.model_size();
+     for(int i=0; i &lt; number_of_models; i++){
+         semantic_map_benchmarking::Model model_msg;
+
+        rendering::VisualPtr visual = scene-&gt;GetVisual(logical_image.model(i).name());
+        if (!visual)
+             continue;
+
+        math::Box bounding_box = visual-&gt;GetBoundingBox();
+
+        model_msg.pose.position.x = logical_image.model(i).pose().position().x();
+
+       model_msg.size.x = bounding_box.GetXLength();
+       model_msg.size.y = bounding_box.GetYLength();
+       model_msg.size.z = bounding_box.GetZLength();
+
+       model_msg.min.x = bounding_box.min.x;
+       model_msg.min.y = bounding_box.min.y;
+       model_msg.min.z = bounding_box.min.z;
+
+       model_msg.max.x = bounding_box.max.x;
+       model_msg.max.y = bounding_box.max.y;
+       model_msg.max.z = bounding_box.max.z;
+
+       msg.models.push_back(model_msg);
+}
+
+  this-&gt;image_pub.publish(msg);
+}
+</code></pre>
+</blockquote>
+
+<p>What I want to do is the following: given the logical camera image containing the models bounding boxes and the depth camera point cloud,  for each bounding box find the points of the cloud that fall inside it.</p>
+
+<p>So, I implemented a node that listens to logical_camera and rgbd camera messages with message filters and approximate time synchronization, and this is what I do in the callback: </p>
+
+<pre><code>void filterCallback(const semantic_map_benchmarking::LogicalCameraImage::ConstPtr&amp; logical_image_msg,
+                    const PointCloud::ConstPtr&amp; scene_cloud_msg){
+
+    tf::StampedTransform depth_camera_pose;
+    try {
+        _listener.waitForTransform(&quot;map&quot;,
+                                   &quot;camera_depth_optical_frame&quot;,
+                                   ros::Time(0),
+                                   ros::Duration(3));
+        _listener.lookupTransform(&quot;map&quot;,
+                                  &quot;camera_depth_optical_frame&quot;,
+                                  ros::Time(0),
+                                  depth_camera_pose);
+    }
+    catch(tf::TransformException ex) {
+        ROS_ERROR(&quot;%s&quot;, ex.what());
+    }
+
+    Eigen::Isometry3f depth_camera_transform = tfTransform2eigen(depth_camera_pose);
+    PointCloud::Ptr map_cloud (new PointCloud ());
+    pcl::transformPointCloud (*scene_cloud_msg, *map_cloud, depth_camera_transform);
+
+    PointCloud::Ptr objects_cloud_msg (new PointCloud ());
+    objects_cloud_msg-&gt;header.frame_id = &quot;/map&quot;;
+    objects_cloud_msg-&gt;width  = 1;
+    objects_cloud_msg-&gt;is_dense = false;
+    int num_points=0;
+
+    PointCloud::Ptr boxes_cloud_msg (new PointCloud ());
+    boxes_cloud_msg-&gt;header.frame_id = &quot;/map&quot;;
+    boxes_cloud_msg-&gt;height = logical_image_msg-&gt;models.size()*8;
+    boxes_cloud_msg-&gt;width  = 1;
+    boxes_cloud_msg-&gt;is_dense = false;
+
+    tf::StampedTransform logical_camera_pose;
+    tf::poseMsgToTF(logical_image_msg-&gt;pose,logical_camera_pose);
+
+    for(int i=0; i &lt; logical_image_msg-&gt;models.size(); i++){
+
+        tf::Transform model_pose;
+        tf::poseMsgToTF(logical_image_msg-&gt;models.at(i).pose,model_pose);
+
+        Eigen::Vector3f box_min = tfTransform2eigen(logical_camera_pose)*tfTransform2eigen(model_pose)*
+                Eigen::Vector3f(logical_image_msg-&gt;models.at(i).min.x,
+                                logical_image_msg-&gt;models.at(i).min.y,
+                                logical_image_msg-&gt;models.at(i).min.z);
+
+        Eigen::Vector3f box_max = tfTransform2eigen(logical_camera_pose)*tfTransform2eigen(model_pose)*
+                Eigen::Vector3f(logical_image_msg-&gt;models.at(i).max.x,
+                                logical_image_msg-&gt;models.at(i).max.y,
+                                logical_image_msg-&gt;models.at(i).max.z);
+
+        float x_range = box_max.x()-box_min.x();
+        float y_range = box_max.y()-box_min.y();
+        float z_range = box_max.z()-box_min.z();
+
+        //in this way I get the 8 vertices of the bounding box
+        for(int k=0; k &lt;= 1; k++)
+            for(int j=0; j &lt;= 1; j++)
+                for(int i=0; i &lt;= 1; i++)
+                    boxes_cloud_msg-&gt;points.push_back (pcl::PointXYZ(box_min.x() + i*x_range,
+                                                                     box_min.y() + j*y_range,
+                                                                     box_min.z() + k*z_range));
+
+        for(int i=0; i &lt; map_cloud-&gt;points.size(); ++i){
+
+            if(map_cloud-&gt;points[i].x &gt; box_min.x() &amp;&amp; map_cloud-&gt;points[i].x &lt; box_max.x() &amp;&amp;
+                    map_cloud-&gt;points[i].y &gt; box_min.y() &amp;&amp; map_cloud-&gt;points[i].y &lt; box_max.y() &amp;&amp;
+                    map_cloud-&gt;points[i].z &gt; box_min.z() &amp;&amp; map_cloud-&gt;points[i].z &lt; box_max.z()){
+
+                objects_cloud_msg-&gt;points.push_back(map_cloud-&gt;points[i]);
+                num_points++;
+            }
+
+        }
+    }
+    objects_cloud_msg-&gt;height = num_points;
+
+    _boxes_cloud_pub.publish(boxes_cloud_msg);
+
+    _objects_cloud_pub.publish(objects_cloud_msg);
+
+}
+</code></pre>
+
+<p>I&#39;m 99% sure that the math is correct, that is, the two clouds are in the same reference frame (i.e. map). In RViz, I visualize correctly the two clouds and I can see that in the space defined by the bounding box it actually falls a certain number of points but the if statement never becomes true and objects_cloud is always empty.</p>
+
+<p>I&#39;d like to show you a screenshot of the situation but I can&#39;t because I&#39;m posting this question from another pc, nevertheless, I kindly ask you to trust me since I made all the possible checks that came to my mind.</p>
+
+<p>As in the title, still I can&#39;t understand where is the problem, so I&#39;d be very glad if someone could give me some hint about this bug!!!</p>
+
+<p>Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3511">schizzz8</a> on 2017-11-11 05:19:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Not directly an answer, but three suggestions:</p>
+
+<p>1 . change the title of your question: if you weren&#39;t looking for ppl to help you, you wouldn&#39;t be posting here. We already know that you are in need of help. Also: the title doesn&#39;t tell anyone anything at the moment. Make it descriptive.</p>
+
+<p>..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-11-11 06:20:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>2 . use as many convenience methods from <a href="http://wiki.ros.org/pcl_conversions">pcl_conversions</a> as possible (don&#39;t work with <code>sensor_msgs/PointCloud2</code> instances directly fi)</p>
+
+<p>3 . use PCL for this: I&#39;m not an expert, but it would seem that PCL itself (so the library), as a lot of functionality ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-11-11 06:26:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>you should be able to reuse. One candidate: <a href="http://docs.pointclouds.org/trunk/classpcl_1_1_extract_indices.html">pcl::ExtractIndices</a> (tutorial: <a href="http://pointclouds.org/documentation/tutorials/extract_indices.php">Extracting indices from a PointCloud</a>).</p>
+
+<p>Reusing this should allow you to avoid ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-11-11 06:29:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>.. the work and any implementation mistakes that others have already made for you (and fixed) in PCL.</p>
+
+<p>(I believe you don&#39;t need to use RANSAC in your case, as you already have the points).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-11-11 06:30:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As to your current code, I find this line:</p>
+
+<pre><code>objects_cloud_msg-&gt;width  = 1;
+</code></pre>
+
+<p>suspicious. Is your cloud really only a single line of points?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-11-11 06:32:02 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

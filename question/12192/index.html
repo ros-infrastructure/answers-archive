@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Getting polar_scan_matcher package working with published laser scanner message - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/12192">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Getting polar_scan_matcher package working with published laser scanner message</h2>
+      <div class="question">
+        <p>I am running 2 nodes. One is psm<em>node (from polar</em>scan<em>matcher package) and the other one is my own node (publisher</em>node) that publishes scan messages.</p>
+
+<p>When running those 2 nodes, I had a warning that I guess causing the rviz not visualizing as expected. The publisher is publishing messsages, however, in the rviz, from laser scan tab, it says &quot;Showing [0] points from [0] messages&quot;. The warning is as below, from the terminal: </p>
+
+<pre><code>[ WARN] [1322334049.869100511]: ScanMatcherNode: Could get initial laser transform, skipping scan (Frame id /laser_frame does not exist! Frames (3): Frame /laser exists with parent /base_link.
+Frame /base_link exists with parent NO_PARENT.
+</code></pre>
+
+<p>Anyway, the following is my launch file:</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;param name=&quot;/use_sim_time&quot; value=&quot;false&quot;/&gt;
+
+  &lt;node pkg=&quot;rviz&quot; type=&quot;rviz&quot; name=&quot;rviz&quot; 
+    args=&quot;-d $(find polar_scan_matcher)/demo/demo.vcg&quot;/&gt;
+
+  &lt;!-- I include this, our own node --&gt;
+  &lt;node pkg=&quot;pcd_robot&quot; type=&quot;publisher_node&quot; name=&quot;publisher_node&quot;&gt; 
+    &lt;remap from=&quot;/scan&quot; to=&quot;scan&quot;/&gt;
+  &lt;/node&gt;
+
+
+  &lt;node pkg=&quot;polar_scan_matcher&quot; type=&quot;psm_node&quot; name=&quot;psm_node&quot; output=&quot;screen&quot;&gt;
+    &lt;param name=&quot;max_error&quot; value=&quot;0.20&quot;/&gt;
+    &lt;param name=&quot;search_window&quot; value=&quot;100&quot;/&gt;
+  &lt;/node&gt;
+
+  &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_link_to_laser&quot; 
+    args=&quot;0.0 0.0 0.0 0 0 0 /base_link /laser 40&quot; /&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Below is my code that is supposed to publish the laser scan messages(it&#39;s already working as a single node, but still cannot be used with psm_node):</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;sstream&gt;
+#include &lt;fstream&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+#include &lt;sensor_msgs/PointCloud.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &quot;geometry_msgs/Twist.h&quot;
+#include &quot;geometry_msgs/Pose.h&quot;
+#include &quot;geometry_msgs/PoseStamped.h&quot;
+#include &lt;vector&gt;
+#include &quot;laser_geometry/laser_geometry.h&quot;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;boost/algorithm/string.hpp&gt;
+#include &quot;tf/tf.h&quot;
+#include &quot;tf/transform_datatypes.h&quot;
+#include &lt;tf/transform_broadcaster.h&gt;
+// PCL specific includes
+#include &lt;pcl/ros/conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl/filters/voxel_grid.h&gt;
+#include &lt;pcl/ros/conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &quot;pcl/common/angles.h&quot;
+
+
+using namespace std;
+
+
+const int num_row = 264;
+const int num_column  = 1089;
+
+class PointCloud
+{
+private:
+    ros::NodeHandle n;
+//  ros::Publisher chatter_pub;
+    ros::Publisher scan_pub;
+    ros::Publisher pose_pub;
+
+    int count;
+    vector&lt;vector&lt;double&gt; &gt; data_set;
+
+
+public:
+    PointCloud();
+    ~PointCloud();
+
+    /**
+     * Opens and reads file
+     */
+    bool operateFile();
+    void publishLaser();
+//  void display(); //translate and publish
+
+};
+
+    PointCloud::PointCloud()
+    {
+        scan_pub = n.advertise&lt;sensor_msgs::LaserScan&gt;(&quot;/scan&quot;, 50);
+
+        count = 0;
+
+    }
+
+
+
+    PointCloud::~PointCloud()
+    {
+        ROS_INFO(&quot;Shutting down publisher_node node.&quot;);
+    }
+
+
+    /**
+     *  @brief Opens and reads file for further processing
+     *
+     *  @param
+     *
+     *  @return True if the file is successfully manipulated
+     */
+    bool PointCloud::operateFile()
+    {
+
+        ifstream inFile;  // object for reading from a file
+        ofstream outFile; // object for writing to a file
+        char inputFilename[] = &quot;/home/alfa/ros_workspace/dataset1.txt&quot;;
+        inFile.open(inputFilename, ios::in);
+
+        if (!inFile) {
+          cerr &lt;&lt; &quot;Can&#39;t open input file &quot; &lt;&lt; inputFilename &lt;&lt; endl;
+          exit(1);
+        }
+        else
+            cout &lt;&lt; &quot;The file is successfully opened :-)&quot; &lt;&lt; endl;
+
+        // Set up sizes. (num_row x num_column)
+        data_set.resize(num_row);
+        for (int i = 0; i &lt; num_row; ++i)
+            data_set[i].resize(num_column);
+
+        // Store in a buffer/vector what have been read.
+        for (int j = 0; j &lt; num_row; j++)
+            for (int k = 0; k &lt; num_column; k++)
+            {
+                inFile &gt;&gt; data_set[j][k];
+            }
+
+
+        return (true);
+    }
+
+
+    void PointCloud::publishLaser()
+    {
+        int num_laser_readings;
+        double laser_frequency;
+
+        num_laser_readings = 1080;
+
+        laser_frequency = 40; //20 could be
+
+
+        ros::Rate r(1.0);
+
+
+        int t = 0;
+
+
+        while (n.ok() &amp;&amp; (t &lt; num_row))
+        {
+            sensor_msgs::LaserScan scan;
+
+
+            ros::Time scan_time( double(data_set[t][1]/1000));
+
+
+
+            for (int i = 0; i &lt; num_row; i++)
+            {
+                scan.header.stamp =  scan_time;
+            }
+
+            scan.header.frame_id = &quot;laser_frame&quot;;
+            scan.angle_min = - 270 / 2 * M_PI / 180; // -xx degree
+            scan.angle_max = 270 / 2 * M_PI / 180;   // xx degree
+
+            scan.angle_increment = (scan.angle_max-scan.angle_min)/num_laser_readings;
+
+            scan.time_increment = (1 / laser_frequency) / (num_laser_readings);
+            scan.range_min = 0.0;
+            scan.range_max = 100.0;
+
+            scan.set_ranges_size(num_laser_readings);
+
+            for(int i = 0; i &lt; num_laser_readings; ++i)
+            {
+//              Laser scanner data reside in column 10th to 1080th
+                scan.ranges[i] = data_set[t][i+9] / 1000.0;
+            }
+
+
+            scan_pub.publish(scan);
+            ++count;
+            ++t;
+
+            r.sleep();
+        }
+    }
+
+
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;publisher_node&quot;);
+    PointCloud pointCloud;
+    ROS_INFO(&quot;Node started&quot;);
+    ros::Rate loop_rate(10);
+    pointCloud.operateFile();
+    pointCloud.publishLaser();
+
+    ROS_INFO(&quot;Node finished&quot;);
+
+    return 0;
+
+}
+</code></pre>
+
+<p>How do I fix this? </p>
+
+        <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-02 07:28:05 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@Ivan Dryanovski: Could you please answer some of my confusions regarding the laser_scan_matcher package tutorial here: <a href="http://answers.ros.org/question/3186/several-things-on-the-laser_scan_matcher-package..Thanks">http://answers.ros.org/question/3186/several-things-on-the-laser_scan_matcher-package..Thanks</a> in advance..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-05 03:27:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>(2) In Laser Scan, under transforms, it says that &quot;For frame [laser]: No transform to fixed frame [/world].  TF error: [Unable to lookup transform, cache is empty, when looking up transform from frame [/laser] to frame [/world]]&quot;</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-04 04:22:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As I followed the setting in laser_scan_matcher demo, I got 2 errors in rviz: (1) In TF, under /laser frame, it complaints that &quot;No transform from [/laser] to frame [/world]&quot; &quot; </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-04 04:22:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Try running the laser_scan_matcher demo, and look at how the tf&#39;s and topics look in rviz</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79">Ivan Dryanovski</a> on 2011-12-04 03:29:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>In rviz, instead of setting fixed frame as /world, can I set it to &quot;/laser&quot;? I&#39;ve tried to set the fixed frame as /laser and target frame as &quot;base_link&quot;, it works but still in the TF option, for /world, it complaints &quot;No transform from [/world] to frame [/laser]&quot;. Having /world is important right?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-04 02:55:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The strange thing also, the publisher is publishing messsages (after running &quot;rostopic echo -c /scan&quot; in the terminal), however, in the rviz, from laser scan tab, it says &quot;Showing [0] points from [0] messages&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-04 02:28:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hopefully, you can guide me on this..thanks in advance.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-04 02:04:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve just tried laser_scan_matcher, however, I still got the similar error([ WARN] [1323010737.488732601]: ScanMatcher: Could not get initial laser transform(Frame id /laser_frame does not exist! Frames (3): Frame /laser exists with parent /base_link.
+Frame /base_link exists with parent NO_PARENT.
+)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2011-12-04 02:02:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Have you tried using laser_scan_matcher? I moved my efforts to that one.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79">Ivan Dryanovski</a> on 2011-12-03 06:27:33 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

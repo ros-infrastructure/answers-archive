@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[python]prevent callbacks from slowing down the main loop - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/370511">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[python]prevent callbacks from slowing down the main loop</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I have a rather basic python2 node (it&#39;s the interface to the motor controllers)</p>
+
+<ul>
+<li>a main loop running (theoretically) at 10Hz (using rate.sleep() )</li>
+<li>2 subscribers for velocities commands (only one is used at a given time, depending of the navigation mode) : the frequency should be about 10Hz on the active one (and 0 on the other one). Both have a queu size of 1</li>
+<li>1 subscriber for proximity sensors (about 10Hz). Queue_size=1</li>
+<li>2 publishers (publishing done from the main loop</li>
+</ul>
+
+<p>Most of the time everything runs OK.
+However, sometimes, the main loop seems to be &quot;stuck&quot; for sometimes more than 1 second in a random place, while the message callbacks seem to be handled fine.</p>
+
+<p>My guess is that sometimes, the main thread isn&#39;t executed for about 1 second, while the callback thread is still running.</p>
+
+<p>From my understanding (please correct me if I&#39;m wrong, I&#39;m quite unsure about it), in Python there is only one thread running at a given time (even if multiple CPU cores are available). From what I understood in python (contrary to C++), the message callbacks are handled on a separate (python) thread).</p>
+
+<p>So it seems that the callback thread gets executed but not the main thread.</p>
+
+<p>NB : this even is rather execeptionnal (about once per minute under very heavy CPU load from other nodes, far less under lighter load).</p>
+
+<p>For this specific use case, The main loop is more important than the message callbacks.</p>
+
+<p>Is there a way to make sure the main loop gets executed (dropping messages in the input queues if needed) rather than processing all incomming messages and not executting fat enough the main loop?</p>
+
+<p>A few potential ideas (but I&#39;m not sure if they are and if so how) :</p>
+
+<ul>
+<li><p>increase the main thread priority (or decrease the message handling thread) : from my understanding it is not possible because python is handling itself it&#39;s threads)</p></li>
+<li><p>disable the message processing thread and une something like the C++ spinOnce function</p></li>
+<li><p>have a way to explicitly aks for the latest data (ie not having any callbacks at all). If no new data arrived, getting &quot;None&quot; or getting the last recieved data are both fine to me</p></li>
+</ul>
+
+<p>Thanks a lot in advance</p>
+
+<p>Best</p>
+
+<p>Felix</p>
+
+<p>EDIT : as asked by mgruhler, I add my code (it&#39;s now the full version). NB : The code was started by a collegue  who left the company and that I replaced (maybe based on an example he found on the web), but I did several changes afterwards (but I never modified the mutex part, so I&#39;m not even sure if it is usefull).</p>
+
+<pre><code>#!/usr/bin/env python
+
+import rospy
+from math import pi as PI
+import threading
+import time
+
+from roboclaw import Roboclaw
+#import roboclaw_driver as roboclaw
+from std_msgs.msg import String
+from std_msgs.msg import Float64
+from std_msgs.msg import Float32
+from std_msgs.msg import Bool
+from geometry_msgs.msg import Twist
+from borobo.msg import capteur_proximite_msg
+
+r = 0.155
+e = 0.55
+chi = 1
+rapport_codeur = 49.53 / 36.83
+
+Kp = 3.0
+Ki = 0.5
+Kd = 0.0
+qpps = 4600
+
+DEV = &quot;/dev/ttyTHS0&quot;
+DEFAULT_BAUD_RATE = 115200
+DEFAULT_LOOP_RATE = 10
+ADDRESS_FRONT = 0x80
+ADDRESS_BACK = 0x81
+
+roboclaw = Roboclaw(DEV, DEFAULT_BAUD_RATE)
+
+distances_US=[255,255,255,255,255,255,255,255,255,255,255]
+FRONT_LEFT=4
+FRONT_MIDDLE=10
+FRONT_RIGHT=6
+BACK=10
+LEFT_FRONT=7
+LEFT_MIDDLE=10
+LEFT_BACK=10
+RIGHT_FRONT=10
+RIGHT_MIDDLE=10
+RIGHT_BACK=10
+
+
+
+class RoboclawNode:
+    def __init__(self):
+        self.mode=1
+        self.time_last_receive_cmd_vel = time.time()
+        self.omega_cmd_g = 0
+        self.omega_cmd_d = 0
+        self.omega_mes_g_front = 0
+        self.omega_mes_d_front = 0
+        self.omega_mes_g_back = 0
+        self.omega_mes_d_back = 0
+        self.vx_cmd = 0.0
+        self.vth_cmd = 0.0
+        self.accelMax = 2000# 5000
+        self.vx_pub = rospy.Publisher(&#39;vx&#39;, Float64, queue_size=10)
+        self.vth_pub = rospy.Publisher(&#39;vth&#39;, Float64, queue_size=10)
+        self.battery_motors_voltage_pub = rospy.Publisher(&#39;battery_motors_voltage&#39;, Float32, queue_size=1)
+        rospy.Subscriber(&#39;cmd_vel&#39;, Twist, self.cmdVelCallback, queue_size=1)
+        rospy.Subscriber(&#39;cmd_vel_joystick&#39;, Twist, self.joystickCallback, queue_size=1)
+        rospy.Subscriber(&#39;capteur_proximite&#39;, capteur_proximite_msg, self.distanceCallback, queue_size=1)
+        rospy.init_node(&#39;roboclaw_node&#39;, anonymous=True)
+
+        # We have a single &#39;roboclaw&#39; object handling serial communications.
+        # We&#39;re about to launch different threads that each want to talk.
+        # 1 - Diagnostics thread calling into our self.check_vitals
+        # 2 - &#39;/cmd_vel&#39; thread calling our self.cmd_vel_callback
+        # 3 - our self.run that publishes to &#39;/odom&#39;
+        # To prevent thread collision in the middle of serial communication
+        # (which causes sync errors) all access to roboclaw from now
+        # must be synchronized using this mutually exclusive lock object.
+        self.mutex = threading.Lock()
+
+
+    def cmdVelCallback(self, cmd_vel_msg):
+        self.vx_cmd = cmd_vel_msg.linear.x
+        self.vth_cmd = cmd_vel_msg.angular.z
+        self.mode=1
+        self.obstaclesLimitSpeed()
+        self.omega_cmd_g = int((2 * self.vx_cmd - chi * e * self.vth_cmd) / (2 * r) * 2400 * rapport_codeur / (2 * PI))
+        self.omega_cmd_d = int((2 * self.vx_cmd + chi * e * self.vth_cmd) / (2 * r) * 2400 * rapport_codeur / (2 * PI))
+        self.time_last_receive_cmd_vel = time.time()
+
+
+
+
+    def distanceCallback(self, distance_msg):
+        global distances_US
+        distances_US[0] = distance_msg.data0
+        distances_US[1] = distance_msg.data1
+        distances_US[2] = distance_msg.data2
+        distances_US[3] = distance_msg.data3
+        distances_US[4] = distance_msg.data4
+        distances_US[5] = distance_msg.data5
+        distances_US[6] = distance_msg.data6
+        distances_US[7] = distance_msg.data7
+        distances_US[8] = distance_msg.data8
+        distances_US[9] = distance_msg.data9
+
+    def joystickCallback(self, cmd_vel_msg):
+        self.vx_cmd = cmd_vel_msg.linear.x
+        self.vth_cmd = cmd_vel_msg.angular.z
+        self.mode=2
+        self.obstaclesLimitSpeed()
+        self.omega_cmd_g = int((2 * self.vx_cmd - chi * e * self.vth_cmd) / (2 * r) * 2400 * rapport_codeur / (2 * PI))
+        self.omega_cmd_d = int((2 * self.vx_cmd + chi * e * self.vth_cmd) / (2 * r) * 2400 * rapport_codeur / (2 * PI))
+        self.time_last_receive_cmd_vel = time.time()
+
+    def constrain_abs_value(self, value, abs_limit):
+        ret=value
+        if value &lt; -abs_limit:
+            ret= -abs_limit
+        if value &gt; abs_limit:
+            ret= abs_limit
+        return ret
+
+    def contraint_abs_value_pair_proportionnal(self, value_1, abs_limit_1, value_2, abs_limit_2):   #on limite les valeurs absolues, en gardant le rapport de proportionnalite
+        abs_1=abs(value_1)
+        abs_2=abs(value_2)
+        factor=1
+        if abs_1 != 0 and abs_1 &gt; abs_limit_1:
+            factor = min(factor, abs_limit_1/abs_1)
+
+        if abs_2 != 0 and abs_2 &gt; abs_limit_2:
+            factor = min(factor, abs_limit_2/abs_2)
+
+        rospy.loginfo(&quot;factor:&quot;)
+        rospy.loginfo(factor)
+        return (value_1*factor, value_2*factor)
+
+    def obstaclesLimitSpeed(self):
+        global distances_US
+        distance_in_front=min(distances_US[FRONT_LEFT], distances_US[FRONT_RIGHT])
+        distance_all_arround=min(distances_US[FRONT_LEFT], distances_US[FRONT_RIGHT],distances_US[LEFT_FRONT])
+        distance_all_arround_except_back_and_left_back=min(distances_US[FRONT_LEFT], distances_US[FRONT_MIDDLE], distances_US[FRONT_RIGHT], distances_US[LEFT_FRONT], distances_US[LEFT_MIDDLE], distances_US[RIGHT_MIDDLE], distances_US[RIGHT_BACK])
+
+
+        rospy.loginfo(distance_in_front)
+        rospy.loginfo(distance_all_arround)
+        rospy.loginfo(&quot;initial:&quot;)
+        rospy.loginfo(self.vx_cmd)
+        rospy.loginfo(self.vth_cmd)
+
+        tance_all_arround&lt;60:
+                rospy.logwarn(&quot;distance_all_arround &lt;60&quot;)
+                if self.vth_cmd &gt; 0.2:      #si on veut tourner : on tourne lentement et on n&#39;avance pas
+                    self.vx_cmd=0
+                    self.vth_cmd=self.constrain_abs_value(self.vth_cmd,0.2)
+                else:   #on ne tourne pas ou presque
+                    self.vx_cmd=self.constrain_abs_value(self.vx_cmd,0.5)   #NB : on n&#39;est pas trop strict, mais on n&#39;a pas ici de return : il se peut qu&#39;on soit plus stricte une fois qu&#39;on a vu la distance devant le robot
+                    self.vth_cmd=self.vth_cmd   #vitesse angulaire deja faible : on ne la change pas    
+
+            if distance_in_front &lt; 150:
+                rospy.logwarn(&quot;front &lt;150&quot;)
+                self.vx_cmd=self.constrain_abs_value(self.vx_cmd,0.2)           
+            if distance_in_front &lt; 80:
+                rospy.logwarn(&quot;front &lt;80&quot;)
+                self.vx_cmd=0
+        else :
+            if (self.mode==2):  #joystick
+                rospy.loginfo(&quot;mode2&quot;)
+                rospy.loginfo(distance_all_arround_except_back_and_left_back)
+                if distance_all_arround_except_back_and_left_back &lt;30:
+                    rospy.loginfo(&quot;all arround &lt;30&quot;)
+                    (self.vx_cmd, self.vth_cmd) = self.contraint_abs_value_pair_proportionnal(self.vx_cmd, 0.1, self.vth_cmd, 0.1)
+                #if distance_all_arround_except_back_and_left_back&lt;40:
+                #   rospy.loginfo(&quot;all arround &lt;40&quot;)
+                #   (self.vx_cmd, self.vth_cmd) = self.contraint_abs_value_pair_proportionnal(self.vx_cmd, 0.2, self.vth_cmd, 0.2)
+                if distance_in_front &lt; 60:
+                    rospy.loginfo(&quot;distance_in_front &lt; 60&quot;)
+                    self.vx_cmd=self.constrain_abs_value(self.vx_cmd,0.1)
+                if distance_in_front &lt; 100:
+                    rospy.loginfo(&quot;distance_in_front &lt; 60&quot;)
+                    self.vx_cmd=self.constrain_abs_value(self.vx_cmd,0.25)  
+
+        rospy.loginfo(&quot;final:&quot;)
+        rospy.loginfo(self.vx_cmd)
+        rospy.loginfo(self.vth_cmd)
+        rospy.loginfo(&quot;&quot;)
+
+
+    def runRoboClawNode(self):
+
+        rospy.loginfo(&quot;Connecting to roboclaw&quot;)
+        with self.mutex:    
+            roboclaw.Open()
+            roboclaw.SetSerialTimeout(ADDRESS_FRONT,15)
+            roboclaw.SetSerialTimeout(ADDRESS_BACK,15)
+            #roboclaw.Open(DEV, DEFAULT_BAUD_RATE)
+            #roboclaw.SetMinVoltageMainBattery(ADDRESS_FRONT, 18) 
+            #roboclaw.SetMaxVoltageMainBattery(ADDRESS_FRONT, 28) 
+            #roboclaw.SetM1MaxCurrent(ADDRESS_FRONT, 30) 
+            #roboclaw.SetM2MaxCurrent(ADDRESS_FRONT, 30)
+            #roboclaw.SetPWMMode(ADDRESS_FRONT, 1) 
+            #roboclaw.SetM1VelocityPID(ADDRESS_FRONT, Kd, Kp, Ki, qpps)
+            #roboclaw.SetM2VelocityPID(ADDRESS_FRONT, Kd, Kp, Ki, qpps) 
+
+            #roboclaw.SetMinVoltageMainBattery(ADDRESS_BACK, 18) 
+            #roboclaw.SetMaxVoltageMainBattery(ADDRESS_BACK, 28) 
+            #roboclaw.SetM1MaxCurrent(ADDRESS_BACK, 30) 
+            #roboclaw.SetM2MaxCurrent(ADDRESS_BACK, 30)
+            #roboclaw.SetPWMMode(ADDRESS_BACK, 1) 
+            #roboclaw.SetM1VelocityPID(ADDRESS_BACK, Kd, Kp, Ki, qpps)
+            #roboclaw.SetM2VelocityPID(ADDRESS_BACK, Kd, Kp, Ki, qpps)
+
+            rospy.loginfo(&quot;Starting motor drive&quot;)
+        rate = rospy.Rate(DEFAULT_LOOP_RATE)
+        while not rospy.is_shutdown():
+            rospy.loginfo(&quot;start loop&quot;)
+            self.getSpeed()
+            rospy.loginfo(&quot;finnished getSpeed&quot;)
+            self.publishSpeed()
+            rospy.loginfo(&quot;finnished publishSpeed&quot;)
+            self.getAndPublishMotorBatery()
+            rospy.loginfo(&quot;finnished getAndPublishMotorBatery&quot;)
+            rospy.loginfo(&quot;ask for mutex&quot;)
+            with self.mutex:
+                rospy.loginfo(&quot;got mutex&quot;)
+                if (time.time() - self.time_last_receive_cmd_vel &gt; 0.5) :   #timeout : on ralenti progressivement
+                    self.vx_cmd=0.8*self.vx_cmd
+                    self.vth_cmd=0.8*self.vth_cmd
+
+                rospy.loginfo(&quot;before: &quot;+str(time.time()))
+                if self.mode==1 and self.vx_cmd&lt;0.2:    #en mode autonome ou follow_me, on diminue l&#39;acceleration a faible vitesse pour limiter les oscillations
+                    roboclaw.SpeedAccelM1M2(ADDRESS_FRONT, self.accelMax*3/4, self.omega_cmd_g, self.omega_cmd_d)
+                    roboclaw.SpeedAccelM1M2(ADDRESS_BACK, self.accelMax*3/4, self.omega_cmd_g, self.omega_cmd_d)
+                else:
+                    roboclaw.SpeedAccelM1M2(ADDRESS_FRONT, self.accelMax, self.omega_cmd_g, self.omega_cmd_d)
+                    roboclaw.SpeedAccelM1M2(ADDRESS_BACK, self.accelMax, self.omega_cmd_g, self.omega_cmd_d)
+
+                rospy.loginfo(&quot;after : &quot;+str(time.time()))
+                #rospy.loginfo(roboclaw.ReadMainBatteryVoltage(ADDRESS_FRONT))
+                #rospy.loginfo(roboclaw.ReadMainBatteryVoltage(ADDRESS_FRONT))
+
+            rate.sleep()
+            rospy.loginfo(&quot;sleep done&quot;) 
+
+
+    def getAndPublishMotorBatery(self):
+        (success,front_voltage)=roboclaw.ReadMainBatteryVoltage(ADDRESS_FRONT)
+        #back_voltage=roboclaw.ReadMainBatteryVoltage(ADDRESS_BACK)
+        if success:
+            voltage_msg=Float32()
+            voltage_msg.data=front_voltage/10.
+            self.battery_motors_voltage_pub.publish(voltage_msg)
+        else:
+            rospy.logwarn(&quot;reading battery voltage from roboclaw failed&quot;)
+
+
+    def getSpeed(self):
+        with self.mutex:
+            buffer_g_front = roboclaw.ReadSpeedM1(ADDRESS_FRONT)
+                buffer_d_front = roboclaw.ReadSpeedM2(ADDRESS_FRONT)
+            buffer_g_back = roboclaw.ReadSpeedM1(ADDRESS_BACK)
+                buffer_d_back = roboclaw.ReadSpeedM2(ADDRESS_BACK)
+            if buffer_g_front[0]:
+                self.omega_mes_g_front = buffer_g_front[1]
+            else:
+                self.omega_mes_g_front = 0
+            if buffer_d_front[0]:
+                self.omega_mes_d_front = buffer_d_front[1]
+            else:
+                self.omega_mes_d_front = 0
+
+            if buffer_g_back[0]:
+                self.omega_mes_g_back = buffer_g_back[1]
+            else:
+                self.omega_mes_g_back = 0
+            if buffer_d_back[0]:
+                self.omega_mes_d_back = buffer_d_back[1]
+            else:
+                self.omega_mes_d_back = 0
+
+
+    def publishSpeed(self):
+        vx_msg = Float64()
+        vth_msg = Float64()
+        vx_msg.data = (self.omega_mes_g_front + self.omega_mes_g_back + self.omega_mes_d_front + self.omega_mes_d_back) / 2 * r / 2 * 2 * PI / (2400 * rapport_codeur) 
+        vth_msg.data = (self.omega_mes_d_front + self.omega_mes_d_back - self.omega_mes_g_front - self.omega_mes_g_back) / 2 * r / (chi * e) * 2 * PI / (2400 * rapport_codeur)
+        self.vx_pub.publish(vx_msg)
+        self.vth_pub.publish(vth_msg)
+
+
+if __name__ == &#39;__main__&#39;:
+
+    try:
+            roboclaw_node = RoboclawNode()
+            roboclaw_node.runRoboClawNode()
+
+        except rospy.ROSInterruptException:
+            pass
+        rospy.loginfo(&quot;Exiting&quot;)
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/59005">felixN</a> on 2021-01-28 07:05:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>From what you described, I&#39;d say this shouldn&#39;t be an issue. Are you sure it&#39;s the callbacks actually &quot;blocking&quot; the main thread? Maybe you could share your script, so that we could have a look...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2647">mgruhler</a> on 2021-01-29 02:04:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I can&#39;t garantee that the callbakcs are blocking the main thread. But for the 3 times I looked in detail into the logs, each times the ros_loginfo printings of the main tread where blocked for a bit over 1 second (the blocking did occure in different places of the main loop each time, but then always continues iin the same order), while the printings from the callback continues to happen normally at 10Hz.</p>
+
+<p>For the code, I will edit to add a simplified version of the code (if you think the full code is needed, I can ask my boss if he agrees that I publish it)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59005">felixN</a> on 2021-01-29 03:55:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just a gut feeling, but I&#39;d first make sure that the mutex you are using is not blocking somewhere, especially in combination with the callbacks. I.e. nowhere in a callback should the mutex be used (and thus, also not in any function called from the callbacks) As you only show one but say you have three, I cannot have a look at that.
+Next thing to check would be everything that has to do with communication (i.e. maybe it is an issue with the serial communication to your robot, that is causing the delays?)</p>
+
+<p>If you are sure that none of that is the issue, I would have a look again at how the callbacks might influence the main loop...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2647">mgruhler</a> on 2021-01-29 05:01:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks,
+The boss agreed that I publish the complete node, so there it is.</p>
+
+<p>I never touched the part about the mutex, but I have the impression that it is never called from within any callback (I even have the impression that the mutex is useless).</p>
+
+<p>For the serial communication, I will try to look deeper into it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59005">felixN</a> on 2021-01-29 11:29:13 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I havn&#39;t completly eliminated the issue yet, but it seems that the blocking element is the call to rospy.loginfo (or warn).</p>
+
+<p>If I remove all the rospy.logX calls, instead of the code getting blocked an average of 4.5 times per minute, it gets blocked only 0.2 times per minute (ie once every 5 minutes).</p>
+
+<p>So the problem isn&#39;t totally solved, but at least quitte reduced.</p>
+
+<p>I&#39;m however wonderring :</p>
+
+<ul>
+<li>why is rospy.log &quot;hanging&quot; at times?</li>
+<li>what else might hand from time to time (for about 1s)? rate.sleep  (with rate =10Hz)? rospy.publish? the callbacks? (or the serial communication to the motor controler?)</li>
+</ul>
+
+<p>Thanks a lor in advance</p>
+
+<p>Best</p>
+
+<p>Felix</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/59005">felixN</a> on 2021-02-03 12:07:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;m not sure this should have been an answer. Anyways:</p>
+
+<p>Logging to the console is slow, this will definitely slow down your program. As to whether this leads to what you describe as &quot;hanging&quot; I&#39;m not so sure.</p>
+
+<p>Without the real program (and HW, for that matter) it is really hard to diagnose the errors further. I suggest you start by stripping down your program one function at a time to see where the issue might actually be hidden. So basically, get rid of everything unnecessary in the first step, see if it is still appearing, then continue with that. Or you could also use a <a href="https://docs.python.org/2/library/profile.html">profiler</a> to measure the time spent in functions. Maybe this will show you where your program is stalling...</p>
+
+<p>Last, if your code is under version control (I do hope so), you are using git and there is a state where everything was working ok, you can use <code>git bisect</code> to figure out which commit introduced the issue...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2647">mgruhler</a> on 2021-02-04 02:21:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi, thanks a lot!
+I admit that I&#39;m not sure if this is really the cause, but removing the logging reduced the frequency of the problem by more than 20. So indeed, it might be that the logging is not the real issue, and that it is just by slowing down the program that it triggers the real cause.</p>
+
+<p>Trying to use a profiler is a good idea, thanks!</p>
+
+<p>The code is indeed under version control now, but I think that this bug goes back since before I started using git on it (the code was started by my predecessor). It was just that until now I had more important problems to solve. But otherwise, it would have been the best approach.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59005">felixN</a> on 2021-02-04 04:07:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>good luck :-) Hope you track down the issue...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2647">mgruhler</a> on 2021-02-04 04:29:13 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

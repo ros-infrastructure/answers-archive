@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Depth filter of a (Kinect) image - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/156586">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Depth filter of a (Kinect) image</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/58941/depth-filter-of-a-kinect-image">https://robotics.stackexchange.com/questions/58941/depth-filter-of-a-kinect-image</a>.</p>
+        <p>Hi,</p>
+
+<p>I run a Kinect sensor and evaluate depth and camera information to track positions of small robots. The idea is to use the pointcloud to identify all robots (2.5m &lt; z &lt; 3m). I used a pcl/passthrough filter for this purpose. Now I want to mask out all parts of the corresponding image which are not part of this cloud. </p>
+
+<p>From my point of view I have to implement the following steps:</p>
+
+<ol>
+<li>Filter the point cloud (already available in pcl)</li>
+<li>Transfer the point cloud into an binary image (?)</li>
+<li>Mask the image (opencv?)</li>
+</ol>
+
+<p>Other ideas?
+Thanks for your help.</p>
+
+<p>Sebastian</p>
+
+        <div class="owner"><p>Asked by <a href="/users/248">Poseidonius</a> on 2014-04-23 01:33:38 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi,</p>
+
+<p>Ifound a solution for the problem and want to present them ... in order to motivate you for improvements:-)
+I used the </p>
+
+<ul>
+<li>openni,<br></li>
+<li>openni_launch, </li>
+<li>depth_image_proc</li>
+<li>pcl_ros </li>
+<li>pcl_conversions</li>
+</ul>
+
+<p>packages for ROS Hydro on Kubuntu 12.10. I used a ASUS Xtion for my setup.</p>
+
+<p><strong>1. Launch file</strong></p>
+
+<p>The solution combines 3 core elements: </p>
+
+<ol>
+<li>a nodelet, generating images and pointclouds based on the sensor </li>
+<li>a filter merging the 3D PointCloud and RGB Image information</li>
+<li>a filter that evaluates the depth values and adapts the RGB values </li>
+<li>a transormation that generates an image based on the PointCloud2.</li>
+</ol>
+
+<p>The launch file illustrates the start up of these elements and follow at the end of the description part. I want to include some comments:</p>
+
+<p>-&gt; 1. The standard launch file <em>$(find openni_launch)/launch/openni.launch</em> has to be adapted related to the fact, that the following filter just accepts image and cloud data with the same frame id. I changed line 7 and 8 from the mentioned file </p>
+
+<pre><code> &lt;arg name=&quot;rgb_frame_id&quot;   default=&quot;$(arg tf_prefix)/$(arg camera)_rgb_optical_frame&quot; /&gt;
+ &lt;arg name=&quot;depth_frame_id&quot; default=&quot;$(arg tf_prefix)/$(arg camera)_depth_optical_frame&quot; /&gt;
+</code></pre>
+
+<p>to </p>
+
+<pre><code> &lt;arg name=&quot;rgb_frame_id&quot;   default=&quot;$(arg tf_prefix)/$(arg camera)_optical_frame&quot; /&gt;
+ &lt;arg name=&quot;depth_frame_id&quot; default=&quot;$(arg tf_prefix)/$(arg camera)_optical_frame&quot; /&gt;
+</code></pre>
+
+<p>in a new file myopenni.launch.</p>
+
+<p>-&gt; 2. The depth_image_proc package offers nodes for PointCloud2 processing. We use one of them for a fusion of point cloud data with corresponding RGB information. Take a view to the documentation on <a href="http://wiki.ros.org/depth_image_proc">http://wiki.ros.org/depth_image_proc</a> !</p>
+
+<p>-&gt; 3+4 The last two points are combined in the <em>pointCloudToImage</em> node. I wrote some lines of C++ to 
+transform the ROS messages to PCL Pointcloud2 later to an pcl::PointCloud<a href="pcl::PointCloudXYZRGB">pcl::PointCloudXYZRGB</a> object. It filters the 
+RGB values according to the z coordinate. Afterwards the PointCloud2 is transformed to a ros image.</p>
+
+<pre><code>   #include &lt;iostream&gt;
+   #include &quot;ros/ros.h&quot;
+   #include &lt;sensor_msgs/PointCloud2.h&gt;
+   #include &lt;sensor_msgs/Image.h&gt;
+   #include &lt;pcl/filters/passthrough.h&gt;
+   #include &quot;pcl_conversions/pcl_conversions.h&quot;
+
+   #define Z_MIN 1.0
+   #define Z_MAX 1.5
+
+   ros::Publisher pub_cloud;
+   ros::Publisher pub_image; 
+
+   void cloudCallback(const sensor_msgs::PointCloud2 &amp;ros_cloud)
+   {
+     pcl::PCLPointCloud2 pcl_pc2;
+     pcl_conversions::toPCL(ros_cloud, pcl_pc2); 
+     pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr pcl_cloud(new pcl::PointCloud&lt;pcl::PointXYZRGB&gt;);     
+     pcl::fromPCLPointCloud2 (pcl_pc2, *pcl_cloud); 
+
+     uint8_t r = 0;
+     uint8_t g = 0;
+     uint8_t b = 0;
+     int32_t rgb = (r &lt;&lt; 16) | (g &lt;&lt; 8) | b; 
+
+     for (size_t i = 0; i &lt; pcl_cloud-&gt;points.size (); ++i)
+     {
+       if ((pcl_cloud-&gt;points[i].z &gt; Z_MAX) or (pcl_cloud-&gt;points[i].z &lt; Z_MIN))
+       {
+         pcl_cloud-&gt;points[i].rgb = rgb;
+       }
+     }
+     pcl::toPCLPointCloud2 (*pcl_cloud, pcl_pc2);
+     sensor_msgs::PointCloud2 ros_pc2;
+     pcl_conversions::fromPCL(pcl_pc2, ros_pc2);
+     ros_pc2.header.frame_id=&quot;camera_optical_frame&quot;;
+     pub_cloud.publish(ros_pc2);  
+
+     pcl::PCLImage pcl_image;
+     pcl::toPCLPointCloud2 (pcl_pc2, pcl_image);  
+     sensor_msgs::Image ros_image; 
+     pcl_conversions::fromPCL(pcl_image, ros_image);
+     pub_image.publish(ros_image);
+   }
+
+   int main(int argc, char **argv)
+   {
+     ros::init(argc, argv, &quot;PointCloud2Filter&quot;);
+     ros::NodeHandle n;
+     ros::Subscriber sub = n.subscribe(&quot;input/&quot;, 1000, cloudCallback);
+     pub_cloud = n.advertise&lt;sensor_msgs::PointCloud2&gt; (&quot;output_cloud/&quot;, 30);
+     pub_image = n.advertise&lt;sensor_msgs::Image&gt; (&quot;output_image/&quot;, 30);
+     ros::spin();
+     return 0;
+   }
+</code></pre>
+
+<p>And the launch file ...</p>
+
+<pre><code> &lt;launch&gt;
+    &lt;include file=&quot;$(find RoboMix)/launch/myopenni.launch&quot; /&gt;
+
+  &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;pcl_manager&quot; args=&quot;manager&quot; output=&quot;screen&quot; /&gt;
+  &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;fusion&quot; args=&quot;load depth_image_proc/point_cloud_xyzrgb pcl_manager&quot; output=&quot;screen&quot;&gt;
+    &lt;remap from=&quot;rgb/camera_info&quot; to=&quot;/camera/rgb/camera_info&quot;/&gt;
+    &lt;remap from=&quot;rgb/image_rect_color&quot; to=&quot;/camera/rgb/image_rect_color&quot;/&gt;
+    &lt;remap from=&quot;depth_registered/image_rect&quot; to=&quot;/camera/depth/image_rect&quot;/&gt;
+    &lt;remap from=&quot;depth_registered/points&quot; to=&quot;/XYZRGBcloud&quot;/&gt;
+  &lt;/node&gt;
+
+  &lt;node pkg=&quot;RoboMix&quot; type=&quot;pointCloudToImage&quot; name=&quot;ImageFilter&quot;&gt;
+     &lt;remap from=&quot;input&quot; to=&quot;/XYZRGBcloud&quot; /&gt;
+     &lt;remap from=&quot;output_image&quot; to=&quot;/resulting_image&quot; /&gt;
+  &lt;/node&gt;   
+
+  &lt;node pkg=&quot;image_view&quot; type=&quot;image_view&quot; name=&quot;Visualisation&quot; args=&quot;image:=/resulting_image&quot; output=&quot;screen&quot;&gt;
+  &lt;/node&gt;   
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Feel free to improve ! </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/248">Poseidonius</a> on 2014-05-05 04:45:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Moveit-PathPlanner giving strange trajectories? Here's one good fix!! - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/396472">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Moveit-PathPlanner giving strange trajectories? Here's one good fix!!</h2>
+      <div class="question">
+        <p>Hi Guys,</p>
+
+<p>I&#39;m not here to ask a question but rather to answer an age-old one! I hope this helps someone because I was struggling with this problem for 3 years until I found this fix recently. If you&#39;re like me and don&#39;t like reading long posts, skip to the solution.</p>
+
+<p><strong><em>Problem description:</em></strong> I work with 2 manipulators - Sawyer and UR3e. Sawyer has 7 DOF and hence can generate hundreds of IK solutions for any given end-effector pose. UR3e has 6, however, the issue here is that all 6 are 360 deg joints and hence, the same problem. I need the robots to sort objects on a table and since the object locations are dynamic I get them using a 3D camera and CV techniques. Since the locations aren&#39;t fixed I need the planner(currently using RRTConnect, but tried almost every planner available) to find a path there and dip down straight, grasp the object and lift up straight! Thanks to Jeroen, we have a way to <a href="https://moveit.ros.org/moveit/2020/09/10/ompl-constrained-planning-gsoc.html">impose constraints along an axis</a> and here&#39;s an <a href="https://answers.ros.org/question/310710/how-to-use-orientation-constraints-in-moveit/">example usage</a>. However, the planner comes up with all sorts of weird unintuitive plans to move between simple straightforward locations and this used to mess up my sort by knocking off some objects on the table or failing to pick, etc (I do have accurate collision objects setup and this happens still!).</p>
+
+<p>I&#39;ve turned over every rock I could to find a fix, read several GitHub issue threads, tutorials, and forum posts but nothing helped. I switched to the enhanced IK solver - <a href="https://ros-planning.github.io/moveit_tutorials/doc/trac_ik/trac_ik_tutorial.html">TRAC IK</a> which helped to an extent with Sawyer&#39;s trajectories but not with UR. <a href="https://github.com/fmauch/universal_robot/blob/calibration_devel/ur3e_moveit_config/config/joint_limits.yaml">Restricting all the joint angles</a> to (-180, +180) or (-270, +270) helped a bit with UR(This can also be done on the teach pendant, or <a href="https://github.com/fmauch/universal_robot/blob/calibration_devel/ur_gazebo/config/ur3e_controllers.yaml">here</a> if you&#39;re on Gazebo). So how did I fix it you ask? Here it is:</p>
+
+<p><strong><em>THE SOLUTION</em></strong>: </p>
+
+<ul>
+<li>Caveat:</li>
+</ul>
+
+<p>Since with UR, the robot is small, always above the table, and can&#39;t physically reach beyond 0.5m radius, this fix won&#39;t be a problem. Sawyer could run into issues because it&#39;s a long bulky manipulator, however, as long as you always start from above the table and make sure your coordinates are valid and above the table, you&#39;ll be fine.</p>
+
+<p>Step 1: Switch back to the default KDL kinematics solver if you&#39;re using something else. This can be done <a href="https://github.com/fmauch/universal_robot/blob/calibration_devel/ur3e_moveit_config/config/kinematics.yaml">here for UR3e</a>. This helps because TRAC IK doesn&#39;t allow approximate IK solutions through code!</p>
+
+<p>Step 2: I believe you&#39;d be using something like this to send your eef coordinates to Moveit planner:</p>
+
+<pre><code>    group = self.group
+    # Allow some leeway in position(meters) and orientation (radians)
+    group.set_goal_position_tolerance(thresh)
+    group.set_goal_orientation_tolerance(thresh)
+
+    pose_goal = geometry_msgs.msg.Pose()
+    pose_goal.orientation.x = ox
+    pose_goal.orientation.y = oy
+    pose_goal.orientation.z = oz
+    pose_goal.orientation.w = ow
+    pose_goal.position.x = px
+    pose_goal.position.y = py
+    pose_goal.position.z = pz
+    group.set_pose_target(pose_goal)
+    group.allow_replanning(allow_replanning)
+    group.set_planning_time(planning_time)
+    plan = group.go(wait=True)
+    rospy.sleep(0.5)
+    group.stop()
+    group.clear_pose_targets()
+</code></pre>
+
+<p><strong>Just replace &quot;group.set<em>pose</em>target(pose<em>goal)&quot; line with &quot;group.set</em>joint<em>value</em>target(pose_goal, True)&quot;</strong> and you&#39;re good to go! (The True is to allow approx IK solutions).</p>
+
+<p>Why does this work? Because in the <a href="https://github.com/ros-planning/moveit/blob/1cc40746bfd3b5a0e3ce41999d9fa96d747a320d/moveit_commander/src/moveit_commander/move_group.py#L199">words of moveit programmers</a>,  &quot;This situation allows setting the joint target of the group by calling IK. This does not send a pose to the planner and the planner will do no IK. Instead, one IK solution will be computed first, and that will be sent to the planner.&quot; This change allows for the IK solver to solve the problem in <strong>Joint-space/Configuration-space instead of Cartesian-space</strong>, hence, faster and more intuitive! However, since we&#39;re skipping the path planner, I&#39;m unsure if it&#39;ll detect any obstacles on the way.</p>
+
+<p>I hope someone else struggling like me could save all that time and hassle by using this!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35866">Prasanth Suresh</a> on 2022-02-20 10:38:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I have been checking in &quot;moveit::planning_interface::MoveGroup Class Reference&quot; and there is no equivalent method to setPoseReferenceFrame for setJointValueTarget. Is there any way to change the reference frame of the commanded positions with your solution? I have been having problems for many months like the ones you describe in your post, and I have tried everything mentioned and more without success. I&#39;m going to explore your solution, I hope it works. Thank you very much!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/103088">angcorcue2</a> on 2023-05-23 02:20:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@angcorcue2 I haven&#39;t tested this myself but setPoseReferenceFrame should still work for setJointValueTarget because both methods belong to this same class:
+<a href="http://docs.ros.org/en/jade/api/moveit_ros_planning_interface/html/classmoveit_1_1planning__interface_1_1MoveGroup_1_1MoveGroupImpl.html">http://docs.ros.org/en/jade/api/moveit_ros_planning_interface/html/classmoveit_1_1planning__interface_1_1MoveGroup_1_1MoveGroupImpl.html</a>
+and the setPoseReferenceFrame just sets a reference frame for all methods of this class to access. Let me know if the setJointValueTarget method works better for you! All the best.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35866">Prasanth Suresh</a> on 2023-05-23 13:50:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@angcorcue2 The link I shared in the previous comment is for ROS Jade which has been deprecated, however, the class methods haven&#39;t changed wrt the ones we&#39;re talking about. Refer to:</p>
+
+<p><a href="https://moveit.picknik.ai/main/api/html/move__group__interface_8cpp_source.html#l00575">https://moveit.picknik.ai/main/api/html/move__group__interface_8cpp_source.html#l00575</a></p>
+
+<p><a href="https://moveit.picknik.ai/main/api/html/classmoveit_1_1planning__interface_1_1MoveGroupInterface_1_1MoveGroupInterfaceImpl.html#a144ce71132b523a50c887c2e4048d1d5">https://moveit.picknik.ai/main/api/html/classmoveit_1_1planning__interface_1_1MoveGroupInterface_1_1MoveGroupInterfaceImpl.html#a144ce71132b523a50c887c2e4048d1d5</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35866">Prasanth Suresh</a> on 2023-05-23 13:55:35 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi,
+I&#39;m glad that I found this &quot;fix&quot; faster ;-) but it&#39;s only the half way to the solution of my problem. So I ask the question after your answer:</p>
+
+<p>I want the robot to follow a curved path, and as it is near a singularity all the way, I calculated waypoints with the above method. Now I can call go() or execute() for the next point, but this leads to a slow stop-go-stop-go movement instead of a smooth path. I would like to feed these joint positions into a path planner, ideally compute_cartesian_path(), to make this a faster motion. That seems to refuse the joint angle data .. somehow plausible, but not helpful - because the planner apparently doesn&#39;t care for the joint constraints I set up before.
+I could make the point spacing small enough so that linear interpolation between joint angles should be valid, but I don&#39;t see how to do it. How to make a trajectory out of a list of joint positions? </p>
+
+<p>P.S. To add to your suggestion of using set_joint_value_target(): you may check the solution with get_joint_value_target(), figure out some fixes and send the modified joint angles back with another set_joint_value_target(), e.g. if you know for sure that that a certain joint should be 0.0 or if you need to find the &quot;closest&quot; of a 360° periodic solution (which may not be the one with the smallest value or within a 0..2pi range). </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/118394">GG</a> on 2022-09-22 12:44:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>If you were using C++ (it sounds like you aren&#39;t), the TOTG time parameterization function can do smoothing. It&#39;s here:</p>
+
+<p><a href="https://github.com/ros-planning/moveit/blob/327b5b09cc48b97ba3f2a9ac2acf1edcd1bb0650/moveit_core/trajectory_processing/include/moveit/trajectory_processing/time_optimal_trajectory_generation.h#L170">https://github.com/ros-planning/moveit/blob/327b5b09cc48b97ba3f2a9ac2acf1edcd1bb0650/moveit_core/trajectory_processing/include/moveit/trajectory_processing/time_optimal_trajectory_generation.h#L170</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2022-09-22 15:43:43 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Hi @GG,</p>
+
+<p>I think you missed a key point I mentioned in the above post. Sending a set of joint angles as the FK solution instead is a well known method. The beauty of the aforementioned solution is that you can send it 3D pose locations (x,y,z, q1,q2,q3,q4) like you would send to group.set_pose_goal() and the planner will plan in Joint-space/Configuration-space instead of Cartesian-space. This makes all the difference.</p>
+
+<p>Coming to your problem, a simple fix for yours would be to just find few close enough points along the curve and send it to to set_joint_value_target(pose_goal) and run this within a loop, with each iteration executing one of those points.</p>
+
+<p>This might still cause jerky motion and if it does, a slightly more sophisticated solution would be to find the mathematical equation of that curve and let that equation dictate the next waypoint based on the current start state along the way.</p>
+
+<p>If this still doesn&#39;t work well, you can try using smoothing filters on top of your existing path planner. For instance, STOMP or CHOMP could be used as a smoothing filter over OMPL. Check out <a href="https://ros-planning.github.io/moveit_tutorials/doc/chomp_planner/chomp_planner_tutorial.html#using-chomp-as-a-post-processor-for-ompl">this link</a>.</p>
+
+<p>Hope that helps. :)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35866">Prasanth Suresh</a> on 2022-09-22 14:06:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

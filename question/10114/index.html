@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How can ROS communicate with my microcontroller? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10114">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How can ROS communicate with my microcontroller?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/31938/how-can-ros-communicate-with-my-microcontroller">https://robotics.stackexchange.com/questions/31938/how-can-ros-communicate-with-my-microcontroller</a>.</p>
+        <p>Some recent questions have shown an interest in how ROS can be used to run a motor or read a sensor on a custom robot. Many hobby robots have one or more microcontrollers that interface with the robot hardware. These microcontrollers should be able to communicate using a serial connection to a robot mounted laptop running ROS.  </p>
+
+<p>The avr_bridge is a sophisticated approach, but it requires a larger AVR processor and C++ code development on the microcontroller which may not be available in some circumstances. Is there a simpler alternative?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/286">Bart</a> on 2011-05-30 16:06:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I have an ATmega16 that is already 85% full with ISR&#39;s, servo control and sensor processing. Some AVR&#39;s use a variant of Basic for programming. Some people are loyal to PIC microprocessors. I would like to try avr_bridge on my ATmega128 for a future project.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/286">Bart</a> on 2011-05-31 17:06:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Bart - Can you provide a bit more explanation on when avr_bridge isn&#39;t suitable, perhaps chips you&#39;ve had an issue with? I&#39;ve been using it with the Arduino Duemilanove (ATmega328) and have been quite happy with its functionality. Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/143">baalexander</a> on 2011-05-31 03:00:32 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>A simple approach is to write a ROS node that can read/write text messages exchanged with the microcontroller over a serial port and convert these serial messages to ROS style std_msgs/String messages. A separate ROS node can then be written to convert the simple text messages to specific ROS message formats (cmd_vel, odom, etc) based on whatever message protocol was defined for the exchange with the microcontroller. </p>
+
+<p>Attached below is the source for code that I used for this purpose. There is nothing original in the code, but it may be helpful to someone new to ROS and Unix/Linux serial communication. Posting this type of a listing may be a bit unconventional for this site as short answers are generally preferred. Hopefully no one is offended. I would be interested in hearing if there are other successful approaches to the problem. </p>
+
+<pre><code>/*                                                                                                                       
+ * Copyright (c) 2010, Willow Garage, Inc.                                                                               
+ * All rights reserved.                                                                                                  
+ *                                                                                                                       
+ * Redistribution and use in source and binary forms, with or without                                                    
+ * modification, are permitted provided that the following conditions are met:                                           
+ *                                                                                                                       
+ *     * Redistributions of source code must retain the above copyright                                                  
+ *       notice, this list of conditions and the following disclaimer.                                                   
+ *     * Redistributions in binary form must reproduce the above copyright                                               
+ *       notice, this list of conditions and the following disclaimer in the                                             
+ *       documentation and/or other materials provided with the distribution.                                            
+ *     * Neither the name of the Willow Garage, Inc. nor the names of its                                                
+ *       contributors may be used to endorse or promote products derived from                                            
+ *       this software without specific prior written permission.                                                        
+ *                                                                                                                       
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;                                           
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE                                             
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE                                            
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE                                              
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR                                                   
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF                                                  
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS                                              
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN                                               
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)                                               
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE                                            
+ * POSSIBILITY OF SUCH DAMAGE.                                                                                           
+ */
+
+//r2Serial.cpp
+
+// communicate via RS232 serial with a remote uController. 
+// communicate with ROS using String type messages.
+// subscribe to command messages from ROS
+// publish command responses to ROS
+
+// program parameters - ucontroller# (0,1), serial port, baud rate
+
+//Thread main
+//  Subscribe to ROS String messages and send as commands to uController
+//Thread receive
+//  Wait for responses from uController and publish as a ROS messages
+
+
+#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;sstream&gt;
+#include &lt;pthread.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;sys/time.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;termios.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+#define DEFAULT_BAUDRATE 19200
+#define DEFAULT_SERIALPORT &quot;/dev/ttyUSB0&quot;
+
+//Global data
+FILE *fpSerial = NULL;   //serial port file pointer
+ros::Publisher ucResponseMsg;
+ros::Subscriber ucCommandMsg;
+int ucIndex;          //ucontroller index number
+
+
+//Initialize serial port, return file descriptor
+FILE *serialInit(char * port, int baud)
+{
+  int BAUD = 0;
+  int fd = -1;
+  struct termios newtio;
+  FILE *fp = NULL;
+
+ //Open the serial port as a file descriptor for low level configuration
+ // read/write, not controlling terminal for process,
+  fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY );
+  if ( fd&lt;0 )
+  {
+    ROS_ERROR(&quot;serialInit: Could not open serial device %s&quot;,port);
+    return fp;
+  }
+
+  // set up new settings
+  memset(&amp;newtio, 0,sizeof(newtio));
+  newtio.c_cflag =  CS8 | CLOCAL | CREAD;  //no parity, 1 stop bit
+
+  newtio.c_iflag = IGNCR;    //ignore CR, other options off
+  newtio.c_iflag |= IGNBRK;  //ignore break condition
+
+  newtio.c_oflag = 0;        //all options off
+
+  newtio.c_lflag = ICANON;     //process input as lines
+
+  // activate new settings
+  tcflush(fd, TCIFLUSH);
+  //Look up appropriate baud rate constant
+  switch (baud)
+  {
+     case 38400:
+     default:
+        BAUD = B38400;
+        break;
+     case 19200:
+        BAUD  = B19200;
+        break;
+     case 9600:
+        BAUD  = B9600;
+        break;
+     case 4800:
+        BAUD  = B4800;
+        break;
+     case 2400:
+        BAUD  = B2400;
+        break;
+     case 1800:
+        BAUD  = B1800;
+        break;
+     case 1200:
+        BAUD  = B1200;
+        break;
+  }  //end of switch baud_rate
+  if (cfsetispeed(&amp;newtio, BAUD) &lt; 0 || cfsetospeed(&amp;newtio, BAUD) &lt; 0)
+  {
+    ROS_ERROR(&quot;serialInit: Failed to set serial baud rate: %d&quot;, baud);
+    close(fd);
+    return NULL;
+  }
+  tcsetattr(fd, TCSANOW, &amp;newtio);
+  tcflush(fd, TCIOFLUSH);
+
+  //Open file as a standard I/O stream
+  fp = fdopen(fd, &quot;r+&quot;);
+  if (!fp) {
+    ROS_ERROR(&quot;serialInit: Failed to open serial stream %s&quot;, port);
+    fp = NULL;
+  }
+  return fp;
+} //serialInit
+
+
+//Process ROS command message, send to uController
+void ucCommandCallback(const std_msgs::String::ConstPtr&amp; msg)
+{
+  ROS_DEBUG(&quot;uc%dCommand: %s&quot;, ucIndex, msg-&gt;data.c_str());
+  fprintf(fpSerial, &quot;%s&quot;, msg-&gt;data.c_str()); //appends newline
+} //ucCommandCallback
+
+
+//Receive command responses from robot uController
+//and publish as a ROS message
+void *rcvThread(void *arg)
+{
+  int rcvBufSize = 200;
+  char ucResponse[rcvBufSize];   //response string from uController
+  char *bufPos;
+  std_msgs::String msg;
+  std::stringstream ss;
+
+  ROS_INFO(&quot;rcvThread: receive thread running&quot;);
+
+  while (ros::ok()) {
+    bufPos = fgets(ucResponse, rcvBufSize, fpSerial);
+    if (bufPos != NULL) {
+      ROS_DEBUG(&quot;uc%dResponse: %s&quot;, ucIndex, ucResponse);
+      msg.data = ucResponse;
+      ucResponseMsg.publish(msg);
+    }
+  }
+  return NULL;
+} //rcvThread
+
+
+int main(int argc, char **argv)
+{
+  char port[20];    //port name
+  int baud;     //baud rate 
+
+  char topicSubscribe[20];
+  char topicPublish[20];
+
+  pthread_t rcvThrID;   //receive thread ID
+  int err;
+
+  //Initialize ROS
+  ros::init(argc, argv, &quot;r2SerialDriver&quot;);
+  ros::NodeHandle rosNode;
+  ROS_INFO(&quot;r2Serial starting&quot;);
+
+  //Open and initialize the serial port to the uController
+  if (argc &gt; 1) {
+    if(sscanf(argv[1],&quot;%d&quot;, &amp;ucIndex)==1) {
+      sprintf(topicSubscribe, &quot;uc%dCommand&quot;,ucIndex);
+      sprintf(topicPublish, &quot;uc%dResponse&quot;,ucIndex);
+    }
+    else {
+      ROS_ERROR(&quot;ucontroller index parameter invalid&quot;);
+      return 1;
+    }
+  }
+  else {
+    strcpy(topicSubscribe, &quot;uc0Command&quot;);
+    strcpy(topicPublish, &quot;uc0Response&quot;);
+  }
+
+  strcpy(port, DEFAULT_SERIALPORT);
+  if (argc &gt; 2)
+     strcpy(port, argv[2]);
+
+  baud = DEFAULT_BAUDRATE;
+  if (argc &gt; 3) {
+    if(sscanf(argv[3],&quot;%d&quot;, &amp;baud)!=1) {
+      ROS_ERROR(&quot;ucontroller baud rate parameter invalid&quot;);
+      return 1;
+    }
+  }
+
+  ROS_INFO(&quot;connection initializing (%s) at %d baud&quot;, port, baud);
+   fpSerial = serialInit(port, baud);
+  if (!fpSerial )
+  {
+    ROS_ERROR(&quot;unable to create a new serial port&quot;);
+    return 1;
+  }
+  ROS_INFO(&quot;serial connection successful&quot;);
+
+  //Subscribe to ROS messages
+  ucCommandMsg = rosNode.subscribe(topicSubscribe, 100, ucCommandCallback);
+
+  //Setup to publish ROS messages
+  ucResponseMsg = rosNode.advertise&lt;std_msgs::String&gt;(topicPublish, 100);
+
+  //Create receive thread
+  err = pthread_create(&amp;rcvThrID, NULL, rcvThread, NULL);
+  if (err != 0) {
+    ROS_ERROR(&quot;unable to create receive thread&quot;);
+    return 1;
+  }
+
+  //Process ROS messages and send serial commands to uController
+  ros::spin();
+
+  fclose(fpSerial);
+  ROS_INFO(&quot;r2Serial stopping&quot;);
+  return 0;
+}
+</code></pre>
+
+<p>I can also offer a simple launch file that interfaces to two microcontrollers using two serial connections:</p>
+
+<pre><code>&lt;launch&gt;
+  &lt;node pkg=&quot;r2SerialDriver&quot; type=&quot;r2Serial&quot; name=&quot;r2Serial0&quot; args=&quot;0 /dev/ttyUSB0 19200&quot; output=&quot;screen&quot; &gt;
+  &lt;remap from=&quot;ucCommand&quot; to=&quot;uc0Command&quot; /&gt;
+  &lt;remap from=&quot;ucResponse&quot; to=&quot;uc0Response&quot; /&gt;
+  &lt;/node&gt;
+
+  &lt;node pkg=&quot;r2SerialDriver&quot; type=&quot;r2Serial&quot; name=&quot;r2Serial1&quot; args=&quot;1 /dev/ttyUSB1 19200&quot; output=&quot;screen&quot; &gt;
+  &lt;remap from=&quot;ucCommand&quot; to=&quot;uc1Command&quot; /&gt;
+  &lt;remap from=&quot;ucResponse&quot; to=&quot;uc1Response&quot; /&gt;
+  &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/286">Bart</a> on 2011-05-30 16:08:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Interesting, but a lot of my serial stuff is send a message and receive a response back. Instead of separate publish/subscribes have you tried a service? That seems like it would work nicely for this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/186">Kevin</a> on 2012-02-22 16:51:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Bart Do you have a python version for this solution?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35598">Spyros</a> on 2018-10-22 08:41:50 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>This seems to be exactly what I need... I think... but may be a little over my head so I will likely have a few questions regarding how to set this up.  I&#39;m using an arm attached to a BS2.  I have a Roomba platform (that will have the arm attached) being controlled via a laptop running Ubuntu/ROS with web based control via php pages.  I would like to use ROS to control the arm as well but I&#39;m unsure of some of the basics.  I have the ARM working through the Basic Stamp and I&#39;m able to control the arm via the laptop keyboard... should I keep the BS2 microcontroller and send serial commands using the code above (if so, I&#39;ll have other questions)... or, is it better (even feasible...) to bypass the microcontroller and send commands directly to the arm using ROS?  I think this is possible, but I&#39;m a novice and need help connecting the dots.  Any advice is greatly appreciated!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/987">kleekru</a> on 2012-02-22 14:04:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Agree, Bart&#39;s answer is cool, but is over kill for a beginner. If you pull out the thread stuff, but keep the serial setup, you can make something like the <a href="http://www.ros.org/wiki/ROS/Tutorials/WritingPublisherSubscriber%28c%2B%2B%29">tutorials</a> that talks to a serial port in the while loop. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/186">Kevin</a> on 2012-02-22 15:31:16 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Thanks Kevin.  I was thinking this must be simpler than that looks.  You mention above using a service.  Do you have an example?  Does anyone have an example of python code that connects to a serial port (a linked USB in my case) and sends integers to a Microcontroller (BS2 in my case).  I&#39;ll plug away with the publish/subscribe tutorials but it doesn&#39;t have the serial port part.  I&#39;m using the BS2 to actuate an arm.
+Thanks!
+Kevin</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/987">kleekru</a> on 2012-02-23 04:57:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Please use the comment tags when replying to messages.  Also commenting on an accepted question will not get you much help usually.  If it&#39;s been accepted and closed for months I suggest you ask a new question referencing this one.  </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2012-02-23 06:31:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I played around with Bart&#39;s code and did a <a href="https://github.com/walchko/serial_node">service</a>. It seems to work pretty good. I am re-writing one of my robots to take advantage of it and see how ti works. Good Luck!!!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/186">Kevin</a> on 2012-02-26 16:00:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Kevin, How to use your <a href="https://github.com/walchko/serial_node">service</a>? Thanks a lot!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23111">sonictl</a> on 2016-02-01 01:58:27 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Hi Bart,</p>
+
+<p>My suggestion would be to use the cereal_port pkg on the serial_communication stack, you can install it on Fuerte by apt-get.</p>
+
+<p>sudo apt-get install ros-fuerte-seria-communication</p>
+
+<p><a href="http://ros.org/wiki/cereal_port">http://ros.org/wiki/cereal_port</a></p>
+
+<p>Its a ROS C++ wrapper for serial port reading and writing with a bunch of helpful functions such as readLine, readBetween, etc!</p>
+
+<p>Hope this helps,</p>
+
+<p>Gonçalo Cabrita</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/83">Gonçalo Cabrita</a> on 2012-11-20 00:57:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros2 subscriber callback blocking one another - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/404019">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros2 subscriber callback blocking one another</h2>
+      <div class="question">
+        <p>Hello, </p>
+
+<p>I am using ROS2 galactic on Ubuntu 20.04. I have 2 callbacks, one which subscribes to the movement message and another which subscribes to a custom path message. In the first call I can see that both these callbacks get data and are updated but however my second call back has a function which moves the robot on that particular path. When this line executes, I stop getting data in my first callback because it is blocking it I guess?? I tried callback groups but it didn&#39;t work. Here is my code:</p>
+
+<p><strong>1st callback</strong></p>
+
+<pre><code>void Robot::moveStatusCb(const fleet_msgs::msg::MoveStatus &amp;msg) {
+    moveable = msg.movestatus[robotId - 1];
+     std::cout &lt;&lt; &quot;MOVABLE CALLBACK: &quot; &lt;&lt; moveable &lt;&lt; std::endl;
+}
+</code></pre>
+
+<p><strong>2nd callback</strong></p>
+
+<pre><code>void Robot::robotPathCb(const fleet_msgs::msg::RobotPath &amp;msg) {
+std::cout &lt;&lt; &quot;Entered path callback&quot; &lt;&lt; std::endl;
+for (int i = 0; i &lt; msg.paths.size(); ++i)
+{
+    if (robotId == msg.paths[i].robotid)
+    {
+        robotPath = msg.paths[i];
+        task = 1;
+        robotInstructions();
+        assigned = true;
+        break;
+    }
+    else {
+        task = 0;
+        robotInstructions();
+        robotStatus.robotid = robotId;
+        robotStatus.orderid = -1;
+        robotStatus.toteid = -1;
+        robotStatus.state = state;
+        robotStatPub-&gt;publish(robotStatus);
+    }
+}
+robotMovement();
+}
+</code></pre>
+
+<p>The robotMovement function is the one which makes the robot move. However when the code enters this function, I stop getting data on movementStatusCb. Can anyone please tell me how to solve this??</p>
+
+<p>Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/75894">cjoshi17</a> on 2022-07-21 06:14:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>What kind of executor are you using? If you are using the default rclcpp::spin() I think that uses a single threaded executor by default, which will call only one callback at a time. I would suggest trying a multithreaded executor, something like this: </p>
+
+<pre><code>rclcpp::executors::MultiThreadedExecutor executor;
+executor.add_node(node);
+executor.spin();
+</code></pre>
+
+<p>See the <a href="https://docs.ros.org/en/foxy/Concepts/About-Executors.html">docs</a> for more information</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/66603"></a> on 2022-07-21 14:16:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I tried this but it did not work for me:</p>
+
+<pre><code>rclcpp::init(argc, argv);
+rclcpp::executors::MultiThreadedExecutor executor;
+executor.add_node(std::make_shared&lt;Robot&gt;());
+executor.spin();
+rclcpp::shutdown();
+</code></pre>
+
+<p>When I did this, I wasn&#39;t getting any data in my callbacks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75894">cjoshi17</a> on 2022-07-21 23:43:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hey, you are right. The default callback group for nodes is a mutually exclusive callback group, which as the <a href="https://docs.ros.org/en/galactic/How-To-Guides/Using-callback-groups.html">docs</a> state prevents callbacks from running concurrently. While keeping the multithreaded executor, try adding your subscriptions to a reentrant callback group. Inside your node&#39;s constructor: </p>
+
+<pre><code>auto my_callback_group = this-&gt;create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+rclcpp::SubscriptionOptions options;
+options.callback_group = my_callback_group;
+
+my_sub1 = this-&gt;create_subscription&lt;fleet_msgs::msg::MoveStatus&gt;(/my_topic1, my_qos, std::bind(&amp;Robot::moveStatusCb, this, _1), options);
+
+my_sub2= this-&gt;create_subscription&lt;fleet_msgs::msg::RobotPath&gt;(/my_topic2, my_qos, std::bind(&amp;Robot::robotPathCb, this, _1), options);
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/66603">Pepis</a> on 2022-07-22 09:39:45 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>If the<code>RobotMovement()</code> method takes a long time to run, or it shouldn&#39;t be called multiple times concurrently, you may consider re-architecting this a bit in conjunction with a MultiThreaded executor, or a second Thread.</p>
+
+<p>Instead of calling <code>RobotMovement()</code> inside your topic callback, you could put the data into a queue, and read that queue from a dedicated timer or thread. This way you&#39;ve got the subscriptions getting handled by an executor, and the RobotMovement thread/timer can take as much time as it needs to push the robot through all the data in the queue without blocking the subscriptions.</p>
+
+<p>If you use a timer for the RobotMovement, you&#39;ll need to put it in it&#39;s own callback group (type doesn&#39;t matter), and use a MultiThreaded Executor. In both cases, be sure to use mutexes to ensure that only one thread/callback is modifying the queue at a time.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30013">ChuiV</a> on 2022-08-09 19:10:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

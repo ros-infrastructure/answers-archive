@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to properly fuse EKF from robot_localization and AMCL - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/413894">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to properly fuse EKF from robot_localization and AMCL</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I have been able to build a custom map via SLAM that I would like for my robot to navigate through. I am using an extended kalman filter node from the <code>robot_localization</code> package to fuse measurements from wheel encoders and an IMU. Also, I am fusing <code>amcl</code> with the algorithm because the robot possesses a Lidar sensor. The AMCL algorithm provides estimates for pose data to the ekf and it appears to be working adequately since the pose array converges; however, I have noticed that the ekf algorithm has been giving poor results with regard to localizing within the map. More specifically, it appears that at moments where the robot stops after moving forward or backwards, the ekf underestimates the distance traveled by the robot which causes the laser scans of the map to shift from where they should be in the static map. This can be seen clearly below from two videos that show two different scenarios where:</p>
+
+<ul>
+<li><a href="https://drive.google.com/file/d/1kU0U3xX5TcFd3CRngDXOKNqIx8mv2c7F/view?usp=share_link">Robot is constantly being driven forward and stopped intermediately causing laser scans to drift</a></li>
+<li><a href="https://drive.google.com/file/d/1tPSWoHlR0ewEeZTgQ3UMnlnrg6mFksKb/view?usp=share_link">Robot is being driven at a constant velocity causing little laser scan drift</a></li>
+</ul>
+
+<p>As you may also notice, the position covariance continues to grow without bound as I drive the robot longer, so it may be possible that those problems are related. Below my launch file that initializes my sensors and the ekf will be displayed below:</p>
+
+<pre><code>&lt;launch&gt;
+
+&lt;!-- Initializing teleop node--&gt;
+&lt;remap from=&quot;vel_cmd&quot; to=&quot;mega_one/vel_cmd&quot;/&gt;
+&lt;node pkg=&quot;devbot_teleop&quot; type=&quot;teleop_control.py&quot; name=&quot;teleop_node&quot; /&gt;
+
+&lt;!-- Initializing nodes that will provide sources of odometry--&gt;
+&lt;!-- Launching wheel twist node--&gt;
+&lt;remap from=&quot;twist&quot; to=&quot;mega_one/twist&quot; /&gt;
+&lt;include file=&quot;$(find base_controller_twist_converter)/launch/base_controller_twist.launch&quot;&gt;
+    &lt;!-- Set custom parameters if needed
+    &lt;param name=&quot;linear_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    &lt;param name=&quot;angular_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    --&gt;
+&lt;/include&gt;    
+&lt;!-- Launching imu node--&gt;
+&lt;remap from=&quot;bno055&quot; to=&quot;mega_two/bno055&quot; /&gt;
+&lt;include file=&quot;$(find bno055_imu_ros)/launch/bno055_imu.launch&quot;&gt;
+    &lt;!-- Set custom parameters if needed
+    &lt;param name=&quot;linear_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    &lt;param name=&quot;angular_velocity_stdev&quot; type=&quot;double&quot; value=&quot;&quot; /&gt;
+    --&gt;
+&lt;/include&gt;
+
+
+&lt;!-- Initializing localization parameters--&gt;
+&lt;arg name=&quot;frame_id&quot;                default=&quot;base_link&quot; /&gt;
+&lt;arg name=&quot;odom_frame&quot;              default=&quot;odom&quot;/&gt;
+&lt;arg name=&quot;map_frame&quot;               default=&quot;map&quot;/&gt;
+&lt;arg name=&quot;pose_topic&quot;              default=&quot;/amcl_pose&quot;/&gt;
+&lt;arg name=&quot;imu_topic&quot;               default=&quot;/imu/data&quot; /&gt;
+&lt;arg name=&quot;twist_topic&quot;             default=&quot;/wheel_twist&quot;/&gt;
+&lt;arg name=&quot;imu_remove_gravitational_acceleration&quot; default=&quot;true&quot; /&gt;
+
+&lt;!-- Odometry fusion (EKF), refer to demo launch file in robot_localization for more info --&gt;
+&lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_localization&quot; clear_params=&quot;true&quot; output=&quot;screen&quot;&gt;
+
+    &lt;param name=&quot;frequency&quot; value=&quot;30&quot;/&gt;
+    &lt;param name=&quot;sensor_timeout&quot; value=&quot;0.1&quot;/&gt;
+    &lt;param name=&quot;two_d_mode&quot; value=&quot;true&quot;/&gt;
+
+    &lt;param name=&quot;map_frame&quot; value=&quot;$(arg map_frame)&quot;/&gt;
+    &lt;param name=&quot;odom_frame&quot; value=&quot;$(arg odom_frame)&quot;/&gt;
+    &lt;param name=&quot;base_link_frame&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+    &lt;param name=&quot;world_frame&quot; value=&quot;$(arg odom_frame)&quot;/&gt;
+
+    &lt;param name=&quot;transform_time_offset&quot; value=&quot;0.0&quot;/&gt;
+
+    &lt;param name=&quot;twist0&quot; value=&quot;$(arg twist_topic)&quot;/&gt;
+    &lt;param name=&quot;imu0&quot; value=&quot;$(arg imu_topic)&quot;/&gt;
+    &lt;param name=&quot;pose0&quot; value=&quot;$(arg pose_topic)&quot;/&gt;
+
+    &lt;!-- The order of the values is x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az. --&gt;
+    &lt;rosparam param=&quot;twist0_config&quot;&gt;[false, false, false,
+                                    false,  false, false,
+                                    true,   true,  false,
+                                    false,  false, true,
+                                    false,  false, false]&lt;/rosparam&gt;
+
+    &lt;rosparam param=&quot;imu0_config&quot;&gt;[false,   false,  false,
+                                    false,  false,  true,
+                                    false,  false,  false,
+                                    false,  false,  true,
+                                    true,   false,  false]&lt;/rosparam&gt;
+
+    &lt;rosparam param=&quot;pose0_config&quot;&gt;[true,   true, false,
+                                    false,  false,  false,
+                                    false,   false, false,
+                                    false,  false,  false,
+                                    false,  false,  false]&lt;/rosparam&gt;
+
+    &lt;param name=&quot;twist0_differential&quot; value=&quot;false&quot;/&gt;
+    &lt;param name=&quot;imu0_differential&quot; value=&quot;false&quot;/&gt;
+    &lt;param name=&quot;pose0_differential&quot; value=&quot;true&quot;/&gt;
+
+    &lt;param name=&quot;twist0_relative&quot; value=&quot;true&quot;/&gt;
+    &lt;param name=&quot;imu0_relative&quot; value=&quot;true&quot;/&gt;
+    &lt;param name=&quot;pose0_relative&quot; value=&quot;false&quot;/&gt;
+
+    &lt;param name=&quot;imu0_remove_gravitational_acceleration&quot; value=&quot;$(arg imu_remove_gravitational_acceleration)&quot;/&gt;
+
+    &lt;param name=&quot;print_diagnostics&quot; value=&quot;true&quot;/&gt;
+
+    &lt;!-- ======== ADVANCED PARAMETERS ======== --&gt;
+    &lt;param name=&quot;twist0_queue_size&quot; value=&quot;10&quot;/&gt;
+    &lt;param name=&quot;imu0_queue_size&quot; value=&quot;50&quot;/&gt;
+    &lt;param name=&quot;pose0_queue_size&quot; value=&quot;5&quot;/&gt;
+
+    &lt;!-- The values are ordered as x, y, z, roll, pitch, yaw, vx, vy, vz,
+        vroll, vpitch, vyaw, ax, ay, az. --&gt;
+    &lt;rosparam param=&quot;process_noise_covariance&quot;&gt;[0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                                                0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.05]&lt;/rosparam&gt;
+
+    &lt;!-- The values are ordered as x, y,
+    z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az. --&gt;
+    &lt;rosparam param=&quot;initial_estimate_covariance&quot;&gt;[1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,     0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9,  0,     0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     1e-9,  0,     0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     1e-9,  0,    0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     1e-9, 0,    0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    1e-9, 0,
+                                                    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    1e-9]&lt;/rosparam&gt;
+
+&lt;/node&gt;
+</code></pre>
+
+<p></launch></p>
+
+<p>Please note that the <code>amcl</code> node is being initialized on another launch file. Also, I have not tweaked neither covariance matrix within the ekf node from their default values. My reasoning for this was because I am not fully sure how to properly tune them. Any guidance or advice at all regarding this problem would be greatly appreciated.  </p>
+
+        <div class="owner"><p>Asked by <a href="/users/61268">Devin1126</a> on 2023-03-30 02:11:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I have actual found the solution to my laser scan shifting problem. The issue was not related to the way that I configured the <code>ekf_localization_node</code>. It actually was related to the <code>odom_alpha</code> parameters of the <code>amcl</code> node that I was launching separately. If your odometry source is not very precise, then modifying the <code>odom_alpha</code> parameters to make them larger in the <code>amcl</code> node can compensate for that in localizing the robot within the map. More details can be found <a href="http://wiki.ros.org/amcl">here</a>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/61268">Devin1126</a> on 2023-04-03 14:47:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

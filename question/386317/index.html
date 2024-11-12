@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Delay video when calling to move - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/386317">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Delay video when calling to move</h2>
+      <div class="question">
+        <p>Hi. I have the following code that displays the compressed video from a robot and moves the robot (move_robot.py). There is a noticeable delay (3 seconds) when looking at the displayed video and what is happening in real-time. I started commenting line by line to see the cause of this delay. </p>
+
+<p>The following line is the reason of the delay:</p>
+
+<p><strong>&gt; self.movekobuki<em>object.move</em>robot(twist_object)</strong></p>
+
+<p>When I use this other python code ([movekobuki] from move_robot.py) which moves the robot, it delays the video time by the 3 seconds. Is there something I do wrong here? is it the rate? I can&#39;t find a solution to this...</p>
+
+<blockquote>
+<pre><code>     #!/usr/bin/env python
+
+     import rospy import cv2 import numpy
+     as np from cv_bridge import CvBridge,
+     CvBridgeError from geometry_msgs.msg
+     import Twist from sensor_msgs.msg
+     import Image, CompressedImage from
+     move_robot import MoveKobuki from
+     pid_control import PID import time
+
+
+
+     class LineFollower(object):
+
+         def __init__(self):
+
+             rospy.logwarn(&quot;Init line Follower&quot;)
+             self.bridge = CvBridge() 
+             self.image_sub = rospy.Subscriber(&#39;/camera/image_raw/compressed&#39;,CompressedImage, self.camera_callback,
+                      queue_size = 1)
+             self.movekobuki_object = MoveKobuki()
+             self.pid_object = PID()
+
+         def camera_callback(self,data):
+
+             try:
+                 image_np = self.bridge.compressed_imgmsg_to_cv2(data)
+             except CvBridgeError as e:
+                 print(e)
+
+
+             height, width, channels = image_np.shape
+             descentre = 100 # 50 works
+             rows_to_watch = 100 # 15 works
+             crop_img = image_np[(height)/2+descentre:(height)/2+(descentre+rows_to_watch)][1:width]
+
+             # Blur Image (to help with color noise)
+             blur = cv2.medianBlur(crop_img,15)
+
+             # Convert from RGB to HSV
+             hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+
+
+             # Threshold the HSV image to get only yellow colors
+             mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+
+
+
+
+             # Calculate centroid of the blob of binary image using ImageMoments
+
+             m = cv2.moments(mask, False)
+             try:
+                cx, cy = m[&#39;m10&#39;]/m[&#39;m00&#39;], m[&#39;m01&#39;]/m[&#39;m00&#39;]
+             except ZeroDivisionError:
+                 cx = 240
+                 cy = 320
+
+             # Bitwise-AND mask and original image
+             res = cv2.bitwise_and(crop_img,crop_img,mask= mask)
+
+             cv2.circle(res, (int(cx), int(cy)), 10,(0,0,255),-1)
+
+             cv2.imshow(&quot;Full Img&quot;, image_np)
+
+
+             cv2.waitKey(1)
+
+             # Move the Robot , center it in the middle of the width 640 =&gt; 320:
+             setPoint_value = width/2
+             self.pid_object.setpoint_update(value=setPoint_value)
+
+             twist_object = Twist();
+             twist_object.linear.x = 0.0; #0.2
+
+             # make it start turning
+
+             self.pid_object.state_update(value=cx)
+             effort_value = self.pid_object.get_control_effort()
+
+             angular_effort_value = 0 #effort_value / 350.0 # was 200 and 300 was latest
+
+             twist_object.angular.z = angular_effort_value;
+             self.movekobuki_object.move_robot(twist_object)
+
+
+
+
+         def clean_up(self):
+             self.movekobuki_object.clean_class()
+             cv2.destroyAllWindows()
+
+ def main():
+         rospy.init_node(&#39;line_following_node&#39;, anonymous=True)
+         line_follower_object = LineFollower()
+
+         rate = rospy.Rate(30) #originally 5
+         ctrl_c = False
+         def shutdownhook():
+             line_follower_object.clean_up()
+             rospy.loginfo(&quot;shutdown time!&quot;)
+             ctrl_c = True
+
+         rospy.on_shutdown(shutdownhook)
+
+         while not ctrl_c:
+             rate.sleep()
+
+     if __name__ == &#39;__main__&#39;:
+         main()
+</code></pre>
+</blockquote>
+
+<p>The <strong>move_robot.py</strong> is as follows, something here is </p>
+
+<blockquote>
+<pre><code>    #!/usr/bin/env python
+    import rospy
+    from geometry_msgs.msg import Twist
+    class MoveKobuki(object):
+
+        def __init__(self):
+
+            self.cmd_vel_pub = rospy.Publisher(&#39;/cmd_vel&#39;, Twist, queue_size=1)
+            self.cmd_vel_subs = rospy.Subscriber(&#39;/cmd_vel&#39;, Twist, self.cmdvel_callback)
+            self.last_cmdvel_command = Twist()
+            self._cmdvel_pub_rate = rospy.Rate(10) #10 is original
+            self.shutdown_detected = False
+
+        def cmdvel_callback(self, msg):
+            self.last_cmdvel_command = msg
+
+        def compare_twist_commands(self, twist1, twist2):
+            LX = twist1.linear.x == twist2.linear.x
+            LY = twist1.linear.y == twist2.linear.y
+            LZ = twist1.linear.z == twist2.linear.z
+            AX = twist1.angular.x == twist2.angular.x
+            AY = twist1.angular.y == twist2.angular.y
+            AZ = twist1.angular.z == twist2.angular.z
+            equal = LX and LY and LZ and AX and AY and AZ
+            if not equal:
+                rospy.logwarn(&quot;The current Twist is not the same as the one sent, Resending&quot;)
+            return equal
+
+        def move_robot(self, twist_object):
+            # We make this to avoid Topic loss, specially at the start
+            current_equal_to_new = False 
+            while (not (current_equal_to_new) and not(self.shutdown_detected) ):
+                self.cmd_vel_pub.publish(twist_object)
+                self._cmdvel_pub_rate.sleep()
+                current_equal_to_new = self.compare_twist_commands(twist1=self.last_cmdvel_command,twist2=twist_object) 
+
+        def clean_class(self):
+            # Stop Robot
+            twist_object = Twist()
+            twist_object.angular.z = 0.0
+            self.move_robot(twist_object)
+            self.shutdown_detected = True
+
+    def main():
+        rospy.init_node(&#39;move_robot_node&#39;, anonymous=True)
+
+        movekobuki_object = MoveKobuki()
+        twist_object = Twist()
+        # Make it start turning
+        twist_object.angular.z = 0.0
+
+        rate = rospy.Rate(30) # 5 is original
+
+        ctrl_c = False
+
+        def shutdownhook():
+            # Works better than the rospy.is_shut_down()
+            movekobuki_object.clean_class()
+            rospy.loginfo(&quot;Shutdown Time!&quot;)
+            ctrl_c = True
+
+        rospy.on_shutdown(shutdownhook)
+
+        while not ctrl_c:
+            movekobuki_object.move_robot(twist_object)
+            rate.sleep()
+
+    if __name__ == &#39;__main__&#39;:
+        main()
+</code></pre>
+</blockquote>
+
+        <div class="owner"><p>Asked by <a href="/users/69247">gup_08</a> on 2021-09-11 21:25:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>You have several design problems in this code.</p>
+
+<ol>
+<li><p>For what you are doing here, the move_robot and the image_analysis should be done in separate ros nodes (i.e. separate linux processes.) You should publish a small message from image_analysis to move_robot to provide updates to move_robot about what it should do.</p></li>
+<li><p><strong>The rule is that all ros subscriber callbacks must return as quickly as they can.</strong> This means no heavy processing, and absolutely no sleeping or waiting inside the callback function. In this specific case for your image_analysis node, I would have your subscriber callback save the incoming message to a global variable, then return. That&#39;s it. In your main() while loop, check if a new image is waiting, then call a function to process that image; also publish an update to move_robot (when it makes sense.)</p>
+
+<p>You <em>should</em> sleep or wait in the main() loop.</p></li>
+<li><p>The cv2 processing you are doing is very heavy, perhaps too heavy for python. I don&#39;t know how big your images are or how powerful your cpu is, but you should measure how long that processing is taking, then reduce your image frame rate so that the cpu can keep up. In ROS, for a single-threaded node, you do not want the linux process for your ROS node using more than about 80% of one cpu core. If you hit 100% cpu for one ROS node, expect the ROS system to behave poorly.</p></li>
+</ol>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-09-12 09:58:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

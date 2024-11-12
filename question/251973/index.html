@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Not receiving published clouds - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/251973">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Not receiving published clouds</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/78354/not-receiving-published-clouds">https://robotics.stackexchange.com/questions/78354/not-receiving-published-clouds</a>.</p>
+        <p>Hi everyone, </p>
+
+<p>I adapted the ensenso<em>grabber example from <a href="https://github.com/PointCloudLibrary/pcl/blob/master/doc/tutorials/content/sources/ensenso_cameras/ensenso_cloud_images_viewer.cpp">here</a> and in a an attept to publish the clouds for onward processing in another node, I decided to publish the processed clouds and images. However, I find that I can only retrieve the images in another node while the point</em>clouds themselves are not streaming out. I am at a loss on what I could possibly be doing wrong.</p>
+
+<p>Would appreciate your feedback in this code:</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;algorithm&gt;
+
+#include &lt;sensor_msgs/Image.h&gt;
+#include &lt;sensor_msgs/CameraInfo.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+
+ /*pcl and cv headers*/
+  #include &lt;ensenso/ensenso_headers.h&gt;
+/*typedefs*/
+using PairOfImages =  std::pair&lt;pcl::PCLImage, pcl::PCLImage&gt;;  //for the Ensenso grabber callback 
+using PointT = pcl::PointXYZ;
+using PointCloudT = pcl::PointCloud&lt;PointT&gt;;
+
+  /*pointers*/
+pcl::EnsensoGrabber::Ptr ensenso_ptr;
+
+  /*Globals*/
+sensor_msgs::PointCloud2 pcl2_msg;   //msg to be displayed in rviz
+
+void callback (const PointCloudT::Ptr&amp; cloud, \
+      const boost::shared_ptr&lt;PairOfImages&gt;&amp; images)
+{
+  ros::NodeHandle nh;
+  // image_transport::ImageTransport it(nh);
+  // image_transport::Publisher imagePub = it.advertise(&quot;/camera/image&quot;, 10);
+ ros::Publisher pclPub = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;/ensenso_cloudy&quot;, 10);
+
+  //prepare cloud for rospy publishing
+  pcl::toROSMsg(*cloud, pcl2_msg);
+  pcl2_msg.header.stamp = ros::Time::now();
+  pcl2_msg.header.frame_id = &quot;ensenso_cloud&quot;;
+
+  /*Process Image and prepare for publishing*/
+  unsigned char *l_image_array = reinterpret_cast&lt;unsigned char *&gt; (&amp;images-&gt;first.data[0]);
+  unsigned char *r_image_array = reinterpret_cast&lt;unsigned char *&gt; (&amp;images-&gt;second.data[0]);
+
+  ROS_INFO_STREAM(&quot;Encoding: &quot; &lt;&lt; images-&gt;first.encoding);
+  ROS_INFO_STREAM(&quot;Cloud size: &quot; &lt;&lt; cloud-&gt;height * cloud-&gt;width);
+
+  int type = getOpenCVType (images-&gt;first.encoding);
+  cv::Mat l_image (images-&gt;first.height, images-&gt;first.width, type, l_image_array);
+  cv::Mat r_image (images-&gt;first.height, images-&gt;first.width, type, r_image_array);
+  cv::Mat im (images-&gt;first.height, images-&gt;first.width * 2, type);
+
+  im.adjustROI (0, 0, 0, -0.5*images-&gt;first.width);
+  l_image.copyTo (im);
+  im.adjustROI (0, 0, -0.5*images-&gt;first.width, 0.5*images-&gt;first.width);
+  r_image.copyTo (im);
+  im.adjustROI (0, 0, 0.5*images-&gt;first.width, 0);
+  //prepare image and pcl to be published for rospy
+  sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), images-&gt;first.encoding, im).toImageMsg();
+
+  /*Publish the image and cloud*/
+  pclPub.publish(pcl2_msg);
+ // imagePub.publish(msg);  
+}
+
+int main (int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;ensensor_bridge_node&quot;); 
+   ros::start();
+   ROS_INFO(&quot;Started node %s&quot;, ros::this_node::getName().c_str());
+
+   ensenso_ptr.reset (new pcl::EnsensoGrabber);
+  ensenso_ptr-&gt;openTcpPort();
+  ensenso_ptr-&gt;openDevice();
+  ensenso_ptr-&gt;enumDevices();
+
+   //ensenso_ptr-&gt;initExtrinsicCalibration (5); // Disable projector if you want good looking images.
+   boost::function&lt;void(const PointCloudT::Ptr&amp;, const boost::shared_ptr&lt;PairOfImages&gt;&amp;)&gt; f \
+                            = boost::bind(&amp;callback, _1, _2);
+
+   ensenso_ptr-&gt;start ();
+
+   ros::Rate rate(5);
+   while(ros::ok())
+   {    
+     ensenso_ptr-&gt;registerCallback (f);
+     ros::spin();
+     rate.sleep();
+   }
+
+    ensenso_ptr-&gt;stop ();
+   ensenso_ptr-&gt;closeDevice ();
+   ensenso_ptr-&gt;closeTcpPort ();
+
+   return EXIT_SUCCESS;
+ }
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-01-14 21:30:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Not an answer, but perhaps you can skip all of this and re-use <a href="https://github.com/crigroup/ensenso">crigroup/ensenso</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 05:54:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>There is an official ROS-Driver from Ensenso in development, so no one should invest much time in a new driver.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18581">NEngelhard</a> on 2017-01-15 10:26:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m aware of that, hence my suggestion to use the <code>crigroup</code> code for now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 10:48:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I am aware of <code>crigroup</code>&#39;s work but it&#39;s not without its own issues. For one, the codebase is kind of big for me to learn before my impending deadline. I know not receiving point clouds is a simple issue that is somehow eluding me. I can subscribe to images but not pcls. Would still appreciate help</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-01-15 11:16:34 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I may be misunderstanding you, but seems to me that you just want to get clouds from an Ensenso device and publish them. Why would you need to understand what it is doing other than what you&#39;d need to start the driver?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 11:38:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As to your problem: in the <code>while</code> in <code>main(..)</code>, you appear to <code>registerCallback(..)</code> every iteration, which in turn creates your <code>pclPub</code> every iteration. That could be a problem, as such things need time to register properly. It is always better to create pubs <em>once</em>, and then reuse them.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 11:40:33 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Thanks to @gvdhoorn! Your suggestion seems to have fixed my problem. The publishers should be moved outside of the callback function to allow for time to process the publishers.</p>
+
+<p>However, when subscribing to the image topic, I get spurious stuff on the screen such as</p>
+
+<pre><code>     [ERROR] [1484512025.632229919]: Tried to advertise a service that is already advertised in this node           [/camera/ir_image/compressed/set_parameters]
+     [ERROR] [1484512025.682142849]: Tried to advertise a service that is already advertised in this node [/camera/ir_image/theora/set_parameters].
+</code></pre>
+
+<p>Now, I know this is well-documented <a href="http://answers.ros.org/question/12244/complaint-from-openni_launch-on-already-advertised-services/">here</a> as is the case of <code>openni launch</code> files. It does not affect what I am trying to do but it would be good to know why ensenso generates this error as well.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22838">lakehanne</a> on 2017-01-15 15:32:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

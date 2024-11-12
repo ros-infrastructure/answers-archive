@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Messages getting dropped [ros melodic + industrial camera] - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/372115">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Messages getting dropped [ros melodic + industrial camera]</h2>
+      <div class="question">
+        <p>Hey everyone,</p>
+
+<p>I am trying to perform a ground truth validation, having an Industrial camera and Ouster lidar (os1-64) where  both are connected to Nvidia Agx via PoE switch. The bandwidth rate of the camera is <code>49 MByte/sec</code> and Lidar Mode is <code>1024*20</code>.</p>
+
+<p>If both the camera and ouster run at the same time, my messages are getting dropped. Whereas, if I only run the ouster client I am getting all the messages. You can see the comparisons below:</p>
+
+<p>I am trying to run with following command to record the messages:</p>
+
+<pre><code>rosbag record -b 1024 --chunksize=1024 --duration=1h  /os_cloud_node/points __name:=recordLidarData &amp;
+</code></pre>
+
+<p>This is the output of the rosbag file which was recorded without the camera presence on the network:
+You can see the messages are <code>71991</code> and size of the recorded bag for 1 hour is almost <code>210.9 GB</code>:</p>
+
+<pre><code>path:        _2018-01-28-17-35-57.bag
+version:     2.0
+duration:    59:59s (3599s)
+start:       Jan 28 2018 17:35:57.88 (1517157357.88)
+end:         Jan 28 2018 18:35:57.60 (1517160957.60)
+size:        210.9 GB
+messages:    71991
+compression: none [71991/71991 chunks]
+types:       sensor_msgs/PointCloud2 [1158d486dd51d683ce2f1be655c3c181]
+topics:      /os_cloud_node/points   71991 msgs    : sensor_msgs/PointCloud2
+</code></pre>
+
+<p>When simultaneously, both the camera and ouster clinet runs, I am getting the correct FPS for the camera but all the messages are getting dropped for ouster and ended up in very small bag file. You can see the output of the rosbag file:
+Here you can see the messages I am getting for 1 hour only <code>6294</code> and the size is of rosbag is <code>18.04 GB</code>.</p>
+
+<pre><code>path:        _2018-01-28-19-15-51.bag
+version:     2.0
+duration:    59:58s (3598s)
+start:       Jan 28 2018 19:15:52.19 (1517163352.19)
+end:         Jan 28 2018 20:15:50.64 (1517166950.64)
+size:        18.4 GB
+messages:    6294
+compression: none [6294/6294 chunks]
+types:       sensor_msgs/PointCloud2 [1158d486dd51d683ce2f1be655c3c181]
+topics:      /os_cloud_node/points   6294 msgs    : sensor_msgs/PointCloud2
+</code></pre>
+
+<p>Can anyone nudge me in the right direction how to solve this issue. I mean in terms of, for example. what will be correct chunksize or buffsize so my messages should not drop. Is there anyway, where I can check how many messages are dropped kind of statistical information?</p>
+
+<p>Or there is a bottleneck, because the switch might be under stress [too many packets]? Any suggestions would be appreciated.</p>
+
+<p>Regards,
+Affi</p>
+
+        <div class="owner"><p>Asked by <a href="/users/70332">affi</a> on 2021-02-18 06:06:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>How glad I am we&#39;re not the only ones seeing this bug! We&#39;ve just spent about 20+ manhours debugging it. With the help of a network tap device, we pinpointed the issue to the timing of the packets sent by the lidar.</p>
+
+<p>It seems the lidar sends data in bursts (8 UDP fragments, pause 8 UDP fragments, pause, 1 UDP fragment). These 17 fragments form one large fragmented UDP datagram. And that&#39;s what the ROS driver sends furter as the lidar packet. When you connect the lidar directly to a computer, you don&#39;t observe the packet loss as there is noone else on the cable and a Gbit link is good enough for the lidar. However, when the lidar traffic is mixed in a switch with traffic from other devices, it shows the bursts of data are just too fast and switches start throwing Ouster packets away as their buffers are half-full of the other traffic and can no longer contain all packets belonging to the Ouster bursts. We haven&#39;t found any parameter of the switches we tested (about 5 types) that would tell us the size of the buffers, but we assume the store-and-forward technology they use has a buffer for just a few packets. Ouster sends 10000 UDP packets/s in 1024x10 mode, and one of our switches specifies 17 Mpackets/s, which is way more. However, the bursting behavior goes beyond the limit of even this switch on short time intervals.</p>
+
+<p>We plan to report this as an issue to Ouster, as it basically renders the sensor unusable when connected to a switch.</p>
+
+<p>Until it is fixed (if!), there are some things you can do to make things a bit better.</p>
+
+<ol>
+<li><p>Switch to 512x10 mode and connect Ouster to switch via a 4-wire 100 Mbit Ethernet cable. This will force it into 100 Mbit mode, in which the bursts are much smaller. The bandwidth of 512x10 mode is 60 Mbps which is easy to handle on the 100 Mbit link. This option fully resolves the issue for us, but you have to work only with 512x10 mode.</p></li>
+<li><p>Connect the lidar via a dedicated network card (e.g. a USB-Ethernet adapter or a PCIe card). This fully resolves the issue (if you manage to find a reliable USB-Ethernet adapter, which is not easy).</p></li>
+<li><p>If your receiving machine is Linux, set the following in /etc/systctl.d/60-ouster-fix.conf:</p></li>
+</ol>
+
+<p><code>
+net.ipv4.ipfrag_high_thresh = 26000000
+net.ipv4.ipfrag_low_thresh = 13000000
+net.ipv4.ipfrag_time = 5
+</code></p>
+
+<p>You can play with the values. This basically doesn&#39;t fix the lost packets problem, but it makes it less serious for the receiving computer. As said earlier, Ouster sends 20k UDP frames fragmented to 17 MTU-sized frames (1500 B). As frames get lost on the switch, the receiving computer adds any received fragment to a buffer where it waits for its other buddies to form the large UDP datagram. However, with 20% of them missing, most datagrams are never completed (reassembled). So their parts just sit in this buffer waiting. The default setting for Ubuntu is to kick them off after 30 seconds. You can see this in action - if you run the lidar and cameras at the same time, every 30 seconds you receive a few damaged scans in quick succession. That&#39;s exactly when the reassembly buffer kicks off most of the hopeless datagrams. The other two settings just control size of the reassembly buffer. The default is about 300 kB, we increase it to 26 MB.</p>
+
+<p>With these 3 settings, we got much better performance, but the problem is still not fixed. Without them, traffic of 60 Mbps from other devices is enough for lidar packets to start disappearing, wherease with the settings, most lidar packets make it through even with 500 Mbps other traffic.</p>
+
+<p>I&#39;ll update this answer if Ouster tells us some relevant information or if they fix the issue in a new firmware.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/7736"></a> on 2021-04-16 20:22:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Jumbo frames might also help. It doesn&#39;t decrease data rate, but it will decrease packet rate. Especially for busy networks, that might help reduce fragmentation and lost packets.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-04-17 08:54:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah, we&#39;d like to use them. But it seems the lidar is limited to the standard MTU of 1500 B :(</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2021-04-17 09:29:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Is there any follow up solution for that? We have been facing the same problem here.</p>
+
+<p>By running only the LiDAR everything is fine, but when we start the cameras we notice the packet drops on the LiDAR. We tried setting the LiDAR mode to 512x10 but we still saw the same behavior. Have you received any answer from Ouster?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/89979">lucas.nunes</a> on 2021-11-19 04:30:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If 512x10 mode is okay for you, connect the lidar via a 100 Mbps link and it will get much better (or even fixed). This connection can be forced either by putting some 100 Mbps-only switch in the way, or just by connecting only 4 of the 8 ethernet cables from Ouster (you need to figure out which ones).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2021-11-19 12:17:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Otherwise, Ouster told that they will try to address this issue in a new firmware released around Q1 2022.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2021-11-19 12:17:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Last, if you can open an issue with Ouster support, it would be great. Until now, they believed we are the only ones with this problem and thus it is a non-problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2021-11-19 12:18:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I don&#39;t know if you are aware but ouster released a new firmware with configurable UDP packet here: <a href="https://data.ouster.io/downloads/changelog/changelog-v2.2.x.pdf">https://data.ouster.io/downloads/changelog/changelog-v2.2.x.pdf</a></p>
+
+<p>Hopefully this will help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/89979">lucas.nunes</a> on 2022-01-18 05:43:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Unfortunately, the new firmware does not help (yet). The configurability is only about supporting the new dual returns mode. There is nothing allowing configuration of how many columns are sent at once. But looking at the changes in the ros driver, it seems Ouster is preparing for that. So let&#39;s hope it will happen soon.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2022-01-18 06:25:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>In the meantime, we have found a switch that supports PTP time sync and has buffers large enough that it can handle muxing Ouster traffic with other devices (we got 120 Mbps Ouster + ca 820 Mbps other traffic without a single dropped Ouster packet). <a href="https://www.botblox.io/products/rugged-gigabit-switch">https://www.botblox.io/products/rugged-gigabit-switch</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2022-01-18 06:26:53 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

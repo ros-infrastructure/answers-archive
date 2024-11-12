@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Cannot connect to gazebo API topics if i run a gazebo server using roslaunch. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/307796">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Cannot connect to gazebo API topics if i run a gazebo server using roslaunch.</h2>
+      <div class="question">
+        <p>Hello everybody. I have been stucked for a day on that and i do not find the solution to this problem.</p>
+
+<p>I am just trying to do a mix between the clone simulation tutorial (<a href="http://gazebosim.org/tutorials?tut=clone_simulation&cat=">http://gazebosim.org/tutorials?tut=clone_simulation&amp;cat=</a>) and a empty_world.launch simulation.</p>
+
+<p>First of all, I am using ROS Kinetic and Gazebo 7.0</p>
+
+<p>in clone.cpp I have commented the server run lines:</p>
+
+<pre><code>std::thread serverThread(RunServer);
+</code></pre>
+
+<p>and </p>
+
+<pre><code>serverThread.join();
+</code></pre>
+
+<p>Instead of running like this way the server, i just added the cpp code inside a launch copy of empty_world. adding the following line:</p>
+
+<pre><code>  &lt;node name=&quot;clone_node&quot; pkg=&quot;ros_trial&quot; type=&quot;cloner&quot; output=&quot;screen&quot; /&gt;
+</code></pre>
+
+<p>(just to be clear, CMakeLists.txt and package.xml are correctly configured</p>
+
+<p>When I do a roslaunch, everyting seems to work, but the api message /gazebo/server/control is not published.</p>
+
+<p>I have check if the channel exists with gz topic -l  (and exists) but if i do gz topic -e /gazebo/server/control nothing appears.</p>
+
+<p>The reason why i want to do this is because I want to clone a simulation several time and run them simoultaneously in order to reduce training time. The simulation which i want to run uses gazebo<em>msgs topics like gazebo</em>msgs::SpawnModel which does not exists woithout ROS (and I did not found any substitute).</p>
+
+<p>I do not know if I have been clear, (sorry if not!) in which case just ask me. Any help will be appreciated. </p>
+
+<p>Thanks!</p>
+
+<p>EDIT: I add the code to be more clear.</p>
+
+<p>cloner.cpp:</p>
+
+<pre><code>#include &lt;cstdlib&gt;
+
+#include &lt;iostream&gt;
+#include &lt;memory&gt;
+#include &lt;thread&gt;
+#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+#include &lt;gazebo/transport/transport.hh&gt;
+
+#include &lt;fstream&gt;
+#include &lt;string&gt;
+
+#include &lt;ros/ros.h&gt;
+#include &lt;ros/package.h&gt;
+#include &lt;geometry_msgs/Quaternion.h&gt;
+#include &lt;geometry_msgs/PoseArray.h&gt;
+#include &lt;geometry_msgs/Inertia.h&gt;
+#include &lt;std_srvs/Empty.h&gt;
+#include &lt;std_srvs/Trigger.h&gt;
+
+#include &lt;urdf/model.h&gt;
+#include &lt;urdf_parser/urdf_parser.h&gt;
+#include &lt;collada_urdf/collada_urdf.h&gt;
+
+#include &lt;gazebo_msgs/SpawnModel.h&gt;
+#include &lt;gazebo_msgs/DeleteModel.h&gt;
+#include &lt;gazebo_msgs/SetModelState.h&gt;
+#include &lt;gazebo_msgs/GetModelState.h&gt;
+
+#include &lt;actionlib/server/simple_action_server.h&gt;
+
+std::mutex feedback_mutex__;
+std::vector&lt;std::shared_ptr&lt;std::thread&gt;&gt; clone_thread_ptr_vector__;
+std::vector&lt;char*&gt; __environments;
+/////////////////////////////////////////////////
+void OnWorldModify(ConstWorldModifyPtr &amp;_msg)
+{
+    std::cout &lt;&lt; &quot;inside on world modify function&quot; &lt;&lt; std::endl;
+  if (_msg-&gt;has_cloned() &amp;&amp; _msg-&gt;cloned() &amp;&amp; _msg-&gt;has_cloned_uri())
+  {
+    std::cout &lt;&lt; &quot;World cloned. You can connect a client by typing\n&quot;
+              &lt;&lt; &quot;\tGAZEBO_MASTER_URI=&quot; &lt;&lt; _msg-&gt;cloned_uri()
+              &lt;&lt; &quot; gzclient&quot; &lt;&lt; std::endl;
+    char uri = *_msg-&gt;cloned_uri().c_str();
+    __environments.push_back(&amp;uri);
+  }
+  else{
+      std::cout &lt;&lt; &quot;ERROR 1&quot; &lt;&lt; std::endl;
+}
+}
+
+/////////////////////////////////////////////////
+void RunServer()
+{
+  // Initialize gazebo server.
+    std::cout &lt;&lt; &quot;inside run server function&quot; &lt;&lt; std::endl;
+  std::unique_ptr&lt;gazebo::Server&gt; server(new gazebo::Server());
+  try
+  {
+    if (!server-&gt;ParseArgs(0, NULL))
+      return;
+
+    // Initialize the informational logger. This will log warnings, and errors.
+    gzLogInit(&quot;server-&quot;, &quot;gzserver.log&quot;);
+
+    server-&gt;Run();
+    server-&gt;Fini();
+  }
+  catch(gazebo::common::Exception &amp;_e)
+  {
+      std::cout &lt;&lt; &quot;ERROR 2&quot; &lt;&lt; std::endl;
+    _e.Print();
+    server-&gt;Fini();
+  }
+}
+
+
+int port_ = 11346;
+char* __master = getenv(&quot;ROS_MASTER_URI&quot;);
+
+
+
+
+void GenerateClone(gazebo::transport::PublisherPtr serverControlPub )
+{
+  std::cout &lt;&lt; &quot;inside GenerateClone&quot; &lt;&lt; std::endl;
+  gazebo::msgs::ServerControl msg;
+  msg.set_save_world_name(&quot;&quot;);
+  msg.set_clone(true);
+  msg.set_new_port(port_);
+
+  std::cout &lt;&lt; &quot;publishing &quot; &lt;&lt; std::endl;
+  serverControlPub-&gt;Publish(msg);
+  std::cout &lt;&lt; &quot;published&quot; &lt;&lt; std::endl;
+
+  port_++;
+
+  return;
+
+}
+
+/////////////////////////////////////////////////
+int main(int argc, char **argv)
+{
+
+ros::init(argc, argv, &quot;talker&quot;);
+
+ros::NodeHandle n;
+__environments.push_back(__master);
+
+ //std::thread serverThread(RunServer);
+//setenv(&quot;GAZEBO_MASTER_URI&quot;, __master, 1);
+
+  // Create a node for communication.
+  gazebo::transport::NodePtr node(new gazebo::transport::Node());
+  node-&gt;Init();
+
+  // Publisher to the server control.
+  gazebo::transport::PublisherPtr serverControlPub =
+    node-&gt;Advertise&lt;gazebo::msgs::ServerControl&gt;(&quot;/gazebo/server/control&quot;);
+//  ros::Publisher serverControlPub = n.advertise&lt;gazebo_msgs::ServerControl&gt;(&quot;/gazebo/server/control&quot;, 1000);
+
+
+  // Subscriber to receive world updates (e.g.: a notification after a cloning).
+  gazebo::transport::SubscriberPtr worldModSub =
+    node-&gt;Subscribe(&quot;/gazebo/world/modify&quot;, &amp;OnWorldModify);
+    std::cout &lt;&lt; &quot;master: &quot;&lt;&lt; __master &lt;&lt; std::endl;
+  std::cout &lt;&lt; &quot;\nPress [ENTER] to clone the current simulation\n&quot; &lt;&lt; std::endl;
+  getchar();
+
+  // Clone the server programmatically.
+  for (int i = 0; i&lt;2 ; i++){
+
+    if (feedback_mutex__.try_lock()){
+        clone_thread_ptr_vector__.push_back(std::make_shared&lt;std::thread&gt;(GenerateClone, serverControlPub ) );
+        feedback_mutex__.unlock();
+
+        //sleep(5);
+
+
+    }
+  }
+  //__environments.push_back(&quot;http://localhost:11346&quot;);
+
+  //__environments.push_back(&quot;http://localhost:11347&quot;);
+
+   sleep(1);
+  // modify the different worlds
+  //master world
+  std::cout &lt;&lt; &quot;\nPress [ENTER] to send a 301 to the master world\n&quot; &lt;&lt; std::endl;
+  getchar();
+
+  {
+      //setenv(&quot;GAZEBO_MASTER_URI&quot;, __master, 1);
+    std::string package_path = ros::package::getPath(&quot;ros_trial&quot;);
+    std::string filename = package_path + &quot;/urdf/part_301.urdf&quot;;
+    urdf::ModelInterfaceSharedPtr part_model_ptr = urdf::parseURDFFile(filename);
+
+    geometry_msgs::Inertia inertial__;
+    inertial__.m =  0.05; 
+    inertial__.com.x =  0.0; 
+    inertial__.com.y =  0.0; 
+    inertial__.com.z = 0.014879; 
+    inertial__.ixx = 0.0006158372000000;
+    inertial__.ixy = -0.0000000010145837;
+    inertial__.ixz = -0.0000000054554562;
+    inertial__.iyy = 0.0006157460000000;
+    inertial__.iyz = 0.0000000212208923;
+    inertial__.izz = 0.0003144807500000;
+
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;mass = inertial__.m;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.x = inertial__.com.x;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.y = inertial__.com.y;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.z = inertial__.com.z;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixx = inertial__.ixx;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixy = inertial__.ixy;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixz = inertial__.ixz;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;iyy = inertial__.iyy;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;iyz = inertial__.iyz;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;izz = inertial__.izz;
+
+
+    TiXmlDocument* urdf_doc_ptr;
+    urdf_doc_ptr = urdf::exportURDF( part_model_ptr );
+
+    TiXmlPrinter printer;
+    urdf_doc_ptr-&gt;Accept( &amp;printer );
+    std::string urdf_str = printer.CStr();
+
+    sdf::ElementPtr __sdf;
+
+    ros::ServiceClient spawn_srv = n.serviceClient&lt;gazebo_msgs::SpawnModel&gt;(&quot;/gazebo/spawn_urdf_model&quot;);
+
+    gazebo_msgs::SpawnModel spawn_service;
+    spawn_service.request.initial_pose.position.x = 0.0;
+    spawn_service.request.initial_pose.position.y = 0.0;
+    spawn_service.request.initial_pose.position.z = 20.0;
+    spawn_service.request.initial_pose.orientation.w = 1.0;
+    spawn_service.request.model_name = &quot;part&quot;;
+    spawn_service.request.model_xml = urdf_str;
+    spawn_srv.call(spawn_service);
+
+  } 
+
+
+//cloned 1
+  std::cout &lt;&lt; &quot;\nPress [ENTER] to send a 021 to the first cloned world\n&quot; &lt;&lt; std::endl;
+  getchar();
+  setenv(&quot;GAZEBO_MASTER_URI&quot;, __environments[1], 1);
+
+    {
+    std::string package_path = ros::package::getPath(&quot;ros_trial&quot;);
+    std::string filename = package_path + &quot;/urdf/part_02.urdf&quot;;
+    urdf::ModelInterfaceSharedPtr part_model_ptr = urdf::parseURDFFile(filename);
+
+    geometry_msgs::Inertia inertial__;
+    inertial__.m =  0.05; 
+    inertial__.com.x =  0.0; 
+    inertial__.com.y =  0.0; 
+    inertial__.com.z = 0.014879; 
+    inertial__.ixx = 0.0006158372000000;
+    inertial__.ixy = -0.0000000010145837;
+    inertial__.ixz = -0.0000000054554562;
+    inertial__.iyy = 0.0006157460000000;
+    inertial__.iyz = 0.0000000212208923;
+    inertial__.izz = 0.0003144807500000;
+
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;mass = inertial__.m;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.x = inertial__.com.x;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.y = inertial__.com.y;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.z = inertial__.com.z;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixx = inertial__.ixx;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixy = inertial__.ixy;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixz = inertial__.ixz;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;iyy = inertial__.iyy;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;iyz = inertial__.iyz;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;izz = inertial__.izz;
+
+
+    TiXmlDocument* urdf_doc_ptr;
+    urdf_doc_ptr = urdf::exportURDF( part_model_ptr );
+
+    TiXmlPrinter printer;
+    urdf_doc_ptr-&gt;Accept( &amp;printer );
+    std::string urdf_str = printer.CStr();
+
+    ros::ServiceClient spawn_srv = n.serviceClient&lt;gazebo_msgs::SpawnModel&gt;(&quot;/gazebo/spawn_urdf_model&quot;);
+
+    gazebo_msgs::SpawnModel spawn_service;
+    spawn_service.request.initial_pose.position.x = 0.0;
+    spawn_service.request.initial_pose.position.y = 0.0;
+    spawn_service.request.initial_pose.position.z = 20.0;
+    spawn_service.request.initial_pose.orientation.w = 1.0;
+    spawn_service.request.model_name = &quot;part&quot;;
+    spawn_service.request.model_xml = urdf_str;
+    spawn_srv.call(spawn_service);
+
+  } 
+
+  //cloned 2
+  std::cout &lt;&lt; &quot;\nPress [ENTER] to send a 301 to the second cloned world\n&quot; &lt;&lt; std::endl;
+  getchar();
+  setenv(&quot;GAZEBO_MASTER_URI&quot;, __environments[2], 1);
+
+    {
+    std::string package_path = ros::package::getPath(&quot;ros_trial&quot;);
+    std::string filename = package_path + &quot;/urdf/part_301.urdf&quot;;
+    urdf::ModelInterfaceSharedPtr part_model_ptr = urdf::parseURDFFile(filename);
+
+    geometry_msgs::Inertia inertial__;
+    inertial__.m =  0.05; 
+    inertial__.com.x =  0.0; 
+    inertial__.com.y =  0.0; 
+    inertial__.com.z = 0.014879; 
+    inertial__.ixx = 0.0006158372000000;
+    inertial__.ixy = -0.0000000010145837;
+    inertial__.ixz = -0.0000000054554562;
+    inertial__.iyy = 0.0006157460000000;
+    inertial__.iyz = 0.0000000212208923;
+    inertial__.izz = 0.0003144807500000;
+
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;mass = inertial__.m;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.x = inertial__.com.x;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.y = inertial__.com.y;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;origin.position.z = inertial__.com.z;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixx = inertial__.ixx;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixy = inertial__.ixy;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;ixz = inertial__.ixz;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;iyy = inertial__.iyy;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;iyz = inertial__.iyz;
+    part_model_ptr-&gt;getRoot()-&gt;inertial-&gt;izz = inertial__.izz;
+
+
+    TiXmlDocument* urdf_doc_ptr;
+    urdf_doc_ptr = urdf::exportURDF( part_model_ptr );
+
+    TiXmlPrinter printer;
+    urdf_doc_ptr-&gt;Accept( &amp;printer );
+    std::string urdf_str = printer.CStr();
+
+    ros::ServiceClient spawn_srv = n.serviceClient&lt;gazebo_msgs::SpawnModel&gt;(&quot;/gazebo/spawn_urdf_model&quot;);
+
+    gazebo_msgs::SpawnModel spawn_service;
+    spawn_service.request.initial_pose.position.x = 0.0;
+    spawn_service.request.initial_pose.position.y = 0.0;
+    spawn_service.request.initial_pose.position.z = 20.0;
+    spawn_service.request.initial_pose.orientation.w = 1.0;
+    spawn_service.request.model_name = &quot;part&quot;;
+    spawn_service.request.model_xml = urdf_str;
+    spawn_srv.call(spawn_service);
+
+  } 
+
+
+  // Wait for the simulation clone before showing the next message.
+  gazebo::common::Time::MSleep(200);
+
+  std::cout &lt;&lt; &quot;\nPress [ENTER] to exit and kill all the servers.&quot; &lt;&lt; std::endl;
+  getchar();
+
+  // Make sure to shut everything down.
+  std::string cmd = &quot;kill -15 `ps -A | grep -m1 gzserver | awk &#39;{print $1}&#39;`&quot;;
+  int ret = std::system(cmd.c_str());
+  if (ret != 0)
+    std::cerr &lt;&lt; &quot;kill gzserver returned a non zero value:&quot; &lt;&lt; ret &lt;&lt; std::endl;
+
+  gazebo::shutdown();
+
+  //serverThread.join();
+
+  ros::spin();
+  return 0;
+}
+</code></pre>
+
+<p>clone.launch:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;launch&gt;
+  &lt;!-- these are the arguments you can pass this launch file, for example paused:=true --&gt;
+  &lt;arg name=&quot;paused&quot; default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;use_sim_time&quot; default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;extra_gazebo_args&quot; default=&quot;&quot;/&gt;
+  &lt;arg name=&quot;gui&quot; default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;recording&quot; default=&quot;false&quot;/&gt;
+  &lt;!-- Note that &#39;headless&#39; is currently non-functional.  See gazebo_ros_pkgs issue #491 (-r arg does not disable
+       rendering, but instead enables recording). The arg definition has been left here to prevent breaking downstream
+       launch files, but it does nothing. --&gt;
+  &lt;arg name=&quot;headless&quot; default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;debug&quot; default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;physics&quot; default=&quot;ode&quot;/&gt;
+  &lt;arg name=&quot;verbose&quot; default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;world_name&quot; default=&quot;worlds/empty.world&quot;/&gt; &lt;!-- Note: the world_name is with respect to GAZEBO_RESOURCE_PATH environmental variable --&gt;
+  &lt;arg name=&quot;respawn_gazebo&quot; default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;use_clock_frequency&quot; default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;pub_clock_frequency&quot; default=&quot;100&quot;/&gt;
+  &lt;arg name=&quot;required&quot; default=&quot;false&quot;/&gt;
+
+  &lt;!-- set use_sim_time flag --&gt;
+  &lt;group if=&quot;$(arg use_sim_time)&quot;&gt;
+    &lt;param name=&quot;/use_sim_time&quot; value=&quot;true&quot; /&gt;
+  &lt;/group&gt;
+
+  &lt;!-- set command arguments --&gt;
+  &lt;arg unless=&quot;$(arg paused)&quot; name=&quot;command_arg1&quot; value=&quot;&quot;/&gt;
+  &lt;arg     if=&quot;$(arg paused)&quot; name=&quot;command_arg1&quot; value=&quot;-u&quot;/&gt;
+  &lt;arg unless=&quot;$(arg recording)&quot; name=&quot;command_arg2&quot; value=&quot;&quot;/&gt;
+  &lt;arg     if=&quot;$(arg recording)&quot; name=&quot;command_arg2&quot; value=&quot;-r&quot;/&gt;
+  &lt;arg unless=&quot;$(arg verbose)&quot; name=&quot;command_arg3&quot; value=&quot;&quot;/&gt;
+  &lt;arg     if=&quot;$(arg verbose)&quot; name=&quot;command_arg3&quot; value=&quot;--verbose&quot;/&gt;
+  &lt;arg unless=&quot;$(arg debug)&quot; name=&quot;script_type&quot; value=&quot;gzserver&quot;/&gt;
+  &lt;arg     if=&quot;$(arg debug)&quot; name=&quot;script_type&quot; value=&quot;debug&quot;/&gt;
+
+  &lt;!-- start gazebo server--&gt;
+
+
+
+   &lt;group if=&quot;$(arg use_clock_frequency)&quot;&gt;
+    &lt;param name=&quot;gazebo/pub_clock_frequency&quot; value=&quot;$(arg pub_clock_frequency)&quot; /&gt;
+  &lt;/group&gt;
+  &lt;node name=&quot;clone_node&quot; pkg=&quot;ros_trial&quot; type=&quot;cloner&quot; output=&quot;screen&quot; /&gt;
+  &lt;node name=&quot;gazebo&quot; pkg=&quot;gazebo_ros&quot; type=&quot;$(arg script_type)&quot; respawn=&quot;$(arg respawn_gazebo)&quot; output=&quot;screen&quot;
+    args=&quot;$(arg command_arg1) $(arg command_arg2) $(arg command_arg3) -e $(arg physics) $(arg extra_gazebo_args) $(arg world_name)&quot; /&gt;
+
+
+  &lt;!-- start gazebo client --&gt;
+  &lt;group if=&quot;$(arg gui)&quot;&gt;
+    &lt;node name=&quot;gazebo_gui&quot; pkg=&quot;gazebo_ros&quot; type=&quot;gzclient&quot; respawn=&quot;false&quot; output=&quot;screen&quot; required=&quot;$(arg required)&quot;/&gt;
+  &lt;/group&gt;
+
+
+
+&lt;/launch&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/31684">Solrac3589</a> on 2018-11-07 06:26:03 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I am not going to post this as a solution, because it is not, but I am working through a workaround (if somebody has this problem).
+I am adapting the code to work only with the API topics from Gazebo (non-ROS ones). Disabling the gzserver generation from the launcher and generating it in the code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31684">Solrac3589</a> on 2018-11-08 03:11:37 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

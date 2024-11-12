@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>messages were subscribed, but callback function does not work - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377916">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>messages were subscribed, but callback function does not work</h2>
+      <div class="question">
+        <p>In rqt<em>graph image, i can see the extent</em>back topic was subscribed correctly. But the member function back_callback does not work even once. I want to know what makes this and what should i do?
+I refer to this solution, but it doesn&#39;t work for me. <a href="https://answers.ros.org/question/304569/callback-fuction-is-not-getting-called/">answers.ros.org/question/304569/callback-fuction-is-not-getting-called</a></p>
+
+<p>This node published /extent_back topic </p>
+
+<pre><code>#!/usr/bin/python
+import rospy
+import time
+import threading
+import numpy as np
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+from car_msgs.msg import Decode, Extent
+class Back(object):
+
+    def __init__(self):
+        self.left_rpt = 0
+        self.right_rpt = 0
+        self.cv_mat = np.zeros([480, 640])
+        self.mat_df= 0
+        rospy.init_node(&quot;is_back&quot;)
+        rospy.Subscriber(&quot;/decode&quot;, Decode, self.encoder_callback, queue_size=1)
+        rospy.Subscriber(&quot;/camera/depth_registered/image_raw&quot;, Image, self.depth_callback, queue_size=1)
+        self.back_pub = rospy.Publisher(&quot;/extent_back&quot;, Extent, queue_size=1)
+
+
+    def encoder_callback(self, msg):
+        self.left_rpt = msg.left_rpt
+        self.right_rpt = msg.right_rpt
+
+
+    def depth_callback(self, msg):
+        br = CvBridge()
+        tmp_mat = self.cv_mat
+        self.cv_mat = br.imgmsg_to_cv2(msg)
+        if self.cv_mat[240:400, 150:490].any() != tmp_mat[240:400, 150:490].any():
+            self.mat_df += 1
+
+
+
+    def threading_main(self):
+        left_rpt = self.left_rpt
+        right_rpt = self.right_rpt
+        time.sleep(0.1)
+        mat_df = self.mat_df
+       # if self.left_rpt - left_rpt &lt; XXX or self.right_rpt - right_rpt &lt; XXX or self.mat_df == mat_df:
+        if self.mat_df == mat_df: 
+            self.back_pub.publish(Extent(wheel=&quot;back&quot;, extent=0))
+ #          rospy.loginfo(&quot;can&#39;t move&quot;)
+if __name__ == &quot;__main__&quot;:
+    back = Back()
+    threading._start_new_thread(rospy.spin, ())
+    rate = rospy.Rate(1)
+        while not rospy.is_shutdown():
+            back.threading_main()
+        rate.sleep()
+</code></pre>
+
+<p>and this node subscribes /extent_back</p>
+
+<pre><code>#!/usr/bin/python
+from sensor_msgs.msg import Image
+from car_msgs.msg import Extent
+from cv_bridge import CvBridge
+import cv2
+import ros_numpy as rnp
+import rospy
+import time
+import threading
+import numpy as np
+depth_topic = &quot;/camera/depth_registered/image_raw&quot;
+
+def ex_cal(distance):
+    return 4 * distance - 2.2
+
+
+class Avoid(object):
+
+    def __init__(self, depth_topic,que=5):
+        self.br = CvBridge()
+       # self.extent = 1  #Flag bit, this ensures that we can&#39;t decrease the speed of wheel in once direction changing
+        self.image = np.zeros((640, 480))
+        self.image_precision = 340 * 160 / 8
+        self.back = True
+        rospy.init_node(&#39;depth_graph&#39;, anonymous=True)
+        rospy.Subscriber(&quot;/extent_back&quot;, Extent, self.back_callback, queue_size=que)
+        time.sleep(1)
+        self.extent_pub = rospy.Publisher(&quot;/extent&quot;, Extent, queue_size=que)
+        rospy.Subscriber(depth_topic, Image, callback=self.depth_callback, queue_size=que)
+
+
+    def back_callback(self, msg):
+        self.back = True
+        rospy.loginfo(&quot;It is time to {}&quot;.format(msg.wheel))
+
+    def depth_callback(self, image):
+        self.image = self.br.imgmsg_to_cv2(image)
+
+    def pub_foo(self):
+        if self.image.any() :
+            count = 0
+            nan_count = 0
+            left_or_right = 0
+            for i in range(240, 400, 2):
+                for j in range(150, 490, 2):
+                    min_distance = self.image[i, j]
+                    if self.image[i, j] == self.image[i, j]:
+                        if self.image[i , j] &lt; 0.65:
+                            count += 1
+                            if 150 &lt; j &lt; 320:
+                                left_or_right += 1
+                            if min_distance &gt; self.image[i, j]:
+                                min_distance = self.image[i, j]
+                    else:
+                        nan_count += 1
+                    if count &gt; self.image_precision:
+                        break
+                if count &gt; self.image_precision:
+                    break
+            if nan_count &gt; self.image_precision * 1.2 and not self.back:
+                self.extent_pub.publish(Extent(wheel=&quot;motionless&quot;, extent=0))
+            elif nan_count &gt; self.image_precision * 1.2 and self.back:
+                self.extent_pub.publish(Extent(wheel=&quot;back&quot;, extent=0))
+                self.back = False
+            else:
+                if count &gt; self.image_precision and left_or_right &lt; count / 2:
+                    &quot;&quot;&quot;turn left&quot;&quot;&quot;
+                    # ex = Extent()
+                    # ex.wheel = &quot;left&quot;
+                    # ex.extent = 0.8
+                   # if self.extent == 1:
+                    self.extent_pub.publish(Extent(wheel=&quot;left&quot;, extent=ex_cal(min_distance)))
+                elif count &gt; self.image_precision and left_or_right &gt;= count / 2:
+                    &quot;&quot;&quot;turn right&quot;&quot;&quot;
+                    # ex = Extent()
+                    # ex.wheel = &quot;right&quot;
+                    # ex.extent = 0.8
+                #    if self.extent == 1:
+                    self.extent_pub.publish(Extent(wheel=&quot;right&quot;, extent=ex_cal(min_distance)))
+                else:
+                    &quot;&quot;&quot;go forward&quot;&quot;&quot;
+                 #   self.extent = 1
+                    self.extent_pub.publish(Extent(wheel=&quot;fore&quot;, extent=1))
+if __name__ == &quot;__main__&quot;:
+    avoid = Avoid(depth_topic, 1)
+    threading._start_new_thread(rospy.spin, ())
+    rate = rospy.Rate(10)
+    while not rospy.is_shutdown():
+        avoid.pub_foo()
+        rate.sleep()
+</code></pre>
+
+<p>In launch file, i set output=&quot;screen&quot;. but i can not see the output information. My poor English level may affect the interpretation of the problem .In any case, thanks for your help …</p>
+
+        <div class="owner"><p>Asked by <a href="/users/74208">IgararA</a> on 2021-05-07 06:21:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Could you explain what&#39;s <code>threading._start_new_thread(rospy.spin, ())</code> for? Since you&#39;ve got both <code>rospy.spin()</code> and <code>while not rospy.is_shutdown()</code>, please make sure to understand how are they different (see point 4 of this <a href="https://answers.ros.org/question/319242/ros-theoretical-question-how-does-work-properly-a-node/?answer=320184#post-id-320184">answer</a>)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34260">abhishek47</a> on 2021-05-07 09:02:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>thanks, i know every subscribers callback function will start a new thread by now.  i use <code>threading._start_new_thread(rospy.spin, ())</code> to get a more real-time image message. your answer makes me know it is meaningless.but i think this may not cause this situation. in fact, when i removed <code>threading._start_new_thread</code>this situation does not change,the callback function can not be called as before.thanks again.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/74208">IgararA</a> on 2021-05-07 10:06:23 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

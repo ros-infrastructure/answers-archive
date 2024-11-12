@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Can only perform kinematic computation for a single link (simple question) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/157356">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Can only perform kinematic computation for a single link (simple question)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/59006/can-only-perform-kinematic-computation-for-a-single-link-simple-question">https://robotics.stackexchange.com/questions/59006/can-only-perform-kinematic-computation-for-a-single-link-simple-question</a>.</p>
+        <p>I made an arm_navigation stack using the Planning Description Configuration Wizard. However, when I try to run forward kinematics on my robot, only a single link shows up in the GetKinematicSolverInfo service response.</p>
+
+<pre><code>[ INFO] [1398420068.098256875]: Joint: 0 shoulder_pan_joint
+[ INFO] [1398420068.098394147]: Joint: 1 shoulder_lift_joint
+[ INFO] [1398420068.098505827]: Joint: 2 elbow_joint
+[ INFO] [1398420068.098577658]: Joint: 3 wrist_1_joint
+[ INFO] [1398420068.098646898]: Joint: 4 wrist_2_joint
+[ INFO] [1398420068.098723696]: Joint: 5 wrist_3_joint
+[ INFO] [1398420068.098798122]: 
+[ INFO] [1398420068.098873428]: Link: 0 wrist_3_link
+</code></pre>
+
+<p>Did I make a mistake in the Planning Configuration Wizard, or must I look at the setup for my planner? There doesn&#39;t seem to be much precise information in the relevant tutorials.</p>
+
+<p>EDIT: It could be that wrist<em>3</em>link is the only link that the solver will take as input, but if I try to solve for the forward kinematics for wrist<em>3</em>link, the kinematics server crasher. I assumed it was because I haven&#39;t specified the all the links, but that may not be the case. Perhaps there is a bug in the code, although I cannot find it.</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;kinematics_msgs/GetKinematicSolverInfo.h&gt;
+#include &lt;kinematics_msgs/GetPositionFK.h&gt;
+
+class ur5_listener_class
+{
+private: 
+  sensor_msgs::JointState ur5_state;
+
+public:
+  void returnJointState(const sensor_msgs::JointState msg)
+  {
+    // The callback function only passes on the data to the class
+    ur5_state = msg;
+  }
+
+  sensor_msgs::JointState applyJointState()
+  {
+    // if the joint_state data is needed in the main function, it will be returned here.
+    return ur5_state;
+  }
+
+  void debug()
+  {
+    for(int i=0;i&lt;6;i++)
+    {
+      std::cout &lt;&lt; &quot;The &quot; &lt;&lt; ur5_state.name.at(i) &lt;&lt; &quot; is now at &quot; &lt;&lt; ur5_state.position.at(i);
+      std::cout &lt;&lt; &quot; moving with velocity &quot; &lt;&lt; ur5_state.velocity.at(i) &lt;&lt; &quot;\n&quot;;
+    }
+  }
+};
+
+int main(int argc, char **argv){
+  // Variable declaration   
+  sensor_msgs::JointState ur5_state;
+
+  ros::init (argc, argv, &quot;get_fk&quot;);
+  ros::NodeHandle rh;
+
+    // Before other business, connect to node, and retrieve joint state
+  ros::Subscriber sub;
+  ur5_listener_class ur5_listener;
+  sub = rh.subscribe(&quot;/joint_states&quot;, 1000, &amp;ur5_listener_class::returnJointState, &amp;ur5_listener);
+  // Wait for the connection to establish
+  ros::Rate r(10);
+  while (sub.getNumPublishers() == 0)
+  r.sleep();
+
+  // retrieve joint_state and use for JointGoal
+  ros::spinOnce();
+  ur5_state = ur5_listener.applyJointState();
+
+  ros::service::waitForService(&quot;ur5_UR5_chain_kinematics/get_fk_solver_info&quot;);
+  ros::service::waitForService(&quot;ur5_UR5_chain_kinematics/get_fk&quot;);
+
+  ros::ServiceClient query_client = 
+    rh.serviceClient&lt;kinematics_msgs::GetKinematicSolverInfo&gt;
+    (&quot;ur5_UR5_chain_kinematics/get_fk_solver_info&quot;);
+  ros::ServiceClient fk_client = rh.serviceClient
+    &lt;kinematics_msgs::GetPositionFK&gt;(&quot;ur5_UR5_chain_kinematics/get_fk&quot;);
+
+  // define the service messages
+  kinematics_msgs::GetKinematicSolverInfo::Request request;
+  kinematics_msgs::GetKinematicSolverInfo::Response response;
+  if(query_client.call(request,response))
+  {
+    ROS_INFO(&quot;number of joints on service %i&quot;,
+        response.kinematic_solver_info.joint_names.size());
+    ROS_INFO(&quot;number of links on service %i&quot;,
+        response.kinematic_solver_info.link_names.size());
+    ROS_INFO(&quot;Link in question: %s&quot;,
+        response.kinematic_solver_info.link_names[0].c_str());
+    for(unsigned int i=0; 
+        i&lt; response.kinematic_solver_info.joint_names.size(); i++)
+    {
+      ROS_INFO(&quot;Joint: %d %s&quot;, i,
+       response.kinematic_solver_info.joint_names[i].c_str());
+    }
+  }
+  else
+  {
+    ROS_ERROR(&quot;Could not call query service&quot;);
+    ros::shutdown();
+    exit(1);
+  }
+  // define the service messages
+  kinematics_msgs::GetPositionFK::Request  fk_request;
+  kinematics_msgs::GetPositionFK::Response fk_response;
+  fk_request.header.frame_id = &quot;base_link&quot;;
+  fk_request.fk_link_names.resize(1);
+  fk_request.fk_link_names[0] = &quot;wrist_3_link&quot;;
+  ROS_INFO(&quot;Forward request call made&quot;);
+  fk_request.robot_state.joint_state.position.resize
+    (response.kinematic_solver_info.joint_names.size());
+    // ROS_INFO(&quot;joint name resized&quot;);
+  fk_request.robot_state.joint_state.name = 
+    response.kinematic_solver_info.joint_names;
+    // ROS_INFO(&quot;Joint names passed&quot;);
+  for(unsigned int i=0; 
+      i&lt; response.kinematic_solver_info.joint_names.size(); i++)
+  {
+    fk_request.robot_state.joint_state.position[i] = ur5_state.position.at(i);
+    ROS_INFO(&quot;Numbers passed to the solver: %i, %f&quot;, i, ur5_state.position.at(i));
+  }
+  sleep(1);
+  if(fk_client.call(fk_request, fk_response))
+  {
+    ROS_INFO(&quot;fk_client.call(fk_request, fk_response init&quot;);
+    if(fk_response.error_code.val == fk_response.error_code.SUCCESS)
+    {
+      for(unsigned int i=0; i &lt; fk_response.pose_stamped.size(); i ++)
+      {
+        ROS_INFO_STREAM(&quot;Link    : &quot; &lt;&lt; fk_response.fk_link_names[i].c_str());
+        ROS_INFO_STREAM(&quot;Position: &quot; &lt;&lt; 
+          fk_response.pose_stamped[i].pose.position.x &lt;&lt; &quot;,&quot; &lt;&lt;  
+          fk_response.pose_stamped[i].pose.position.y &lt;&lt; &quot;,&quot; &lt;&lt; 
+          fk_response.pose_stamped[i].pose.position.z);
+        ROS_INFO(&quot;Orientation: %f %f %f %f&quot;,
+          fk_response.pose_stamped[i].pose.orientation.x,
+          fk_response.pose_stamped[i].pose.orientation.y,
+          fk_response.pose_stamped[i].pose.orientation.z,
+          fk_response.pose_stamped[i].pose.orientation.w);
+      } 
+    }
+    else
+    {
+      ROS_ERROR(&quot;Forward kinematics failed&quot;);
+    }
+  }
+  else
+  {
+    ROS_ERROR(&quot;Forward kinematics service call failed&quot;);
+  }
+  ros::shutdown();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/14791">paturdc</a> on 2014-04-25 00:05:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The fact that only one link shows up is expected. That link is your IK link, i.e. the link that you can compute IK (inverse kinematics) for. The result will be a joint state for each of the 6 listed joints. Vice versa for FK (forward kinematics): you have to give the FK service a joint state for your 6 joints and will receive a resulting pose of your wrist_3_link.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22"></a> on 2014-04-25 00:45:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks. There must be some bug in the code then.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14791">paturdc</a> on 2014-04-25 00:48:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Your code looks good at first glance. Maybe you could try fk_request.robot_state.joint_state.position[i] = 0.0 (if 0.0 is a valid position for all your joints), just to make sure your requested position is reachable.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22">Martin Günther</a> on 2014-04-25 00:55:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If that also fails (and you&#39;re sure your requested joint state is a valid configuration), the problem is with the configuration of the IK plugin you&#39;re using, or your URDF.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22">Martin Günther</a> on 2014-04-25 00:56:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m using the actual joint_state, so it should be valid.</p>
+
+<p>Is there something special you need to do to configure the kinematics plugin? I am only using the autogenerated arm_navigation.launch file, from the Planning Description Wizard. It has a kinematics node, which I assumed was enough.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14791">paturdc</a> on 2014-04-25 01:37:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>it is the one called arm_kinematics_constraint_aware/KDLArmKinematicsPlugin</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14791">paturdc</a> on 2014-04-25 02:04:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>IIRC, you don&#39;t need to configure anything special for the KDL kinematics plugin. The crash is definitely a bug. The KDL plugin parses your URDF, so maybe there is something in the URDF that it doesn&#39;t like.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22">Martin Günther</a> on 2014-04-25 02:28:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, in fact it crashes when I run the PR2 tutorial, for forward kinematics as well. I guess I should make a new question about that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14791">paturdc</a> on 2014-04-25 02:33:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

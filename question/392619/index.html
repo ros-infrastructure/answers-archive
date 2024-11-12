@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Image Subscriber Lags (despite queue_size=1 and buff_size=2**30) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/392619">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Image Subscriber Lags (despite queue_size=1 and buff_size=2**30)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100788/image-subscriber-lags-despite-queue-size-1-and-buff-size-230">https://robotics.stackexchange.com/questions/100788/image-subscriber-lags-despite-queue-size-1-and-buff-size-230</a>.</p>
+        <p>Hi,</p>
+
+<p>I have been working on a Python class that will allow me to spawn an object in gazebo, take an image of the object, and then delete that object, for a given number of objects that I provide. I am able to spawn the objects, and have written a subscriber that is able to take images using a sensor. However, the images that are saved are not being taken in the order I am asking them to. Starting the script, I seem to be getting images out of order. For example, if I set it to spawn 5 objects without deleting for clarity, and take an image each time a new object is spawned, I could have 1 image without any objects, 3 images with 2 objects present, and the last image with 3 objects present. Sometimes I even get images with objects in positions that were set the last time I ran the script. </p>
+
+<p>I thought this was because my publisher and subscriber were working at different rates, so looking at the answers on this forum I added <code>queue_size=1</code> and <code>buff_size = 2***30</code>, to make sure that it was taking the last image that was sent. However, the problem is still there and nothing has changed. I have also tried increasing the time delay which has not helped, and was trying to find a way to delete the subscriber queue each time so that the latest message was definitely the one being read, but I have been unable to do so. I am not sure how to solve this and was wondering if anyone had a solution to this or an idea of why this was happening? I have attached my code below. Thanks!</p>
+
+<pre><code>import numpy as np
+import rospy, tf, time
+from gazebo_msgs.srv import SpawnModel, DeleteModel, GetModelState
+from geometry_msgs.msg import *
+from take_photo import ImageNode
+# ROS Image message
+from sensor_msgs.msg import Image
+# ROS Image message -&gt; OpenCV2 image converter
+from cv_bridge import CvBridge, CvBridgeError
+# OpenCV2 for saving an image
+import cv2
+import os
+
+class ImageCollection():
+    def __init__(self, number_spawn, model_path, time_delay=3.0):
+        print(&quot;Waiting for gazebo services...&quot;)
+        #rospy.init_node(&quot;spawn_products_in_bins&quot;)
+        rospy.wait_for_service(&quot;gazebo/delete_model&quot;)
+        rospy.wait_for_service(&quot;gazebo/spawn_sdf_model&quot;)
+        rospy.wait_for_service(&quot;gazebo/get_model_state&quot;)
+        print(&quot;Got it.&quot;)
+        self.delete_model = rospy.ServiceProxy(&quot;gazebo/delete_model&quot;, DeleteModel)
+        self.spawn_model = rospy.ServiceProxy(&quot;gazebo/spawn_sdf_model&quot;, SpawnModel)
+        self.model_coordinates = rospy.ServiceProxy(&quot;gazebo/get_model_state&quot;, GetModelState)
+
+        # Instantiate CvBridge
+        self.bridge = CvBridge()
+        self.image_number = 0
+        self.number_spawn = number_spawn
+        self.time_delay = time_delay
+        self.model_path = model_path
+
+        # Create a directory to store images
+        self.folder_path = &quot;Gazebo_Images&quot;
+        try:
+            os.mkdir(self.folder_path)
+        except:
+            print(&quot;Folder already exists, appending to that folder...&quot;)
+
+        # Initialize the node
+        rospy.init_node(&#39;image_listener&#39;)
+        # Define your image topic
+        self.image_topic = &quot;/wamv/sensors/cameras/front_left_camera/image_raw&quot;
+        # Set up your subscriber and define its callback
+        # rospy.Subscriber(image_topic, Image, self.image_callback)
+        # rospy.spin()
+
+    def spawn(self):
+
+        with open(self.model_path, &quot;r&quot;) as f:
+            product_xml = f.read()
+
+        # Determine a random position for the buoy (function has not been shown here but is just a random generator)
+        bin_x, bin_y = self.generate_random_position()
+        self.item_name   =   &quot;croc_{0}&quot;.format(self.image_number)
+        print(&quot;Spawning model: %s&quot; % self.item_name)
+
+        # Want to give the object a random yaw
+        random_yaw = np.random.random()
+        orient = Quaternion(*tf.transformations.quaternion_from_euler(0,0,random_yaw*np.pi))
+
+        item_pose = Pose(Point(x=bin_x, y=bin_y, z=0), orient)
+        self.spawn_model(self.item_name, product_xml, &quot;&quot;, item_pose, &quot;world&quot;)
+
+    def start_taking_images(self):
+        # Start image taking node
+        rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size = 1, buff_size = 2**30)
+        rospy.spin()
+
+    def image_callback(self, msg):
+        # Spawn objects
+        self.spawn()
+
+        print(&quot;Received an image!&quot;)
+        try:
+            # Convert your ROS Image message to OpenCV2
+            cv2_img = self.bridge.imgmsg_to_cv2(msg, &quot;bgr8&quot;)
+        except CvBridgeError as e:
+            print(e)
+        # Save your OpenCV2 image as a png 
+        time.sleep(self.time_delay)
+        cv2.imwrite(self.folder_path+&#39;/croc_{}&#39;.format(self.image_number)+&#39;.png&#39;, cv2_img)
+        print(&quot;Saved Image!&quot;)
+
+        #print(&quot;Deleting model: %s&quot; % self.item_name)
+        #self.delete_model(self.item_name)
+
+        self.image_number += 1
+        if self.image_number == self.number_spawn:
+            self.shutdown()
+
+    def shutdown(self):
+        # shutdown the ROS node
+        print(&quot;Shutting down ImageNode after taking {} image(s)...&quot;.format(self.image_number))
+        rospy.signal_shutdown(&quot;ROS is shutting down ImageNode&quot;)
+
+
+if __name__ == &quot;__main__&quot;:
+    # Number of objects to spawn
+    number = 2
+
+    # Spawning crocodile
+    spawner = ImageCollection(number, &quot;crocodile_buoy/model.sdf&quot;, time_delay=3.0)
+    spawner.start_taking_images()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/89762">jdastoor3</a> on 2021-12-10 17:39:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi @jdastoor3 your question is clear. Unfortunately I don’t know the answer as I’ll need time to study it more. However why not use a rosbag to save your pictures instead of trying to handle in the node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-12-10 18:45:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I was unaware that was a possibility. Would that avoid the issues I have been having? I found this <a href="https://gist.github.com/wngreene/835cda68ddd9c5416defce876a4d7dd9">script</a>, would that be a good place to start? Sorry, I am new to ROS.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/89762">jdastoor3</a> on 2021-12-10 18:53:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes a good place and search for ‘rosbag tutorials’. It will be a lot faster</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-12-10 19:03:57 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Take a look at this thread, hope it helps: <a href="https://stackoverflow.com/questions/38700271/python-converting-image-time-series-to-ros-bag">https://stackoverflow.com/questions/38700271/python-converting-image-time-series-to-ros-bag</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-12-10 19:35:16 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Your code is doing many things which lead to bad performance.</p>
+
+<ol>
+<li><p>You should not be doing any rospy calls until you have done the <code>rospy.init_node()</code>.</p></li>
+<li><p>If you want good performance, you <strong>can not</strong> do slow stuff inside a subscribe callback: don&#39;t sleep, don&#39;t call services, don&#39;t wait for services, don&#39;t write a lot of data to files, don&#39;t convert the image data into some other format.</p></li>
+<li><p>One design strategy many have used successfully is to simply have the callback save the msg and then return. Then in your main loop, you keep checking to see if a msg is available, then process it when one shows up. In the main loop it is OK to do all the slow things I listed in item (2).</p></li>
+<li><p>If fact, you <strong>must</strong> sleep in main loop because you want to limit how many times per second the main loop executes. Typically a <code>rospy.Rate</code> object is used to implement this.</p></li>
+<li><p>If you sleep in main loop, use <code>rospy.sleep()</code>, not <code>time.sleep()</code>.</p></li>
+</ol>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-12-11 10:00:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>So essentially I should just save the msg that callback receives, and create a main function which has the code currently in callback? Where would I put the rospy.Rate object? Is that right after I start the subscriber? And I don&#39;t need the rospy.spin() right after I call the subscriber right?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/89762">jdastoor3</a> on 2021-12-11 15:14:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Here is example of how to use <code>rospy.Rate()</code> in a main loop. Yes, the while loop replaces the <code>rospy.spin()</code> statement.</p>
+
+<p><a href="http://wiki.ros.org/rospy/Overview/Time#Sleeping_and_Rates">http://wiki.ros.org/rospy/Overview/Time#Sleeping_and_Rates</a></p>
+
+<p>And you should rethink that 3 second sleep that you have in there.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-12-11 19:51:36 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

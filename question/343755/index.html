@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Sensor fusion after intrinsic and extrinsic calibration - Autoware - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/343755">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Sensor fusion after intrinsic and extrinsic calibration - Autoware</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/94678/sensor-fusion-after-intrinsic-and-extrinsic-calibration-autoware">https://robotics.stackexchange.com/questions/94678/sensor-fusion-after-intrinsic-and-extrinsic-calibration-autoware</a>.</p>
+        <p>Hello!  I am runing autoware v1.12 on nvidia jetson agx with jetpack 4.2. Currently am using live sensors VLP-16 lidar and FLIR ADK thermal camera. 
+I was able to get the intrinsic and extrinsic calibration by following directions at: <a href="https://autoware.readthedocs.io/en/feature-documentation_rtd/DevelopersGuide/PackagesAPI/sensing/autoware_camera_lidar_calibrator.html">https://autoware.readthedocs.io/en/feature-documentation_rtd/DevelopersGuide/PackagesAPI/sensing/autoware_camera_lidar_calibrator.html</a></p>
+
+<p>However now, I do not know how to overlay data and get fusion. </p>
+
+<p>I run the calibration publisher using the extrinsic yaml file and generic fields that autoware already has in target<em>frame, camera</em>frame, camera<em>info</em>topic_name etc  and it runs and exits out of the node - is that how it is supposed to be?</p>
+
+<p>I used Pixel-Cloud Fusion node (<a href="https://autoware.readthedocs.io/en/feature-documentation_rtd/DevelopersGuide/PackagesAPI/detection/pixel_cloud_fusion.html">https://autoware.readthedocs.io/en/feature-documentation_rtd/DevelopersGuide/PackagesAPI/detection/pixel_cloud_fusion.html</a>)  but it keeps on saying waiting for intrinsic file and the target frame does not exist. Am I supposed to do something else also? The Directions ask for &quot;rectified_image&quot; how am i to do that? </p>
+
+<p>Following the steps from <a href="https://youtu.be/pfBmfgHf6zg?t=501">https://youtu.be/pfBmfgHf6zg?t=501</a> at time 8:20, does not allow me to view both lidar and camera data, it only shows one or the other depending on which frame I pick i.e. velodyne or boson-camera, and then the camera feed does not have any overlay data either. </p>
+
+<p>I would really appreciate if you could direct me of the next steps I could take in order to overlay the data of each sensor and get &quot;sensor fusion&quot;. I am very new to this, but am trying to learn and properly document.</p>
+
+<p>Thank you!!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/51019">msaeUF</a> on 2020-02-10 18:16:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>you need to follow traditional point-to pixel transform to project LIDAR points onto your RGB image. From there you may assign RGB values to point cloud and have point cloud with XYZRGB fields. After you are able to do this projection you can pretty much get all of the &quot;fusion&quot; tasks staright forward. Assuming the calibration parameters you got are right first you need to transform your point from LIDAR frame to Camera frame using extrinsic parameters and finally project this point in camera frame to image plane using intrinsic parameters. Now in code it will look something like below first know the sizes and types of you matrices, and then feed your calibration parameters into them</p>
+
+<pre><code> //  camera projection matrix P
+Eigen::MatrixXf TRANS_CAM_TO_IMAGE;
+//  lidar to cam transform matrix
+Eigen::MatrixXf TRANS_LIDAR_TO_CAM;
+Eigen::MatrixXf TRANS_LIDAR_TO_IMAGE;
+
+TRANS_CAM_TO_IMAGE = Eigen::MatrixXf::Zero(3, 4);
+TRANS_LIDAR_TO_CAM = Eigen::MatrixXf::Zero(4, 4);
+
+TRANS_CAM_TO_IMAGE &lt;&lt; 612.3624267578125, 0.0, 422.271484375, 0.0, 0.0, 610.940185546875, 241.3871612548828,
+    0.0, 0.0, 0.0, 1.0, 0.0;
+
+TRANS_LIDAR_TO_CAM &lt;&lt; 0.9999990463256836, -0.0005898026865907013, 0.0012526829959824681,
+    0.015111126005649567, 0.0005937033565714955, 0.9999949932098389, -0.003115807892754674, 0.00044604094000533223,
+    -0.0012508389772847295, 0.003116548527032137, 0.9999943375587463, -0.000181241164682433, 0, 0, 0, 1;
+
+TRANS_LIDAR_TO_IMAGE = TRANS_CAM_TO_IMAGE * TRANS_LIDAR_TO_CAM;
+</code></pre>
+
+<p>And a function that takes in point cloud from your Lidar and results of matric multplication above; </p>
+
+<pre><code>Eigen::MatrixXf transformLidarToImage(pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr in_cloud, Eigen::MatrixXf TRANS_LIDAR_TO_IMAGE)
+{
+    Eigen::MatrixXf matrix_lidar_points_in_lidar_frame = Eigen::MatrixXf::Zero(4, in_cloud-&gt;size());
+   // feed cloud points into a matrice
+    for (int i = 0; i &lt; in_cloud-&gt;size(); ++i) {
+        matrix_lidar_points_in_lidar_frame(0, i) = in_cloud-&gt;points[i].x;
+        matrix_lidar_points_in_lidar_frame(1, i) = in_cloud-&gt;points[i].y;
+        matrix_lidar_points_in_lidar_frame(2, i) = in_cloud-&gt;points[i].z;
+        matrix_lidar_points_in_lidar_frame(3, i) = 1;
+    }
+
+    /*************** PROJECT POINT CLOUD TO IMAGE PPLANE  ****************/
+
+    Eigen::MatrixXf image_points = TRANS_LIDAR_TO_IMAGE * matrix_lidar_points_in_lidar_frame;
+    Eigen::MatrixXf uv = Eigen::MatrixXf::Zero(3, matrix_lidar_points_in_lidar_frame.cols());
+    uv.row(0) = image_points.row(0).array() / image_points.row(2).array();
+    uv.row(1) = image_points.row(1).array() / image_points.row(2).array();
+    uv.row(2) = image_points.row(2);
+    return uv;
+}
+</code></pre>
+
+<p>You may use a function that look like in above to do the transform, I also listed the matrices that are going to be involved. so you can just feed your calibration results to them  and call the function. 
+The return of that function is a matrix of points with pixel coordinates of whole point cloud.  Remember that since you have 360 degrees cloud, not all projected points will make sense you may get some negative values as well, so you need to do a few checks to get the points that actually corresponds to image coordinates.  Assuming you used the above function somewhere in your code and now you have <code>uv</code> returned,  you may use a for loop as below to do fusion; </p>
+
+<pre><code>pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr fused_cloud(new pcl::PointCloud&lt;pcl::PointXYZRGB&gt;);
+for (int m = 0; m &lt; uv.cols(); m++) {
+    cv::Point point;
+    point.x = uv(0, m);
+    point.y = uv(1, m);
+
+    // Store corners in pixels only of they are on image plane
+    if (point.x &gt; 0 &amp;&amp; point.x &lt; your_image_as_opencv_mat-&gt;cols) {
+        if (point.y &gt; 0 &amp;&amp; point.y &lt; your_image_as_opencv_mat-&gt;rows) {
+
+            pcl::PointXYZRGB fused_3d_point;
+            cv::Vec3b rgb_pixel = your_image_as_opencv_mat-&gt;at&lt;cv::Vec3b&gt;(point.y, point.x);
+            // Get x,y,z values of this point from original raw point cloud
+            fused_3d_point.x = matrix_lidar_points_in_lidar_frame(0, m);
+            fused_3d_point.y = matrix_lidar_points_in_lidar_frame(1, m);
+            fused_3d_point.z = matrix_lidar_points_in_lidar_frame(2, m);
+
+            // get r,g,b value of this point from segmented image
+            fused_3d_point.r = rgb_pixel[2];
+            fused_3d_point.g = rgb_pixel[1];
+            fused_3d_point.b = rgb_pixel[0];
+
+            //put cicles into your image
+            cv::circle(*your_image_as_opencv_mat, point, 1, cv::Scalar(0, 0, 255), 2, 8, 0);
+
+
+            fused_cloud-&gt;points.push_back(fused_3d_point);
+
+        }
+    }
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/32821"></a> on 2020-02-10 20:36:09 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I thought autoware would already have node that could do sensor fusion</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51019">msaeUF</a> on 2020-02-10 21:00:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>well they might but I am not sure</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32821">Fetullah Atas</a> on 2020-02-10 21:14:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>even if they do, must be something that looks similar to what I just wrote :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32821">Fetullah Atas</a> on 2020-02-10 21:14:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51019">msaeUF</a> on 2020-02-15 15:47:06 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>@msaeuf The <code>pixel_cloud_fusion</code> node is the correct node for this function. You first need to use the <code>calibration_publisher</code> package to publish the camera calibration based on the lidar/camera calibration file that you created. Here is an example command to run the <code>calibration_publisher</code> using a launch file from <code>runtime_manager</code>:</p>
+
+<p><code>
+roslaunch runtime_manager calibration_publisher.launch camera_frame:=/camera_frame image_topic_src:=/camera/image_raw file:=/path/to/your/lidar_camera_cal.yaml camera_info_topic:=/camera/camera_info
+</code></p>
+
+<p>In the above command, replace <code>/camera_frame</code> with the TF frame that your camera publishes images in, replace <code>/camera/image_raw</code> with the topic name of the raw image from your camera, replace <code>/path/to/your/lidar_camera_cal.yaml</code> with the full path to your lidar/camera calibration file produced from the <code>autoware_camera_lidar_calibration</code> YAML file, and replace <code>/camera/camera_info</code> with the topic that you would like the <code>calibration_publisher</code> to publish the calibration info on.</p>
+
+<p>Once this is running, you can use the <code>pixel_cloud_fusion.launch</code> file to launch both an <code>image_rectifier</code> node (which will generate the rectified image topic) and the <code>pixel_cloud_fusion</code> node. You&#39;ll have to remap the topics in this launch file to the appropriate topics for your camera and calibration.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4390">Josh Whitley</a> on 2020-02-11 15:06:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks alot!!!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51019">msaeUF</a> on 2020-02-11 20:12:08 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

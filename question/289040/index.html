@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Multiple instances of a dynamic_reconfigure server in the same client node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/289040">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Multiple instances of a dynamic_reconfigure server in the same client node</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/86656/multiple-instances-of-a-dynamic-reconfigure-server-in-the-same-client-node">https://robotics.stackexchange.com/questions/86656/multiple-instances-of-a-dynamic-reconfigure-server-in-the-same-client-node</a>.</p>
+        <p>Hello, </p>
+
+<p>I&#39;m using ROS Kinetic.
+I&#39;d like to have multiple instances of a dynamic<em>reconfigure server in a node, and I&#39;m wondering how to achieve that.
+I have different robots that I define in YAML files with a specific number of motors for each robot.
+I have a dynamic</em>reconfigure config file in my package that allows me to set min, max, offset and enable parameters for a motor.</p>
+
+<p>But I need to be able to tune those parameters for each motor defined in the YAML file, and that is unknown at compile time. I can&#39;t dynamically allocate some array of server because at runtime I don&#39;t have the callbacks created. </p>
+
+<p>A way, which I don&#39;t really like, could be to add a string or int field to the parameters, and type the motor name or index to apply the values to that specific motor in the code. There could be a bool parameter also to apply the new values in the client node when set to true.</p>
+
+<p>Another way could be to create a nodelet class of a motor with its own dynamic reconfigure server and callback, and have a vector of them in the main node, and push back as many as needed.</p>
+
+<p>The other way could be to use services instead, but then I couldn&#39;t use the rqt_reconfigure gui.</p>
+
+<p>Is there a good practice for doing this kind of thing ? </p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-04-18 12:35:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Passing extra arguments to callbacks: #q63991 (also a complete non-class example #q289061)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-04-18 16:16:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks! I see that working for topics, but will it work for dynamic_reconfigure, will rqt_reconfigure show me a list of motors with their parameters using that design ? I&#39;ll give it a try.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-04-19 02:51:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your hint lucasw, I&#39;ve published an answer in my question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-04-19 09:37:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Cyril_J great you got it working. You can post your solution as an answer and accept that as correct. This will help other users stumbling upon the same problem...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2647">mgruhler</a> on 2018-04-19 09:42:12 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I tried something pointed out by @lucasw and it works! I found that a dynamic_reconfigure server is linked to a NodeHandle and there can only be one instance otherwise you get the error: <strong>&quot;tried to advertise a service that is already advertised in this node&quot;</strong>. So I created a vector of <strong>NodeHandle</strong> that I link to each server. Also I had to make sure to call ros::init(...) before creating any instance of my class that has the CallbackType as a member otherwise I got the error: <strong>Couldn&#39;t find an AF_INET address...</strong></p>
+
+<p>My class is for filtering motor commands, here are a few lines of code that focus on solving this problem:
+In my header file :</p>
+
+<pre><code>class CommandFilter
+{
+    /* some functions */
+
+    void motorDynConfigCallback(osa_control::MotorDynConfig &amp;config, uint32_t level, const int idx);
+
+private:
+    std::vector&lt;dynamic_reconfigure::Server&lt;osa_control::MotorDynConfig&gt;*&gt; motor_dyn_config_server_list_;
+    osa_control::MotorDynConfig motor_param_;
+    /* other class members */
+};
+</code></pre>
+
+<p>In my implementation file:</p>
+
+<pre><code>bool CommandFilter::init()
+{
+/* some init code */
+
+for(int i=0; i&lt;ptr_robot_description_-&gt;getRobotDof(); i++)
+{
+        const std::string dof_name = ptr_robot_description_-&gt;getControllerList().at(i)-&gt;getName();
+
+        ros::NodeHandle node_handle(dof_name.c_str());
+
+        dynamic_reconfigure::Server&lt;osa_control::MotorDynConfig&gt; *s = new dynamic_reconfigure::Server&lt;osa_control::MotorDynConfig&gt;(node_handle);
+        dynamic_reconfigure::Server&lt;osa_control::MotorDynConfig&gt;::CallbackType f;
+        f = boost::bind(&amp;CommandFilter::motorDynConfigCallback, this, _1, _2, i);
+
+        s-&gt;setCallback(f);
+        motor_dyn_config_server_list_.push_back(s);
+}
+
+/* some init code */
+}
+
+void CommandFilter::motorDynConfigCallback(osa_control::MotorDynConfig &amp;config, uint32_t level, const int idx)
+{
+    ROS_INFO(&quot;Dynamic Reconfigure Request for dof%d [%s]: %s %d %d %d&quot;, idx+1, ptr_robot_description_-&gt;getControllerList().at(idx)-&gt;getName().c_str(), config.enable?&quot;True&quot;:&quot;False&quot;, config.min_pos, config.max_pos, config.offset_pos);
+
+    motor_param_ = config;
+}
+</code></pre>
+
+<p>Note that it&#39;s a first cut solution and the code can be improved, but it works and give me exactly what I needed.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-04-19 09:44:09 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>ROS1 has a limitation of 1 node per process. Multiple nodehandles will not create more nodes, but could introduce additional namespaces. Afaik the only thing required for multiple <code>dyn_recfg</code> servers is exactly that: multiple namespaces so topics don&#39;t clash.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-19 09:46:10 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<pre><code>ros::NodeHandle *node_handle = new ros::NodeHandle(dof_name.c_str());
+</code></pre>
+</blockquote>
+
+<p>This line created an additional namespace.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-19 09:46:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes exactly. @gvdhoorn Is there a way to create just the namespace ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-04-19 09:54:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You can just directly pass in a <code>NodeHandle</code> instance. No need to keep them around yourself. The <code>dynamic_reconfigure::Server</code> instance owns them.</p>
+
+<p>But you do need the <code>NodeHandle</code> instance.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-19 09:59:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for your advice @gvdhoorn, I&#39;ve simplified the code and updated my answer. I works just as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-04-19 10:08:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It&#39;s worth pointing out: <a href="https://github.com/ros/dynamic_reconfigure/blob/master/include/dynamic_reconfigure/server.h#L75">https://github.com/ros/dynamic_reconfigure/blob/master/include/dynamic_reconfigure/server.h#L75</a> the constructor to the server can be given a mutex and a nodehandle  </p>
+
+<pre><code> new dynamic_reconfigure::Server&lt;foo::Bar&gt;(reconfig_mutex, node_handle)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-05-04 15:29:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You <em>must</em> construct the dynamic_reconfigure Server via the <code>new</code> operator. It doesn&#39;t work when you just use <code>config_server(nh)</code>.
+Using the latter syntax, it will get destroyed when it goes out of scope.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1830">Loy</a> on 2018-09-17 02:37:41 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS timer not working after including CallbackGroups - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/332813">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS timer not working after including CallbackGroups</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93242/ros-timer-not-working-after-including-callbackgroups">https://robotics.stackexchange.com/questions/93242/ros-timer-not-working-after-including-callbackgroups</a>.</p>
+        <p>Hi everyone,
+I have a question regarding the CallbackGroups of rclcpp in ROS2. I&#39;m trying to have an update cycle run by a rclcpp::TimerBase run on a specified update rate and at the same time the node should listen to an incoming message on a subscription. The way to do it, as I have understood it, is to use a MultiThreadExceutor with CallbackGroups. I therfore created a Reentrant Type CallbackGroup to which I added both the timer and the subscription. As soon as I add the timer to the CallbackGroup the timer stops working, however. Maybe I forgot something? Does the CallbackGroups or Node need to be in a specified Context maybe? Or did I misunderstand the concept of CallbackGroups altogether? Would be happy about any help from you!</p>
+
+<p>Code:</p>
+
+<p>Header file: controller<em>node</em>test/controller<em>node</em>test.h:</p>
+
+<pre><code>#ifndef CONTROLLER_NODE_H
+#define CONTROLLER_NODE_H
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;controller_node_test/multi_threaded_executor.hpp&quot;
+#include &quot;chrono&quot;
+#include &lt;ctime&gt;
+
+using std::placeholders::_1;
+
+namespace controller_node
+{
+    class ControllerNode : public rclcpp::Node {
+        public:
+        ControllerNode();
+        ~ControllerNode();
+
+        private:
+
+        rclcpp::TimerBase::SharedPtr update_timer_;
+
+        void update();
+
+    };
+} // namespace controller_node
+</code></pre>
+
+<p>Source: controller<em>node</em>test.cpp:</p>
+
+<pre><code>#include &quot;controller_node_test/controller_node_test.h&quot;
+
+namespace controller_node
+{
+
+    ControllerNode::ControllerNode() : rclcpp::Node(&quot;controller_node&quot;){
+        rclcpp::callback_group::CallbackGroup::SharedPtr update_group = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::Reentrant);
+        update_timer_ = this-&gt;create_wall_timer(
+                                                                    std::chrono::milliseconds(100),
+                                                                    std::bind(&amp;ControllerNode::update, this),
+                                                                    update_group);
+    }
+
+    ControllerNode::~ControllerNode(){
+
+    }
+
+    void ControllerNode::update(){
+        std::cout &lt;&lt; &quot;Timer: &quot; &lt;&lt; std::this_thread::get_id() &lt;&lt; std::endl;
+    }
+} // namespace controller_node
+
+int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor exec;
+    auto controller_node = std::make_shared&lt;controller_node::ControllerNode&gt;();
+    exec.add_node(controller_node);
+    exec.spin();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>The problem is, that</p>
+
+<pre><code>std::cout &lt;&lt; &quot;Timer: &quot; &lt;&lt; std::this_thread::get_id() &lt;&lt; std::endl;
+</code></pre>
+
+<p>never gets called, so the timer is not working, at all.</p>
+
+<p>I deleted all not necessary parts of the Code to make it more clear for you, so if it doesn&#39;t compile let me know. Would really appreciate any help!</p>
+
+<p>What I tried so far:
+SingleThreadExecutor shows the same problem,
+Removing the CallbackGroup shows the expected behavior, timer is running and update() is called.
+Tried to isolate the problem and found out, that it is during the run(...) method of the MTE, in the get<em>next</em>executable(:::) of the parent class (rclcpp::executor::Executor) in the wait<em>for</em>work(...)  function of the Executor in line 447-448:</p>
+
+<pre><code>rcl_ret_t status = rcl_wait(&amp;wait_set_, std::chrono::duration_cast&lt;std::chrono::nanoseconds&gt;(timeout).count());
+</code></pre>
+
+<p>and if I give out</p>
+
+<pre><code>memory_strategy_-&gt;number_of_ready_timers()
+</code></pre>
+
+<p>in the MultiThreadedExecutor it shows me 1, so the timer seems to be registered, right?</p>
+
+<p>if that helps at all. I just don&#39;t understand what exactly is happening there and now I need your help...
+Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/38438">LeoE</a> on 2019-09-11 10:49:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Okay, apparently multiple CallbackGroups result in an infinite &quot;wait_for_work&quot;. Related Github: <a href="https://github.com/ros2/rclcpp/pull/814">#814</a> Switching to different Nodes in MultiThreadedExecutor now</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38438">LeoE</a> on 2019-09-13 07:44:58 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It has been more than 2 years, but I came across this exact same issue.</p>
+
+<p>The problem seems to be associated with
+<code>rclcpp::callback_group::CallbackGroup::SharedPtr update_group</code> getting destroyed after the constructor ends, at it is a local variable.</p>
+
+<p>Fix this by <strong>making <code>rclcpp::callback_group::CallbackGroup::SharedPtr update_group</code> a class member of ControllerNode.</strong>, and initialising it in the constructor.</p>
+
+<p>The <a href="https://docs.ros.org/en/galactic/Concepts/About-Executors.html#callback-groups">ROS2 tutorial</a> seem slightly misleading, with the callback group looking like a local variable, but this of course depends on the user&#39;s context.</p>
+
+<hr>
+
+<p>EDIT:</p>
+
+<p>I just realised this was answered on a <a href="https://stackoverflow.com/questions/57893546/ros-communication-not-responding-after-including-callbackgroups">duplicate on Stack Overflow</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/73298"></a> on 2022-03-17 01:25:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>A <a href="https://github.com/ros2/ros2_documentation/pull/2353#event-6260141362">PR</a> against ROS2 tutorial has been merged, to update the docs to include a notice to store the callback group throughout execution of the node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73298">ijnek</a> on 2022-03-17 17:13:09 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

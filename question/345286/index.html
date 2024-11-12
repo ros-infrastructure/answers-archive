@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Flask Threading issue - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/345286">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Flask Threading issue</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/94897/ros2-flask-threading-issue">https://robotics.stackexchange.com/questions/94897/ros2-flask-threading-issue</a>.</p>
+        <p>Hi all,</p>
+
+<p>I am trying to set up a ROS2 rclpy node that functions as a Flask socket server. This node needs to have a thread or timer-based process running (which handles a socket broadcast). The issue I am running into is that when I create a ROS2 timer, it seems that it never executes, and when I use a python thread, it seems to block the main process. The minimal code samples are below:</p>
+
+<h2>ROS2 Timer:</h2>
+
+<pre><code>class MyNode(Node):
+
+    def __init__(self):
+        super(MyNode,self).__init__('my_node')
+        self.get_logger().info('Initializing My Node!') # Works fine
+        self.app = Flask(__name__) # Flask Stuff
+        self.my_ns = NS(self)     # Custom Flask Socket Namespace
+        self.socketio = SocketIO(self.app, cors_allowed_origins="*") # Create Socket
+        self.socketio.on_namespace(self.my_ns) # Pair the namespace
+        self.process_timer = self.create_timer(.1,self.process)
+        self.get_logger().info('Initialized!') # Executes
+
+    def process(self):
+        self.get_logger().info('Running!') # Never Executes
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MyNode()
+    node.socketio.run(node.app)
+
+if __name__ == '__main__':
+    main()
+</code></pre>
+
+<h2>Python Thread:</h2>
+
+<pre><code>class MyNode(Node):
+
+    def __init__(self):
+        super(MyNode,self).__init__('my_node')
+        self.get_logger().info('Initializing My Node!') # Works fine
+        self.app = Flask(__name__) # Flask Stuff
+        self.my_ns = NS(self)     # Custom Flask Socket Namespace
+        self.socketio = SocketIO(self.app, cors_allowed_origins="*") # Create Socket
+        self.socketio.on_namespace(self.my_ns) # Pair the namespace
+        self.process_thread = Thread(target=self.process,daemon=True)
+        self.process_thread.start()
+        self.get_logger().info('Initialized!') # Never Executes
+
+    def process(self):
+        alive = True
+        while alive:
+           try:
+              self.assert_liveliness()
+              self.get_logger().info('Running!') # Executes
+            except:
+              alive = False
+        
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MyNode()
+    node.socketio.run(node.app)
+
+if __name__ == '__main__':
+    main()
+</code></pre>
+
+<p>Thanks for the suggestions, and I will try out those changes. I should share the original code I had, which is the following:</p>
+
+<pre><code>class WizardNode(Node):
+
+    def __init__(self):
+        super(WizardNode,self).__init__('wizard')
+        self.get_logger().info('Initializing Wizard Node!')
+        self.app = Flask(__name__)
+        self.cors = CORS(self.app)
+        self.wizard = Wizard(self)
+        self.socketio = SocketIO(self.app, cors_allowed_origins="*")
+        self.socketio.on_namespace(self.wizard)
+        self.socket_thread = Thread(target=lambda:self.socketio.run(self.app),daemon=True)
+        self.socket_thread.start()
+        self.process_timer = self.create_timer(.1,self.process)
+        self.get_logger().info('Initialized!')
+        self.printer = PrettyPrinter()
+
+    def process(self):
+        time = self.get_clock().now()
+        self.wizard.timestep()
+
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = WizardNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+
+    node.destroy_node()
+    rclpy.shutdown() </code></pre>
+
+<p>In this version, it seems that the socket.io thread fails to do any sort of broadcasting/emitting, which was why I tried restructuring in the ways above. I should also say that in this example, using <code>eventlet</code>&#39;s <code>monkey_patch()</code> basically broke everything.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36496">AndrewJSchoen</a> on 2020-02-27 13:57:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Due to my very limited experience with python+ROS2 I&#39;m not sure if this will help you, or if this will just be a stupid comment. I also have no clue what Flask threading is.</p>
+
+<p>Anyways, simply creating a ROS2 node and adding a timer, does not make that timer do anything. In C++ you need to spin() the node for anything to happen. Spinning is basically adding the node to an executor which, when the timer triggers, will execute the callback function. I&#39;m not sure how this is setup in python, but could it be that you are missing this? </p>
+
+<p>This is solely based on my c++ experience and the fact that I don&#39;t see a spin() anywhere :P so be gentle.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44213">MCornelis</a> on 2020-03-04 05:27:55 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As mentioned by @MCornelis you need to spin the ROS node. Your invocation of <code>node.socketio.run(node.app)</code> does not run any of the ROS threads. ROS nodes are not flask Nodes. </p>
+
+<p>I recommend you go through the basic python tutorials here: <a href="https://index.ros.org/doc/ros2/Tutorials/Writing-A-Simple-Py-Publisher-And-Subscriber/">https://index.ros.org/doc/ros2/Tutorials/Writing-A-Simple-Py-Publisher-And-Subscriber/</a></p>
+
+<p><strong>Update:</strong></p>
+
+<p>With your original one which uses the <code>rclpy.spin(node)</code> there&#39;s nothing processing the Flask app&#39;s threads. You need to provide threads for both of them. So that both the Flask app and the rclpy node have threads to do their work. You can&#39;t do just one or the other.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2020-03-04 05:46:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The flask app was being executed as a thread within the MyNode <strong>init</strong> function. The actual issue was that there was an inconsistency between rclpy.spin() and the expectations around threading that flask-socketio has.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36496">AndrewJSchoen</a> on 2020-03-05 20:47:28 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>This turned out to be a bit of a fun puzzle to get ROS2 and Eventlet working together. In the end, the solution makes a lot of sense, but it just isn&#39;t super intuitive. Basically, the solution is first to import <code>eventlet</code> and run <code>monkey_patch()</code> before any other imports. </p>
+
+<pre><code>
+import eventlet
+eventlet.monkey_patch()
+from flask import Flask, request, jsonify, make_response
+from flask_socketio import SocketIO, emit, Namespace
+...
+</code></pre>
+
+<p>The issue is that when monkey-patching, it basically turns all the threads into blocking threads, which need to be explicitly slept so that other threads can process (i.e. the rest of the code). So the trick is to combine <code>rclpy</code>&#39;s <code>spin_once()</code> with the <code>eventlet.greenthread.sleep()</code> </p>
+
+<pre><code>class MyNode(Node):
+
+    def __init__(self):
+        super(MyNode,self).__init__('my_node')
+        self.get_logger().info('Initializing My Node!') # Works fine
+        self.app = Flask(__name__) # Flask Stuff
+        self.my_ns = NS(self)     # Custom Flask Socket Namespace
+        self.socketio = SocketIO(self.app, cors_allowed_origins="*") # Create Socket
+        self.socketio.on_namespace(self.my_ns) # Pair the namespace
+        self.process_timer = self.create_timer(.1,self.process)
+        self.ros_thread = Thread(target=self.process,daemon=True)
+        self.ros_thread.start()
+        self.get_logger().info('Initialized!')
+
+    def process(self):
+        alive = True
+        while alive:
+            try:
+                # Check that the ROS node is still alive
+                self.assert_liveliness()
+                # Spin the ROS node once...
+                rclpy.spin_once(self,timeout_sec=0.0)
+                # ...and then momentarily sleep so the other process (socket.io) can run.
+                eventlet.greenthread.sleep()
+            except:
+                alive = False
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = MyNode()
+    
+    # SocketIO's run has eventlet sleeps incorporated when eventlet is imported
+    node.socketio.run(node.app)
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/36496">AndrewJSchoen</a> on 2020-03-05 20:44:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>How do you assert the liveliness of the ROS node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64650">aniemi</a> on 2021-01-03 09:33:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p><code>assert_liveliness</code> is a method that Node objects have. Since MyNode inherits from it, I use it there.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36496">AndrewJSchoen</a> on 2021-01-03 20:17:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks, looks like it&#39;s not in foxy yet.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64650">aniemi</a> on 2021-01-04 06:38:01 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I followed your suggestions here and they worked, thanks for this tip! One thing I&#39;m noticing though is that I&#39;m unable to subscribe to ROS topics when using the setup above. After digging a bit, I discovered that this was because of the timer that you have which also runs the process method (which inside has an infinite loop to process the two threads).</p>
+
+<p>It turns out this timer is actually not necessary. I removed this but left the Thread in to run the process as a daemon and just added a variable to cancel the thread when disposing of it. This allowed me to still process incoming topics while not affecting the SocketIO perfomance!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/148533">esimkowitz</a> on 2023-05-11 16:38:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Processing an image outside the Callback function - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/53234">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Processing an image outside the Callback function</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/47573/processing-an-image-outside-the-callback-function">https://robotics.stackexchange.com/questions/47573/processing-an-image-outside-the-callback-function</a>.</p>
+        <p>Hi guys, </p>
+
+<p>The answer to this question is probably trivial, but I have looked around and cannot find the answer I am looking for. I have written a simple Harris corner detector algorithm in which I receive an image from the <code>camera/image_raw</code> topic and then inside the Callback function the image is converted to a open cv type image (I call it <code>cv_ptr</code>) using the <code>cv::bridge</code>, and the processing of detecting the corner is all done inside the callback function. It works but is very slow (lag and a black screen for a couple of seconds) when the camera movement is fast. I am assuming this is because I have my processing in the callback function?</p>
+
+<p>I have read in other posts that doing processing inside the callback function is not the correct way and that processing should be in the main loop. Which leeds to my question, how can I access <code>cv_ptr</code> (or better the <code>sensor_msgs::ImageConstPtr&amp; msg</code> passed to the callback function) in the <code>main</code> process since callbacks are <code>void</code> functions and do not return anything?  Note: I have tried making <code>cv_ptr</code> a global variable and then access it outside the callback function, although there is no error in compiling it, the process dies immediately) I am sure there is a better way to access messages passed to the callback function. </p>
+
+<p>What am I missing? I have posted my code for clarification. Thanks alot for your help.</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;iostream&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+using namespace cv;
+using namespace std;
+namespace enc = sensor_msgs::image_encodings;
+
+static const char WINDOW[] = &quot;Image window&quot;;
+static const char WINDOWDST[] = &quot;DST window&quot;;
+
+/// Global variables
+Mat src, src_gray, src_gray_corner;
+int thresh = 200;
+int max_thresh = 255;
+
+
+char* source_window = &quot;Source image&quot;;
+char* corners_window = &quot;Corners detected&quot;;
+
+/// Function header
+void cornerHarris_demo( int, void* );
+
+/** @function cornerHarris_demo */
+
+
+class ImageConverter
+{
+ ros::NodeHandle nh_;
+ image_transport::ImageTransport it_;
+ image_transport::Subscriber image_sub_;
+ image_transport::Publisher image_pub_;
+
+public:
+  ImageConverter()
+   : it_(nh_)
+ {
+  image_pub_ = it_.advertise(&quot;out&quot;, 1);
+  image_sub_ = it_.subscribe(&quot;camera/image_raw&quot;, 1, &amp;ImageConverter::imageCb,this);
+
+  cv::namedWindow(WINDOW);
+  }
+
+ ~ImageConverter()
+ {
+  cv::destroyWindow(WINDOW);
+ }
+
+ void imageCb(const sensor_msgs::ImageConstPtr&amp; msg)
+{
+
+
+
+cv_bridge::CvImagePtr cv_ptr;
+cv_bridge::CvImagePtr cv_ptr2;
+
+
+/// Detector parameters
+int blockSize = 2;
+int apertureSize = 3;
+double k = .04;
+try
+{
+  cv_ptr = cv_bridge::toCvCopy(msg, enc::BGR8);
+  cv_ptr2 = cv_bridge::toCvCopy(msg, enc::BGR8);
+}
+catch (cv_bridge::Exception&amp; e)
+{
+  ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+  return;
+}
+
+
+Mat dst, dst_norm, dst_norm_scaled;
+
+
+cv::imshow(WINDOW, cv_ptr-&gt;image);
+
+cvtColor( cv_ptr-&gt;image, src_gray, CV_BGR2GRAY );
+
+dst = Mat::zeros( cv_ptr-&gt;image.size(), CV_32FC1);
+
+ /// Detecting corners
+ cornerHarris( src_gray, dst, blockSize, apertureSize, k, BORDER_DEFAULT );
+ cv::imshow(WINDOWDST, dst);
+
+
+ // Normalizing
+ normalize( dst,dst_norm, 0, 255, NORM_MINMAX, CV_32FC1, Mat() );
+ convertScaleAbs( dst_norm, dst_norm_scaled );
+ cv::imshow(WINDOWDST, dst_norm_scaled );
+ cv::waitKey(1);
+
+ /// Drawing a circle around corners
+ for( int j = 0; j &lt; dst_norm.rows ; j++ )
+  { for( int i = 0; i &lt; dst_norm.cols; i++ )
+      {
+        if( (int) dst_norm.at&lt;float&gt;(j,i) &gt; thresh )
+          {
+           circle( dst_norm_scaled, Point( i, j ), 5,  Scalar(0), 2, 8, 0 );
+          }
+      }
+   }
+  /// Showing the result
+  namedWindow( corners_window, CV_WINDOW_AUTOSIZE );
+  imshow( corners_window, dst_norm_scaled );
+
+  cv_ptr2-&gt;image =dst_norm_scaled;
+  cv::imshow(&quot;cv_ptr2&quot;, cv_ptr2-&gt;image );
+  cv::waitKey(3);
+
+image_pub_.publish(cv_ptr2-&gt;toImageMsg());
+ }
+ };
+
+ void test()
+{
+  cv::imshow(&quot;cv_ptr2&quot;, cv_ptr2-&gt;image );
+
+}
+
+int main(int argc, char** argv)
+{
+ ros::init(argc, argv, &quot;image_converter&quot;);
+ ImageConverter ic;
+
+ ros::spin();
+
+ return 0;
+}
+</code></pre>
+
+<p><strong>EDIT 1</strong>: After following Thomas&#39;s instructions (pseudo code), the process dies immediately after launching:</p>
+
+<pre><code>[hariss3-6] process has died [pid 28431, exit code -11, cmd /home/samme/fuerte_workspace/firefly_mv/bin/harris3 __name:=hariss3 __log:=/home/samme/.ros/log/0ad3107e-6752-11e2-b522-60672021cf54/hariss3-6.log].log file: /home/samme/.ros/log/0ad3107e-6752-11e2-b522-60672021cf54/hariss3-6*.log
+</code></pre>
+
+<p><strong>Here is the new code:</strong></p>
+
+<pre><code>class Node
+{
+public:
+Node (ros::NodeHandle&amp; nh, ros::NodeHandle&amp; nhPrivate) : it_(nh_)
+ // initialization list copy the arguments to the class attributes.
+{
+  nh_ = nh;
+  nhPrivate_=nhPrivate;
+
+   pub_ = it_.advertise(&quot;out&quot;, 1);
+   sub_ = it_.subscribe(&quot;camera/image_raw&quot;, 1, &amp;Node::subscriberCb,this);
+
+  // create subscriber, publisher using nh_.
+  }
+
+ // always use shared pointer version of callbacks. sensor_msgs::ImageShPtr&amp;
+ //void subscriberCb (const boost::shared_ptr&lt; sensor_msgs::ImagConstPtr &gt;&amp; image)
+ void subscriberCb (const sensor_msgs::ImageConstPtr&amp; image) 
+
+ {
+   imageIn_ = image;
+  }
+
+void process ()
+{
+   if(&amp;imageIn_ == NULL)
+    return;
+   // Use imageIn as your input image.
+   sensor_msgs::ImageConstPtr imageIn = imageIn_; // See note (1)
+     try
+{
+  imageOut_ = cv_bridge::toCvCopy(imageIn, enc::BGR8);
+}
+catch (cv_bridge::Exception&amp; e)
+{
+  ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+  return;
+}
+
+
+
+   // No new images since last time, do nothing.
+     if (imageOut_-&gt;header.seq == imageIn-&gt;header.seq)
+     return;
+
+   // use imageOut_.image and images which are *class attributes*
+   // to realize the image processing, so it will allocate memory only once.
+   // You should have *no* instance of big objects as local variables here.
+   // Use directly imageOut_.image as the cv::Mat destination object  of your last
+   // OpenCV function call.
+
+    //publish imageOut_.toMsg ();
+    pub_.publish(imageOut_-&gt;toImageMsg());
+}
+
+virtual void spin ()
+{
+  ros::Rate rate (30);
+  while (ros::ok ())
+  {
+    spinOnce ();
+    rate.sleep ();
+   }
+}
+
+virtual void spinOnce ()
+{
+   process ();
+   spinOnce ();
+}
+
+
+  protected:
+  image_transport::ImageTransport it_;
+  image_transport::Subscriber sub_;
+  image_transport::Publisher pub_;
+  ros::NodeHandle nh_;
+  ros::NodeHandle nhPrivate_;
+
+ //CvImageConstPtr imageIn_;
+ sensor_msgs::ImageConstPtr imageIn_ ;
+ cv_bridge::CvImagePtr imageOut_;
+
+ };
+
+ class NodeWithGui : public Node
+ {
+public:
+NodeWithGui(ros::NodeHandle&amp; nh, ros::NodeHandle&amp; nhPrivate) : Node (nh,nhPrivate){}
+virtual void spinOnce ()
+{
+   Node::spinOnce ();
+   // and refresh GUI using imshow.
+    cv::imshow(&quot;Corners&quot;,imageOut_.image);
+   }
+ };
+
+int main(int argc, char **argv)
+{
+
+ ros::init(argc, argv, &quot;harris3&quot;);
+ ros::NodeHandle nh;
+ ros::NodeHandle nhPrivate (&quot;~&quot;);
+
+ Node* node = 0;
+ // if (ros::param::get&lt;bool&gt;(&quot;~use_gui&quot;))
+   node = new NodeWithGui (nh, nhPrivate);
+  //else
+  // node = new Node (nh, nhPrivate);
+  node-&gt;spin ();
+  return 0;
+   }
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-23 19:51:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p><code>waitKey</code> is the function that draws to screen, so yes if there is too much time between calls to that then the OpenCV output will not look very good. How did you attempt to process cv_ptr outside the callback? Were you able to debug the dead process? It couldn&#39;t&#39;ve been a null pointer issue? </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2651">DamienJadeDuff</a> on 2013-01-23 20:39:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You will probably need to do the image processing outside the main thread so that you can call waitKey to draw to screen from the main thread. See e.g. <a href="http://www.ros.org/wiki/roscpp/Overview/Callbacks%20and%20Spinning#Multi-threaded_Spinning">http://www.ros.org/wiki/roscpp/Overview/Callbacks%20and%20Spinning#Multi-threaded_Spinning</a> - also to avoid weird errors, use a mutex.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2651">DamienJadeDuff</a> on 2013-01-23 20:42:47 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Here is how I would refactor this code (in pseudo-C++)</p>
+
+<pre><code>class Node
+{
+    Node (ros::NodeHandle&amp; nh, ros::NodeHandle&amp; nhPrivate)
+     // initialization list copy the arguments to the class attributes.
+    {
+      // create subscriber, publisher using nh_.
+    }
+
+    // always use shared pointer version of callbacks.
+    subscriberCb (const sensor_msgs::ImageConstPtr&amp; image) 
+    {
+       imageIn_ = image;
+    }
+
+    void process ()
+    {
+       // Use imageIn as your input image.
+       sensor_msgs::ImageConstPtr imageIn = imageIn_; // See note (1)
+
+       // No new images since last time, do nothing.
+       if (imageOut_.header.seq == imageIn.header.seq)
+         return;
+
+       // use imageOut_.image and images which are *class attributes*
+       // to realize the image processing, so it will allocate memory only once.
+       // You should have *no* instance of big objects as local variables here.
+       // Use directly imageOut_.image as the cv::Mat destination object  of your last
+       // OpenCV function call.
+
+       // publish imageOut_.toMsg ();
+    }
+
+    virtual void spin ()
+    {
+      ros::Rate rate (30);
+      while (ros::ok ())
+      {
+        spinOnce ();
+        rate.sleep ();
+       }
+    }
+
+    virtual void spinOnce ()
+    {
+       process ();
+       spinOnce ();
+    }
+
+
+protected:
+  image_transport::ImageTransport it_;
+  image_transport::Subscriber sub_;
+  image_transport::Publisher pub_;
+  ros::NodeHandle nh_;
+  ros::NodeHandle nhPrivate_;
+
+  sensor_msgs::ImageConstPtr imageIn_;
+  cv_bridge::CvImage imageOut_;
+};
+
+class NodeWithGui : public Node
+{
+    virtual void spinOnce ()
+    {
+       Node::spinOnce ();
+       // and refresh GUI using imshow.
+    }
+};
+
+int main ()
+{
+  ros::init (...);
+  ros::NodeHandle nh;
+  ros::NodeHandle nhPrivate (&quot;~&quot;);
+
+  Node* node = 0;
+  if (ros::param::get&lt;bool&gt;(&quot;~use_gui&quot;))
+   node = new NodeWithGui (nh, nhPrivate);
+  else
+    node = new Node (nh, nhPrivate);
+  node-&gt;spin ();
+}
+</code></pre>
+
+<p>So the reason is not that you are doing your computation in the callback, the reason is that you reallocate at <em>each</em> callback all your objects!</p>
+
+<p>To have an efficient node, allocation should be done <strong>once</strong>. At the beginning (here when the first image is received). Then, old structures should be reused.</p>
+
+<p>Additional introduced features are:</p>
+
+<ul>
+<li>Pass the node handle and private node handle explicitly. It will help you convert your node to a nodelet one day (see nodelet conversion tutorial).</li>
+<li><strong>ALWAYS</strong> separate algorithms from display (GUI). Especially in robotics, robots should not embed X11 server.</li>
+<li>No global variables.</li>
+</ul>
+
+<p>Also, you can see that this code is much easier to benchmark as different piece of codes are separated. You can, for instance, bench how fast process is very easily. Never use waitKey to get a &quot;sensation&quot; of how fast it is going. This is bad practice even if it is used in the cv_bridge tutorial. <strong>Do not use waitkey in your code.</strong> Use Timers to publish statistics through the ros logging api (rosconsole) about processing speed if you want to.</p>
+
+<p>Note (1): you may notice that before processing the data, I copy the shared pointer. This is to ensure that, if you use an ASyncSpinner, your image won&#39;t change in the middle of the processing. Shared pointers copies are atomic operations which means that this callback is thread-safe. This is required to convert this node to a nodelet for instance and also to deal with more complex GUI that may require you to use the ASyncSpinner. Note that <em>no</em> mutex are needed here, even in this case.</p>
+
+<p>Bonus points for advanced C++ developpers: template the Node class to realize different kind of spinning/scheduling using <a href="http://en.wikipedia.org/wiki/Policy-based_design">policy-based design</a> for instance :)</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/87"></a> on 2013-01-23 21:26:26 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you Thomas for your detailed answer. I do not have the equipment with me at the moment but I will try to implement this and follow your description as soon as possible and will post back with the result.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-24 03:12:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hello Thomas, I have tried implementing your pseudo code but my process is dying immediately after launch, I have edited the question and posted the new code (see Edit 1). I am assuming that by CvImageConstPtr imageIn_ you mean   cv_bridge::CvImageConstPtr imageIn_ ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-25 19:32:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Also the type sensor_msgs::ImageShPtr&amp; image does not seem to exist.. How do you properly define the shared pointer? It is only accepting  sensor_msgs::ImageConstPtr or otherwise it will give me an error.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-25 19:36:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Well yes it does not compile, that is why this is pseudo-code :) The input image (imageIn_) is a sensor_msgs::ImageConstPtr to avoid having to do the conversion in the callback. What do you mean by die immediately? (I edited my answer to fix the type)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87">Thomas</a> on 2013-01-26 01:51:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I set the imageIn_ type to sensor_msgs::ImageConstPtr  and I also had to change the cv_bridge::CvImage imageOut_ to the type cv_bridge::CvImagePtr (I have updated the code above). The code compiles with no errors but when I rosrun the node I get a segmentation fault (core dumped) ? Any idea why?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-26 02:51:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You also have to check at the beginning of process that the shared pointer is not null. If you still have an issue, run the code in gdb to see where the problem is :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87">Thomas</a> on 2013-01-26 04:29:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi Thomas, at the beginning of the process() function I added this: if ( &amp;imageIn_ == NULL)
+return;</p>
+
+<p>is that the correct way of checking if it is a NULL pointer? after adding this condition and running, I still get the segmentation fault. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-26 17:17:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I debugged it with gdp, it crashes as soon as it enters the Node constructor:
+Breakpoint 7, Node::Node (this=0x623a40, nh=..., nhPrivate=...) at ~/fuerte_workspace/firefly_mv/src/harris3.cpp:20
+20      Node (ros::NodeHandle&amp; nh, ros::NodeHandle&amp; nhPrivate) : it_(nh_)
+(gdb) continue 
+Continuing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-26 19:27:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Program received signal SIGSEGV, Segmentation fault.
+0x00007ffff68e0f28 in std::basic_string<char, std::char_traits<char>, std::allocator<char> &gt;::basic_string(std::string const&amp;) ()
+   from /usr/lib/x86_64-linux-gnu/libstdc++.so.6</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-26 19:27:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>After looking at your code, you initialize the image transport object with the non-initialized nh_ attribute. I recommend also initializing nh_ and nhPrivate_ using the initialization list instead of doing it in the constructor body.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87">Thomas</a> on 2013-01-27 14:29:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi Thomas, thanks a lot for taking the time to look at my code. I have managed to get it to work, I have the same problem though, when I move the camera fast it lags a lot and the screen becomes black for a second. However if i keep it steady or move it slow its fine.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-27 14:41:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It seems like an image encoding issue, when I change the encodings I get different results. For example if I change the dst_norm_scaled to CV_8SC1 instead of CV_32FC1 , It becomes very fast but the image is replicated 4 times.  </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-27 19:56:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Might it be an acquisition problem? if you do &quot;rostopic hz /my_image_topic&quot; you can see how fast you are acquiring data, then do the same thing on your output topic from your node and you&#39;ll know if you are real-time or not...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87">Thomas</a> on 2013-01-28 14:07:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>the image_raw is acquired at around 14.2 hz and the output is at around 12.5 hz. also I noted when moving the camera fast, the output says no new messages, although the camera_raw is continuously publishing at 14.2 hz.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-28 14:28:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I tried implementing sift and surf instead and they are very fast, It seems the problem is coming from the harris corner detector. I really appreciate your help and will mark this question as solved. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3767">K_Yousif</a> on 2013-01-28 18:19:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Though it&#39;s an old topic, but it&#39;s still relevant.
+The problem with this approach is that processing in a different thread with different loop rate adds latency comparing to processing in callback.
+Also, copying shared pointer (imageIn = imageIn_) and writing to it (imageIn_ = image) isn&#39;t thread-safe (<a href="http://www.comrite.com/wp/c-why-need-atomic_store-atomic_load-on-shared_ptr-atomic-shared_ptr/">link1</a>, <a href="https://wandbox.org/permlink/oAXbYnkKE5BR7Wig">link2</a>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36348">Pashek</a> on 2019-07-01 03:08:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Pashek the usual approach is through a lock-free ring buffer and making sure that when you push the ring-buffer, the other thread is already waiting for process something (using e.g. a condition variable). If you add latency in this world, it means you are receiving messages faster than you can process them and you should 1/ reduce the frequency at which messages are sent on the publisher side or 2/ if you can&#39;t reduce the frequency, drop some messages as needed (sub-sampling?). More than one worker thread would also be a solution, but that would significantly increase the complexity of the architecture...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87">Thomas</a> on 2019-07-11 16:57:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Am I missing something ? why virtual void spinOnce () calls himself ? This is a recursive call that never ends. (note : I am a beginner both in ros and C++)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69998">iad-AR</a> on 2021-03-23 06:20:06 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>thank you for sharing the above codes, i wish i could be more helpful by providing the following two image processing methods in different platforms.
+<a href="http://www.rasteredge.com/how-to/asp-net-imaging/imaging-processing/">process image in asp.net</a>
+<a href="http://www.rasteredge.com/how-to/winforms-net-imaging/imaging-processing/">process image in winforms</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/12746">lilylily</a> on 2014-03-20 17:39:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

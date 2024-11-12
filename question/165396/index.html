@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to get the Pixy camera working on ROS ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/165396">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to get the Pixy camera working on ROS ?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/59410/how-to-get-the-pixy-camera-working-on-ros">https://robotics.stackexchange.com/questions/59410/how-to-get-the-pixy-camera-working-on-ros</a>.</p>
+        <p>I&#39;m trying to get the Pixy camera working with ROS (Hydro) on Ubuntu 12.04 x64.</p>
+
+<p><strong>Overview</strong></p>
+
+<p>If you haven&#39;t heard about the Pixy yet, it&#39;s a camera with embedded vision processing that does mainly fast blob tracking. </p>
+
+<p>It is provided with a software and a GUI written in C++ and Qt, called PixyMon. So I thought it could be great to convert it to a ROS package ! 
+Of course I could connect the Pixy to an Arduino and get some data from a serial link, but I&#39;d like to use the direct USB link to the Pixy, no arduino, and have all the capability of PixyMon within ROS.
+PixyMon allows you to interact with the Pixy, change its parameters (lightness, contrast...), get the camera image, detected blobs position/size, record new colors...so I&#39;d like to have a ROS wrapper for all of this.</p>
+
+<p><strong>Explanation of the issue</strong></p>
+
+<p>So far I can build and link and execute PixyMon as a ROS package, it detects my Pixy but cannot connect to it, PixyMon terminal shows :</p>
+
+<pre><code>Pixy detected.
+error: Unable to connect to device.
+</code></pre>
+
+<p>and the terminal from where I execute the node shows :</p>
+
+<pre><code>libusb_bulk_write -7
+libusb_bulk_write -7
+interpreter finished
+destroying interpreter...
+done
+libusb_bulk_write -7
+libusb_bulk_write -7
+</code></pre>
+
+<p>And they all repeat. A click on Parameters button give a segmentation fault and crash.
+So somewhere something is not using the right libraries, or not the right Qt version, or the different parts of the project are not linked properly I suspect.</p>
+
+<p><strong>Here are the steps I followed to convert PixyMon into a ROS package</strong></p>
+
+<p>So I basically created an empty Qt package, and paste PixyMon (that means common and host folders) inside src folder.
+My package.xml contains this for Qt project :</p>
+
+<pre><code>&lt;buildtool_depend&gt;catkin&lt;/buildtool_depend&gt;
+&lt;build_depend&gt;qt_build&lt;/build_depend&gt;
+&lt;build_depend&gt;roscpp&lt;/build_depend&gt;
+&lt;build_depend&gt;libqt4-dev&lt;/build_depend&gt;
+&lt;run_depend&gt;qt_build&lt;/run_depend&gt;
+&lt;run_depend&gt;roscpp&lt;/run_depend&gt;
+&lt;run_depend&gt;libqt4-dev&lt;/run_depend&gt;
+</code></pre>
+
+<p>My CMakeLists.xml is as follow (I removed all comments) :</p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8.9)
+project(pixymon)
+
+find_package(catkin REQUIRED COMPONENTS qt_build roscpp)
+find_package(Qt4 COMPONENTS QtCore QtGui QtWidgets)
+include_directories(
+    ${catkin_INCLUDE_DIRS} 
+    src/common 
+    src/host/pixymon
+    /usr/include/libusb-1.0)
+link_directories(
+    src/common 
+    src/host/pixymon)
+catkin_package()
+
+file(GLOB QT_FORMS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} src/host/pixymon/*.ui)
+file(GLOB QT_RESOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} src/host/pixymon/*.qrc)
+file(GLOB_RECURSE QT_MOC RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS src/host/pixymon/*.h)
+QT4_ADD_RESOURCES(QT_RESOURCES_CPP ${QT_RESOURCES})
+QT4_WRAP_UI(QT_FORMS_HPP ${QT_FORMS})
+QT4_WRAP_CPP(QT_MOC_HPP ${QT_MOC})
+
+file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS src/common/*.cpp)
+file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS src/host/pixymon/*.cpp)
+
+add_executable(pixymon ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP})
+add_library(chirp src/common/chirp.cpp)
+add_library(qqueue src/common/qqueue.cpp)
+add_library(blob src/common/blob.cpp)
+add_library(blobs src/common/blobs.cpp)
+target_link_libraries(blobs blob)
+target_link_libraries(pixymon ${QT_LIBRARIES} ${catkin_LIBRARIES} chirp qqueue blobs /usr/lib/x86_64-linux-gnu/libusb-1.0.so)
+install(TARGETS pixymon RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+</code></pre>
+
+<p>I can build and execute the normal Pixymon project provided for the Pixy and it workd well, it is building using Qt5 with the .pro file. But it seems ROS use Qt4, I couldn&#39;t get Qt5 working yet. So I had to make some changes in the code, changing all the signal and slots in header files with the macro Q<em>SIGNALS and Q</em>SLOTS, and even &quot;emit&quot; replaced by Q_EMIT in cpp files. 
+There was one exception of a signal call from another class, where I had to create a public method to emit the signal, and call that method, here are the steps.</p>
+
+<p>In interpreter.h you add, under public :</p>
+
+<pre><code>void disconnect();
+</code></pre>
+
+<p>In interpreter.cpp you add the method :</p>
+
+<pre><code>void Interpreter::disconnect()
+{
+    Q_EMIT connected(PIXY, false);
+}
+</code></pre>
+
+<p>In disconnectevent.cpp you replace  </p>
+
+<pre><code>m_interpreter-&gt;emit connected(PIXY, false);
+by
+m_interpreter-&gt;disconnect();
+</code></pre>
+
+<p>I suspect that in my CMakeLists.txt I&#39;m not linking properly the different library (chirp, qqueue, blob, blobs).</p>
+
+<p>Does anyone has a good knowledge of CMakeLists files for more complex projects involving different library parts that has to link to a final Qt project ?</p>
+
+<p>Many thanks !</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2014-05-15 07:33:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This looks sort of reasonable. Without hacking on it a lot, it&#39;s hard to say for sure. I suspect most of your build process is fine, or you would have symbol errors at link time or at startup. Have you tried running your node in gdb? Does it have a debug mode that you can enable?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2014-05-16 06:39:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your reply. Yes I agree the build process should be ok. I tried to run the node in gdb but it doesn&#39;t give me more information. Actually, all the error written in the terminal are written by qDebug calls. The error &quot;libusb_bulk_write -7&quot; cause the problem, I&#39;ll try to trace it back.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2014-05-20 22:51:25 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I too am very interested and have approached this in a &#39;hack&#39; sort of way as my 1st cut but hope to implement a true ROS node with Pixy as my next step.  I am not suggesting this is clean, I am only putting it forth as an unclean alternative that some may benefit from till a clean solution is devised.</p>
+
+<p>My solution is that I have hacked the linux (Raspberry PI) hello code to stuff it&#39;s results to shared memory segment.  My current ROS node then inspects this shared memory with both processes only accessing the shared memory segment using a system V semaphore so it is safe for the producer (hello code) and consumer (ROS node).  My ROS node then inspects memory and passes what it finds over via a ROS topic to my main node which is the end consumer of the Pixy object recognition data.   All this then means the pixy.h and pixydef.h includes and a definition of the named shared memory segment of my own .h file are all the ROS node need see as it compiles.  This works but I agree is a bit of a &#39;hack&#39; if you will as I have to start the pixy converted &#39;hello&#39; process outside of my roslaunch config file.</p>
+
+<p>Just a thought and maybe it will be a reasonable short term solution for others in the mean time as we strive to get the code to operate as a true ROS node which of course is the &#39;right&#39; way to deal with this issue.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20073">mjstn</a> on 2014-08-22 15:45:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Hi,  I&#39;ve taken the recently released libpixyusb from Charmed Labs&#39; pixy repository &amp; made a ROS node around it.  At the time of this writing, it only supports USB streaming of plain signiture &amp; color-code block data.  It will also subscribe to a servo command topic and move the servos for pan-tilt... though I don&#39;t have any demo for that (yet).  </p>
+
+<p><a href="https://github.com/jeskesen/pixy_ros">Here is a link</a> to my source code.  I welcome any feedback and/or collaboration from interested users.  I&#39;ve already created a to-do list on the github page of features I&#39;d like to add.  Please feel free to add suggestions there.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3965">jeskesen</a> on 2014-11-06 10:35:08 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>You might check out libpixyusb, which makes direct communictation with Pixy over USB fairly easy ---</p>
+
+<p><a href="http://cmucam.org/projects/cmucam5/wiki/Building_the_libpixyusb_example_on_Linux">http://cmucam.org/projects/cmucam5/wiki/Building_the_libpixyusb_example_on_Linux</a>
+<a href="http://charmedlabs.github.io/pixy/pixy_8h.html">http://charmedlabs.github.io/pixy/pixy_8h.html</a> </p>
+
+<p>I&#39;m not sure if you&#39;re running Windows or Linux.  Linux is well-tested.  Windows isn&#39;t so much (for libpixyusb). </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22173">charchar</a> on 2015-04-15 11:41:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

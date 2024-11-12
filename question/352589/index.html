@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Obstacles added through service call (/apply_planning_scene) not reflected in PlanningSceneMonitor - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/352589">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Obstacles added through service call (/apply_planning_scene) not reflected in PlanningSceneMonitor</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95885/obstacles-added-through-service-call-apply-planning-scene-not-reflected-in-pl">https://robotics.stackexchange.com/questions/95885/obstacles-added-through-service-call-apply-planning-scene-not-reflected-in-pl</a>.</p>
+        <p>Setup:</p>
+
+<pre><code>std::unique_ptr&lt;robot_model_loader::RobotModelLoader&gt; ur10_model_loader = std::make_unique&lt;robot_model_loader::RobotModelLoader&gt;(&quot;robot_description&quot;);
+robot_model::RobotModelPtr ur10_kinematic_model = ur10_model_loader -&gt; getModel();
+
+planning_scene_monitor::PlanningSceneMonitorPtr ur10_planning_scene_monitor;
+ur10_planning_scene_monitor = planning_scene_monitor::PlanningSceneMonitorPtr(new planning_scene_monitor::PlanningSceneMonitor(&quot;robot_description&quot;));
+ur10_planning_scene_monitor -&gt; startSceneMonitor();
+ur10_planning_scene_monitor -&gt; startWorldGeometryMonitor();
+ur10_planning_scene_monitor -&gt; startStateMonitor();
+ur10_planning_pipeline = std::make_shared&lt;planning_pipeline::PlanningPipeline&gt;
+                         (planning_pipeline::PlanningPipeline(ur10_kinematic_model, nodeHandle, &quot;planning_plugin&quot;, &quot;request_adapters&quot;));
+robot_model::JointModelGroup* manipulator_joint_model_group = ur10_kinematic_model -&gt; getJointModelGroup(MANIPULATOR_JOINT_GROUP);
+</code></pre>
+
+<p>I add an obstacle into the scene with the following:</p>
+
+<pre><code>moveit_msgs::PlanningScene planning_scene_msg;
+{// scope
+    planning_scene_monitor::LockedPlanningSceneRO planning_sceneRO (ur10_planning_scene_monitor);
+    planning_sceneRO -&gt; getPlanningSceneMsg(planning_scene_msg);
+}// scope
+
+planning_scene_msg.world.collision_objects.clear();
+
+planning_scene_msg.world.collision_objects.push_back(robot_workspace); // where robot_workspace has been filled with obstacles
+planning_scene_msg.is_diff = true;
+planning_scene_msg.robot_state.is_diff = true;
+
+ros::ServiceClient update_planning_scene_service_client = nodeHandle.serviceClient&lt;moveit_msgs::ApplyPlanningScene&gt;(&quot;apply_planning_scene&quot;);
+moveit_msgs::ApplyPlanningScene apply_scene_msg;
+apply_scene_msg.request.scene = planning_scene_msg;
+update_planning_scene_service_client.call(apply_scene_msg)
+</code></pre>
+
+<p>I can verify that the obstacle is visible in rviz under &quot;Scene Geometry&quot;.</p>
+
+<p>I invoke the planner as follows</p>
+
+<pre><code>    planning_scene_monitor::LockedPlanningSceneRO lscene(ur10_planning_scene_monitor);
+    ur10_planning_pipeline -&gt; generatePlan(lscene, motion_request, motion_response);
+</code></pre>
+
+<p>However, the generated trajectory just passes through the obstacle.</p>
+
+<p>----------------------------------- UPDATE 1 ------------------------------------------</p>
+
+<p>After much digging and referring to <code>moveit/moveit_ros/move_group/src/default_capabilities/move_action_capability.cpp</code>, changing </p>
+
+<pre><code>ur10_planning_pipeline -&gt; generatePlan(lscene, motion_request, motion_response);
+</code></pre>
+
+<p>to</p>
+
+<pre><code>ur10_planning_pipeline -&gt; generatePlan(lscene-&gt;diff(planning_scene_msg), motion_request, motion_response);
+</code></pre>
+
+<p>solves the problem.  However, I don&#39;t believe that is the correct way to fix this.</p>
+
+<p>Further digging revealed that the <code>lscene</code> from</p>
+
+<pre><code>planning_scene_monitor::LockedPlanningSceneRO lscene(ur10_planning_scene_monitor);
+</code></pre>
+
+<p>does not get updated with the obstacle, i.e.</p>
+
+<pre><code>    moveit_msgs::PlanningScene tmp;
+    lscene-&gt;getPlanningSceneMsg(tmp);
+    ROS_INFO(&quot;collision objects: %ld&quot;, tmp.world.collision_objects.size());
+</code></pre>
+
+<p>Still gives 0 obstacles.</p>
+
+<p>Shouldn&#39;t the PlanningSceneMonitor be automatically updated when the <code>/apply_planning_scene</code> service is called?</p>
+
+<p>Using </p>
+
+<pre><code>ur10_planning_scene_monitor-&gt;monitorDiffs(true)
+</code></pre>
+
+<p>or</p>
+
+<pre><code>ur10_planning_scene_monitor-&gt;startPublishingPlanningScene(planning_scene_monitor::PlanningSceneMonitor::UPDATE_SCENE);
+</code></pre>
+
+<p>or </p>
+
+<pre><code>ur10_planning_scene_monitor-&gt;startPublishingPlanningScene(planning_scene_monitor::PlanningSceneMonitor::UPDATE_SCENE, &quot;/move_group/monitored_planning_scene&quot;);
+</code></pre>
+
+<p>or</p>
+
+<pre><code>ur10_planning_scene_monitor -&gt; startSceneMonitor(&quot;/move_group/monitored_planning_scene&quot;);
+</code></pre>
+
+<p>does not solve the problem.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34739"></a> on 2020-05-18 05:37:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This Q&amp;A seems related: #q352656.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-19 02:22:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It appears that changing</p>
+
+<pre><code>ur10_planning_scene_monitor -&gt; startSceneMonitor();
+</code></pre>
+
+<p>to</p>
+
+<pre><code>ur10_planning_scene_monitor -&gt; startSceneMonitor(&quot;/move_group/monitored_planning_scene&quot;);
+</code></pre>
+
+<p>as well as adding a 2 second delay between </p>
+
+<pre><code>update_planning_scene_service_client.call(apply_scene_msg)
+</code></pre>
+
+<p>and</p>
+
+<pre><code>planning_scene_monitor::LockedPlanningSceneRO lscene(ur10_planning_scene_monitor);
+</code></pre>
+
+<p>allows me to reliably get an <code>lscene</code> that contains the collision object.</p>
+
+<p>This seems counter to what <a href="https://ros-planning.github.io/moveit_tutorials/doc/planning_scene_ros_api/planning_scene_ros_api_tutorial.html#interlude-synchronous-vs-asynchronous-updates">the tutorial</a> mentions about service call being synchronous (blocks until diff is applied).  Though it may refer to blocking until the diff is applied only to <code>move_group</code>&#39;s <code>PlanningSceneMonitor</code>, and not every listening <code>PlanningSceneMonitor</code></p>
+
+<p>The Q&amp;A for this behavior can be found here: <a href="https://answers.ros.org/question/352721/applying-scene-changes-through-service-call-does-not-block-until-changes-are-applied/">https://answers.ros.org/question/352721/applying-scene-changes-through-service-call-does-not-block-until-changes-are-applied/</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/34739"></a> on 2020-05-19 04:10:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

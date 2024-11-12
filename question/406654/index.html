@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2 Humble + Gtest] Test throwing an exception when looking for lib[package]__rosidl_typesupport_fastrtps_cpp.so - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/406654">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2 Humble + Gtest] Test throwing an exception when looking for lib[package]__rosidl_typesupport_fastrtps_cpp.so</h2>
+      <div class="question">
+        <p>Hello.</p>
+
+<p>I am using ROS2 Humble on Ubuntu 22.04 for this <a href="https://gitlab.com/arnixrobotix/alfred/-/tree/ros2/">project</a>.
+I am able to compile and run the packages I wrote (in C++), I also wrote a few unit tests (with Google Test).
+However I am facing an error when trying to use a custom service in one of my tests:</p>
+
+<pre><code>arnix@Faye:~/src/alfred/workspace$ ./build/hal_pigpio/hal_pigpio_init_test
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from PigpioInitTest
+[ RUN      ] PigpioInitTest.SetInputMode
+unknown file: Failure
+C++ exception with description &quot;could not create client: Type support not from this implementation. Got:
+    Handle&#39;s typesupport identifier (rosidl_typesupport_cpp) is not supported by this library, at ./src/type_support_dispatch.hpp:111
+    Could not load library libhal_pigpio_interfaces__rosidl_typesupport_fastrtps_cpp.so: dlopen error: libhal_pigpio_interfaces__rosidl_typesupport_fastrtps_cpp.so: cannot open shared object file: No such file or directory, at ./src/shared_library.c:99, at ./src/type_support_dispatch.hpp:76
+while fetching it, at ./src/rmw_client.cpp:120, at ./src/rcl/client.c:113&quot; thrown in SetUp().
+Segmentation fault (core dumped)
+</code></pre>
+
+<p>This is the <a href="https://gitlab.com/arnixrobotix/alfred/-/blob/ros2/workspace/src/hal/hal_pigpio/test/test_hal_pigpio_init.cpp">test</a> in question.</p>
+
+<p>I am creating 2 nodes in the global SetUp of the test fixture (one with the service I want to test and the other one that is using the service and checking its response).
+In the constructor of the checker node I am creating a client for the service, and then sending the request in the test case.</p>
+
+<pre><code>#include &quot;gtest/gtest.h&quot;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;lifecycle_msgs/srv/change_state.hpp&quot;
+
+#include &quot;hal_pigpio.hpp&quot;
+
+class PigioCheckerNode : public rclcpp::Node
+{
+public:
+  PigioCheckerNode()
+  : rclcpp::Node(&quot;hal_pigpio_checker_node&quot;),
+    changeStateClient(this-&gt;create_client&lt;lifecycle_msgs::srv::ChangeState&gt;(
+        &quot;hal_pigpio_node/change_state&quot;)),
+    setInputModeClient(this-&gt;create_client&lt;hal_pigpio_interfaces::srv::HalPigpioSetInputMode&gt;(
+        &quot;hal_pigpioSetInputMode&quot;))
+  {
+  }
+  ~PigioCheckerNode() = default;
+  void changePigpioNodeToState(std::uint8_t transition)
+  {
+    auto request = std::make_shared&lt;lifecycle_msgs::srv::ChangeState::Request&gt;();
+    request-&gt;transition.id = transition;
+    auto result = changeStateClient-&gt;async_send_request(request);
+  }
+  rclcpp::Client&lt;hal_pigpio_interfaces::srv::HalPigpioSetInputMode&gt;::SharedPtr
+  getSetInputModeClient(void)
+  {
+    return setInputModeClient;
+  }
+
+private:
+  rclcpp::Client&lt;lifecycle_msgs::srv::ChangeState&gt;::SharedPtr changeStateClient;
+  rclcpp::Client&lt;hal_pigpio_interfaces::srv::HalPigpioSetInputMode&gt;::SharedPtr setInputModeClient;
+};
+
+/* Test fixture */
+class PigpioInitTest : public testing::Test
+{
+protected:
+  std::shared_ptr&lt;Pigpio&gt; pigpioInit;
+  std::shared_ptr&lt;PigioCheckerNode&gt; pigioChecker;
+  rclcpp::executors::SingleThreadedExecutor executor;
+
+  void SetUp()
+  {
+    pigioChecker = std::make_shared&lt;PigioCheckerNode&gt;();
+    pigpioInit = std::make_shared&lt;Pigpio&gt;();
+
+    executor.add_node(pigpioInit-&gt;get_node_base_interface());
+    executor.add_node(pigioChecker);
+
+    pigioChecker-&gt;changePigpioNodeToState(
+      lifecycle_msgs::msg::Transition::TRANSITION_CONFIGURE);
+    executor.spin_some();
+    pigioChecker-&gt;changePigpioNodeToState(
+      lifecycle_msgs::msg::Transition::TRANSITION_ACTIVATE);
+    executor.spin_some();
+  }
+
+  void TearDown()
+  {
+    executor.cancel();
+    executor.remove_node(pigpioInit-&gt;get_node_base_interface());
+    executor.remove_node(pigioChecker);
+    pigpioInit.reset();
+    pigioChecker.reset();
+  }
+};
+
+/* Test cases */
+TEST_F(PigpioInitTest, SetInputMode)
+{
+  auto setInputModeRequest =
+    std::make_shared&lt;hal_pigpio_interfaces::srv::HalPigpioSetInputMode::Request&gt;();
+
+  setInputModeRequest-&gt;gpio_id = 1;
+
+  auto setInputModeFuture = pigioChecker-&gt;getSetInputModeClient()-&gt;async_send_request(
+    setInputModeRequest);
+
+  ASSERT_EQ(setInputModeFuture.get()-&gt;has_succeeded, true);
+}
+
+int main(int argc, char ** argv)
+{
+  testing::InitGoogleTest(&amp;argc, argv);
+  rclcpp::init(argc, argv);
+
+  auto result = RUN_ALL_TESTS();
+
+  rclcpp::shutdown();
+  return result;
+}
+</code></pre>
+
+<p>I am not using Fast DDS middleware (i.e. I didn&#39;t set RMW_IMPLEMENTATION environnement variable).</p>
+
+<p>I searched around for the cause of this error but I didn&#39;t find any solution. 
+Any help is welcomed, thank you!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/95127"></a> on 2022-09-20 03:27:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As it turns out, executing the test directly calling the test executable is not a good idea... When using <strong>colcon</strong>, everything runs smoothly.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/95127"></a> on 2022-12-06 11:07:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@Arnix Can you explain why this is the case? I cannot find anything about this issue mentioned</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/138494">mandicLuka</a> on 2023-02-15 11:39:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi @mandicLuka, I didn&#39;t investigate more as using colcon to run my tests is fine.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/95127">Arnix</a> on 2023-02-16 03:21:27 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

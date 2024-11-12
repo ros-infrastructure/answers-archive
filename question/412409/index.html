@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>how to get asynchronous publish working on ROS2 Galactic with FastRTPS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/412409">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>how to get asynchronous publish working on ROS2 Galactic with FastRTPS</h2>
+      <div class="question">
+        <p>I&#39;m observing the publisher to be block when sending over a slow link. This behavior is unlike any other pub/sub middleware I&#39;ve used before (including ROS1).
+So just running a subscriber on a remote node causes the publish rate of the publisher to drop:</p>
+
+<pre><code> [1676142719.758977019] [test_publisher]: size: 1000000 rate: 40.00 bw:  319.995 Mbits/s
+ [1676142720.783972503] [test_publisher]: size: 1000000 rate: 40.00 bw:  320.002 Mbits/s
+ [1676142721.817557893] [test_publisher]: size: 1000000 rate: 26.12 bw:  208.979 Mbits/s
+ [1676142722.849145421] [test_publisher]: size: 1000000 rate: 12.60 bw:  100.823 Mbits/s
+ [1676142723.903613207] [test_publisher]: size: 1000000 rate: 14.22 bw:  113.796 Mbits/s
+</code></pre>
+
+<p>Yes, this is over a Wifi link but the wifi is working just fine. It is simply out of bandwidth. In this case I would expect the publisher to drop messages, but not block in publish(). The latter behavior is really bad if you want to e.g. transmit camera images that the robot is also using for state estimation.
+After first seeing this in ROS2 Galactic with the default cyclone DDS I switched over to fastrtps using asynchronous mode following <a href="https://docs.ros.org/en/galactic/Tutorials/Advanced/FastDDS-Configuration.html">these instructions</a>.
+No matter what I try the publisher always blocks when there is insufficient network bandwidth. I played around with qos policies and kernel buffer memory settings but to no avail. Here is the code for creating the publisher. Looks pretty standard:</p>
+
+<pre><code> rclcpp::QoS qos(1);
+  pub_ = create_publisher&lt;StringMsg&gt;(&quot;test_string&quot;, qos);
+</code></pre>
+
+<p>The variables were set as follows:</p>
+
+<pre><code>export RMW_IMPLEMENTATION=rmw_fastrtps_cpp                                                                                                                                   
+export FASTRTPS_DEFAULT_PROFILES_FILE=`pwd`/SyncAsync.xml                                                                                                                    
+export RMW_FASTRTPS_USE_QOS_FROM_XML=1                                                                                                                                       
+export RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS       
+</code></pre>
+
+<p>and this is the xml config file:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; ?&gt;
+&lt;profiles xmlns=&quot;http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles&quot;&gt;
+    &lt;!-- default publisher profile --&gt;
+    &lt;publisher profile_name=&quot;default_publisher&quot; is_default_profile=&quot;true&quot;&gt;
+        &lt;historyMemoryPolicy&gt;DYNAMIC&lt;/historyMemoryPolicy&gt;
+        &lt;qos&gt;
+            &lt;publishMode&gt;
+                &lt;kind&gt;ASYNCHRONOUS&lt;/kind&gt;
+            &lt;/publishMode&gt;
+        &lt;/qos&gt;
+    &lt;/publisher&gt;
+ &lt;/profiles&gt;
+</code></pre>
+
+<p>The code can be found in a <a href="https://github.com/berndpfrommer/ros2_perf_test">little github repo here</a></p>
+
+<p>[Edit]
+With new keywords for searching provided by one of the answers, I&#39;ve discovered that this has been noticed by others already: <a href="https://github.com/ros2/rmw_fastrtps/issues/460">https://github.com/ros2/rmw_fastrtps/issues/460</a>
+[/Edit]</p>
+
+        <div class="owner"><p>Asked by <a href="/users/53718">Bernd Pfrommer</a> on 2023-02-11 15:03:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I can&#39;t find any references right now, but isn&#39;t async publishing the default for at least FastRTPS? Afaik, Cyclone doesn&#39;t support it.</p>
+
+<p>re: even with async you see &#39;blockages&#39;: according to <a href="https://docs.ros.org/en/galactic/Concepts/About-Quality-of-Service-Settings.html#qos-profiles">this</a>, default QoS would be: keep last, queue depth (history) of 10, reliable, volatile. Even if the RMW has an internal queue it uses to serialise messages to, QoS might still be causing the behaviour you describe.</p>
+
+<p>Have you tried configuring a <code>sensor</code> QoS? That could result in dropped messages (especially with large payloads), but should not block the sender.</p>
+
+<hr>
+
+<p>Edit: according to <a href="https://github.com/ros2/rmw_fastrtps/blob/galactic/README.md?plain=1#L59">ros2/rmw_fastrtps/README.md@galactic</a>:</p>
+
+<blockquote>
+<p>If <code>RMW_FASTRTPS_PUBLICATION_MODE</code> is not set, then both <code>rmw_fastrtps_cpp</code> and <code>rmw_fastrtps_dynamic_cpp</code> behave as if it were set to <code>ASYNCHRONOUS</code>.</p>
+</blockquote>
+
+<p>so the config <code>.xml</code> would not change anything.</p>
+
+<p>[..]</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-02-12 02:53:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>[..] Note that it has changed. The <a href="https://github.com/ros2/rmw_fastrtps/blob/humble/README.md?plain=1#L58">Humble default</a> is <code>SYNCHRONOUS</code>. 
+And an observation:</p>
+
+<blockquote>
+<p>This behavior is unlike any other pub/sub middleware I&#39;ve used before (including ROS1).</p>
+</blockquote>
+
+<p>pedantic perhaps, but DDS QoS is rather complex. It&#39;s perfectly possible for this to happen. I believe the default in many DDS implementations to be fully synchronous and behaviour with lossy links is entirely dependant on QoS parameters.</p>
+
+<p><a href="https://discourse.ros.org/t/rmw-fast-dds-publication-mode-sync-vs-async-and-how-to-change-it/17153">This</a> seems to describe what you observe:</p>
+
+<blockquote>
+<p>Nevertheless, the ASYNCHRONOUS publishing mode could also block if the History is filled and it is not possible to add a new change. To prevent this from happening, it is important to tune correctly the Quality of Service Policies related to the History management (Resource Limits, History, Reliability and Durability) [..]</p>
+</blockquote>
+
+<p>[..]</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-02-12 03:00:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p>[..] And the (main) author of Cyclone provides an insightful overview of the behaviour of a (hypothetical) <code>dds_publish(..)</code> in <a href="https://github.com/ros2/rmw_cyclonedds/issues/89#issuecomment-583843099">this comment</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-02-12 03:11:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I tried setting replacing the qos line above with:</p>
+
+<p>rclcpp::SensorDataQoS qos; </p>
+
+<p>and set RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS and for good measure also provided an XML file, but the call is still blocking. I&#39;ll next try the non_blocking_send flag as suggested in the answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53718">Bernd Pfrommer</a> on 2023-02-13 12:02:33 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <blockquote>
+<p>In this case I would expect the publisher to drop messages, but not block in publish().</p>
+</blockquote>
+
+<p>Fast DDS allows to configure the UDP transport with a <code>non_blocking_send</code> flag in the <a href="https://fast-dds.docs.eprosima.com/en/latest/fastdds/transport/udp/udp.html#udptransportdescriptor">UDP transport descriptor</a>.
+More information about how to configure a custom UDP transport can be also found in <a href="https://fast-dds.docs.eprosima.com/en/latest/fastdds/transport/udp/udp.html#enabling-udp-transport">Fast DDS documentation</a>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/61692">JLBuenoLopez-eProsima</a> on 2023-02-13 01:55:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Could you add a hint on how the OP could do this in a ROS 2 context? I don&#39;t believe that flag is exposed by any infrastructure in <code>rclcpp</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-02-13 05:16:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This flag can be set in the XML configuration file. The link to the documentation above has an example. This configuration should be added to the XML configuration file the user is already using.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61692">JLBuenoLopez-eProsima</a> on 2023-02-13 05:33:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for the pointers! By using <a href="https://github.com/ros2/rmw_fastrtps/issues/460#issuecomment-716390249">this xml file</a> I can indeed decouple sender and receiver. Alas the UDP protocol is not suitable for transfering image frames with a size of 4.4MB over a link that drops packets (because of congestion control or otherwise). Is something similar possible with TCP? This worked in ROS1. Can fastrtps configured to perform similarly?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53718">Bernd Pfrommer</a> on 2023-02-13 15:09:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>TCP transport has its own reliability protocol and Fast DDS does not handle it. Maybe setting a <a href="https://fast-dds.docs.eprosima.com/en/v2.3.5/fastdds/use_cases/large_data/large_data.html#flow-controllers">Flow Controller</a> may help in your use case. I have pointed to the Flow Controllers version applying to ROS 2 Galactic (Fast DDS v2.3.x branch). Please, be aware that Flow Controllers were refactored in <a href="https://github.com/eProsima/Fast-DDS/releases/tag/v2.4.0">Fast DDS v2.4.0</a> so the latest Fast DDS documentation does not apply in ROS 2 Galactic.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61692">JLBuenoLopez-eProsima</a> on 2023-02-14 01:53:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@JLBuenoLopez-eProsima: if UDP packets are lost due to whatever reason, would flow controllers still work? Wireless networks are prime examples of links which drop packets/frames due to other reasons than congestion, which flow controllers appear to address mostly (by artificially limiting the maximum bandwidth).</p>
+
+<p>Should @Bernd Pfrommer not be looking at the QoS configuration?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-02-14 02:39:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Working with DDS (fastrtps or others) makes me feel dumb. For instance now I cannot even get a basic tcp transport working. The config file I&#39;m using has a transport like below, but when I use it &quot;ros2 node list&quot; no longer shows any nodes (even after starting/stopping ros2 daemons). I suppose that means discovery is no longer working, but why? I desperately need a working example, not pages of docs, sorry.</p>
+
+<pre><code>  &lt;transport_descriptors&gt;
+    &lt;transport_descriptor&gt;
+      &lt;transport_id&gt;nonblocking_tcp_transport&lt;/transport_id&gt;
+      &lt;type&gt;TCPv4&lt;/type&gt;
+      &lt;maxMessageSize&gt;10000&lt;/maxMessageSize&gt;
+      &lt;sendBufferSize&gt;92160&lt;/sendBufferSize&gt;
+      &lt;listening_ports&gt;
+        &lt;port&gt;7400&lt;/port&gt;
+      &lt;/listening_ports&gt;
+      &lt;interfaceWhiteList&gt;
+        &lt;address&gt;10.42.0.1&lt;/address&gt;
+        &lt;address&gt;127.0.0.1&lt;/address&gt;
+      &lt;/interfaceWhiteList&gt;
+      &lt;wan_addr&gt;10.42.0.1&lt;/wan_addr&gt;
+    &lt;/transport_descriptor&gt;
+  &lt;/transport_descriptor
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53718">Bernd Pfrommer</a> on 2023-02-14 13:53:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>ROS 2 daemon should also be configured with the TCP transport in order to discover the nodes and topics. TCP transport there is no multicast, so no out-of-the-box discovery of new entities if those entities does not know where to ping. I take note about adding a tutorial of how to configure a TCP transport in ROS 2 environment.
+I know you are not looking for more documentation, but right now it is the only way I can help you. You may consider looking at these <a href="https://docs.vulcanexus.org/en/latest/rst/tutorials/cloud/cloud_tutorials.html">tutorials that use eProsima&#39;s ROS 2 Router</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61692">JLBuenoLopez-eProsima</a> on 2023-02-15 01:16:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That link takes me to Vulcanexus and now I&#39;m no longer certain what of that documentation is specific to Vulcanexus, and what to ROS2. I realize that I&#39;ll have to gain a fairly deep understanding of FastRTPS in order to just pull a stream of images over wifi. Not what I&#39;d hoped for but I&#39;ll sink the time in. To be continued...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53718">Bernd Pfrommer</a> on 2023-02-15 11:21:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Nope, I just gave up. At the moment I do not have the time to figure out how to configure async fastrtps via tcp.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53718">Bernd Pfrommer</a> on 2023-08-03 15:35:53 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>I'm confused with callback_groups and threads - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417525">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>I'm confused with callback_groups and threads</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103427/im-confused-with-callback-groups-and-threads">https://robotics.stackexchange.com/questions/103427/im-confused-with-callback-groups-and-threads</a>.</p>
+        <p>Hi,</p>
+
+<p>I want to get a value from a topic and after perform some operations on the value retrieved (can&#39;t be in the callback function).</p>
+
+<p>I imagine a subscriber and this simple loop (python)</p>
+
+<pre><code>while self.__var is None:
+    self.get_logger().info(&quot;__var has no value yet.&quot;)
+    # wait
+</code></pre>
+
+<p>On my first attempt, I used <code>time.sleep</code> for the &quot;wait&quot;, which pause the whole Node, including the subscriber if I don&#39;t misunderstand.
+Then I used a callback_group to handle the subscription, it didn&#39;t work either.
+I read that time.sleep should never be used and prefer rate.sleep instead, inside another thread.
+So i tried this</p>
+
+<pre><code>def retrieve_value(self):
+    self.__var = None
+    # Spin in a separate thread
+    thread = threading.Thread(target=rclpy.spin, args=(self, ), daemon=True)
+    thread.start()
+    self.get_logger().info(&quot;thread starts.&quot;)
+
+    rate = self.create_rate(1)
+    self.__sub_var = self.create_subscription(
+        String,
+        f&#39;/var_values&#39;,
+        self.__set_var_value,  # simply self.__var = msg.data
+        10,
+        callback_group=self.__listener_cb_grp
+    )
+    while self.__var is None:
+        self.get_logger().info(&quot;¤¤¤__var has not value yet.&quot;)
+        rate.sleep()
+
+    # rclpy.shutdown()  # the node crash if uncomment and the node seem to stop when commented
+    self.get_logger().info(&quot;thread stops.&quot;)
+    thread.join()
+</code></pre>
+
+<p>Last I used a MultiThreadedExecutor and it still did not work.
+Obviously I don&#39;t understand the thread management here.</p>
+
+<p>Can someone help me ?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/146607"></a> on 2023-07-18 06:35:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you provide the full program context? How is <code>retrieve_value</code> being run?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2128">jdlangs</a> on 2023-07-18 13:19:28 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ll post more code. I suspect I did not understand how ROS2 nodes are supposed to be used.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/146607">SébastienL</a> on 2023-07-19 03:28:32 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Are you actually using <code>rclpy.spin()</code> in the spawned thread?
+If I&#39;m getting this right, in the spawned thread you&#39;re trying to <code>spin()</code> once again the same node calling this function (as for the argument <code>self</code>). With the info provided, I&#39;m not sure that will work.</p>
+
+<p>I could be wrong, given I don&#39;t have the full picture, but... I don&#39;t actually see the point of using an explicit thread here. Even if the node you&#39;re coding can be both the subscriber and the publisher to the <code>/var_values</code> thread (in two different configurations), using the <code>MultiThreadExecutor</code> you can just add two nodes before spinning. Something like:</p>
+
+<pre><code>executor = MultiThreadedExecutor()
+executor.add_node(sub_node)
+executor.add_node(pub_node)
+rclpy.spin()
+</code></pre>
+
+<p>Some useful stuff about executors and callback groups:</p>
+
+<p><a href="https://www.youtube.com/watch?v=_BrT4WZN2hI">An open class by The Construct</a></p>
+
+<p><a href="https://discourse.ros.org/t/how-to-use-callback-groups-in-ros2/25255">A post on ROS Discourse</a></p>
+
+<p><a href="https://docs.ros.org/en/humble/Concepts/Intermediate/About-Executors.html?highlight=executor">ROS2 documentation </a>(<em>humble</em> only because that&#39;s what I&#39;m using now)</p>
+
+<p><br><br>
+As an additional information judging by the log print, the <code>join()</code> does not terminate the thread, it actually waits for its termination before going on.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/145981"></a> on 2023-07-18 16:04:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>thanks for the answer, I tried indeed to spin again the same node.</p>
+
+<p>I think sleeping on it make it clearer to me, but still unsolved.
+like @jdlangs suspected, to context on how the function is called is probably the key.
+-&gt; i&#39;ll post more code after his reply</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/146607">SébastienL</a> on 2023-07-19 03:26:57 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Here are some complement</p>
+
+<p>The <code>retrieve_value</code> method is called in my <strong>init</strong> function which is</p>
+
+<pre><code>def __init__(self, ):
+    super().__init__(__class__.__name__)
+
+    self.__var = None
+    self.__listener_cb_grp = ReentrantCallbackGroup()
+    self.retrieve_value()
+
+    # I want __var set here
+    self.get_logger().info(f&quot;init: var = {self.__var}&quot;)
+</code></pre>
+
+<p>What I understand, is that the callback will be run only once the spin method is called, so calling a time.sleep in this init method makes this init never ends.</p>
+
+<p>Let&#39;s say, my init defines only the callback group and move the retrieved+&quot;use of __var&quot; in another methods <code>work</code></p>
+
+<pre><code>def __init__(self, ):
+    super().__init__(__class__.__name__)
+
+    self.__var = None
+    self.__listener_cb_grp = ReentrantCallbackGroup()
+
+def work(self,):
+    self.get_logger().info(&quot;work IN !&quot;)
+    self.retrieve_value()
+    # I want __var set here
+    self.get_logger().info(f&quot;work: var = {self.__var}&quot;)
+    self.get_logger().info(&quot;work OUT !&quot;)
+</code></pre>
+
+<p>And the main will init the node, spin the executor and last call the <code>work</code> method</p>
+
+<pre><code>node = TestCB()  # my node
+
+exe = MultiThreadedExecutor()
+exe.add_node(node)
+exe.spin()
+
+node.get_logger().info(&quot;init done, work now !&quot;)
+node.work()
+
+node.destroy_node()
+rclpy.shutdown()
+</code></pre>
+
+<p>This time the node is stuck right after the init.
+I suspect everything has to be done in callbacks and methods can&#39;t be called by ROS2 design, is that right ?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/146607"></a> on 2023-07-19 03:31:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Looking at the additional info posted, I think your second design more-or-less makes sense. You should not use <code>spin</code> though because that&#39;s intended to move program control to callbacks only, and it only ends when the node shuts down. Instead, you can create the subscription and then in the <code>while self.__var is None</code> loop you can call <code>spin_once</code> on an executor. This will let callbacks run but return control to you afterwards. I don&#39;t think you need a reentrant callback group or a multi-threaded executor in this scenario.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2128"></a> on 2023-07-19 09:51:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for the explanations.
+I tried to spin_once and it worked.
+I&#39;ll work with that on my real case.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/146607">SébastienL</a> on 2023-07-19 10:33:30 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

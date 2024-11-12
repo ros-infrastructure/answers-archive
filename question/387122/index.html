@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Mavros mavcmd 213: unexpected command error with result 0 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387122">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Mavros mavcmd 213: unexpected command error with result 0</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I am trying to use mavcmd 213 from within a Python script. However, I have encountered an unexpected problem. When executing the script, I get the error <code>CMD: Unexpected command 213, result 0</code>. </p>
+
+<p>After reading mavros documentation it seems to me <code>result 0</code> is equal to the command being valid and being executed, which is even more confusing.</p>
+
+<p>Additionally, when I manually enter the command via <code>rosrun mavros mavcmd long 213 &lt;heading&gt; &lt;speed&gt; &lt;absolute&gt; 0 0 0 0 0</code> the command is successfully executed.</p>
+
+<p>Moreover, despite the unexpected command error it seems that the command is actually executed (at the moment I have no access to my engine/rotors to check if they are actually moving), because if the command is not resent in a loop i get the <code>FCU: target not received last 3secs, stopping</code>.</p>
+
+<p>Below I attached a snippet of my Python code that executes the command, maybe something is wrong here:</p>
+
+<pre><code>set_yaw_speed = rospy.ServiceProxy(&#39;mavros/cmd/command&#39;, CommandLong)
+syw = set_yaw_speed(broadcast=1, command=213, confirmation=1, param1=self.course, param2=self.speed, param3=0, param4=0, param5=0, param6=0, param7=0)
+</code></pre>
+
+<p>I left the param3 to 0 intentionally, as its meant to be absolute course. 
+The self.course and self.speed are floats that are attributes of an object, but I tried substituting them manually for a predefined variable, which changed nothing. I can provide bigger part of code if necessary. </p>
+
+<p>I should probably add I am running ROS Lunar with Pixhawk 2.1.  I am running Ubuntu ver 16.04 kernel 4.15.0-142-generic. </p>
+
+<p>I would be much obliged for any help or tips or explanations. Thanks in advance. If any additional information is needed I will be glad to try to provide it.</p>
+
+<p>Added full code as requested by osilva.</p>
+
+<p><strong>Some explanation:</strong>
+Desired course and desired speed are floats with 1 decimal precision. They are read from topic /AC<em>man which is a custom topic to which desired course and speed are published after being calculated by a standalone module written in C#. Mode is also changed by a standalone python script which listens for a string on topic /mode</em>command and executes mavcmd 176 (I can confirm it works, as Pixhawk mode gets changed).</p>
+
+<p><strong>Full code below:</strong></p>
+
+<pre><code>#!/usr/bin/env python
+# - *- coding: utf- 8 - *-
+import rospy
+from hh_1.msg import ac_man
+from std_msgs.msg import Float64
+from mavros_msgs.msg import VFR_HUD 
+from mavros_msgs.srv import CommandLong
+from hh_1.msg import mode_cmd
+
+class AntiCollision():
+    HDG_TOPIC = &#39;/mavros/global_position/compass_hdg&#39; #where to listen for current heading
+    SPD_TOPIC = &#39;/mavros/vfr_hud&#39; #where to listen for current speed
+    AC_TOPIC = &#39;/AC_man&#39; #where to listen for anticollision maneuver
+    COURSE_HYST = 2.0 #course hysteresis for maneuver [deg]
+    SPEED_HYST = 0.3 #speed hysteresis for maneuver [m/s]
+    SERV_TIMEOUT = 10 #service timeout [s]
+
+    def __init__(self):
+        self.current_mode = &#39;AUTO&#39;
+        self.current_course = None
+        self.current_speed = None
+        self.desired_course = None
+        self.desired_speed = None
+        self.course_type = 0 #0 - absolute course, 1 - relative course
+
+    def AC_callback(self, data):
+        &quot;&quot;&quot;Get vehicle desired (new) course and speed&quot;&quot;&quot;
+        self.desired_course = float(data.Course)
+        self.desired_speed = float(data.Speed)
+
+
+    def hdg_callback(self, data):
+        &quot;&quot;&quot;Get vehicle current heading&quot;&quot;&quot;
+        self.current_course = data.data
+
+    def spd_callback(self, data):
+        &quot;&quot;&quot;Get vehicle current speed&quot;&quot;&quot;
+        self.current_speed = data.airspeed
+
+    @property
+    def angle_diff(self):
+        &quot;&quot;&quot;Calculate desired course and current course difference&quot;&quot;&quot;
+        return 180 - abs(abs(self.desired_course - self.current_course) - 180)
+
+    @property
+    def speed_diff(self):
+        &quot;&quot;&quot;Calculate desired speed and current speed difference&quot;&quot;&quot;
+        return abs(self.desired_speed- self.current_speed)
+
+    @property
+    def maneuver_boolean(self):
+        &quot;&quot;&quot;Modify boolean that triggers maneuver&quot;&quot;&quot;
+        if self.angle_diff &gt;= self.COURSE_HYST or self.speed_diff &gt;= self.SPEED_HYST:
+            return True
+        else:
+            return False
+
+    def subscriber(self, topic, message_type, callback):
+        &quot;&quot;&quot;Creates ROS Subscriber&quot;&quot;&quot;
+        rospy.Subscriber(topic, message_type, callback)
+
+    def change_to_guided(self):
+        &quot;&quot;&quot;Set mode to Guided&quot;&quot;&quot; 
+        if self.current_mode != &#39;GUIDED&#39;:
+            mode_msg = mode_cmd()
+            mode_msg.new_mode = &#39;GUIDED&#39;
+        pub_mode.publish(mode_msg)
+            self.current_mode = &#39;GUIDED&#39;
+
+    def change_to_auto(self):
+        &quot;&quot;&quot;Set mode to Auto&quot;&quot;&quot;
+        if self.current_mode != &#39;AUTO&#39;:
+            mode_msg = mode_cmd()
+            mode_msg.new_mode = &#39;AUTO&#39;
+        pub_mode.publish(mode_msg)
+            self.current_mode = &#39;AUTO&#39;
+
+    def do_maneuver(self):
+        &quot;&quot;&quot;Executes maneuver via mavros mavcmd 213 command&quot;&quot;&quot;
+        set_yaw_speed = rospy.ServiceProxy(&#39;mavros/cmd/command&#39;, CommandLong)
+        while self.maneuver_boolean == True:
+            self.change_to_guided()
+            print(&#39;Changing course from {} to {} and speed from {} to {}&#39;.format(self.current_course, self.desired_course,self.current_speed, self.desired_speed))
+            if self.course_type == 0: #absolute course
+                syw = set_yaw_speed(
+                    broadcast=1,command=213,confirmation=1,param1=self.desired_course,
+                    param2=self.desired_speed, param3=self.course_type,
+                    param4=0,param5=0,param6=0,param7=0
+                    )
+            elif self.course_type == 1: #relative course - not yet implemented
+                syw = set_yaw_speed(
+                    broadcast=1,command=213,confirmation=1,param1=self.relative_course,
+                    param2=self.desired_speed, param3=self.course_type,
+                    param4=0,param5=0,param6=0,param7=0
+                    )
+            rospy.sleep(0.5) #command 213 must be executed in loop, sleep value to be tested
+        self.change_to_auto()
+
+#Main module
+if __name__ == &#39;__main__&#39;:
+    try:
+        #Node initialization
+        rospy.init_node(&#39;AC_man&#39;, anonymous = False)
+        #Object (AC maneuver) initialization
+        AntiColl = AntiCollision()
+        #Mode changer
+        pub_mode = rospy.Publisher(&#39;mode_command&#39;, mode_cmd, queue_size=10)
+        #Subscribers
+        AntiColl.subscriber(AntiColl.HDG_TOPIC, Float64, AntiColl.hdg_callback)
+        AntiColl.subscriber(AntiColl.SPD_TOPIC, VFR_HUD, AntiColl.spd_callback) 
+        AntiColl.subscriber(AntiColl.AC_TOPIC, ac_man, AntiColl.AC_callback)
+        #Execute maneuver
+        while True:
+            try:
+                AntiColl.do_maneuver()
+            except:
+                pass
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/85328">ahalic</a> on 2021-09-22 08:57:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Yes please share more code. I’d like to see how you wait for the message for example. Thank you</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-09-23 18:17:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Added full code with some explanation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85328">ahalic</a> on 2021-09-24 01:33:36 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

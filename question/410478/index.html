@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>map_server does not load parameters from file when launched as ComposableNode - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/410478">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>map_server does not load parameters from file when launched as ComposableNode</h2>
+      <div class="question">
+        <p>Hi all,</p>
+
+<p>I&#39;m using ROS2 Humble on Ubuntu 22.04 (WSL) and writing some launch files to bring up Nav2 stack.</p>
+
+<p>I passed a parameter file to map_server but it does not load parameters when launching as ComposableNode. Strangely there&#39;s no problem with other nodes such as amcl.</p>
+
+<p>I&#39;ve found that parameters are loaded correctly when passing</p>
+
+<ul>
+<li>SomeParametersDict to ComposableNode-style map_server</li>
+<li>SomeParameterFile to Node-style map_server</li>
+<li>SomeParametersDict to Node-style map_server</li>
+</ul>
+
+<p>I believe that the issue was fixed by <a href="https://github.com/ros2/launch_ros/pull/259">This PR</a>, so I should have made mistakes in my code, but I cannot find one.</p>
+
+<p>The launch is the following (The container is created by another launch):</p>
+
+<pre><code>from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import LoadComposableNodes, Node
+from launch_ros.descriptions import ComposableNode
+
+
+def generate_launch_description():
+    map_file = LaunchConfiguration(&quot;map_file&quot;)
+    params_file = LaunchConfiguration(&quot;params_file&quot;)
+    use_sim_time = LaunchConfiguration(&quot;use_sim_time&quot;)
+    use_composition = LaunchConfiguration(&quot;use_composition&quot;)
+    container_name = LaunchConfiguration(&quot;container_name&quot;)
+
+    lifecycle_node_names = [&quot;map_server&quot;, &quot;amcl&quot;]
+
+    load_composed_localization_nodes = LoadComposableNodes(
+        condition=IfCondition(use_composition),
+        target_container=container_name,
+        composable_node_descriptions=[
+            ComposableNode(
+                package=&quot;nav2_map_server&quot;,
+                plugin=&quot;nav2_map_server::MapServer&quot;,
+                name=&quot;map_server&quot;,
+                parameters=[
+                    params_file,
+                    {&quot;yaml_filename&quot;: map_file},
+                ],
+            ),
+            ComposableNode(
+                package=&quot;nav2_amcl&quot;,
+                plugin=&quot;nav2_amcl::AmclNode&quot;,
+                name=&quot;amcl&quot;,
+                parameters=[params_file],
+            ),
+            ComposableNode(
+                package=&quot;nav2_lifecycle_manager&quot;,
+                plugin=&quot;nav2_lifecycle_manager::LifecycleManager&quot;,
+                name=&quot;lifecycle_manager_localization&quot;,
+                parameters=[
+                    {
+                        &quot;use_sim_time&quot;: use_sim_time,
+                        &quot;node_names&quot;: lifecycle_node_names,
+                        &quot;autostart&quot;: True,
+                    }
+                ],
+            ),
+        ],
+    )
+
+    load_localization_nodes = GroupAction(
+        condition=UnlessCondition(use_composition),
+        actions=[
+            Node(
+                package=&quot;nav2_map_server&quot;,
+                executable=&quot;map_server&quot;,
+                name=&quot;map_server&quot;,
+                output=&quot;screen&quot;,
+                parameters=[
+                    params_file,
+                    {&quot;yaml_filename&quot;: map_file},
+                ],
+            ),
+            Node(
+                package=&quot;nav2_amcl&quot;,
+                executable=&quot;amcl&quot;,
+                name=&quot;amcl&quot;,
+                output=&quot;screen&quot;,
+                parameters=[params_file],
+            ),
+            Node(
+                package=&quot;nav2_lifecycle_manager&quot;,
+                executable=&quot;lifecycle_manager&quot;,
+                name=&quot;lifecycle_manager_localization&quot;,
+                output=&quot;screen&quot;,
+                parameters=[
+                    {
+                        &quot;use_sim_time&quot;: use_sim_time,
+                        &quot;node_names&quot;: lifecycle_node_names,
+                        &quot;autostart&quot;: True,
+                    }
+                ],
+            ),
+        ],
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                &quot;map_file&quot;, description=&quot;Full path to map yaml file to load&quot;
+            ),
+            DeclareLaunchArgument(
+                &quot;params_file&quot;,
+                description=&quot;Full path to the ROS2 parameters file to use for localization nodes&quot;,
+            ),
+            DeclareLaunchArgument(
+                &quot;use_sim_time&quot;,
+                default_value=&quot;true&quot;,
+                description=&quot;Whether to use simulation (Gazebo) clock&quot;,
+            ),
+            DeclareLaunchArgument(
+                &quot;use_composition&quot;,
+                default_value=&quot;true&quot;,
+                description=&quot;Whether to use composed bringup&quot;,
+            ),
+            DeclareLaunchArgument(
+                &quot;container_name&quot;,
+                default_value=&quot;nav2_container&quot;,
+                description=&quot;Name of container that nodes will load in if use_composition&quot;,
+            ),
+            load_composed_localization_nodes,
+            load_localization_nodes,
+        ]
+    )
+</code></pre>
+
+<p>And the yaml file (whose path is passed to the launch above as &quot;params_file&quot;):</p>
+
+<pre><code>amcl:
+  ros__parameters:
+    use_sim_time: true
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    base_frame_id: base_link
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: map
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 100.0
+    laser_min_range: -1.0
+    laser_model_type: &quot;likelihood_field&quot;
+    max_beams: 60
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: odom
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    resample_interval: 1
+    robot_model_type: &quot;nav2_amcl::DifferentialMotionModel&quot;
+    save_pose_rate: 0.5
+    sigma_hit: 0.2
+    tf_broadcast: true
+    transform_tolerance: 1.0
+    update_min_a: 0.2
+    update_min_d: 0.25
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05
+    scan_topic: slam_lidar/scan
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+
+map_server:
+  ros__parameters:
+    use_sim_time: true
+    topic_name: map
+    frame_id: map
+</code></pre>
+
+<p>Could anyone help me to make it work?</p>
+
+<p>Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/115574">mitukou1109</a> on 2022-12-13 08:16:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

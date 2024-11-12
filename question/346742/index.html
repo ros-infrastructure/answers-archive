@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publishing Odometry in ROS2 - orientation is not reflected in RViz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/346742">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publishing Odometry in ROS2 - orientation is not reflected in RViz</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95068/publishing-odometry-in-ros2-orientation-is-not-reflected-in-rviz">https://robotics.stackexchange.com/questions/95068/publishing-odometry-in-ros2-orientation-is-not-reflected-in-rviz</a>.</p>
+        <p>Hi!<br>
+I&#39;m trying to publish odometry messages based on encoder values coming from motors.<br>
+I&#39;m using ROS2 (Eloquent).<br>
+Odometry messages are published, but the orientation fo the robot is not correct (the arrow is always pointing up in RViz)  </p>
+
+<p>Below are more details.<br>
+Motors are controlled by Arduino which uses Serial port.<br>
+I send desired velocities in mm/s (linear) and radians/s (angular).<br>
+Arduno sends back actual speeds for left and right wheels based on encoder data as comma-separated lines:  </p>
+
+<pre><code>duration_ms,left_velocity_mm_s,right_velocity_mm_s
+</code></pre>
+
+<p>After calculating linear and angular velocities they are very similar to the desired ones.<br>
+For example, when I send <code>0.08</code> m/s linear and <code>0.5</code> r/s angular <code>vx</code> and <code>vth</code> are something like <code>0.086</code> and <code>0.023091</code> when going straingt and 
+<code>left: 0.041, right: 0.119 vth: 0.439</code> when turning left.</p>
+
+<p>The problem is that after launching RViz2 and adding <code>Odometry</code> display I can see that the position of the robot is changing and it follows my commands, but
+the direction is always the same - it&#39;s always pointing up.<br>
+It looks like the robot is moving sideways which it can&#39;t do :)<br>
+As far as I understand it should point in the direction in which robot is pointed.  </p>
+
+<p>What am I missing here?</p>
+
+<p>Here is how it looks in RViz:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15842519887434533.png" alt="image description"></p>
+
+<p>Below is the code, please note that I&#39;m using <code>quaternion_from_euler</code> from <code>transformations</code> library <a href="https://pypi.org/project/transformations/">https://pypi.org/project/transformations/</a>, because I think it&#39;s not packaged with <code>ros2_tf</code>.</p>
+
+<pre><code>odom_pub = node.create_publisher(
+    Odometry, &#39;/odom&#39;, qos_profile=qos_profile_services_default)
+odom_broadcaster = tf2_ros.TransformBroadcaster(node, qos_profile_services_default)
+
+x = 0.0
+y = 0.0
+th = 0.0
+WHEEL_BASE = 0.177
+while True:
+  bytesToRead = ser.inWaiting()
+  if bytesToRead &gt; 0:
+
+    line = str(ser.readline(), &#39;ascii&#39;)
+    parts = line.split(&quot;,&quot;)
+
+    dt = int(parts[0]) / 1000.0 # convert to seconds
+    v_left = float(parts[1]) / 1000.0 # convert to metres from mm
+    v_right = float(parts[2]) / 1000.0
+    vx = (v_right + v_left) / 2.0
+    vy = 0.0
+    vth = (v_right - v_left) / WHEEL_BASE
+
+    delta_x = (vx * cos(th) - vy * sin(th)) * dt
+    delta_y = (vx * sin(th) + vy * cos(th)) * dt
+    delta_th = vth * dt
+
+    x += delta_x
+    y += delta_y
+    th += delta_th
+
+    odom_quat = quaternion_from_euler(0, 0, th)
+    current_time = node.get_clock().now().to_msg()
+
+    t = TransformStamped()
+    t.header.stamp = current_time
+    t.header.frame_id = &quot;odom&quot;
+    t.child_frame_id = &quot;base_link&quot;
+    t.transform.translation.x = x
+    t.transform.translation.y = y
+    t.transform.translation.z = 0.0
+    t.transform.rotation.x = odom_quat[0]
+    t.transform.rotation.y = odom_quat[1]
+    t.transform.rotation.z = odom_quat[2]
+    t.transform.rotation.w = odom_quat[3]
+
+    odom_broadcaster.sendTransform(t)
+
+    odom = Odometry()
+    odom.header.frame_id = &quot;odom&quot;
+    odom.header.stamp = current_time
+
+    # set the position
+    odom.pose.pose.position.x = x
+    odom.pose.pose.position.y = y
+    odom.pose.pose.position.z = 0.0
+    odom.pose.pose.orientation.x = odom_quat[0]
+    odom.pose.pose.orientation.y = odom_quat[1]
+    odom.pose.pose.orientation.z = odom_quat[2]
+    odom.pose.pose.orientation.w = odom_quat[3]
+
+    # set the velocity
+    odom.child_frame_id = &quot;base_link&quot;
+    odom.twist.twist.linear.x = vx
+    odom.twist.twist.linear.y = vy
+    odom.twist.twist.angular.z = vth
+
+    odom_pub.publish(odom)
+
+  time.sleep(.001)
+</code></pre>
+
+<p>Here is an example of the <code>Odometry message</code>:</p>
+
+<pre><code>    header:
+  stamp:
+    sec: 1584244609
+    nanosec: 895687741
+  frame_id: odom
+child_frame_id: base_link
+pose:
+  pose:
+    position:
+      x: 0.6140683483040018
+      y: -2.3255323685351637
+      z: 0.0
+    orientation:
+      x: -0.36651838967766565
+      y: 0.0
+      z: -0.0
+      w: -0.9304108071320383
+  covariance: - all zeroes
+twist:
+  twist:
+    linear:
+      x: 0.08174239999999999
+      y: 0.0
+      z: 0.0
+    angular:
+      x: 0.0
+      y: 0.0
+      z: 0.5080033898305085
+  covariance: - all zeroes
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/51710">Leonti</a> on 2020-03-15 01:02:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<pre><code>orientation:
+  x: -0.36651838967766565
+  y: 0.0
+  z: -0.0
+  w: -0.9304108071320383
+</code></pre>
+</blockquote>
+
+<p>without looking at anything else, this looks fishy.</p>
+
+<p>If I put those values into <a href="https://quaternions.online/">this site</a>, I only get <code>0</code>s, which would correspond to what you are describing.</p>
+
+<p>I&#39;d check whether your calculations are correct.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-15 05:34:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the hint! This made me look into quaternions which led to a &quot;solution&quot; ;)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51710">Leonti</a> on 2020-03-17 07:22:47 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Turns out the problem was this:</p>
+
+<blockquote>
+<p>Below is the code, please note that I&#39;m using quaternion_from_euler from transformations library </p>
+</blockquote>
+
+<p>Even though these libraries cite the same author <code>Christoph Gohlke</code> the code for <code>quaternion_from_euler</code> is actually different.  </p>
+
+<p>Here is the code from the library that I was using:  </p>
+
+<pre><code>try:
+    firstaxis, parity, repetition, frame = _AXES2TUPLE[axes.lower()]
+except (AttributeError, KeyError):
+    _TUPLE2AXES[axes]  # validation
+    firstaxis, parity, repetition, frame = axes
+
+i = firstaxis + 1
+j = _NEXT_AXIS[i+parity-1] + 1
+k = _NEXT_AXIS[i-parity] + 1
+
+if frame:
+    ai, ak = ak, ai
+if parity:
+    aj = -aj
+
+ai /= 2.0
+aj /= 2.0
+ak /= 2.0
+ci = math.cos(ai)
+si = math.sin(ai)
+cj = math.cos(aj)
+sj = math.sin(aj)
+ck = math.cos(ak)
+sk = math.sin(ak)
+cc = ci*ck
+cs = ci*sk
+sc = si*ck
+ss = si*sk
+
+q = numpy.empty((4, ))
+if repetition:
+    q[0] = cj*(cc - ss)
+    q[i] = cj*(cs + sc)
+    q[j] = sj*(cc + ss)
+    q[k] = sj*(cs - sc)
+else:
+    q[0] = cj*cc + sj*ss
+    q[i] = cj*sc - sj*cs
+    q[j] = cj*ss + sj*cc
+    q[k] = cj*cs - sj*sc
+if parity:
+    q[j] *= -1.0
+
+return q
+</code></pre>
+
+<p><a href="https://github.com/malcolmreynolds/transformations/blob/master/transformations/transformations.py#L1174">https://github.com/malcolmreynolds/transformations/blob/master/transformations/transformations.py#L1174</a></p>
+
+<p>And this is the one packaged with ROS1:</p>
+
+<pre><code>try:
+    firstaxis, parity, repetition, frame = _AXES2TUPLE[axes.lower()]
+except (AttributeError, KeyError):
+    _ = _TUPLE2AXES[axes]
+    firstaxis, parity, repetition, frame = axes
+
+i = firstaxis
+j = _NEXT_AXIS[i+parity]
+k = _NEXT_AXIS[i-parity+1]
+
+if frame:
+    ai, ak = ak, ai
+if parity:
+    aj = -aj
+
+ai /= 2.0
+aj /= 2.0
+ak /= 2.0
+ci = math.cos(ai)
+si = math.sin(ai)
+cj = math.cos(aj)
+sj = math.sin(aj)
+ck = math.cos(ak)
+sk = math.sin(ak)
+cc = ci*ck
+cs = ci*sk
+sc = si*ck
+ss = si*sk
+
+quaternion = numpy.empty((4, ), dtype=numpy.float64)
+if repetition:
+    quaternion[i] = cj*(cs + sc)
+    quaternion[j] = sj*(cc + ss)
+    quaternion[k] = sj*(cs - sc)
+    quaternion[3] = cj*(cc - ss)
+else:
+    quaternion[i] = cj*sc - sj*cs
+    quaternion[j] = cj*ss + sj*cc
+    quaternion[k] = cj*cs - sj*sc
+    quaternion[3] = cj*cc + sj*ss
+if parity:
+    quaternion[j] *= -1
+
+return quaternion
+</code></pre>
+
+<p><a href="https://github.com/ros/geometry/blob/hydro-devel/tf/src/tf/transformations.py#L1100">https://github.com/ros/geometry/blob/hydro-devel/tf/src/tf/transformations.py#L1100</a></p>
+
+<p>I just copied <code>transformations.py</code> into my project and now odometry works as expected :)  </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/51710">Leonti</a> on 2020-03-17 06:49:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Seeing as &quot;quaternion from Euler angles&quot; is essentially a mathematical transformation which is either correct or not, it seems strange for one version to work and the other not to work, unless one of them is incorrect.</p>
+
+<p>It would be good to know which one, or what the actual problem is.</p>
+
+<p>Have you considered notifying / asking the author?</p>
+
+<p>The biggest difference in the code above seems to be the ordering of elements in the quaternion, and the explicit declaration of the data type.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-17 06:57:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>My bet would be as you said that it has to do with the ordering - at some point I almost got it working by switching the order of parameters supplied to <code>quaternion_from_euler</code>, it was <code>quaternion_from_euler(th, 0, 0)</code> instead of <code>quaternion_from_euler(0, 0, th)</code>. It almost &quot;worked&quot; in a sense that the arrow started to point in correct directions, but the transform to &quot;base_link&quot; was upside-down.
+I&#39;m sure if I new how to shuffle either parameters or x,y,z,w from the output I could get it working with the original library, but I don&#39;t have enough knowledge about quaternions to do that, so I did what I could - just replaced the library ;)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51710">Leonti</a> on 2020-03-17 07:22:06 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

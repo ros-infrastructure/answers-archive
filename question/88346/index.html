@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>need odometry insight for two wheel robot - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/88346">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>need odometry insight for two wheel robot</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/54656/need-odometry-insight-for-two-wheel-robot">https://robotics.stackexchange.com/questions/54656/need-odometry-insight-for-two-wheel-robot</a>.</p>
+        <p>Updated my odometry: new code follows:  Still robot not following trajectory. Not sure why map is following base_link? odom stays fixed.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/13813457588546627.png" alt="image description"></p>
+
+<pre><code>#include &lt;string&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/transform_broadcaster.h&gt;
+#include &lt;tf2_ros/static_transform_broadcaster.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/TransformStamped.h&gt;
+#include &lt;geometry_msgs/Quaternion.h&gt;
+#include &lt;control_msgs/JointControllerState.h&gt;
+#include &lt;geometry_msgs/Pose.h&gt;
+#include &lt;geometry_msgs/PoseWithCovarianceStamped.h&gt;
+#include &lt;sensor_msgs/JointState.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/time_synchronizer.h&gt;
+
+
+using namespace sensor_msgs;
+using namespace message_filters;
+
+class PublishOdometry
+{
+public:
+  PublishOdometry()
+  {
+     pubOdometry = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 10);
+
+     // Listen and wait for initial pose from nav
+     subInitialPose = n.subscribe(&quot;/initialpose&quot;, 1, &amp;PublishOdometry::handelerInitialPose,this);
+  }
+
+
+void handelerInitialPose(geometry_msgs::PoseWithCovarianceStamped msg)
+{
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  msg.header.stamp;
+     odom_trans.transform.translation.x = msg.pose.pose.position.x;
+     odom_trans.transform.translation.y = msg.pose.pose.position.y;
+     odom_trans.transform.translation.z = msg.pose.pose.position.z;
+     odom_trans.transform.rotation = msg.pose.pose.orientation;
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg.header.stamp;
+     odometry.pose = msg.pose;
+
+     // set starting point
+     theta = msg.pose.pose.orientation.z;
+     x = msg.pose.pose.position.x;
+     y = msg.pose.pose.position.y;
+
+     // publish initial postion
+     odom_broadcaster.sendTransform(odom_trans);
+     pubOdometry.publish(odometry);
+
+     // start sync&#39;d joint state callbacks 
+     j1_sub.reset(new Subscriber&lt;control_msgs::JointControllerState&gt;(n, &quot;/rrbot/joint1_position_controller/state&quot;, 10));
+     j2_sub.reset(new Subscriber&lt;control_msgs::JointControllerState&gt;(n, &quot;/rrbot/joint2_position_controller/state&quot;, 10));
+     sync.reset(new TimeSynchronizer&lt;control_msgs::JointControllerState, control_msgs::JointControllerState&gt;(*j1_sub, *j2_sub, 10));
+     sync-&gt;registerCallback(boost::bind(&amp;PublishOdometry::handelerOdometry, this, _1, _2));
+}
+
+
+void handelerOdometry(const control_msgs::JointControllerStateConstPtr&amp; msg1, const control_msgs::JointControllerStateConstPtr&amp; msg2)
+{
+
+// based on: http://rossum.sourceforge.net/papers/DiffSteer/
+
+     double wheel_track = .21;   //distance between two wheels in meters  : in urdf dist is .3 in sdf it is .16 wheels are .05
+
+     float   j1 = msg1-&gt;process_value;   // values are velocities: using velocity controller:  meters/sec
+     float   j2 = msg2-&gt;process_value;   
+
+     if (msg1-&gt;set_point == 0) j1 =0;
+     if (msg2-&gt;set_point == 0) j2 =0;
+
+     double  dt = msg1-&gt;time_step;                        // elapsed time in seconds
+     float   dx     =   ( ((j1 + j2)*dt ) / 2.0);         // distance in meters
+     float   dtheta =   ( ((j1 - j2)*dt ) / wheel_track);  // rotation
+
+     if (abs(dtheta)&gt;.001) 
+     {
+        x = x + (dx/dtheta)*(dx*sin(theta + dtheta)-sin(theta));                                    
+        y = y - (dx/dtheta)*(dx*cos(theta + dtheta)-cos(theta));  
+        theta = theta + dtheta;                                   
+        theta = fmodf(theta + M_PI, 2*M_PI) - M_PI ; 
+     } 
+     else // straight line dtheta == 0
+     {
+        x = x - dx*cos(theta);
+        y = y + dx*sin(theta);
+     }
+
+
+
+//**************************************************************
+
+     geometry_msgs::Quaternion  quaternion;
+     quaternion.x = 0.0;
+     quaternion.y = 0.0; 
+     quaternion.z = -sin(theta);           
+     quaternion.w = cos(theta);  
+
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  msg1-&gt;header.stamp;
+     odom_trans.transform.translation.x = x;
+     odom_trans.transform.translation.y = y;
+     odom_trans.transform.translation.z = 0;
+     odom_trans.transform.rotation = quaternion;
+
+     odom_broadcaster.sendTransform(odom_trans);
+
+
+     ROS_INFO(&quot;pv1=[%f] pv2=[%f]&quot;,msg1-&gt;process_value, msg2-&gt;process_value);
+     ROS_INFO(&quot;er1=[%f] er2=[%f] &quot;,msg1-&gt;error, msg2-&gt;error);
+     ROS_INFO(&quot;sp1=[%f] sp2=[%f] &quot;,msg1-&gt;set_point, msg2-&gt;set_point);
+     ROS_INFO(&quot;dx =[%f] z=[%f]  w=[%f] theta=[%f]&quot;, dx, quaternion.z, quaternion.w, theta);
+     ROS_INFO(&quot;x =[%e] ,y=[%e]&quot;, x, y);
+//**************************************************************
+
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg1-&gt;header.stamp;
+
+     odometry.pose.pose.position.x  = x;
+     odometry.pose.pose.position.y  = y;
+     odometry.pose.pose.position.z  = 0;
+     odometry.pose.pose.orientation = quaternion;
+     odometry.twist.twist.linear.x  = dx/dt;       // convet back to velocity
+     odometry.twist.twist.linear.y  = 0;
+     odometry.twist.twist.angular.z = dtheta/dt;   // convet back to velocity
+
+     pubOdometry.publish(odometry);              // only seems to confuse orientation 
+
+}
+
+private:
+
+   double x,y;
+   float theta;
+
+   ros::NodeHandle n;
+   ros::Publisher pubOdometry;
+   tf2_ros::TransformBroadcaster odom_broadcaster;
+   ros::Subscriber subInitialPose;
+
+
+   boost::shared_ptr&lt;Subscriber&lt;control_msgs::JointControllerState&gt; &gt; j1_sub;
+   boost::shared_ptr&lt;Subscriber&lt;control_msgs::JointControllerState&gt; &gt; j2_sub;
+   boost::shared_ptr&lt;TimeSynchronizer&lt;control_msgs::JointControllerState, control_msgs::JointControllerState&gt; &gt; sync;
+
+
+};  // Enodof Class
+
+
+
+int main(int argc, char **argv)
+{ 
+  ros::init(argc, argv, &quot;robot_odometry&quot;);
+
+  // publish static latch transformations 
+
+  tf2_ros::StaticTransformBroadcaster static_broadcaster;
+  geometry_msgs::TransformStamped msg;
+
+  msg.header.stamp = ros::Time::now();
+  msg.transform.rotation.x =  0.0;
+  msg.transform.rotation.y =  0.0;
+  msg.transform.rotation.z =  0.0;
+  msg.transform.rotation.w =  1.0;
+
+  msg.header.frame_id = &quot;base_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.1;
+  msg.child_frame_id = &quot;camera_link&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;camera_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.2;
+  msg.child_frame_id = &quot;hokuyo_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;camera_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.3;
+  msg.child_frame_id = &quot;camera_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  PublishOdometry sp;
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Update: the velocity commands are calculated from /cmd_vel from move base. For some reason they are negative as it thinks the robot is facing the wrong way. If it wanted to turn around it would rotate , yes.</p>
+
+<p>I am trying to write a odometry node for a two wheel car running in gazebo. The robot keeps running backward as you can see from the png file i&#39;ve attached. It moves away from the odom frame and at the same time the map frame moves in the oppiste direction (correct direction and the correct forward scanner direction). </p>
+
+<pre><code>class PublishOdometry
+{
+public:
+  PublishOdometry()
+  {
+     pubOdometry = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 10);
+
+     // Listen and wait for initial pose from nav
+     subInitialPose = n.subscribe(&quot;/initialpose&quot;, 1, &amp;PublishOdometry::handelerInitialPose,this);
+  }
+
+
+void handelerInitialPose(geometry_msgs::PoseWithCovarianceStamped msg)
+{
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  msg.header.stamp;
+     odom_trans.transform.translation.x = msg.pose.pose.position.x;
+     odom_trans.transform.translation.y = msg.pose.pose.position.y;
+     odom_trans.transform.translation.z = msg.pose.pose.position.z;
+     odom_trans.transform.rotation = msg.pose.pose.orientation;
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg.header.stamp;
+     odometry.pose = msg.pose;
+
+     // set starting point
+     theta = msg.pose.pose.orientation.z;
+     x =  msg.pose.pose.position.x;
+
+     // publish initial postion
+     odom_broadcaster.sendTransform(odom_trans);
+     pubOdometry.publish(odometry);
+
+     // start sync&#39;d joint state callbacks 
+     j1_sub.reset(new Subscriber&lt;control_msgs::JointControllerState&gt;(n, &quot;/rrbot/joint1_position_controller/state&quot;, 10));
+     j2_sub.reset(new Subscriber&lt;control_msgs::JointControllerState&gt;(n, &quot;/rrbot/joint2_position_controller/state&quot;, 10));
+     sync.reset(new TimeSynchronizer&lt;control_msgs::JointControllerState, control_msgs::JointControllerState&gt;(*j1_sub, *j2_sub, 10));
+     sync-&gt;registerCallback(boost::bind(&amp;PublishOdometry::handelerOdometry, this, _1, _2));
+}
+
+
+void handelerOdometry(const control_msgs::JointControllerStateConstPtr&amp; msg1, const control_msgs::JointControllerStateConstPtr&amp; msg2)
+{
+     double wheel_track = .26;   //distance between two wheels in meters  : in urdf dist is .3 in sdf it is .16 wheels are .05
+
+     float   j1 = msg1-&gt;process_value;     // values are velocities: using velocity controller:  meters/sec
+     float   j2 = msg2-&gt;process_value;   
+
+     double  dt = (msg1-&gt;header.stamp - timeold).toSec();      // elapsed time in seconds
+     timeold = msg1-&gt;header.stamp;  
+
+     float   dx     =   ( ((j1 + j2)) / 2.0) * dt;             // distance in meters
+     float   dtheta =   ( ((j1 - j2)) / wheel_track) * dt;     // rotation???????????????????????????????????
+
+
+     theta = theta + dtheta;                                   // theta and x set on initialpose
+     theta = fmodf(theta + M_PI, 2*M_PI) - M_PI;               // adj to range 
+     x = x + dx;                                               // adj distance to angle
+
+
+//**************************************************************
+
+     geometry_msgs::Quaternion  quaternion;
+     quaternion.x = 0.0;
+     quaternion.y = 0.0; 
+     quaternion.z = -sin(theta);           
+     quaternion.w = -cos(theta);  
+
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  msg1-&gt;header.stamp;
+     odom_trans.transform.translation.x = x;
+     odom_trans.transform.translation.y = 0;
+     odom_trans.transform.translation.z = 0;
+     odom_trans.transform.rotation = quaternion;
+
+     odom_broadcaster.sendTransform(odom_trans);
+
+
+//**************************************************************
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg1-&gt;header.stamp;
+
+     odometry.pose.pose.position.x  = x;
+     odometry.pose.pose.position.y  = 0;
+     odometry.pose.pose.position.z  = 0;
+     odometry.pose.pose.orientation = quaternion;
+     odometry.twist.twist.linear.x  = dx/dt;       // convet back to velocity
+     odometry.twist.twist.linear.y  = 0;
+     odometry.twist.twist.angular.z = dtheta/dt;   // convet back to velocity
+
+     pubOdometry.publish(odometry);             
+
+}
+
+private:
+
+   double x;
+   float theta;
+   ros::Time timeold;
+
+   ros::NodeHandle n;
+   ros::Publisher pubOdometry;
+   tf2_ros::TransformBroadcaster odom_broadcaster;
+   ros::Subscriber subInitialPose;
+
+
+   boost::shared_ptr&lt;Subscriber&lt;control_msgs::JointControllerState&gt; &gt; j1_sub;
+   boost::shared_ptr&lt;Subscriber&lt;control_msgs::JointControllerState&gt; &gt; j2_sub;
+   boost::shared_ptr&lt;TimeSynchronizer&lt;control_msgs::JointControllerState, control_msgs::JointControllerState&gt; &gt; sync;
+
+
+};  // Enodof Class
+
+
+
+int main(int argc, char **argv)
+{ 
+  ros::init(argc, argv, &quot;robot_odometry&quot;);
+
+  // publish static latch transformations 
+
+  tf2_ros::StaticTransformBroadcaster static_broadcaster;
+  geometry_msgs::TransformStamped msg;
+
+  msg.header.stamp = ros::Time::now();
+  msg.transform.rotation.x =  0.0;
+  msg.transform.rotation.y =  0.0;
+  msg.transform.rotation.z =  0.0;
+  msg.transform.rotation.w =  1.0;
+
+  msg.header.frame_id = &quot;base_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.1;
+  msg.child_frame_id = &quot;camera_link&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;camera_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.2;
+  msg.child_frame_id = &quot;hokuyo_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;camera_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.3;
+  msg.child_frame_id = &quot;camera_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  PublishOdometry sp;
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/13811846534066795.png" alt="image description"></p>
+
+        <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-10-07 12:23:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This problem as been reworked and I am now posting it under a new question. I know this is not the best way to do this but there is so much supporting data the problem text gets too long. Rather then replace it I am opening a new question. Hope that is ok.</p>
+
+<p><a href="http://answers.ros.org/question/90316/having-problems-with-my-odometry-code/">http://answers.ros.org/question/90316/having-problems-with-my-odometry-code/</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5119">rnunziata</a> on 2013-10-13 10:53:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

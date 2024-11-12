@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Skid steer robot PID control with DC motors - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/358486">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Skid steer robot PID control with DC motors</h2>
+      <div class="question">
+        <p>I have a skid steer robot where I have four individual DC motors with an H bridge so I can control speed and direction. There are also four quadrature encoders with 6000 ticks per revolution. 
+The motors are 12v and I am controlling them with a 10bit PWM (0 to 1023). First test I did was to raise all wheels and test the minimum value where the wheels start moving, which is around 500. </p>
+
+<p>I am able to measure the current speed of the wheels correctly by using a counter where the quadrature encoder set it to count up or down. Therefore, by reading the current count every 50ms (20Hz), I can measure the current speed:</p>
+
+<pre><code>   encoders_curr.FR = COUNTER_mReadReg(ENC0_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+   encoders_curr.FL = COUNTER_mReadReg(ENC1_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+   encoders_curr.RR = COUNTER_mReadReg(ENC2_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+   encoders_curr.RL = COUNTER_mReadReg(ENC3_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+
+   encoders_diff.FR = encoders_curr.FR - encoders_prev.FR;
+   encoders_diff.FL = encoders_curr.FL - encoders_prev.FL;
+   encoders_diff.RL = encoders_curr.RL - encoders_prev.RL;
+   encoders_diff.RR = encoders_curr.RR - encoders_prev.RR;
+
+   encoders_prev = encoders_curr;
+
+   speed_measured.FR = (2*M_PI*WHEEL_RADIUS*encoders_diff.FR) / (0.05*TICKS);
+   speed_measured.FL = (2*M_PI*WHEEL_RADIUS*encoders_diff.FL) / (0.05*TICKS);
+   speed_measured.RR = (2*M_PI*WHEEL_RADIUS*encoders_diff.RR) / (0.05*TICKS);
+   speed_measured.RL = (2*M_PI*WHEEL_RADIUS*encoders_diff.RL) / (0.05*TICKS);
+</code></pre>
+
+<p>Which I convert to X, Y and Z (geometry_msgs/Twist) with:</p>
+
+<pre><code>   // Inverse Kinematics: http://robotsforroboticists.com/drive-kinematics/
+   kinematics_measured.linear.x = (speed_measured.FR+speed_measured.FL+speed_measured.RR+speed_measured.RL)*(WHEEL_RADIUS/4);
+   kinematics_measured.linear.y = (-speed_measured.FR+speed_measured.FL+speed_measured.RR-speed_measured.RL)*(WHEEL_RADIUS/4);
+   kinematics_measured.angular.z = (-speed_measured.FR+speed_measured.FL-speed_measured.RR+speed_measured.RL)*(WHEEL_RADIUS/(4*(WHEEL_SEPARATION_WIDTH+WHEEL_SEPARATION_LENGTH)));
+</code></pre>
+
+<p>Now for the control part, to set the individual velocities of each of the four wheels, I am using these equations, as my input is linear x, linear Y and angular Z speeds (rad/seg):</p>
+
+<pre><code>   // Forward kinematics: http://robotsforroboticists.com/drive-kinematics/
+   speed_desired.FL = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x-kinematics_desired.linear.y-kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+   speed_desired.FR = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x+kinematics_desired.linear.y+kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+   speed_desired.RL = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x+kinematics_desired.linear.y-kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+   speed_desired.RR = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x-kinematics_desired.linear.y+kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+</code></pre>
+
+<p>The PID function that I have implemented is the following:</p>
+
+<pre><code>float integral=0.0, prev_error=0.0;
+#define dt  0.05    // in seconds
+#define Kp  1
+#define Ki  0
+#define Kd  0
+float pid(float desired, float measured)
+{
+    if(measured&lt;0)
+        measured = (-1)*measured;
+
+    // Calculate error
+    float error = desired-measured;
+
+    // Proportional term
+    float Pout = Kp*error;
+
+    // Integral term
+    integral += error*dt;
+    float Iout = Ki*integral;
+
+    // Derivate term
+    float derivate = (error-prev_error)/dt;
+    float Dout = Kd*derivate;
+
+    return (Pout+Iout+Dout);
+}
+</code></pre>
+
+<p>So, after measuring the current speed, I can call it to obtain the speed I need to set the <code>duty</code> of each motor.</p>
+
+<p>My questions:</p>
+
+<ol>
+<li>The sign of the velocity indicates the direction of rotation (clockwise=forward, counterclockwise=backwards). Do I need to pass to the pid function the desired velocity as a signed or unsigned value?</li>
+<li>What should I do with velocity values that would mean a lower pwm so the motor will not spin?</li>
+<li>To convert from linear velocity that the pid will dictate to duty cycle, I am calculating the equation that passes over two points. For this, I measured the speeds at the <strong>minimum and maximum</strong> duties where the wheels rotation (500 and 1023) giving (0.81 and 1.03). I use these numbers to get the equation: <code>p = 511 + (uint16_t)(((1023-511)/(1.02-0.8))*(v-0.8));</code>. Should I consider that the speed can be negative to compute a &quot;negative&quot; duty which will later represent only the direction to set for the motors? If so, it means that I have to consider that the two points for the equation are (-1023, -1.03) and (1023, 1.03)?</li>
+<li>As I have four motors, they all show different velocities. So, to simplify the process, even thought there will be 4 PIDs, I got for the lowest duty cycle the maximum velocity value of all motors and for the highest duty cycle the lowest velocity of all motors. Would that be correct?</li>
+<li>Do I need to include the speed limits for the PID?</li>
+<li>Considering the signs, won&#39;t be a problem if the measured speed is higher than the desired, the pid would compute a negative value and the fact that the rotation switches directions might cause an issue, or not?</li>
+</ol>
+
+<p>Thank you for the help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/23277">Ariel</a> on 2020-08-01 10:04:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Lots of questions:  but first a couple comments on your code.</p>
+
+<ul>
+<li>You never update value to previous_error so it will always be zero.</li>
+<li>I&#39;m not sure why you take the inverse of measured when negative. You do not want to do that...unless your robot can only go forward.</li>
+<li>You want to cap the output of the PID algo with limits(positive and negative) to allow you to set max torque or speed in the motors. This is important to have when you&#39;re tuning your robot initially and then later when you have encoder failures some day so robot has a limited amount of fit it can throw.</li>
+<li>You should put a cap on your integral term(positive and negative) to prevent what is called integral windup. Google it to see why.</li>
+<li>I cannot say it will not work, but I have no experience with PIDs loops on DC motors updating at anything less than 1000Hz. Your PID loop should operate above the well above bandwidth of your motor/drive combo. On large induction motors 20Hz seems fine, but on a small robot with DC motors I can&#39;t say. I&#39;m sure the world-interweb will tell you if 20Hz can work. You&#39;ll have to tune the PID to be fairly un-responsive at 20Hz.</li>
+</ul>
+
+<p>.</p>
+
+<pre><code>The sign of the velocity indicates the direction of rotation (clockwise=forward, counterclockwise=backwards). Do I need to pass to the pid function the desired velocity as a signed or unsigned value?
+</code></pre>
+
+<p>Yes. Use the PID algo as the full control without splitting out the forward/reverse to some other code. At the point that you send PID output to PWM controller, you want to check if value is positive or negative and set the direction on the H-Bridge accordingly and use ABS(PID) to the H-Bridge. </p>
+
+<pre><code>What should I do with velocity values that would mean a lower pwm so the motor will not spin?
+</code></pre>
+
+<p>You should not have to worry about this. PID algo will do what is required to make motor move when it should and not when it should not.</p>
+
+<pre><code>To convert from linear velocity that the pid will dictate to duty cycle, I am calculating the equation that passes over two points. For this, I measured the speeds at the minimum and maximum duties where the wheels rotation (500 and 1023) giving (0.81 and 1.03). I use these numbers to get the equation: p = 511 + (uint16_t)(((1023-511)/(1.02-0.8))*(v-0.8));. Should I consider that the speed can be negative to compute a &quot;negative&quot; duty which will later represent only the direction to set for the motors? If so, it means that I have to consider that the two points for the equation are (-1023, -1.03) and (1023, 1.03)?
+</code></pre>
+
+<p>I understand you&#39;re trying to calculate your PID coefficients, but unless this is a school assignment do not bother. Code the algo and set your coefficients through manual tuning. The positive and negative are part of a continuum. You do not need to treat them differently.</p>
+
+<pre><code>As I have four motors, they all show different velocities. So, to simplify the process, even thought there will be 4 PIDs, I got for the lowest duty cycle the maximum velocity value of all motors and for the highest duty cycle the lowest velocity of all motors. Would that be correct?
+</code></pre>
+
+<p>I think you&#39;re asking if you need to tune each motor control loop differently. Maybe but you should try it with a common setup first. The PID should keep all motors running together so unless something is really off, you&#39;ll only notice a difference when accelerating or decelerating and even then a properly tuned system should do a good job hiding mechanical differences.</p>
+
+<pre><code>Do I need to include the speed limits for the PID?
+Considering the signs, won&#39;t be a problem if the measured speed is higher than the desired, the pid would compute a negative value and the fact that the rotation switches directions might cause an issue, or not?
+</code></pre>
+
+<p>See my comments above. PID will not compute a negative sign instantaneously if speed goes a touch above desired because you have an integral term. That is the very point of the integral term...to smooth the output.. but even if you are running only the P part of PID, a short (think one PID loop cycle) negative pulse will not reverse a motor. It will cause it to slow down a tiny amount. One the next cycle or two the error will be taken care of and the output will be positive again without the motor ever having reacted hardy at all...unless of course your PID is running at 20Hz and then who knows what will happen :)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26871">billy</a> on 2020-08-01 15:48:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Thank you @billy for the help.</p>
+
+<p>I removed all the checking whether it is negative or not and send the measured values as they are to the pid function. The return of it, I check for maximum values. To be on the safe side, this is the maximum I measured, right?</p>
+
+<p>Here is the &quot;clean&quot; code:</p>
+
+<pre><code>   while(1)
+    {
+       /***** Desired (input) *****/
+       // Forward kinematics: http://robotsforroboticists.com/drive-kinematics/
+       speed_desired.FL = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x-kinematics_desired.linear.y-kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+       speed_desired.FR = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x+kinematics_desired.linear.y+kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+       speed_desired.RL = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x+kinematics_desired.linear.y-kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+       speed_desired.RR = (1/WHEEL_RADIUS)*(kinematics_desired.linear.x-kinematics_desired.linear.y+kinematics_desired.angular.z*(WHEEL_SEPARATION_LENGTH+WHEEL_SEPARATION_WIDTH));
+
+       /***** Measured (output) *****/
+       encoders_curr.FR = COUNTER_mReadReg(ENC0_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+       encoders_curr.FL = COUNTER_mReadReg(ENC1_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+       encoders_curr.RR = COUNTER_mReadReg(ENC2_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+       encoders_curr.RL = COUNTER_mReadReg(ENC3_BASEADDR, COUNTER_S00_AXI_SLV_REG1_OFFSET);
+
+       encoders_diff.FR = encoders_curr.FR - encoders_prev.FR;
+       encoders_diff.FL = encoders_curr.FL - encoders_prev.FL;
+       encoders_diff.RL = encoders_curr.RL - encoders_prev.RL;
+       encoders_diff.RR = encoders_curr.RR - encoders_prev.RR;
+
+       encoders_prev = encoders_curr;
+
+       speed_measured.FR = (2*M_PI*WHEEL_RADIUS*encoders_diff.FR) / (0.05*TICKS);
+       speed_measured.FL = (2*M_PI*WHEEL_RADIUS*encoders_diff.FL) / (0.05*TICKS);
+       speed_measured.RR = (2*M_PI*WHEEL_RADIUS*encoders_diff.RR) / (0.05*TICKS);
+       speed_measured.RL = (2*M_PI*WHEEL_RADIUS*encoders_diff.RL) / (0.05*TICKS);
+
+       /***** PID *****/
+       speed_pid.FR = pid(speed_desired.FR, speed_measured.FR);
+       speed_pid.FL = pid(speed_desired.FL, speed_measured.FL);
+       speed_pid.RR = pid(speed_desired.RR, speed_measured.RR);
+       speed_pid.RL = pid(speed_desired.RL, speed_measured.RL);
+
+       /***** Convert speed to duty cycle *****/
+       duties.FL = computeDuty(abs(speed_pid.FL));
+       duties.FR = computeDuty(abs(speed_pid.FR));
+       duties.RL = computeDuty(abs(speed_pid.RL));
+       duties.RR = computeDuty(abs(speed_pid.RR));
+
+       /***** Set PID&#39;s speeds *****/
+       if(speed_pid.FL&gt;=0)
+           PWM_mWriteReg(PWM_BASEADDR, FLM, ((CLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.FL));
+       else
+           PWM_mWriteReg(PWM_BASEADDR, FLM, ((COUNTERCLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.FL));
+
+       if(speed_pid.FR&gt;=0)
+           PWM_mWriteReg(PWM_BASEADDR, FRM, ((CLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.FR));
+       else
+           PWM_mWriteReg(PWM_BASEADDR, FRM, ((COUNTERCLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.FR));
+
+       if(speed_pid.RL&gt;=0)
+           PWM_mWriteReg(PWM_BASEADDR, RLM, ((CLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.RL));
+       else
+           PWM_mWriteReg(PWM_BASEADDR, RLM, ((COUNTERCLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.RL));
+
+       if(speed_pid.RR&gt;=0)
+           PWM_mWriteReg(PWM_BASEADDR, RRM, ((CLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.RR));
+       else
+           PWM_mWriteReg(PWM_BASEADDR, RRM, ((COUNTERCLOCKWISE&lt;&lt;11) | (ENABLE&lt;&lt;10) | duties.RR));
+
+       printf(&quot;FL: desired-measured = %.3f - %.3f = error = %.3f --&gt; set = %.3f (duty: %d)\n&quot;, speed_desired.FL, speed_measured.FL, speed_desired.FL - speed_measured.FL, speed_pid.FL, duties.FL);
+       printf(&quot;FR: desired-measured = %.3f - %.3f = error = %.3f --&gt; set = %.3f (duty: %d)\n&quot;, speed_desired.FR, speed_measured.FR, speed_desired.FR - speed_measured.FR, speed_pid.FR, duties.FR);
+       printf(&quot;RL: desired-measured = %.3f - %.3f = error = %.3f --&gt; set = %.3f (duty: %d)\n&quot;, speed_desired.RL, speed_measured.RL, speed_desired.RL - speed_measured.RL, speed_pid.RL, duties.RL);
+       printf(&quot;RR: desired-measured = %.3f - %.3f = error = %.3f --&gt; set = %.3f (duty: %d)\n&quot;, speed_desired.RR, speed_measured.RR, speed_desired.RR - speed_measured.RR, speed_pid.RR, duties.RR);
+
+       // Inverse Kinematics: http://robotsforroboticists.com/drive-kinematics/
+       kinematics_measured.linear.x = (speed_measured.FR+speed_measured.FL+speed_measured.RR+speed_measured.RL)*(WHEEL_RADIUS/4);
+       kinematics_measured.linear.y = (-speed_measured.FR+speed_measured.FL+speed_measured.RR-speed_measured.RL)*(WHEEL_RADIUS/4);
+       kinematics_measured.angular.z = (-speed_measured.FR+speed_measured.FL-speed_measured.RR+speed_measured.RL)*(WHEEL_RADIUS/(4*(WHEEL_SEPARATION_WIDTH+WHEEL_SEPARATION_LENGTH)));
+
+       printf(&quot;X: %.4f -Y: %.4f - Z: %.4f\n\n&quot;, kinematics_measured.linear.x, kinematics_measured.linear.y, kinematics_measured.angular.z);
+
+       usleep(1000);    // 1khz for PID to work properly
+}
+</code></pre>
+
+<p>And the functions:</p>
+
+<pre><code>uint16_t computeDuty(float v)
+{
+    uint16_t p;
+
+    if(v&gt;1.02)
+        v=1.02; // Maximum measured speed with duty=1023
+
+    return ((uint16_t) ((1023/1.02)*v));
+}
+
+
+float integral=0.0, prev_error=0.0;
+#define dt  0.05    // in seconds
+#define Kp  10
+#define Ki  0
+#define Kd  0
+float pid(float desired, float measured)
+{
+    float pid;
+
+    // Calculate error
+    float error = desired-measured;
+
+    // Proportional term
+    float Pout = Kp*error;
+
+    // Integral term
+    integral += error*dt;
+    float Iout = Ki*integral;
+
+    // Derivate term
+    float derivate = (error-prev_error)/dt;
+    float Dout = Kd*derivate;
+    prev_error = error;
+
+    pid = Pout+Iout+Dout;
+
+    if(pid&gt;0)
+        if(pid&gt;1.02)    //Maximum measured speed
+            return 1.02;
+        else
+            return pid;
+    else
+        if(pid&lt;-1.02)
+            return (-1.02);
+        else
+            return pid;
+}
+
+float abs(float v)
+{
+    if(v&lt;0)
+        return ((-1)*v);
+    else
+        return v;
+}
+</code></pre>
+
+<p>What I am missing is how should I limit the integral part of the pid? How should I determine the limits? Are they also the maximum values measured?</p>
+
+<p>Thanks for the help.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/23277">Ariel</a> on 2020-08-03 05:36:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Regarding the on the PID and integrators, they are different purpose. </p>
+
+<ul>
+<li>The PID limit is limit the torque or speed getting too high. As example, I had an outdoor robot get away from me and it took off and ran into the lawn mower and flip it up in the air like a bullfighter getting flung by a bull. Both the lawnmower and robot survived, but what if that had been a person or animal getting hit and injured? Another small robot indoors absolutely lost it&#39;s mind and ran into the wall faster than I thought it could go.  Build in a limit unless you know the robot is physically incapable of doing something too hard or too fast to cause an issue. Then make sure the code records anytime that limit is hit so you&#39;re aware in case that limit is getting hit during normal operation and needs to change.</li>
+<li>For integral windup - you&#39;ll have to decide if you want to include and what value, but have code record hitting limit.</li>
+<li>Don&#39;t add answer to your own question - upsets the moderators.</li>
+</ul>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-08-04 01:19:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

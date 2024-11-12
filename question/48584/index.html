@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscriber callback isn't invoked - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/48584">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscriber callback isn't invoked</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/45881/subscriber-callback-isnt-invoked">https://robotics.stackexchange.com/questions/45881/subscriber-callback-isnt-invoked</a>.</p>
+        <p>I&#39;m currently rewriting this gazebo controller plugin to apply additional forces to a link of my model. My goal is to simulate the flight behaviour of a indoor blimp at low velocity. I tried to wrap the computations of the additional mechanical forces and moments and the subscription of the control input (which is at the moment some input from the keyboard, just for testing purposes) in one class. I tried to keep the example as tight as possible:</p>
+
+<pre><code>namespace gazebo
+{
+
+class Blimp_FlightMechanics : public ModelPlugin
+{
+  public: Blimp_FlightMechanics()
+  {
+        this-&gt;wrench_msg_.force.x = 0;
+        this-&gt;wrench_msg_.force.y = 0;
+        this-&gt;wrench_msg_.force.z = 0;
+        this-&gt;wrench_msg_.torque.x = 0;
+        this-&gt;wrench_msg_.torque.y = 0;
+        this-&gt;wrench_msg_.torque.z = 0;
+  };
+  public: virtual ~Blimp_FlightMechanics()
+  {
+    event::Events::DisconnectWorldUpdateStart(this-&gt;update_connection_);    
+        this-&gt;queue_.clear();
+        this-&gt;queue_.disable();
+        this-&gt;rosnode_-&gt;shutdown();
+        delete this-&gt;rosnode_;      
+  };
+protected: void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
+{
+// Load data from xml file
+  if (!ros::isInitialized())
+    return;
+  this-&gt;rosnode_ = new ros::NodeHandle(this-&gt;robot_namespace_);
+
+  ros::SubscribeOptions so = ros::SubscribeOptions::create&lt;geometry_msgs::Wrench&gt;(
+    this-&gt;topic_name_,1,
+    boost::bind( &amp;Blimp_FlightMechanics::UpdateObjectForce,this,_1),
+    ros::VoidPtr(), &amp;this-&gt;queue_);
+  this-&gt;sub_ = this-&gt;rosnode_-&gt;subscribe(so);
+
+  this-&gt;update_connection_ = event::Events::ConnectWorldUpdateStart(
+      boost::bind(&amp;Blimp_FlightMechanics::UpdateChild, this));
+}
+
+  protected: virtual void UpdateChild()
+  {
+this-&gt;lock_.lock();
+    math::Vector3 force_sum = math::Vector3(0,0,0);
+    math::Vector3 torque_sum = math::Vector3(0,0,0);
+
+[Do computations of forces and torque here]
+
+    this-&gt;link_-&gt;SetForce(force_sum);
+    this-&gt;link_-&gt;SetTorque(torque_sum);
+        this-&gt;lock_.unlock();
+  };
+   // this is the crucial part: although the callback is set above, it will not be called within the simulation; for debugging, I juse &quot;ROS_INFO()&quot;, but the call here is never executed
+    private: void UpdateObjectForce(const geometry_msgs::Wrench::ConstPtr&amp; _msg)
+    {
+        this-&gt;wrench_msg_.force.x = _msg-&gt;force.x;
+        this-&gt;wrench_msg_.force.y = _msg-&gt;force.y;
+        this-&gt;wrench_msg_.force.z = _msg-&gt;force.z;
+        this-&gt;wrench_msg_.torque.x = _msg-&gt;torque.x;
+        this-&gt;wrench_msg_.torque.y = _msg-&gt;torque.y;
+        this-&gt;wrench_msg_.torque.z = _msg-&gt;torque.z;
+        ROS_INFO(&quot;F-Ctrl: [%g %g %g], T-Ctrl: [%g %g %g]&quot;,this-&gt;wrench_msg_.force.x,this-&gt;wrench_msg_.force.y,this-&gt;wrench_msg_.force.z,this-&gt;wrench_msg_.torque.x,this-&gt;wrench_msg_.torque.y,this-&gt;wrench_msg_.torque.z);
+    }
+}
+GZ_REGISTER_MODEL_PLUGIN(Blimp_FlightMechanics);
+</code></pre>
+
+<p>I also tried to keep the basic tutorials for subscribers at the wiki page in mind.
+At runtime, I execute my tele-operating (toy) keybord input programm and made a check using &quot;rostopic info force1&quot;, with the following output:</p>
+
+<pre><code>Type: geometry_msgs/Wrench
+
+Publishers: 
+ * /talker (&lt;adress&gt;)
+
+Subscribers: 
+ * /gazebo (&lt;adress&gt;)
+</code></pre>
+
+<p>which seems feasible. I also receive messages, using &quot;rostopic echo force1&quot;. Anybody has a clue or do I forget something?</p>
+
+<p>EDIT: Problem was solved. For the subscriber, I used:</p>
+
+<pre><code>this-&gt;sub_ = this-&gt;rosnode_-&gt;subscribe&lt;geometry_msgs::Wrench&gt;(this-&gt;topic_name_, 1,boost::bind(&amp;Blimp_FlightMechanics::UpdateObjectForce,this,_1));
+</code></pre>
+
+<p>and the callbacks are executed as expected, when a new message is published. Thanks to Lorenz.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3524">FTrommsdorff</a> on 2012-11-19 05:33:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@Lorenz: Thank you for the reference about the track_object. But I wonder, why many examples of controllers are using the SubscriberOptions the same way? I try to figure out the difference between them and my code, but until now, I didn&#39;t find the crucial point.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3524">FTrommsdorff</a> on 2012-11-19 22:48:47 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I would guess the problem is the temporary object you use for the <code>tracked_object</code> parameter in the SubscriberOptions. It will go out of scope immediately which will cause your subscriber to be destroyed right after creation.</p>
+
+<p>I would not suggest to use the version of subscribe that takes an instance of SubscriberOptions. Instead, better use one of the higher-level functions. If you need to use a different callback queue, set it for the complete NodeHandle if possible. See <a href="http://ros.org/wiki/roscpp/Overview/Callbacks%20and%20Spinning">here</a> for more info.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21">Lorenz</a> on 2012-11-19 06:27:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

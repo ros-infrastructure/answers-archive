@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Exporting plugins to nav2. How to? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/403671">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Exporting plugins to nav2. How to?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102107/exporting-plugins-to-nav2-how-to">https://robotics.stackexchange.com/questions/102107/exporting-plugins-to-nav2-how-to</a>.</p>
+        <p>I want to write a custom local planner and a custom recovery. I have made an ament_cmake package, written the code in .cpp files with .h files next to them. It compiles fine. Here&#39;s the setup.</p>
+
+<pre><code>./src/prepare_for_path.h
+./src/prepare_for_path.cpp
+./src/rpp_controller.h
+./src/rpp_controller.cpp
+./CMakeLists.txt
+./package.xml
+./plugins.xml
+</code></pre>
+
+<p>rpp_controller.h:</p>
+
+<pre><code>...
+namespace plugins
+{
+class RPPController : public nav2_core::Controller
+...
+</code></pre>
+
+<p>rpp_controller.cpp:</p>
+
+<pre><code>...
+#include &quot;pluginlib/class_list_macros.hpp&quot;
+PLUGINLIB_EXPORT_CLASS(plugins::RPPController, nav2_core::Controller)
+</code></pre>
+
+<p>prepare<em>for</em>path.h:</p>
+
+<pre><code>...
+namespace plugins 
+{
+class PrepareForPath : public nav2_recoveries::Recovery&lt;SomeRecoveryType&gt;
+...
+</code></pre>
+
+<p>prepare<em>for</em>path.cpp:</p>
+
+<pre><code>...
+#include &quot;pluginlib/class_list_macros.hpp&quot;
+PLUGINLIB_EXPORT_CLASS(plugins::PrepareForPath, nav2_core::Recovery)
+</code></pre>
+
+<p>plugins.xml:</p>
+
+<pre><code>&lt;class_libraries&gt;
+    &lt;library path=&quot;prepare_for_path&quot;&gt;
+        &lt;class name=&quot;plugins/PrepareForPath&quot; type=&quot;plugins::PrepareForPath&quot; base_class_type=&quot;nav2_core::Recovery&quot;&gt;
+            &lt;description&gt;This prepares the robot to run a path.&lt;/description&gt;
+        &lt;/class&gt;
+    &lt;/library&gt;
+    &lt;library path=&quot;rpp_controller&quot;&gt;
+        &lt;class name=&quot;plugins/RPPController&quot; type=&quot;plugins::RPPController&quot; base_class_type=&quot;nav2_core::Controller&quot;&gt;
+            &lt;description&gt;Regulated pure pursuit controller &lt;/description&gt;
+        &lt;/class&gt;
+    &lt;/library&gt;
+&lt;/class_libraries&gt;
+</code></pre>
+
+<p>CMakeLists.txt: (select bits)</p>
+
+<pre><code>set(controller_name rpp_controller)
+set(prepare_name prepare_for_path)
+
+add_library(${controller_name} SHARED src/${controller_name}.cpp)
+add_library(${prepare_name} SHARED src/${prepare_name}.cpp)
+
+ament_target_dependencies(${controller_name} ${controller_deps})
+ament_target_dependencies(${prepare_name} ${prepare_deps})
+
+pluginlib_export_plugin_description_file(nav2_core plugins.xml)
+
+install(TARGETS ${controller_name} ${prepare_name}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(FILES plugins.xml
+  DESTINATION share/{PROJECT_NAME}
+)
+
+ament_export_libraries(
+  ${controller_name}
+  ${prepare_name}
+)
+
+ament_package()
+</code></pre>
+
+<p>Unsure what to write in package.xml, it seems to make no difference so I&#39;m excluding it for brevity. Tell me if this is incorrect.</p>
+
+<p>Meanwhile, launching the nav2 stack with some recovery params:</p>
+
+<pre><code>recoveries_server:
+  ros__parameters:
+    ...
+    recovery_plugins: [..., &quot;prepare&quot;]
+    prepare:
+      plugin: &quot;plugins/PrepareForPath&quot;
+</code></pre>
+
+<p>Controller params:</p>
+
+<pre><code>controller_server:
+  ros__parameters:
+    ...
+    controller_plugins: [&quot;FollowPath&quot;]
+    FollowPath:
+      plugin: plugins/RPPController
+</code></pre>
+
+<p>Launch output:</p>
+
+<pre><code>...
+[controller_server-1]: Created controller : FollowPath of type plugins/RPPController
+[controller_server-1]: Controller Server has FollowPath  controllers available.
+...
+[recoveries_server-3]: Creating recovery plugin prepare of type plugins/PrepareForPath
+[recoveries_server-3]: Failed to create recovery prepare of type plugins/PrepareForPath. Exception: Failed to load library /hugo_ws/install/plugins/lib/libprepare_for_path.so. Make sure that you are calling the PLUGINLIB_EXPORT_CLASS macro in the library code, and that names are consistent between this macro and your XML. Error string: Could not load library LoadLibrary error: /hugo_ws/install/plugins/lib/libprepare_for_path.so: undefined symbol: _ZTVN13plugins14PrepareForPathE, at /opt/ros/foxy/src/rcutils/src/shared_library.c:84
+</code></pre>
+
+<p>And then, it crashes. Now, for some questions.
+How come the local planner is exported correctly, while the recovery is not? They look identically treated to me. </p>
+
+<p>Pluginlib is extremely opaque to me - how can I view what plugins are available? In general, how do I go about troubleshooting something like this? </p>
+
+<p>I have been <a href="https://navigation.ros.org/plugin_tutorials/docs/writing_new_behavior_plugin.html">following tutorials</a> but I can&#39;t ever be sure about which major version these are working with. I reverted back to comparing to <a href="https://github.com/ros-planning/navigation2/tree/foxy-devel/nav2_recoveries">the github repo</a>, which should work, but even that doesn&#39;t work. </p>
+
+        <div class="owner"><p>Asked by <a href="/users/79869">Per Edwardsson</a> on 2022-07-12 04:04:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Turned out to be that I had declared a destructor but not implemented it. </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/79869">Per Edwardsson</a> on 2022-07-12 06:30:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

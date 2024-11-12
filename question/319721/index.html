@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Asynchronous message filter does not subscribe to remapped nodelet topics - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/319721">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Asynchronous message filter does not subscribe to remapped nodelet topics</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91143/asynchronous-message-filter-does-not-subscribe-to-remapped-nodelet-topics">https://robotics.stackexchange.com/questions/91143/asynchronous-message-filter-does-not-subscribe-to-remapped-nodelet-topics</a>.</p>
+        <p>I&#39;m using a custom made package that uses <code>nodelet</code>s for RGBD image processing. The end of the processing pipeline is a <code>nodelet</code> called <code>ObjectRecognitionNodelet</code>, which publishes to the topic <code>/camX/object_rec/output_objects</code> (where <code>camX</code> is either <code>cam1</code>, <code>cam2</code> or <code>cam3</code>, as I launch three processing pipelines).</p>
+
+<p>My goal is to create a node that subscribes to the three output topics and processes the objects&#39; data. For that I wrote a <code>DispatcherNode</code> that uses the <code>message_filters</code> package for synchronizing the messages of the three topics. However, when I run <strong>the node</strong> it goes through the code but <strong>does not subscribe</strong> to anything. Below are the relevant code excerpts to understand the question. Am I missing something?</p>
+
+<hr>
+
+<p><strong>ObjectRecognitionNode - publisher</strong> (wrapped by a Nodelet class to launch it as a <code>nodelet</code>)</p>
+
+<pre><code>ObjectRecognitionNode::ObjectRecognitionNode(ros::NodeHandle nh,
+                        ros::NodeHandle private_nh)
+{
+    this-&gt;nh_ = nh;
+    this-&gt;private_nh_ = private_nh;
+    this-&gt;private_nh_.getParam(&quot;cam_name&quot;, this-&gt;cam_);
+    this-&gt;node_topic_ns_ = &quot;/&quot; + this-&gt;cam_ + &quot;/object_rec&quot;;
+    [...]
+    this-&gt;initializePublishers();
+    [...]
+}
+
+void
+ObjectRecognitionNode::initializePublishers()
+{
+    this-&gt;objects_publisher_ = this-&gt;nh_.advertise&lt;scene_msgs::ObjectArray&gt;(this-&gt;node_topic_ns_ + &quot;/output_objects&quot;, 5);
+}
+</code></pre>
+
+<p>output from <code>rostopic list | grep object_rec</code></p>
+
+<pre><code>/cam1/object_rec/output_objects
+/cam1/object_recognition/parameter_descriptions
+/cam1/object_recognition/parameter_updates
+/cam2/object_rec/output_objects
+/cam2/object_recognition/parameter_descriptions
+/cam2/object_recognition/parameter_updates
+/cam3/object_rec/output_objects
+/cam3/object_recognition/parameter_descriptions
+/cam3/object_recognition/parameter_updates
+</code></pre>
+
+<hr>
+
+<p><strong>DispatcherNode - subscriber</strong></p>
+
+<p><em>header</em></p>
+
+<pre><code>#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/time_synchronizer.h&gt;
+#include &lt;message_filters/sync_policies/approximate_time.h&gt;
+[...]
+namespace objrecog_dispatcher
+{
+class DispatcherNode
+{
+    public:
+        DispatcherNode(ros::NodeHandle nh,
+                ros::NodeHandle private_nh);
+        [...]
+    private:
+        [...]
+        typedef message_filters::sync_policies::ApproximateTime&lt;scene_msgs::ObjectArray, scene_msgs::ObjectArray, scene_msgs::ObjectArray&gt; MyApproxSyncPolicy;
+        [...]
+        void
+        inputCallback(const scene_msgs::ObjectArray::ConstPtr &amp; cam1_objects,
+                const scene_msgs::ObjectArray::ConstPtr &amp; cam2_objects,
+                const scene_msgs::ObjectArray::ConstPtr &amp; cam3_objects);
+        [...]
+        void
+        initializeSubscribers();
+        [...]
+        std::string node_topic_ns_;
+        [...]
+        ros::NodeHandle nh_;
+        ros::NodeHandle private_nh_;
+        [...]
+        message_filters::Synchronizer&lt;MyApproxSyncPolicy&gt; * synchronizer_;
+        message_filters::Subscriber&lt;scene_msgs::ObjectArray&gt; cam1_objects_subscriber_;
+        message_filters::Subscriber&lt;scene_msgs::ObjectArray&gt; cam2_objects_subscriber_;
+        message_filters::Subscriber&lt;scene_msgs::ObjectArray&gt; cam3_objects_subscriber_;
+        [...]
+}; // class DispatcherNode
+} // namespace objrecog_dispatcher
+</code></pre>
+
+<p><em>source</em></p>
+
+<pre><code>namespace objrecog_dispatcher
+{
+DispatcherNode::DispatcherNode(ros::NodeHandle nh,
+                ros::NodeHandle private_nh)
+{
+    this-&gt;nh_ = nh;
+    this-&gt;private_nh_ = private_nh;
+    this-&gt;node_topic_ns_ = &quot;dispatcher&quot;;
+    [...]
+    this-&gt;initializeSubscribers();
+    [...]
+    ROS_INFO(&quot;Dispatcher created&quot;);
+}
+
+[...]
+
+void
+DispatcherNode::initializeSubscribers()
+{
+    // Subscribe
+    this-&gt;cam1_objects_subscriber_.subscribe(this-&gt;nh_, this-&gt;node_topic_ns_ + &quot;/input_objects_cam1&quot;, 5);
+    this-&gt;cam2_objects_subscriber_.subscribe(this-&gt;nh_, this-&gt;node_topic_ns_ + &quot;/input_objects_cam2&quot;, 5);
+    this-&gt;cam3_objects_subscriber_.subscribe(this-&gt;nh_, this-&gt;node_topic_ns_ + &quot;/input_objects_cam3&quot;, 5);
+    // Initialize synchronizer
+    this-&gt;synchronizer_ = new message_filters::Synchronizer&lt;MyApproxSyncPolicy&gt;(MyApproxSyncPolicy(5), this-&gt;cam1_objects_subscriber_, this-&gt;cam2_objects_subscriber_, this-&gt;cam3_objects_subscriber_);
+    this-&gt;synchronizer_-&gt;registerCallback(boost::bind(&amp;DispatcherNode::inputCallback, this, _1, _2, _3));
+    ROS_INFO(&quot;Dispatcher subscribed&quot;);
+}
+} // namespace objrecog_dispatcher
+
+int
+main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;DispatcherNode&quot;);
+    ros::NodeHandle nh;
+    ros::NodeHandle p_nh(&quot;~&quot;);
+    objrecog_dispatcher::DispatcherNode(nh, p_nh);
+    ros::Rate loop_rate(15);
+    while (ros::ok())
+    {
+        ros::spinOnce();
+        loop_rate.sleep();
+        ROS_INFO(&quot;DISPATCHER ROS LOOP&quot;);
+    }
+    return 0;
+}
+</code></pre>
+
+<p><em>launchfile</em></p>
+
+<pre><code>&lt;launch&gt;
+  &lt;arg name=&quot;use_machine&quot;       default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;machine&quot;           default=&quot;localhost&quot;/&gt;
+
+  &lt;machine name=&quot;localhost&quot; address=&quot;localhost&quot; if=&quot;$(arg use_machine)&quot;/&gt;
+
+  &lt;!-- Dispatcher Node --&gt;
+  &lt;node pkg=&quot;objrecog_dispatcher&quot; type=&quot;DispatcherNode&quot; name=&quot;DispatcherNode&quot; machine=&quot;$(arg machine)&quot; output=&quot;screen&quot;&gt;
+    &lt;remap from=&quot;dispatcher/input_objects_cam1&quot; to=&quot;cam1/object_rec/output_objects&quot;/&gt;
+    &lt;remap from=&quot;dispatcher/input_objects_cam2&quot; to=&quot;cam2/object_rec/output_objects&quot;/&gt;
+    &lt;remap from=&quot;dispatcher/input_objects_cam3&quot; to=&quot;cam3/object_rec/output_objects&quot;/&gt;
+  &lt;/node&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p><strong>Output from <code>rosnode info DispatcherNode</code></strong></p>
+
+<pre><code>Node [/DispatcherNode]
+Publications: 
+ * /objrecog_dispatcher/parameter_descriptions [dynamic_reconfigure/ConfigDescription]
+ * /objrecog_dispatcher/parameter_updates [dynamic_reconfigure/Config]
+ * /rosout [rosgraph_msgs/Log]
+
+Subscriptions: None
+
+Services: 
+ * /DispatcherNode/get_loggers
+ * /DispatcherNode/set_logger_level
+ * /objrecog_dispatcher/set_parameters
+
+
+contacting node http://inhands-server:35689/ ...
+Pid: 31771
+Connections:
+ * topic: /rosout
+    * to: /rosout
+    * direction: outbound
+    * transport: TCPROS
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/40338">jgallostra</a> on 2019-03-27 09:37:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In your main, your dispatcher node is a temporary object, so it is created and then immediately destroyed:</p>
+
+<pre><code>objrecog_dispatcher::DispatcherNode(nh, p_nh);
+</code></pre>
+
+<p>Instead, you need to keep the DispatcherNode in a variable:</p>
+
+<pre><code>objrecog_dispatcher::DispatcherNode dispatcher_node(nh, p_nh);
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2019-03-27 10:36:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>That is indeed the way to fix it - such a stupid error! Thanks for reading through all the code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40338">jgallostra</a> on 2019-03-27 10:48:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Just one thing I wonder now, how come in the faulty version the DispatcherNode appeared when calling <code>rostopic list</code> and I could call <code>rosnode info DispatcherNode</code>? Ok, it was a temporary object, but apparently ROS kept some information about the node. Maybe it has something to do with the fact that it creates a dynamic reconfigure server, or maybe it wasn&#39;t destroyed at all?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40338">jgallostra</a> on 2019-03-27 10:51:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The ROS node is not the DispatcherNode C++ object. The ROS node is the program, and it starts being a ROS node when you call <code>ros::init(argc, argv, &quot;DispatcherNode&quot;);</code>, and continues to be a ROS node until the last NodeHandle is destroyed or <code>ros::shutdown()</code> is called.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-03-27 11:05:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ok, thanks a lot!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40338">jgallostra</a> on 2019-03-27 11:14:39 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

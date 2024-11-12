@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>move_base_flex adds waypoints to the robot, and the recovery function, as well as the problem that the obstacles in the map are not cleared in time？ - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/392149">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>move_base_flex adds waypoints to the robot, and the recovery function, as well as the problem that the obstacles in the map are not cleared in time？</h2>
+      <div class="question">
+        <p>I am using ros melodic, and there is still another question at the moment, how should I configure it so that the robot can distinguish between the path point and the target point?Below is my startup file:</p>
+
+<pre><code>&lt;launch&gt;  
+  &lt;node pkg=&quot;mbf_costmap_nav&quot; name=&quot;move_base_flex&quot; type=&quot;mbf_costmap_nav&quot; respawn=&quot;false&quot; output=&quot;screen&quot;&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;global_costmap&quot;/&gt;--&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;local_costmap&quot;/&gt;--&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/local_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/global_costmap_params.yaml&quot; command=&quot;load&quot;/&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/planners.yaml&quot; command=&quot;load&quot;/&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/controllers.yaml&quot; command=&quot;load&quot;/&gt;
+      &lt;rosparam file=&quot;$(find motor-ctrl)/config/base5/recovery_behaviors.yaml&quot; command=&quot;load&quot;/&gt;
+
+      &lt;remap from=&quot;/move_base_flex/GlobalPlanner/plan&quot; to=&quot;path&quot;/&gt;--&gt;
+      &lt;remap from=&quot;cmd_vel&quot; to=&quot;cmd_vel&quot;/&gt;
+  &lt;/node&gt;
+  &lt;node name=&quot;navigation_sm&quot; pkg=&quot;mbf_costmap_nav&quot; type=&quot;navigation_sm.py&quot;&gt;
+    &lt;param name=&quot;base_global_planner&quot; value=&quot;GlobalPlanner&quot; /&gt;
+    &lt;param name=&quot;base_local_planner&quot; value=&quot;TrackingPidLocalPlanner&quot; /&gt;
+  &lt;/node&gt;
+  &lt;/launch&gt;
+</code></pre>
+
+<h1>recovery_behavious.yaml</h1>
+
+<pre><code>recovery_behaviors:
+  - name: &#39;rotate_recovery&#39;
+  type: &#39;rotate_recovery/RotateRecovery&#39;
+ - name: &#39;clear_costmap&#39;
+  type: &#39;clear_costmap_recovery/ClearCostmapRecovery&#39;
+- name: &#39;moveback_recovery&#39;
+  type: &#39;moveback_recovery/MoveBackRecovery&#39;
+
+moveback_recovery:
+ linear_vel_back: -0.1 # default -0.3
+ step_back_length: 0.3  # default 1.0
+ step_back_timeout: 5.0 # default 15.0
+</code></pre>
+
+<h1>navigation_sm.py</h1>
+
+<pre><code>import rospy
+import smach
+import smach_ros
+from mbf_msgs.msg import ExePathAction, ExePathResult
+from mbf_msgs.msg import GetPathAction, GetPathResult
+from mbf_msgs.msg import RecoveryAction, RecoveryResult
+from wait_for_goal import WaitForGoal
+class Control(smach.StateMachine):
+  def __init__(self):
+      smach.StateMachine.__init__(
+         self,
+          outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;, &#39;failed&#39;],
+          input_keys=[&#39;path&#39;],
+         output_keys=[
+            &#39;outcome&#39;, &#39;message&#39;,
+            &#39;final_pose&#39;, &#39;dist_to_goal&#39;, &#39;angle_to_goal&#39;,
+            &#39;recovery_behavior&#39;]
+    )
+
+    with self:
+
+        self.userdata.recovery_behavior = None
+
+        smach.StateMachine.add(
+            &#39;EXE_PATH&#39;,
+            smach_ros.SimpleActionState(
+                &#39;move_base_flex/exe_path&#39;,
+                ExePathAction,
+                goal_cb=Control.controller_goal_cb,
+                result_cb=Control.controller_result_cb),
+            transitions={
+                &#39;succeeded&#39;: &#39;succeeded&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;,
+                &#39;failed&#39;: &#39;failed&#39;,
+            }
+        )
+
+@staticmethod
+@smach.cb_interface(input_keys=[&#39;path&#39;])
+def controller_goal_cb(user_data, goal):
+    goal.path = user_data.path
+    goal.controller = &#39;PathTrackingPID&#39;
+
+@staticmethod
+@smach.cb_interface(
+    output_keys=[&#39;path&#39;, &#39;outcome&#39;, &#39;message&#39;, &#39;final_pose&#39;, &#39;dist_to_goal&#39;, &#39;angle_to_goal&#39;, &#39;recovery_behavior&#39;],
+    outcomes=[&#39;succeeded&#39;, &#39;aborted&#39;, &#39;failed&#39;, &#39;preempted&#39;])
+def controller_result_cb(user_data, status, result):
+    outcome_map = {
+        ExePathResult.COLLISION: &#39;COLLISION&#39;,
+        ExePathResult.CANCELED: &#39;CANCELED&#39;,
+        ExePathResult.BLOCKED_PATH: &#39;BLOCKED_PATH&#39;,
+        ExePathResult.FAILURE: &#39;FAILURE&#39;,
+        ExePathResult.INTERNAL_ERROR: &#39;INTERNAL_ERROR&#39;,
+        ExePathResult.INVALID_PATH: &#39;INVALID_PATH&#39;,
+        ExePathResult.MISSED_GOAL: &#39;MISSED_GOAL&#39;,
+        ExePathResult.INVALID_PLUGIN: &#39;INVALID_PLUGIN&#39;,
+        ExePathResult.MISSED_PATH: &#39;MISSED_PATH&#39;,
+        ExePathResult.NO_VALID_CMD: &#39;NO_VALID_CMD&#39;,
+        ExePathResult.NOT_INITIALIZED: &#39;NOT_INITIALIZED&#39;,
+        ExePathResult.OSCILLATION: &#39;OSCILLATION&#39;,
+        ExePathResult.PAT_EXCEEDED: &#39;PAT_EXCEEDED&#39;,
+        ExePathResult.ROBOT_STUCK: &#39;ROBOT_SUCK&#39;,
+        ExePathResult.TF_ERROR: &#39;TF_ERROR&#39;,
+        ExePathResult.SUCCESS: &#39;SUCCESS&#39;,
+    }
+
+    controller_aborted_map = [
+        ExePathResult.TF_ERROR,
+        ExePathResult.INTERNAL_ERROR,
+        ExePathResult.INVALID_PATH,
+        ExePathResult.NOT_INITIALIZED,
+    ]
+
+    controller_failed_map = [
+        ExePathResult.PAT_EXCEEDED,
+        ExePathResult.BLOCKED_PATH,
+        ExePathResult.FAILURE,
+        ExePathResult.MISSED_PATH,
+        ExePathResult.MISSED_GOAL,
+        ExePathResult.NO_VALID_CMD,
+        ExePathResult.OSCILLATION,
+        ExePathResult.ROBOT_STUCK,
+    ]
+
+    user_data.outcome = result.outcome
+    user_data.message = result.message
+    user_data.final_pose = result.final_pose
+    user_data.dist_to_goal = result.dist_to_goal
+    user_data.angle_to_goal = result.angle_to_goal
+
+    recovery_behavior = &#39;clear_costmap&#39;
+    if result.outcome == ExePathResult.SUCCESS:
+        p = result.final_pose.pose.position
+        rospy.loginfo(&quot;Controller arrived at goal: (%s), %s, %s&quot;,
+                      str(p), outcome_map[result.outcome], result.message)
+        return &#39;succeeded&#39;
+    elif result.outcome == ExePathResult.CANCELED:
+        rospy.loginfo(&quot;Controller has been canceled.&quot;)
+        return &#39;preempted&#39;
+    elif result.outcome in controller_failed_map:
+        rospy.logwarn(&quot;Controller failed: %s, %s&quot;, outcome_map[result.outcome], result.message)
+        user_data.recovery_behavior = recovery_behavior
+        rospy.loginfo(&quot;Set recovery behavior to %s&quot;, recovery_behavior)
+        return &#39;failed&#39;
+    else:
+        rospy.logfatal(&quot;Controller aborted: %s, %s&quot;, outcome_map[result.outcome], result.message)
+        return &#39;aborted&#39;
+
+
+ class Planning(smach.StateMachine):
+    def __init__(self):
+       smach.StateMachine.__init__(
+           self,
+         outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;],
+        input_keys=[&#39;target_pose&#39;],
+        output_keys=[&#39;outcome&#39;, &#39;message&#39;, &#39;path&#39;, &#39;cost&#39;, &#39;recovery_behavior&#39;]
+    )
+
+    with self:
+
+        self.userdata.recovery_behavior = None
+
+        smach.StateMachine.add(
+            &#39;GET_PATH&#39;,
+            smach_ros.SimpleActionState(
+                &#39;move_base_flex/get_path&#39;,
+                GetPathAction,
+                goal_cb=Planning.planner_goal_cb,
+                result_cb=Planning.planner_result_cb),
+            transitions={
+                &#39;succeeded&#39;: &#39;succeeded&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;
+            }
+        )
+
+@staticmethod
+@smach.cb_interface(input_keys=[&#39;target_pose&#39;])
+def planner_goal_cb(user_data, goal):
+    goal.use_start_pose = False
+    goal.tolerance = 0.2  # 20cm tolerance to the target
+    goal.target_pose = user_data.target_pose
+    goal.planner = &#39;GlobalPlanner&#39;  # name of the planner to call see move base flex planners.yaml config
+
+@staticmethod
+@smach.cb_interface(
+    output_keys=[&#39;outcome&#39;, &#39;message&#39;, &#39;path&#39;, &#39;cost&#39;, &#39;recovery_behavior&#39;],
+    outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;])
+def planner_result_cb(user_data, status, result):
+    user_data.message = result.message
+    user_data.outcome = result.outcome
+    user_data.path = result.path
+    user_data.cost = result.cost
+    recovery_behavior = &#39;clear_costmap&#39;
+    if result.outcome == GetPathResult.SUCCESS:
+        return &#39;succeeded&#39;
+    elif result.outcome == GetPathResult.CANCELED:
+        return &#39;preempted&#39;
+    else:
+        user_data.recovery_behavior = recovery_behavior
+        rospy.loginfo(&quot;Set recovery behavior to %s&quot;, recovery_behavior)
+        return &#39;aborted&#39;
+
+
+ class Recovery(smach.StateMachine):
+
+   def __init__(self):
+      smach.StateMachine.__init__(
+        self,
+        outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;],
+        input_keys=[&#39;recovery_behavior&#39;],
+        output_keys=[&#39;outcome&#39;, &#39;message&#39;, &#39;recovery_behavior&#39;]
+    )
+
+    with self:
+
+        self.userdata.recovery_behavior = None
+
+        smach.StateMachine.add(
+            &#39;RECOVERY&#39;,
+            smach_ros.SimpleActionState(&#39;move_base_flex/recovery&#39;,
+                                        RecoveryAction,
+                                        goal_cb=Recovery.recovery_goal_cb,
+                                        result_cb=Recovery.recovery_result_cb),
+            transitions={
+                &#39;succeeded&#39;: &#39;succeeded&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;
+            }
+        )
+
+@staticmethod
+@smach.cb_interface(input_keys=[&#39;recovery_behavior&#39;])
+def recovery_goal_cb(user_data, goal):
+    rospy.loginfo(&quot;Recovery behavior: %s&quot;, user_data.recovery_behavior)
+    goal.behavior = user_data.recovery_behavior
+
+@staticmethod
+@smach.cb_interface(
+    output_keys=[&#39;outcome&#39;, &#39;message&#39;, &#39;recovery_behavior&#39;],
+    outcomes=[&#39;succeeded&#39;, &#39;aborted&#39;, &#39;preempted&#39;])
+def recovery_result_cb(user_data, status, result):
+    if result.outcome == RecoveryResult.SUCCESS:
+        return &#39;succeeded&#39;
+    elif result.outcome == RecoveryResult.CANCELED:
+        return &#39;preempted&#39;
+    else:
+        user_data.recovery_behavior = &#39;rotate_recovery&#39;
+        return &#39;aborted&#39;
+
+
+class Replanning(smach.Concurrence):
+
+ @staticmethod
+  def child_term_cb(outcome_map):
+      return True
+
+   def __init__(self):
+      smach.Concurrence.__init__(
+        self,
+        outcomes=[&#39;new_goal&#39;, &#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;],
+        default_outcome=&#39;aborted&#39;,
+        input_keys=[&#39;target_pose&#39;],
+        output_keys=[&#39;target_pose&#39;, &#39;path&#39;, &#39;recovery_behavior&#39;],
+        outcome_map={
+            &#39;new_goal&#39;: {&#39;WAIT_FOR_GOAL&#39;: &#39;received_goal&#39;},
+            &#39;succeeded&#39;: {&#39;PLANNING&#39;: &#39;succeeded&#39;},
+            &#39;preempted&#39;: {&#39;PLANNING&#39;: &#39;preempted&#39;,
+                          &#39;WAIT_FOR_GOAL&#39;: &#39;preempted&#39;}
+        },
+        child_termination_cb=Replanning.child_term_cb,
+    )
+
+    with self:
+        smach.Concurrence.add(&#39;PLANNING&#39;, Planning())
+        smach.Concurrence.add(&#39;WAIT_FOR_GOAL&#39;, WaitForGoal())
+
+
+  class NavigationStateMachine(smach.StateMachine):
+
+     def __init__(self):
+       smach.StateMachine.__init__(
+         self,
+         outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;],
+        input_keys=[&#39;target_pose&#39;],
+        output_keys=[&#39;outcome&#39;, &#39;message&#39;]
+    )
+
+    with self:
+
+        smach.StateMachine.add(
+            &#39;PLANNING&#39;,
+            Planning(),
+            transitions={
+                &#39;succeeded&#39;: &#39;CONTROL&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;
+            }
+        )
+
+        smach.StateMachine.add(
+            &#39;CONTROL&#39;,
+            Control(),
+            transitions={
+                &#39;succeeded&#39;: &#39;succeeded&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;,
+                &#39;failure&#39;: &#39;RECOVERY&#39;,
+            }
+        )
+
+        smach.StateMachine.add(
+            &#39;RECOVERY&#39;,
+            Recovery(),
+            transitions={
+                &#39;succeeded&#39;: &#39;PLANNING&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;,
+            }
+        )
+
+
+class PlanToGoal(smach.StateMachine):
+
+   def __init__(self):
+      smach.StateMachine.__init__(
+          self,
+          outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;, &#39;aborted&#39;],
+          input_keys=[],
+          output_keys=[&#39;path&#39;, &#39;recovery_behavior&#39;, &#39;target_pose&#39;],
+    )
+
+    with self:
+
+        #self.userdata.path = None
+        #self.userdata.recovery_behavior = None
+
+        smach.StateMachine.add(
+            &#39;WAIT_FOR_GOAL&#39;,
+            WaitForGoal(),
+            transitions={
+                &#39;received_goal&#39;: &#39;REPLANNING&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+            })
+        smach.StateMachine.add(
+            &#39;REPLANNING&#39;,
+            Replanning(),
+            transitions={
+                &#39;new_goal&#39;: &#39;REPLANNING&#39;,
+                &#39;succeeded&#39;: &#39;succeeded&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;,
+                &#39;aborted&#39;: &#39;aborted&#39;,   # TODO recovery
+            })
+
+
+ class NavigateToGoal(smach.Concurrence):
+
+  @staticmethod
+  def child_term_cb(outcome_map):
+    return True
+
+def __init__(self):
+    smach.Concurrence.__init__(
+        self,
+        outcomes=[&#39;new_path&#39;, &#39;succeeded&#39;, &#39;preempted&#39;, &#39;failed&#39;],
+        default_outcome=&#39;preempted&#39;,
+        input_keys=[&#39;path&#39;, &#39;recovery_behavior&#39;],
+        output_keys=[&#39;target_pose&#39;, &#39;recovery_behavior&#39;, &#39;path&#39;],
+        outcome_map={
+            &#39;new_path&#39;: {&#39;PLAN_TO_GOAL&#39;: &#39;succeeded&#39;},
+            &#39;succeeded&#39;: {&#39;CONTROL&#39;: &#39;succeeded&#39;},
+            &#39;preempted&#39;: {&#39;PLAN_TO_GOAL&#39;: &#39;preempted&#39;,
+                          &#39;CONTROL&#39;: &#39;preempted&#39;},
+            &#39;failed&#39;: {&#39;CONTROL&#39;: &#39;failed&#39;}
+        },
+        child_termination_cb=NavigateToGoal.child_term_cb,
+    )
+
+    with self:
+        smach.Concurrence.add(&#39;PLAN_TO_GOAL&#39;, PlanToGoal())
+        smach.Concurrence.add(&#39;CONTROL&#39;, Control())
+
+
+ def main():
+    rospy.init_node(&#39;navigation&#39;)
+
+    base_sm = smach.StateMachine(outcomes=[&#39;preempted&#39;, &#39;aborted&#39;])
+
+   with base_sm:
+      smach.StateMachine.add(
+         &#39;PLAN_TO_GOAL&#39;,
+         PlanToGoal(),
+         transitions={
+             &#39;succeeded&#39;: &#39;NAVIGATE_TO_GOAL&#39;,
+             &#39;preempted&#39;: &#39;preempted&#39;,
+             &#39;aborted&#39;: &#39;aborted&#39;
+        }
+    )
+
+    smach.StateMachine.add(
+        &#39;NAVIGATE_TO_GOAL&#39;,
+        NavigateToGoal(),
+        transitions={
+            &#39;succeeded&#39;: &#39;PLAN_TO_GOAL&#39;,
+            &#39;preempted&#39;: &#39;preempted&#39;,
+            &#39;new_path&#39;: &#39;NAVIGATE_TO_GOAL&#39;,
+            &#39;failed&#39;: &#39;RECOVERY&#39;
+        }
+    )
+
+    smach.StateMachine.add(
+        &#39;RECOVERY&#39;,
+        Recovery(),
+        transitions={
+            &#39;succeeded&#39;: &#39;REPLANNING&#39;,
+            &#39;preempted&#39;: &#39;preempted&#39;,
+            &#39;aborted&#39;: &#39;RECOVERY&#39;,  # TODO solve recovery loop
+        }
+    )
+
+    smach.StateMachine.add(
+        &#39;REPLANNING&#39;,
+        Replanning(),
+        transitions={
+            &#39;new_goal&#39;: &#39;REPLANNING&#39;,
+            &#39;succeeded&#39;: &#39;NAVIGATE_TO_GOAL&#39;,
+            &#39;preempted&#39;: &#39;preempted&#39;,
+            &#39;aborted&#39;: &#39;RECOVERY&#39;,  # davide into aborted and failed, more specific failure code and recovery
+        }
+    )
+
+sis = smach_ros.IntrospectionServer(&#39;navigation&#39;, base_sm, &#39;/NAVIGATION&#39;)
+sis.start()
+outcome = base_sm.execute()
+
+ rospy.loginfo(&quot;Navigation smach outcome: %s&quot;, outcome)
+
+  rospy.spin()
+  sis.stop()
+
+
+ if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<h1>contollers.yaml</h1>
+
+<pre><code>controllers:
+  - name: PathTrackingPID
+  type: path_tracking_pid/TrackingPidLocalPlanner
+PathTrackingPID:
+ holonomic_robot: false
+track_base_link: true
+estimate_pose_angle: false
+base_link_frame: base_link
+Kd_ang: 0.3
+Kd_lat: 0.3
+Ki_ang: 0.0
+Ki_lat: 0.0
+Kp_ang: 1.0
+Kp_lat: 1.0
+l: 1.0
+feedback_ang: false
+feedback_lat: true
+feedforward_ang: false
+feedforward_lat: true
+controller_debug_enabled: true
+target_end_x_vel: 0.0
+target_x_acc: 2.0
+target_x_decc: 2.0
+target_x_vel: 2.0
+abs_minimum_x_vel: 0.0
+max_error_x_vel: 1.0
+max_yaw_vel: 2.0
+max_yaw_acc: 2.0
+ min_turning_radius: 0.0
+use_mpc: false
+mpc_max_error_lat: 0.5
+mpc_max_fwd_iter: 200
+mpc_max_vel_optimization_iterations: 5
+mpc_min_x_vel: 0.5
+mpc_simulation_sample_time: 0.05
+
+anti_collision: true
+obstacle_speed_reduction: true
+collision_look_ahead_resolution: 1.0  
+global_frame_id: odom
+map_frame: map
+
+controller_frequency: 5.0
+controller_max_retries: 0
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/81756">mingyue</a> on 2021-12-03 01:35:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@ osilva  I reposted the question</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/81756">mingyue</a> on 2021-12-03 01:36:04 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

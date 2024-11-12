@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Realsense node stops publishing image data after calling up other nodes - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407865">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Realsense node stops publishing image data after calling up other nodes</h2>
+      <div class="question">
+        <p>Hi, I&#39;m using ROS2 and realsense D435i to implement a navigation application. I modified <a href="https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox/blob/main/docs/tutorial-nvblox-vslam-realsense.md">this example</a> which brings up the realsense node, nvblox, and VSLAM. It runs well when all nodes are in the same machine. I divided them, such as the realsense node only running on the jetson board on my robots, nvblox, and VSLAM runs in the edge server. The robot and edge server are connected with ethernet cables. Please note that I have tested that they can ping and use the talker listener examples from ROS2 well.</p>
+
+<p><strong>Problem:</strong>
+When I start the realsense node at the jetson board side, I can see topics and image data in the edge server.
+But when I bring up the nvblox and VSLAM nodes, the edge side doesn&#39;t see the image, but the topic name is still there, and the jetson side can see the image data.</p>
+
+<p>Is there any mistake in my launch files, or is something missing in the network setup?</p>
+
+<p>Below are my launch files.</p>
+
+<p>The <code>nvr_debug_jetson.launch.py</code> file:</p>
+
+<pre><code># license removed for brevity
+
+import os
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch_ros.descriptions import ComposableNode
+from launch_ros.actions import ComposableNodeContainer
+
+
+def generate_launch_description():
+    realsense_config_file_path = os.path.join(
+        get_package_share_directory(&quot;nvblox_examples_bringup&quot;),
+        &quot;config&quot;,
+        &quot;realsense.yaml&quot;,
+    )
+
+    realsense_node = ComposableNode(
+        namespace=&quot;camera&quot;,
+        package=&quot;realsense2_camera&quot;,
+        plugin=&quot;realsense2_camera::RealSenseNodeFactory&quot;,
+        parameters=[realsense_config_file_path],
+    )
+
+    realsense_splitter_node = ComposableNode(
+        namespace=&quot;camera&quot;,
+        name=&quot;realsense_splitter_node&quot;,
+        package=&quot;realsense_splitter&quot;,
+        plugin=&quot;nvblox::RealsenseSplitterNode&quot;,
+        parameters=[{&quot;input_qos&quot;: &quot;SENSOR_DATA&quot;, &quot;output_qos&quot;: &quot;SENSOR_DATA&quot;}],
+        remappings=[
+            (&quot;input/infra_1&quot;, &quot;/camera/infra1/image_rect_raw&quot;),
+            (&quot;input/infra_1_metadata&quot;, &quot;/camera/infra1/metadata&quot;),
+            (&quot;input/infra_2&quot;, &quot;/camera/infra2/image_rect_raw&quot;),
+            (&quot;input/infra_2_metadata&quot;, &quot;/camera/infra2/metadata&quot;),
+            (&quot;input/depth&quot;, &quot;/camera/depth/image_rect_raw&quot;),
+            (&quot;input/depth_metadata&quot;, &quot;/camera/depth/metadata&quot;),
+            (&quot;input/pointcloud&quot;, &quot;/camera/depth/color/points&quot;),
+            (&quot;input/pointcloud_metadata&quot;, &quot;/camera/depth/metadata&quot;),
+        ],
+    )
+
+    realsense_container = ComposableNodeContainer(
+        name=&quot;realsense_container&quot;,
+        namespace=&quot;&quot;,
+        package=&quot;rclcpp_components&quot;,
+        executable=&quot;component_container&quot;,
+        composable_node_descriptions=[realsense_node, realsense_splitter_node],
+        output=&quot;screen&quot;,
+    )
+
+    base_link_tf_node = Node(
+        package=&quot;tf2_ros&quot;,
+        executable=&quot;static_transform_publisher&quot;,
+        arguments=[&quot;0.16&quot;, &quot;0&quot;, &quot;0.11&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;1&quot;, &quot;base_link&quot;, &quot;camera_link&quot;],
+    )
+
+    return LaunchDescription([realsense_container, base_link_tf_node])
+</code></pre>
+
+<p>The <code>nvr_debug_edge.launch.py</code> file:</p>
+
+<pre><code># license removed for brevity
+
+import os
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    visual_slam_node = Node(
+        name=&quot;visual_slam_node&quot;,
+        package=&quot;isaac_ros_visual_slam&quot;,
+        executable=&quot;isaac_ros_visual_slam&quot;,
+        parameters=[
+            {
+                &quot;enable_rectified_pose&quot;: True,
+                &quot;denoise_input_images&quot;: False,
+                &quot;rectified_images&quot;: True,
+                &quot;enable_debug_mode&quot;: False,
+                &quot;debug_dump_path&quot;: &quot;/tmp/vslam&quot;,
+                &quot;enable_slam_visualization&quot;: True,
+                &quot;enable_landmarks_view&quot;: True,
+                &quot;enable_observations_view&quot;: True,
+                &quot;map_frame&quot;: &quot;map&quot;,
+                &quot;odom_frame&quot;: &quot;odom&quot;,
+                &quot;base_frame&quot;: &quot;base_link&quot;,
+                &quot;input_left_camera_frame&quot;: &quot;camera_infra1_frame&quot;,
+                &quot;input_right_camera_frame&quot;: &quot;camera_infra2_frame&quot;,
+                &quot;enable_localization_n_mapping&quot;: True,
+                &quot;publish_odom_to_base_tf&quot;: True,
+                &quot;publish_map_to_odom_tf&quot;: True,
+            }
+        ],
+        remappings=[
+            (&quot;stereo_camera/left/image&quot;, &quot;/camera/infra1/image_rect_raw&quot;),
+            (&quot;stereo_camera/left/camera_info&quot;, &quot;/camera/infra1/camera_info&quot;),
+            (&quot;stereo_camera/right/image&quot;, &quot;/camera/infra2/image_rect_raw&quot;),
+            (&quot;stereo_camera/right/camera_info&quot;, &quot;/camera/infra2/camera_info&quot;),
+        ],
+    )
+
+    nvblox_config = DeclareLaunchArgument(
+        &quot;nvblox_config&quot;,
+        default_value=os.path.join(
+            get_package_share_directory(&quot;nvblox_examples_bringup&quot;),
+            &quot;config&quot;,
+            &quot;nvblox.yaml&quot;,
+        ),
+    )
+
+    nvblox_node = Node(
+        package=&quot;nvblox_ros&quot;,
+        executable=&quot;nvblox_node&quot;,
+        parameters=[LaunchConfiguration(&quot;nvblox_config&quot;)],
+        output=&quot;screen&quot;,
+        remappings=[
+            (&quot;depth/camera_info&quot;, &quot;/camera/depth/camera_info&quot;),
+            (&quot;depth/image&quot;, &quot;/camera/realsense_splitter_node/output/depth&quot;),
+            (&quot;color/camera_info&quot;, &quot;/camera/color/camera_info&quot;),
+            (&quot;color/image&quot;, &quot;/camera/color/image_raw&quot;),
+        ],
+    )
+
+    rviz_config_path = os.path.join(
+        get_package_share_directory(&quot;nvblox_examples_bringup&quot;),
+        &quot;config&quot;,
+        &quot;nvblox_vslam_realsense.rviz&quot;,
+    )
+
+    print(rviz_config_path)
+
+    rviz = Node(
+        package=&quot;rviz2&quot;,
+        executable=&quot;rviz2&quot;,
+        arguments=[&quot;-d&quot;, rviz_config_path],
+        output=&quot;screen&quot;,
+    )
+
+    return LaunchDescription([nvblox_config, visual_slam_node, nvblox_node, rviz])
+</code></pre>
+
+<p>Below is the output of the realsense node. It appears that some errors are on, but I don&#39;t know if this problem has to do with it.</p>
+
+<pre><code>admin@ubuntu:/workspaces/isaac_ros-dev$ source install/setup.bash
+admin@ubuntu:/workspaces/isaac_ros-dev$ ros2 launch nvblox_examples_bringup nvr_debug.launch.py
+[INFO] [launch]: All log files can be found below /home/admin/.ros/log/2022-10-13-10-58-40-532074-ubuntu-30285
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [component_container-1]: process started with pid [30298]
+[INFO] [static_transform_publisher-2]: process started with pid [30300]
+[static_transform_publisher-2] [WARN] [1665658721.809580602] []: Old-style arguments are deprecated; see --help for new-style arguments
+[static_transform_publisher-2] [INFO] [1665658721.908011870] [static_transform_publisher_okFmVYzYxSyDHaoM]: Spinning until stopped - publishing transform
+[static_transform_publisher-2] translation: (&#39;0.160000&#39;, &#39;0.000000&#39;, &#39;0.110000&#39;)
+[static_transform_publisher-2] rotation: (&#39;0.000000&#39;, &#39;0.000000&#39;, &#39;0.000000&#39;, &#39;1.000000&#39;)
+[static_transform_publisher-2] from &#39;base_link&#39; to &#39;camera_link&#39;
+[component_container-1] [INFO] [1665658722.208643569] [realsense_container]: Load Library: /workspaces/isaac_ros-dev/install/realsense2_camera/lib/librealsense2_camera.so
+[component_container-1] [INFO] [1665658722.362127880] [realsense_container]: Found class: rclcpp_components::NodeFactoryTemplate&lt;realsense2_camera::RealSenseNodeFactory&gt;
+[component_container-1] [INFO] [1665658722.362456857] [realsense_container]: Instantiate class: rclcpp_components::NodeFactoryTemplate&lt;realsense2_camera::RealSenseNodeFactory&gt;
+[component_container-1] [INFO] [1665658722.533116839] [camera.camera]: RealSense ROS v3.2.3
+[component_container-1] [INFO] [1665658722.533400565] [camera.camera]: Built with LibRealSense v2.51.1
+[component_container-1] [INFO] [1665658722.533531771] [camera.camera]: Running with LibRealSense v2.51.1
+[INFO] [launch_ros.actions.load_composable_nodes]: Loaded node &#39;/camera/camera&#39; in container &#39;/realsense_container&#39;
+[component_container-1] [INFO] [1665658722.551024226] [realsense_container]: Load Library: /workspaces/isaac_ros-dev/install/realsense_splitter/lib/librealsense_splitter_component.so
+[component_container-1] [INFO] [1665658722.567078113] [realsense_container]: Found class: rclcpp_components::NodeFactoryTemplatenvblox::RealsenseSplitterNode
+[component_container-1] [INFO] [1665658722.567578362] [realsense_container]: Instantiate class: rclcpp_components::NodeFactoryTemplatenvblox::RealsenseSplitterNode
+[component_container-1] [INFO] [1665658722.606632370] [camera.realsense_splitter_node]: Creating a RealsenseSplitterNode().
+[INFO] [launch_ros.actions.load_composable_nodes]: Loaded node &#39;/camera/realsense_splitter_node&#39; in container &#39;/realsense_container&#39;
+[component_container-1] [INFO] [1665658723.096249348] [camera.camera]: Device with serial number 135122070687 was found.
+[component_container-1]
+[component_container-1] [INFO] [1665658723.096623606] [camera.camera]: Device with physical ID 2-4.1.3-5 was found.
+[component_container-1] [INFO] [1665658723.096826272] [camera.camera]: Device with name Intel RealSense D435I was found.
+[component_container-1] [INFO] [1665658723.098514932] [camera.camera]: Device with port number 2-4.1.3 was found.
+[component_container-1] [INFO] [1665658723.098679581] [camera.camera]: Device USB type: 3.2
+[component_container-1] [INFO] [1665658723.144959324] [camera.camera]: getParameters...
+[component_container-1] [INFO] [1665658723.205539107] [camera.camera]: setupDevice...
+[component_container-1] [INFO] [1665658723.205834930] [camera.camera]: JSON file is not provided
+[component_container-1] [INFO] [1665658723.205979449] [camera.camera]: Device Name: Intel RealSense D435I
+[component_container-1] [INFO] [1665658723.206071998] [camera.camera]: Device physical port: 2-4.1.3-5
+[component_container-1] [INFO] [1665658723.206209605] [camera.camera]: Device FW version: 05.13.00.50
+[component_container-1] [INFO] [1665658723.206289961] [camera.camera]: Device Product ID: 0x0B3A
+[component_container-1] [INFO] [1665658723.206357612] [camera.camera]: Enable PointCloud: Off
+[component_container-1] [INFO] [1665658723.206418223] [camera.camera]: Align Depth: Off
+[component_container-1] [INFO] [1665658723.206476114] [camera.camera]: Sync Mode: Off
+[component_container-1] [INFO] [1665658723.206601240] [camera.camera]: Device Sensors:
+[component_container-1] [INFO] [1665658723.375074489] [camera.camera]: Stereo Module was found.
+[component_container-1] [INFO] [1665658723.508486890] [camera.camera]: RGB Camera was found.
+[component_container-1] [INFO] [1665658723.510156733] [camera.camera]: Motion Module was found.
+[component_container-1] [INFO] [1665658723.510575378] [camera.camera]: (Infrared, 0) sensor isn&#39;t supported by current device! -- Skipping...
+[component_container-1] [INFO] [1665658723.510700760] [camera.camera]: (Fisheye, 0) sensor isn&#39;t supported by current device! -- Skipping...
+[component_container-1] [INFO] [1665658723.510776220] [camera.camera]: (Fisheye, 1) sensor isn&#39;t supported by current device! -- Skipping...
+[component_container-1] [INFO] [1665658723.510844447] [camera.camera]: (Fisheye, 2) sensor isn&#39;t supported by current device! -- Skipping...
+[component_container-1] [INFO] [1665658723.510929123] [camera.camera]: (Pose, 0) sensor isn&#39;t supported by current device! -- Skipping...
+[component_container-1] [INFO] [1665658723.511013384] [camera.camera]: (Confidence, 0) sensor isn&#39;t supported by current device! -- Skipping...
+[component_container-1] [INFO] [1665658723.511090251] [camera.camera]: num_filters: 0
+[component_container-1] [INFO] [1665658723.511151374] [camera.camera]: Setting Dynamic reconfig parameters.
+[component_container-1] [INFO] [1665658729.268175134] [camera.camera]: Done Setting Dynamic reconfig parameters.
+[component_container-1] [INFO] [1665658729.278360921] [camera.camera]: depth stream is enabled - width: 640, height: 480, fps: 30, Format: Z16
+[component_container-1] [INFO] [1665658729.280400767] [camera.camera]: infra1 stream is enabled - width: 640, height: 480, fps: 30, Format: Y8
+[component_container-1] [INFO] [1665658729.288298792] [camera.camera]: infra2 stream is enabled - width: 640, height: 480, fps: 30, Format: Y8
+[component_container-1] [INFO] [1665658729.293281216] [camera.camera]: color stream is enabled - width: 640, height: 480, fps: 30, Format: RGB8
+[component_container-1] [INFO] [1665658729.293696052] [camera.camera]: setupPublishers...
+[component_container-1] [INFO] [1665658729.697329774] [camera.camera]: setupStreams...
+[component_container-1] [WARN] [1665658730.271933798] [camera.camera]: Hardware Notification:Depth stream start failure,1.66566e+12,Error,Hardware Error
+[component_container-1] [INFO] [1665658730.398371067] [camera.camera]: SELECTED BASE:Depth, 0
+[component_container-1] [INFO] [1665658730.421108359] [camera.camera]: Device Serial No: 135122070687
+[component_container-1] [INFO] [1665658730.421718149] [camera.camera]: RealSense Node Is Up!
+[component_container-1] [WARN] [1665658730.527182918] [camera.camera]:
+[component_container-1] 13/10 10:58:50,529 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:58:50,580 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:58:50,742 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:58:50,793 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:58:50,930 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:58:50,985 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:58:51,014 ERROR [281472225241392] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 130
+[component_container-1] 13/10 10:58:51,243 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:59:17,944 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:59:23,003 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:59:30,066 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:59:41,357 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 10:59:47,687 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 10:59:56,148 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 10:59:57,015 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 11:00:02,345 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 11:00:17,683 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] 13/10 11:00:18,003 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 11:00:24,238 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 11:00:26,291 WARNING [281473113725232] (messenger-libusb.cpp:42) control_transfer returned error, index: 768, error: Resource temporarily unavailable, number: 11
+[component_container-1] 13/10 11:00:29,677 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] [WARN] [1665658831.352656482] [camera.camera]: Hardware Notification:Right MIPI error,1.66566e+12,Error,Hardware Error
+[component_container-1] 13/10 11:00:53,983 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 11:01:01,324 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] [WARN] [1665658862.374305032] [camera.camera]: Hardware Notification:Right MIPI error,1.66566e+12,Error,Hardware Error
+[component_container-1] 13/10 11:01:20,647 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] 13/10 11:01:22,313 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] 13/10 11:01:24,299 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 11:01:30,642 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] 13/10 11:01:35,639 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] 13/10 11:01:40,291 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+[component_container-1] 13/10 11:01:40,637 ERROR [281472795650352] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 132
+[component_container-1] [WARN] [1665658901.400340923] [camera.camera]: Hardware Notification:Right MIPI error,1.66566e+12,Error,Hardware Error
+[component_container-1] 13/10 11:01:43,956 ERROR [281472200063280] (uvc-streamer.cpp:106) uvc streamer watchdog triggered on endpoint: 131
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/108655">chivas1000</a> on 2022-10-13 05:55:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Network seem to be stuck after I bring up the VSLAM and NVBLOX nodes on server, because after I launch realsense on jetson, the server receive topic and data </p>
+
+<p>But after I launched vslam and nvblox, camera data doesn&#39;t avaliable on my server, <strong>also I run ros2 run demo_nodes_cpp talker at jetson and ros2 run demo_nodes_py listener on server, server does not receive too.</strong></p>
+
+<p>I assume that the launch of the server side blocked the network and they can&#39;t see each other then.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108655">chivas1000</a> on 2022-10-13 06:29:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>noting that the nodes on edges and servers are all running in the container, so is that the NAT issues?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108655">chivas1000</a> on 2022-10-13 07:30:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Updates:</p>
+
+<p>When I started only realsense node at jetson container, and ros2 topic echo depth topic on the server, it only shows the first frame and stops, neither other image topics, but I ros2 topic echo at the jetson, the depth can shows.</p>
+
+<p>Another tips is that I installed my system in the sd card at jetson, together with the error logs occured by realsense node, so is that the sd card I/O bottlenecked the buffer of transfer which disobeyed the QoS and dropped the connection?</p>
+
+<p>while my jetson can receive about 25fps messages, the server only receives 3 messages and stopped:</p>
+
+<p>so do the inferred images, when I only echo inferred 1 at server, it receives and bandwidth is about 9MB/s
+       9.22 MB/s from 100 messages
+       Message size mean: 0.31 MB min: 0.31 MB max: 0.31 MB</p>
+
+<p>but when I echo another inferred 2, these two topics dropped and stopped transmitting, so I think when bw over 10MB/s, the jetson can&#39;t handle transmission and dropped connection.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108655">chivas1000</a> on 2022-10-14 04:40:28 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think the problem might be similar to this:</p>
+
+<p><a href="https://support.intelrealsense.com/hc/en-us/community/posts/4939637103891--messenger-libusb-cpp-42-control-transfer-returned-error-index-768-error-Resource-temporarily-unavailable-number-11?sort_by=votes">https://support.intelrealsense.com/hc/en-us/community/posts/4939637103891--messenger-libusb-cpp-42-control-transfer-returned-error-index-768-error-Resource-temporarily-unavailable-number-11?sort_by=votes</a></p>
+
+<p>and</p>
+
+<p><a href="https://answers.ros.org/question/389347/ros-dropping-messages-how-to-predict-it/">https://answers.ros.org/question/389347/ros-dropping-messages-how-to-predict-it/</a></p>
+
+<p>so is that the hardware issue and if it can fixed with switching the system from sd card to SSD and reducing depth frame rate? Or, I might just using an Intel nuc to run realsense node and transfer image topics since it better deal with realsense camera?</p>
+
+<p>I&#39;m waiting for the ssd and putting on it to see if it can fix.</p>
+
+<p>==========================================================</p>
+
+<p>here is my realsense yaml files:</p>
+
+<p>device_type: &#39;&#39;
+serial_no: &#39;&#39;
+usb_port_id: &#39;&#39;</p>
+
+<p>rgb_camera:
+profile: &#39;640x480x15&#39;
+color_qos: &quot;SENSOR_DATA&quot;</p>
+
+<p>depth_module:
+profile: &#39;640x480x15&#39;
+emitter_enabled: 1
+emitter_on_off: true
+depth_qos: &quot;SENSOR_DATA&quot;
+depth_info_qos: &quot;SYSTEM_DEFAULT&quot;</p>
+
+<p>infr</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108655">chivas1000</a> on 2022-10-14 04:43:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>sorry for comments one, the talker and listener examples work, it might just because I opened it with 4 image topics transferring which dropped the connection and so do the talker and listener examples. Anyway, I supposed that network setup is good now and the issue are more likely to do with realsense node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108655">chivas1000</a> on 2022-10-14 05:08:25 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

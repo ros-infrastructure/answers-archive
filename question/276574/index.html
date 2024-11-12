@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Write/Improve a ROS node to publish encoder data - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/276574">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Write/Improve a ROS node to publish encoder data</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/84045/write-improve-a-ros-node-to-publish-encoder-data">https://robotics.stackexchange.com/questions/84045/write-improve-a-ros-node-to-publish-encoder-data</a>.</p>
+        <p>Hi to all,</p>
+
+<p>I&#39;m using two incremental encoders (<a href="https://it.rs-online.com/web/p/encoder-rotativi/7125424/?sra=pstk">SICK DFS60B</a>) on my skid steering robot. A full wheel turn on each side generates about 2241114 pulses.</p>
+
+<p>I wrote a ROS node in C language in order to publish the encoders data and the wheel velocity.
+The node works well, but the problem is that the encoders data are too big.
+Is there any ROS package or library which can properly handle the encoders data?
+What can I do to improve the encoder topic and my code?<br>
+Is there any better method to publish odometry data?</p>
+
+<hr>
+
+<p><strong>EDIT 1:</strong>
+it seems that the motor controller that I&#39;m using to read the encoder pulses cannot handle the current PPR. I&#39;m going to decrease the PPR for my encoders and check if the problem goes away. In the meanwhile, how do you think I can improve my code? Is there anything I can change? Is there any ROS library which I can include in my code to optimize the velocity calculation?</p>
+
+<hr>
+
+<pre><code>    int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;robot_base&quot;);
+  ros::NodeHandle n;
+
+  std::string port = &quot;&quot;;
+  int sys=0, enc=0, io=0, velocity=0, rate=10;
+
+  n.getParam(&quot;/robot_base/port&quot;, port);
+  n.getParam(&quot;/robot_base/sys&quot;, sys);
+  n.getParam(&quot;/robot_base/enc&quot;, enc);
+  n.getParam(&quot;/robot_base/io&quot;, io);
+  n.getParam(&quot;/robot_base/velocity&quot;, velocity);
+  n.getParam(&quot;/robot_base/rate&quot;, rate);
+
+  //Debug
+  //ROS_INFO(&quot;%d - %d - %d - %s&quot;, sys, enc, io, port.c_str());
+
+
+  long long unsigned int count = 0; //Frame counter
+
+  RoboteqDevice device;
+  int status = device.Connect(port.c_str());
+
+
+  ros::Publisher sys_pub = n.advertise&lt;std_msgs::String&gt;(&quot;robot/sys&quot;, 1);
+  ros::Publisher enc_pub = n.advertise&lt;std_msgs::String&gt;(&quot;robot/enc&quot;, 1);
+  ros::Publisher vel_pub = n.advertise&lt;std_msgs::String&gt;(&quot;robot/velocity&quot;, 1);
+  ros::Publisher io_pub = n.advertise&lt;std_msgs::String&gt;(&quot;robot/io&quot;, 1);
+
+  ros::Subscriber cmd_sub = n.subscribe(&quot;robot/cmd_vel&quot;, 1, &amp;RoboteqDevice::cmdCallback, &amp;device);
+
+
+  double current_time =ros::Time::now().toSec();
+  double last_time =ros::Time::now().toSec();
+
+  ros::Rate loop_rate(rate);
+
+
+
+ while (ros::ok())
+  {
+    std_msgs::String msg_sys, msg_enc, msg_io, msg_vel;
+    std:string temp=&quot;&quot;, volt=&quot;&quot;, amotor=&quot;&quot;, enco=&quot;&quot;, aio=&quot;&quot;, dio=&quot;&quot;; //Strings that receives data from roboteq device
+    std::stringstream ss, ss2, ss3, ssvel;  //Strings used to build topics message
+
+
+    //System Topic
+    if (sys == 1){
+      device.GetValue(_T, 0, temp);
+      device.GetValue(_V, 0, volt);
+      device.GetValue(_A, amotor);
+
+    //printf(&quot;Debug: %s -- %llu \n&quot;, temp.c_str(), count);
+
+      if (temp != &quot;&quot; &amp;&amp; volt != &quot;&quot; &amp;&amp; amotor != &quot;&quot;){
+
+        std::replace(temp.begin(), temp.end(), &#39;:&#39;, &#39;,&#39;);
+        std::replace(volt.begin(), volt.end(), &#39;:&#39;, &#39;,&#39;);
+        std::replace(amotor.begin(), amotor.end(), &#39;:&#39;, &#39;,&#39;);
+
+        ros::Time time = ros::Time::now();
+        ss &lt;&lt; time &lt;&lt; &quot;,&quot; &lt;&lt; temp &lt;&lt; &quot;,&quot; &lt;&lt; volt &lt;&lt; &quot;,&quot; &lt;&lt; amotor &lt;&lt; &quot;,&quot; &lt;&lt; count;
+        //msg_sys.header.stamp = ros::Time::now();
+        msg_sys.data = ss.str();
+
+        //ROS_INFO(&quot;%s&quot;, msg_sys.data.c_str());
+
+        sys_pub.publish(msg_sys);
+    }
+  }
+
+
+    //Encoder Topic
+    if (enc == 1){
+      current_time =ros::Time::now().toSec();
+      device.GetValue(_C, 0, enco);
+       //enco =&quot;15000:16000&quot;;
+
+      if (enco != &quot;&quot;){
+
+        //Velocity 
+        if (velocity == 1){
+        //Convert encoder string in long long integer
+        std::string vel_enco=enco;
+        std::replace(vel_enco.begin(), vel_enco.end(), &#39;:&#39;, &#39; &#39;);
+
+        const char * c_enco = vel_enco.c_str();
+        char* pEnd;
+        double Encoder_sx, Encoder_dx;
+        double Distance_sx, Distance_dx, Distance_prev_sx, Distance_prev_dx, Vel_sx, Vel_dx;
+        float Vel_linear, w;
+
+        Encoder_sx = std::strtod (c_enco,&amp;pEnd);
+        Encoder_dx = std::strtod (pEnd,&amp;pEnd);
+        //printf(&quot;E1 %lf, E2 %lf&quot;, Encoder_sx, Encoder_dx);
+
+        Encoder_sx=Encoder_sx/2241114;
+        Encoder_dx=Encoder_dx/2241114;
+        Distance_sx = (Encoder_sx)*125;
+        Distance_dx = (Encoder_dx)*125;
+
+        last_time =ros::Time::now().toSec();
+        Vel_sx = ((Distance_prev_sx - Distance_sx) / (last_time - current_time))/1000; // m / sec 
+        Vel_dx = ((Distance_prev_dx - Distance_dx) / (last_time - current_time))/1000;  
+
+        Distance_prev_sx = Distance_sx;
+        Distance_prev_dx = Distance_dx;
+
+        Vel_linear = (Vel_dx + Vel_sx)/2;
+        w = (Vel_dx - Vel_sx)/0.945;
+
+        ros::Time time2 = ros::Time::now();
+
+        //Publish velocity topic
+        ssvel &lt;&lt; time2 &lt;&lt; &quot;,&quot; &lt;&lt; Distance_sx &lt;&lt; &quot;,&quot; &lt;&lt; Distance_dx &lt;&lt; &quot;,&quot; &lt;&lt; Vel_sx &lt;&lt; &quot;,&quot; &lt;&lt; Vel_dx &lt;&lt; &quot;,&quot; &lt;&lt; Vel_linear &lt;&lt; &quot;,&quot; &lt;&lt; w;
+        msg_vel.data = ssvel.str();
+        vel_pub.publish(msg_vel);
+       }
+
+        ros::Time time3 = ros::Time::now();
+
+        std::replace(enco.begin(), enco.end(), &#39;:&#39;, &#39;,&#39;);
+
+        //Publish enco topic
+        ss2 &lt;&lt; time3 &lt;&lt; &quot;,&quot; &lt;&lt; enco &lt;&lt; &quot;,&quot; &lt;&lt; count;
+        msg_enc.data = ss2.str();
+        enc_pub.publish(msg_enc);
+      }
+    }
+
+....
+
+  ros::spinOnce();
+
+    loop_rate.sleep();
+    ++count;
+  }
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/5421">Marcus Barnet</a> on 2017-11-23 12:07:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi, can you be more specific ? Is it a problem with the size of the data (memory size) or the latency (Low rate of publishing) or computing speed (CPU)?</p>
+
+<p>for the first case, try Boost.Multiprecision</p>
+
+<p>for the second, try nodelet if you can.</p>
+
+<p>Or if this is a CPU problem, maybe try GPU computing ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2017-11-23 13:19:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>At high speed and for distances greater than 8 meters, the encoder data seem to saturate in some way.
+On the contrary, at low speed, everything works great. I cannot understand if it is an encoder problem or a problem with my code. The input velocity is 2200RPM at max at high speed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5421">Marcus Barnet</a> on 2017-11-23 14:04:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I use a good CPU, so i do not think it&#39;s a CPU problem. I cannot understand if it is related to my encoders which cannot handle high speed or to my code which is not optimized.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5421">Marcus Barnet</a> on 2017-11-23 14:05:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Sounds like a sampling rate issue, how often do you sample the inputs and at what rate do you expect your 2241114 pulses to change?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21851">Humpelstilzchen</a> on 2017-11-24 03:09:34 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It seems that the motor controller that I&#39;m using to read the pulses cannot handle the current PPR. I&#39;m going to decrease the PPR for my encoders and check if the problem goes away. In the meanwhile, how do you think I can improve my code? Is there anything I can change?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5421">Marcus Barnet</a> on 2017-11-24 04:27:10 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Two cases:</p>
+
+<ul>
+<li>Your encoder is &quot;smart&quot; and is counting for you, so you only fetch the current value of the encoder, you are not counting the pulses.</li>
+<li>You are counting the pulses from your encoder and </li>
+</ul>
+
+<h1>First case</h1>
+
+<p>Fetch/publish the encoder value at any rate you need, or fetch the value only when you require it. Use time-stamps and everything should be ok.</p>
+
+<h1>Second case</h1>
+
+<p>You really shouldn&#39;t rely on &quot;software&quot; for this kind of task, you should set-up an interrupt on your micro-controller / microprocessor so that every-time a pulse appears from the encoder; a variable is changed to reflect the new encoder position.</p>
+
+<p>The interrupt should do as least a possible so that you are sure every-time a pulse is triggered, your micro-controller is ready to enter the interrupt again. (don&#39;t do anything else than updating the value inside this interrupt, maybe just set the time-stamp of the data).</p>
+
+<p>In an other thread, you should set up a loop that will get the current encoder position and publish it with a time-stamp. Make sure you don&#39;t have data races because the encoder position value is shared between the interrupt and the loop thread.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20682">VictorLamoine</a> on 2017-11-24 11:46:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS dropping messages - How to predict it - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/389347">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS dropping messages - How to predict it</h2>
+      <div class="question">
+        <p>Good day.</p>
+
+<p><strong>Situation:</strong>
+On A RPI4 (8gb RAM, Ubuntu 18.04 server), I&#39;m recording a rosbag with three different topics (IMU at 200 hz with messages of 0.35 kb; Lidar at 10 hz with messages of 190 kb; and video (different resolutions of compressed images at 30 hz). All of them using c++/ROS packages.</p>
+
+<p>When recording the bag using 640x480 video, there is no problem during replaying as the frecuency is the right one for all topics. BUT, when recording at 1920 x 1080 (400 kb per message) set at 30 hz, the recorded bag is actually at 11 hz for the video and the IMU topic get affected decreasing the frecuency to only 160 hz. </p>
+
+<p>Im using a Sandisk extreme mini sd card (up to 70 mb per second) and I need to record all messages in the right order so increasing the buffer size will not help.</p>
+
+<p><strong>Question:</strong>
+ - ROS related: Is there a way in ROS to indicate or predict the limiting factor (i.e: RAM usage )?
+ - Aditional question: Any good solutions for this? Will increase RAM memory solve this problem?</p>
+
+<p>Thanks in advance!
+ - </p>
+
+        <div class="owner"><p>Asked by <a href="/users/87992">camilo.chiang</a> on 2021-10-24 14:08:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Just to be clear: You are recording the <code>image_raw/compressed</code> topic, and the compression type is set to JPEG, correct? I believe the CPU power required for JPEG compression on the Raspberry Pi is the bottleneck, so it has nothing to do directly with ROS, writing to the SD card, rosbag or the amount of RAM. You could check this by running <code>rostopic hz</code> on the compressed image topic on the live system. Also running <code>top</code> or <code>htop</code> could help - it should show you if the CPU is maxed out.</p>
+
+<p>Unfortunately, saving the uncompressed images is probably also not an option, since the data rate is in the order of 1920×1080×3×30/(1024×1024) = 178 MB/s. If you are going to record very short rosbags only, you can increase the amount of RAM buffer that rosbag uses with the command line option <code>rosbag record --buffsize=SIZE</code>, where <code>SIZE</code> is the buffer size in MB (default: 256 MB), but at that data rate, it will only last a minute or so.</p>
+
+<p>I guess recording a 30 Hz image stream in 1080p is just not going to work on a Raspi4.</p>
+
+<p><strong>Edit in response to comment:</strong></p>
+
+<p>Online compression to JPEG for an even bigger image stream (3840x2160@30Hz) will be a challenge on most &quot;embedded&quot; CPUs. You can benchmark your own system by installing <code>sudo apt install libjpeg-turbo-test</code> and running <code>tjbench</code>. On my laptop CPU (Intel(R) Core(TM) i9-10885H CPU @ 2.40GHz), I get a <em>compression</em> throughput of 233 Megapixels/sec and <em>decompression</em> throughput of 272 Megapixels/sec. The DJI Manifold 2-C has a Intel Core i7-8550U, which gets a <em>decompression</em> throughput of 176 Megapixels/sec according to <a href="https://openbenchmarking.org/test/pts/tjbench">this page</a>, so the compression throughput should be about <strong>150 Megapixels/sec</strong> (around 3 times faster than the Raspberry Pi 4).</p>
+
+<p>You would need:</p>
+
+<ul>
+<li>for 640×480@30Hz: 9.2 Megapixels/sec</li>
+<li>for 1920×1080@30Hz: 62.2 Megapixels/sec</li>
+<li>for 3840×2160@30Hz: 248.8 Megapixels/sec</li>
+</ul>
+
+<p>Note that the values from <code>tjbench</code> are for the <code>libjpeg-turbo</code> library, but OpenCV (which is used by the ROS <code>image_transport_plugin</code> for compression) uses the slower <code>libjpeg</code> library, which can be up to 2-6x slower. It is possible to build OpenCV with <code>libjpeg-turbo</code> and then rebuild all ROS packages that depend on OpenCV. I have done it, but it&#39;s a huge hassle and I wouldn&#39;t recommend it if it can be avoided.</p>
+
+<p>The Raspberry Pi&#39;s ARMv8 Cortex-A72 has a decompression throughput of 61 Megapixels/sec according to <a href="https://openbenchmarking.org/test/pts/tjbench">this page</a>, so let&#39;s guess the compression throughput should be around 52 Megapixels/sec. What you have actually observed is 1920×1080@11Hz = 22.8 Megapixels/sec. This could be explained by the <code>libjpeg</code> vs. <code>libjpeg-turbo</code> issue discussed above, so calculate some large margin of error when speccing your CPU. In other words, I guess that the DJI Manifold 2-C realistically has a compression throughput closer to 60 Megapixels/sec, so it can just barely handle 1920×1080@30Hz and will definitely not be able to handle 3840×2160@30Hz.</p>
+
+<p>Maybe one thing you can try: <a href="http://wiki.ros.org/image_transport_plugins">image_transport_plugins</a> has a plugin called <code>theora_image_transport</code>, which is a plugin that compressed image topics using the Theora video codec. Maybe it can compress faster than JPEG, I haven&#39;t tested that yet. You can easily switch to Theora by running  <code>rosrun rqt_rqconfigure rqt_reconfigure</code>, so you don&#39;t even need to change any code.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22"></a> on 2021-10-25 08:02:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hei Martin!
+ 1. Thanks for your answer. You were right. After rechecking the live system , the CPU usage is above 100 at 30 and 15 hz. I can still use it at 6 hz (25% CPU usage) but is not ideal.
+ 2. Then, I will assume that there is no a standard way from ROS to inform about the lack of CPU power to reach the required frequency. My option is to change the code and check loop_rate.sleep() . If this value is lower than 0 then i will add a warning.
+3. Non ROS related : Do you have any suggestions of how I could calculate which CPU should be able to do this? I&#39;m planning to use higher resolutions in the future but I&#39;m afraid that the new CPU could not manage it (3840x2160 - 30 hz. I have been thinking about DJI manifold-C ).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87992">camilo.chiang</a> on 2021-10-25 08:54:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>See my edit for my response!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22">Martin Günther</a> on 2021-10-25 10:01:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This needs more upvotes.</p>
+
+<p>Instead of vagueries based on intuition and previous experience, you actually used a representative benchmark and describe some objective measurements.</p>
+
+<p>This question (+1 @camilo.chiang for asking) and your answer Martin are a really nice example of how something may seem like it&#39;s bottlenecked &quot;on ROS&quot; or &quot;message passing&quot;, but where it turns out even the basic IO of (de)compression is just too much for the system used.</p>
+
+<blockquote>
+<p>I guess that the DJI Manifold 2-C realistically has a compression throughput closer to 60 Megapixels/sec, so it can just barely handle 1920×1080@30Hz [..]</p>
+</blockquote>
+
+<p>even stronger: it can barely handle <em>a single stream</em>. The op describes several more, with different resolutions.</p>
+
+<hr>
+
+<p>Edit: perhaps switching to something like <a href="https://github.com/swri-robotics/imagezero_transport">swri-robotics/imagezero_transport</a> (or other alternative compression) could help. But it will all depend on performance of the system used.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-25 10:05:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>And if the system has hw support for jpeg/png/x264 compression, there are <code>image_transport</code> plugins which can use those (for JPEG you could even just package the already compressed payload).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-25 10:11:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, using HW support actually seems like the best way to do it. Many cameras have the option of outputting a mjpeg stream. E.g., this node reads the mjpeg stream from a network camera and directly publishes it as a compressed image: <a href="https://github.com/chadrockey/mjpeg_network_camera">https://github.com/chadrockey/mjpeg_network_camera</a> . Many USB cameras can also output a mjpeg stream. If you can get a mjpeg stream from your camera and directly copy the bitstream into a CompressedImage message, that would eliminate any need for jpeg compression on the CPU and should easily work with huge images.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22">Martin Günther</a> on 2021-10-27 02:16:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>In #q379644 we discussed some (hw accelerated via FFMPEG&#39;s NVENC support fi) x264 <code>image_transport</code> plugins.</p>
+
+<p>May also be an option.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-27 02:42:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks guys :) I learn so much with this! I really appreciate it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87992">camilo.chiang</a> on 2021-10-27 03:00:45 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

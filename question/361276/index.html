@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Archive Download Failure from Buildfarm - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/361276">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Archive Download Failure from Buildfarm</h2>
+      <div class="question">
+        <p>We have a ROS2 package that is downloading a large file that we don&#39;t want to commit directly on the repository:
+<a href="https://github.com/cyberbotics/webots_ros2/blob/master/webots_ros2_desktop/setup.py#L28-L29">https://github.com/cyberbotics/webots_ros2/blob/master/webots_ros2_desktop/setup.py#L28-L29</a></p>
+
+<p>Unfortunately, this download is refused on the ROS2 buildfarm (<a href="http://build.ros2.org/job/Esrc_uB__webots_ros2_desktop__ubuntu_bionic__source/7/console):">http://build.ros2.org/job/Esrc_uB__webots_ros2_desktop__ubuntu_bionic__source/7/console):</a> </p>
+
+<pre><code>08:26:53 Traceback (most recent call last):
+08:26:53   File &quot;setup.py&quot;, line 29, in &lt;module&gt;
+08:26:53     os.path.join(os.path.dirname(__file__), archiveName))
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 248, in urlretrieve
+08:26:53     with contextlib.closing(urlopen(url, data)) as fp:
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 223, in urlopen
+08:26:53     return opener.open(url, data, timeout)
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 526, in open
+08:26:53     response = self._open(req, data)
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 544, in _open
+08:26:53     &#39;_open&#39;, req)
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 504, in _call_chain
+08:26:53     result = func(*args)
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 1368, in https_open
+08:26:53     context=self._context, check_hostname=self._check_hostname)
+08:26:53   File &quot;/usr/lib/python3.6/urllib/request.py&quot;, line 1327, in do_open
+08:26:53     raise URLError(err)
+08:26:53 urllib.error.URLError: &lt;urlopen error [Errno 111] Connection refused&gt;
+</code></pre>
+
+<p>So my question is, are we allowed to download files from the buildfarm, or is the Docker container not allowed to communicate with the outside world? And if not, what is the recommended way to deal with such cases?</p>
+
+<p>Thank you for the help.
+David</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40575">DavidMansolino</a> on 2020-09-10 02:41:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Once the sources are fetched network access should not be required to create a debian source package. I&#39;m not actually certain whether this is being intentionally blocked but it&#39;s reproducible off the buildfarm by cloning the release repository and trying to run
+<code>
+debian/rules clean
+</code>
+or
+<code>
+fakeroot debian/rules clean
+</code>
+in a Docker container with network access and the same set of packages used in the buildfarm containers yields the same result. I&#39;m not actually certain why the request is failing. I tried stracing it and when the setup.py script attempts to issue a connect(2) to localhost port 9. So if there&#39;s something in the debhelper / pybuild pipeline intercepting DNS requests and blocking them that could be the mechanism.</p>
+
+<p>Your setup.py is making a network request every time it is run which I already can&#39;t advise and furthermore. It also looks like it&#39;s attempting to pull archives larger than 1GB every single time setup.py is invoked even if the archive is already present locally which is going to be awful for individuals with low bandwidth or for our build environment where traffic outside the datacenter is not unlimited. I would suggest rethinking how this payload is fetched. At the very least, you shouldn&#39;t fetch it when it&#39;s not needed and you should use some mechanism to avoid re-fetching it if it is already present.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30752"></a> on 2020-09-11 13:57:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <blockquote>
+<p>I tried stracing it and when the setup.py script attempts to issue a connect(2) to localhost port 9</p>
+</blockquote>
+
+<p>The <code>discard</code> protocol? Is that perhaps used to determine whether a network connection is even possible/the stack is working?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-09-11 14:39:37 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>The discard protocol? </p>
+</blockquote>
+
+<p>Yep! The <code>/dev/null</code> of TCP and UDP. However this connection is only attempted when running via <code>debian/rules</code>. In the same environment I checked both python3 and curl and neither of them ever attempted to connect. Instead they both hit the local DNS server&#39;s port 53, which is why my best hypothesis with the current information is that something is intercepting and redirecting the system calls but I couldn&#39;t find any docs on what would do that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30752">nuclearsandwich</a> on 2020-09-11 15:20:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This must be some sort of new protection in the debian helpers. I know people have abused things in the past in similar ways. But i agree that this approach is not the optimal way. In particular we don&#39;t want to be distributing debian packages with 1Gb size or anything near that. They take up a lot of resources on our hosting infrastructure and a lot of bandwidth for our users. What is making these packages so big? Are there assets included? </p>
+
+<p>It would seem to me that we should be building webots here not downloading release binaries. In particular the logic for binaries gets pretty complicated for alternative architectures.</p>
+
+<p>Related the most common way to do this sort of thing in CMake is using the external project macros which can fetch things at build time. So I think this might be related to the python settings. And the other thought that this might be is that it doesn&#39;t have https certificates to fetch the https resource, so it might be being blackholed by the SSL enforcement.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2020-09-11 16:42:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you all for these information, it is now more clear why it is failing (and also why we should avoid this), we will change our package to avoid including this dependency inside, this will be cleaner and at the same time resolve this issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40575">DavidMansolino</a> on 2020-09-15 04:50:48 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Getting position of an object to be shown as a marker - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417757">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Getting position of an object to be shown as a marker</h2>
+      <div class="question">
+        <p>I am finding a problem to define the exact position of a simple bluesquare using camera and laserscan, I am using ros noetic and turtlebot for the simulation. I tried a lot of solution in my vision module but I still can&#39;t get it right. The best outcomes that I had was that the correct position will be calculated correctly only if the camera is facing the object with angle 0, that means the object has to be in the middle of the image, otherwise it will rotate with it or follow the wall line instead.</p>
+
+<p>I am not sure if the problem is a miscalculation in the x and y values that I defined or is it when setting the position for <strong>blueSquareMap</strong></p>
+
+<p>This is how I do the transformation:
+      <code>transformStamped = tfBuffer.lookupTransform(&quot;map&quot;, &quot;base_scan&quot;, ros::Time(0));</code></p>
+
+<p>and this is the code I have now:</p>
+
+<pre><code>geometry_msgs::PointStamped get_point()
+{
+     geometry_msgs::PointStamped p;
+     p.header.frame_id = &quot;map&quot;;
+     p.header.stamp = ros::Time::now();
+
+     p.point.x = transformStamped.transform.translation.x;
+     p.point.y = transformStamped.transform.translation.y;
+     p.point.z = transformStamped.transform.translation.z;
+
+return p;
+}
+
+
+// Extract blue square marker positions
+for (const auto &amp;contour : blueContours)
+{
+    double area = cv::contourArea(contour); // Get how big is the object
+
+    if (area &gt; 100)
+    {
+        // Calculate coords of the middle
+        cv::Rect boundingRect = cv::boundingRect(contour);
+        geometry_msgs::Point markerPoint;
+        markerPoint.x = boundingRect.x + boundingRect.width / 2;
+        markerPoint.y = boundingRect.y + boundingRect.height / 2;
+        markerPoint.z = 0.0;
+
+        // Adjust camera image and laser scanner
+        double angle_offset = ((markerPoint.x - 320) / 320);
+        double adapted_camera_angle = estimated_camera_angle * angle_offset;
+
+        // Calculate the angle in which the blue square is
+        double final_angle = fmod((2 * M_PI + adapted_camera_angle), (2 * M_PI));
+        // Set the laser index to read from
+        int laserscan_index = static_cast&lt;int&gt;(final_angle / laserScan.angle_increment);
+        laserscan_index = fmod((360 - laserscan_index), (360));
+        // Read distance from the laserscanner
+        double laserscan_range = laserScan.ranges.at(laserscan_index);
+
+        ROS_INFO(&quot;[BLUE] Angle: %.2f - Index: %i&quot;, final_angle * 180 / M_PI, laserscan_index);
+        ROS_INFO(&quot;[BLUE] Distance: %.2f   |   Contour area: %.2f&quot;, laserscan_range, area);
+
+        // Calculate the position of the blue square
+        double x = cos(final_angle) * laserscan_range;
+        double y = sin(final_angle) * laserscan_range;
+
+        // Point with the postition to transform
+        geometry_msgs::PointStamped blueSquareMap = get_point();
+
+        tf2::Quaternion q;
+        tf2::convert(transformStamped.transform.rotation, q);
+        double rotation = tf2::getYaw(q);
+
+        ROS_INFO(&quot;[BLUE] ROTATION1: %.2f&quot;, rotation * 180 / M_PI);
+        // laserScan.ranges.at(final_angle)
+        blueSquareMap.point.x += laserScan.ranges.at(final_angle) * cos(final_angle * laserScan.angle_increment + laserScan.angle_min + rotation);
+        blueSquareMap.point.y += laserScan.ranges.at(final_angle) * sin(final_angle * laserScan.angle_increment + laserScan.angle_min + rotation);
+
+        // Set the color of the marker
+        std_msgs::ColorRGBA blueColor;
+        blueColor.r = 0.0;
+        blueColor.g = 0.0;
+        blueColor.b = 1.0;
+        blueColor.a = 1.0;
+
+        publishMarker(blueSquareMap.point, std::to_string(laserscan_range), blueColor, &quot;map&quot;, &quot;blue_markers&quot;, 0, visualization_msgs::Marker::CUBE, blueSquarePublisher);
+    }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/166133">turtlebot_fan</a> on 2023-07-26 12:52:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi!</p>
+
+<p>Please tell me if I have got correctly what you did:</p>
+
+<ul>
+<li>Get pixel coordinates of the object from the image</li>
+<li>Compute the angle of the object wrt the &quot;forward&quot; direction of the robot, using the horizontal pixel coordinate</li>
+<li>Use the angle value to get the corresponding laser value, i.e. the distance from the robot</li>
+<li>Transform to the map RF and publish the marker</li>
+</ul>
+
+<p>A couple of things that look odd to me are:</p>
+
+<ul>
+<li>you do not take into account (as far as I can see) any <code>sensor_msgs/CameraInfo</code> message when converting from pixel to world coordinates. I would have expected, once you got your distance from laser, to see something like <a href="https://stackoverflow.com/questions/38909696/2d-coordinate-to-3d-world-coordinate">this</a>.</li>
+<li>it looks like you are getting the <code>base_scan</code> to <code>map</code> transform, and then manually transforming the marker position. Why not to use <a href="http://docs.ros.org/en/jade/api/tf/html/c++/classtf_1_1Transformer.html"><code>tf::TransformListener::transformPoint()</code></a> instead?</li>
+</ul>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69377">bluegiraffe-sc</a> on 2023-07-27 03:20:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for taking the time, yes you get it very correct understanding the code.
+Like you said I don&#39;t rely on msgs from CameraInfo, I don&#39;t know how will they be helpful for me. I do my lookupTransform in main and then have a synced callback between laser and camera topics that looks like this.</p>
+
+<pre><code>void synchronizedCallback(const sensor_msgs::ImageConstPtr &amp;imageMsg, const sensor_msgs::LaserScanConstPtr &amp;scanMsg) {
+laserScan = *scanMsg;
+try
+{
+    cv::Mat frame = cv_bridge::toCvShare(imageMsg, &quot;bgr8&quot;)-&gt;image;
+    cv::Mat hsvImage;
+    cv::cvtColor(frame, hsvImage, cv::COLOR_BGR2HSV);
+
+    detect_blue_markers(hsvImage);
+    // ! detect_red_markers(hsvImage);
+}
+catch (cv_bridge::Exception &amp;e)
+{
+    ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+}
+}
+</code></pre>
+
+<p>I never heard or read about transformPoint(), so I will have look how to use and see if it brings something</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/166133">turtlebot_fan</a> on 2023-07-27 06:46:55 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I am going again through your code. How did you get the <code>estimated_camera_angle</code>, which I guess is the camera <em>angle of view</em> along in the horizontal direction? And what is the meaning of <code>M_PI</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69377">bluegiraffe-sc</a> on 2023-07-28 09:28:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>estimated camera angle ist set to PI / 4 (45 degrees) as a constant for the camera field of view.
+M_PI is just pi value from math lib</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/166133">turtlebot_fan</a> on 2023-07-28 10:51:11 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ok, the <code>M_PI</code> meaning was indeed pretty clear, sorry for the super-dumb question.</p>
+
+<p>Regarding the estimated camera angle, how did you find it? From device datasheet? From calibration?
+You can see <a href="https://answers.ros.org/question/357799/is-there-a-topic-for-camera-fov-info/">here</a> how to calculate it from focal length (that you can get in turn from <code>CameraInfo</code> messages).</p>
+
+<p>Finally (for this round), what is the meaning of</p>
+
+<pre><code>// Calculate the angle in which the blue square is
+double final_angle = fmod((2 * M_PI + adapted_camera_angle), (2 * M_PI));
+</code></pre>
+
+<p>You are adding the <code>adapted_camera_angle</code> to a 180° angle, and the <code>adapted_camera_angle</code> will always be less than 180° (it can reach up to 45°, right?). The result of the ratio will always be 1, with remainder (which is what you are storing into <code>final_angle</code>) equal to <code>adapted_camera_angle</code>.</p>
+
+<p>What am I not understanding about your pipeline?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69377">bluegiraffe-sc</a> on 2023-07-31 05:45:12 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

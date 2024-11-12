@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Extracting kinect depth_registered image - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/60312">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Extracting kinect depth_registered image</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/50189/extracting-kinect-depth-registered-image">https://robotics.stackexchange.com/questions/50189/extracting-kinect-depth-registered-image</a>.</p>
+        <p>Hi everybody,</p>
+
+<p>I am using Ubuntu 12.10 with ROS Groovy.
+My problem is that I would like to extract the depth_registered image, in the same way I do it with the rgb image (in order to be able to do some processing outside ROS).</p>
+
+<p>Basically, I am using the tutorial <a href="http://www.ros.org/wiki/rosbag/Tutorials/Exporting%20image%20and%20video%20data">Exporting image and video data</a>. But for depth, it doesn&#39;t work, because image is either float, either uint (see <a href="http://www.ros.org/wiki/openni_launch">here</a> for details on format)... but not bgr8 like image_view would like...</p>
+
+<p>Any idea of another package doing the same thing ?
+Or how I could have my images quickly, without doing all the computation by hand (or writing a node doing the transformation format) ?</p>
+
+<p>Thanks in advance,</p>
+
+<p>Bests regards,</p>
+
+<p>Stéphane</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2013-04-09 05:09:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi everybody,</p>
+
+<p>so the solution is to take the extract_images file from the package image_view, and to modify it :</p>
+
+<p>just modify the </p>
+
+<pre><code>bgr8
+</code></pre>
+
+<p>and</p>
+
+<pre><code>mono8
+</code></pre>
+
+<p>to </p>
+
+<pre><code>sensor_msgs::image_encodings::TYPE_32FC1
+</code></pre>
+
+<p>Don&#39;t forget to add at the top : </p>
+
+<pre><code>#include &lt;sensor_msgs/image_encodings.h&gt;
+</code></pre>
+
+<p>Last but not least add in your manifest </p>
+
+<pre><code>&lt;depend package=&quot;cv_bridge&quot;/&gt;
+</code></pre>
+
+<p>The results will be, as in the original file, jpg files. However, don&#39;t be frightened if they look black, because values are given in meter (for depth_registered/image).</p>
+
+<p>Here is the whole code :</p>
+
+<pre><code>// modified version for depth extraction
+
+/*********************************************************************
+* Software License Agreement (BSD License)
+*
+* Copyright (c) 2008, Willow Garage, Inc.
+* All rights reserved.
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions
+* are met:
+*
+* * Redistributions of source code must retain the above copyright
+* notice, this list of conditions and the following disclaimer.
+* * Redistributions in binary form must reproduce the above
+* copyright notice, this list of conditions and the following
+* disclaimer in the documentation and/or other materials provided
+* with the distribution.
+* * Neither the name of the Willow Garage nor the names of its
+* contributors may be used to endorse or promote products derived
+* from this software without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+* &quot;AS IS&quot; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+* LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+* FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+* COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+* INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+* BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+* CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+* LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+* ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+* POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+
+#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/Image.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+
+#include &lt;boost/thread.hpp&gt;
+#include &lt;boost/format.hpp&gt;
+
+class ExtractImages
+{
+private:
+  image_transport::Subscriber sub_;
+
+  sensor_msgs::ImageConstPtr last_msg_;
+  boost::mutex image_mutex_;
+
+  std::string window_name_;
+  boost::format filename_format_;
+  int count_;
+  double _time;
+  double sec_per_frame_;
+
+#if defined(_VIDEO)
+  CvVideoWriter* video_writer;
+#endif //_VIDEO
+
+public:
+  ExtractImages(const ros::NodeHandle&amp; nh, const std::string&amp; transport)
+    : filename_format_(&quot;&quot;), count_(0), _time(ros::Time::now().toSec())
+  {
+    std::string topic = nh.resolveName(&quot;image&quot;);
+    ros::NodeHandle local_nh(&quot;~&quot;);
+
+    std::string format_string;
+    local_nh.param(&quot;filename_format&quot;, format_string, std::string(&quot;frame%04i.jpg&quot;));
+    filename_format_.parse(format_string);
+
+    local_nh.param(&quot;sec_per_frame&quot;, sec_per_frame_, 0.1);
+
+    image_transport::ImageTransport it(nh);
+    sub_ = it.subscribe(topic, 1, &amp;ExtractImages::image_cb, this, transport);
+
+#if defined(_VIDEO)
+    video_writer = 0;
+#endif
+
+    ROS_INFO(&quot;Initialized sec per frame to %f&quot;, sec_per_frame_);
+  }
+
+  ~ExtractImages()
+  {
+  }
+
+  void image_cb(const sensor_msgs::ImageConstPtr&amp; msg)
+  {
+    boost::lock_guard&lt;boost::mutex&gt; guard(image_mutex_);
+
+    // Hang on to message pointer for sake of mouse_cb
+    last_msg_ = msg;
+
+    // May want to view raw bayer data
+    // NB: This is hacky, but should be OK since we have only one image CB.
+    if (msg-&gt;encoding.find(&quot;bayer&quot;) != std::string::npos)
+      boost::const_pointer_cast&lt;sensor_msgs::Image&gt;(msg)-&gt;encoding = sensor_msgs::image_encodings::TYPE_32FC1;
+
+    cv::Mat image;
+    try
+    {
+      image = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::TYPE_32FC1)-&gt;image;
+    } catch(cv_bridge::Exception)
+    {
+      ROS_ERROR(&quot;Unable to convert %s image to 32FC1&quot;, msg-&gt;encoding.c_str());
+    }
+
+    double delay = ros::Time::now().toSec()-_time;
+    if(delay &gt;= sec_per_frame_)
+    {
+      _time = ros::Time::now().toSec();
+
+      if (!image.empty()) {
+        std::string filename = (filename_format_ % count_).str();
+
+#if !defined(_VIDEO)
+        cv::imwrite(filename, image);
+#else
+        if(!video_writer)
+        {
+            video_writer = cvCreateVideoWriter(&quot;video.avi&quot;, CV_FOURCC(&#39;M&#39;,&#39;J&#39;,&#39;P&#39;,&#39;G&#39;),
+                int(1.0/sec_per_frame_), cvSize(image-&gt;width, image-&gt;height));
+        }
+
+        cvWriteFrame(video_writer, image);
+#endif // _VIDEO
+
+        ROS_INFO(&quot;Saved image %s&quot;, filename.c_str());
+        count_++;
+      } else {
+        ROS_WARN(&quot;Couldn&#39;t save image, no data!&quot;);
+      }
+    }
+  }
+};
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;extract_images&quot;, ros::init_options::AnonymousName);
+  ros::NodeHandle n;
+  if (n.resolveName(&quot;image&quot;) == &quot;/image&quot;) {
+    ROS_WARN(&quot;extract_images: image has not been remapped! Typical command-line usage:\n&quot;
+             &quot;\t$ ./extract_images image:=&lt;image topic&gt; [transport]&quot;);
+  }
+
+  ExtractImages view(n, (argc &gt; 1) ? argv[1] : &quot;raw&quot;);
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Have a good day everyone,</p>
+
+<p>Bests,</p>
+
+<p>Stéphane</p>
+
+<p>[EDIT] : SYNCHRONIZED VERSION for extracting rgb and depth at the same time. It may not be the best solution (using API would be better), but at least it works. I did not programm it (one of my colleague did this trick) and I do not clean the code, I let it &quot;as it&quot;, and just hope it can help people.</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;iostream&gt;
+
+#include &lt;sensor_msgs/Image.h&gt;
+
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/synchronizer.h&gt;
+#include &lt;message_filters/sync_policies/approximate_time.h&gt;
+
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+
+using namespace std;
+// Initializing the counters
+int count_rgb = 1;
+int count_depth = 1;
+double spf;
+//
+  cv::Mat image1;
+void depthToCV8UC1(const cv::Mat&amp; float_img, cv::Mat&amp; mono8_img);
+//
+// Function for converting the msg to jpg
+void extraction(const sensor_msgs::ImageConstPtr&amp; msg, int* count, ros::NodeHandle&amp; node_handle)
+{
+    //ROS_WARN(&quot;Entering extraction.&quot;);
+    // May want to view raw bayer data
+    // NB: This is hacky, but should be OK since we have only one image CB.
+    if (msg-&gt;encoding.find(&quot;bayer&quot;) != std::string::npos)
+    {
+      if (strcmp(msg-&gt;encoding.c_str(),&quot;32FC1&quot;)==0)
+      {
+      boost::const_pointer_cast&lt;sensor_msgs::Image&gt;(msg)-&gt;encoding = sensor_msgs::image_encodings::TYPE_32FC1;
+      }else
+    {
+     boost::const_pointer_cast&lt;sensor_msgs::Image&gt;(msg)-&gt;encoding = &quot;mono8&quot;;
+    }
+    }
+
+    cv::Mat image;
+    try
+    {
+    if (strcmp(msg-&gt;encoding.c_str(),&quot;32FC1&quot;)==0)
+      {
+    //ROS_WARN(&quot;Sharing depth image.&quot;);
+      image = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::TYPE_32FC1)-&gt;image;
+//
+     depthToCV8UC1(image, image1);
+    image = image1;
+//
+      }else
+    {
+    //ROS_WARN(&quot;Sharing rgb image.&quot;);
+     image = cv_bridge::toCvShare(msg, &quot;bgr8&quot;)-&gt;image;
+    }
+
+    } catch(cv_bridge::Exception)
+    {
+     if (strcmp(msg-&gt;encoding.c_str(),&quot;32FC1&quot;)==0)
+      {
+      ROS_ERROR(&quot;Unable to convert %s image to 32FC1&quot;, msg-&gt;encoding.c_str());
+      }else
+    {
+     ROS_ERROR(&quot;Unable to convert %s image to bgr8&quot;, msg-&gt;encoding.c_str());
+    }
+
+    }
+
+    if (!image.empty()) {
+    //ROS_WARN(&quot;Image converted.&quot;);
+    std::string filename;
+    std::stringstream sstm;
+    std::ostringstream oss;
+    std::string path1_string;
+    node_handle.getParam(&quot;path1&quot;, path1_string);
+    std::string path2_string;
+    node_handle.getParam(&quot;path2&quot;, path2_string);
+    /*if (node_handle.hasParam(&quot;path&quot;))
+    {
+    ROS_WARN(&quot;the path.c_str() is %s&quot;,path_string.c_str());
+    }
+    else
+    {
+    ROS_WARN(&quot;No path parameter found&quot;);
+    }*/
+
+    oss &lt;&lt; *count;
+    if (strcmp(msg-&gt;encoding.c_str(),&quot;32FC1&quot;)==0)
+        {
+    //ROS_WARN(&quot;Creating depth name.&quot;);
+    sstm &lt;&lt; path1_string.c_str() &lt;&lt; &quot;depth_&quot; &lt;&lt; oss.str() &lt;&lt; &quot;.jpg&quot;;
+        }else
+    {
+    //ROS_WARN(&quot;Creating rgb name.&quot;);
+    sstm &lt;&lt; path2_string.c_str() &lt;&lt; &quot;rgb_&quot; &lt;&lt; oss.str() &lt;&lt; &quot;.jpg&quot;;
+    }
+    filename = sstm.str();
+
+    cv::imwrite(filename, image);
+    ROS_INFO(&quot;Saved image %s&quot;, filename.c_str());
+        *count = *count +1;
+        } else {
+        ROS_WARN(&quot;Couldn&#39;t save image, no data!&quot;);
+        }
+
+}
+
+
+
+void callback(ros::NodeHandle&amp; node_handle, const sensor_msgs::ImageConstPtr&amp; Depth_msg, const sensor_msgs::ImageConstPtr&amp; RGB_msg)
+{   
+    //ros::Rate loop_rate(30);
+    //ROS_WARN(&quot;Entering the callback.&quot;);
+    node_handle.getParam(&quot;sec_per_frame&quot;,spf);
+    //secperframe(node_handle,spf);
+    int a= 1.0/spf;
+    ros::Rate loop_rate(a);
+    //ROS_INFO(&quot;looprate %i&quot;,a);
+    //ROS_WARN(&quot;Starting extraction of depth.&quot;);
+    extraction(Depth_msg,&amp;count_depth, node_handle);
+    //ROS_WARN(&quot;Starting extraction of rgb.&quot;);
+    extraction(RGB_msg,&amp;count_rgb, node_handle);
+}
+
+
+
+int main(int argc, char **argv)
+{
+
+  // Initialization
+  ros::init(argc, argv, &quot;extraction_synchronized&quot;);
+
+  // Handler
+  ros::NodeHandle nh;
+
+  // Handler
+  ros::NodeHandle nh_priv(&quot;~&quot;);
+
+  // Suscribers to the RGB and depth kinect message
+  message_filters::Subscriber&lt;sensor_msgs::Image&gt; depth_sub(nh, &quot;depth_image&quot;, 10);
+    ROS_INFO(&quot;%s&quot;, &quot;Suscriber of Depth set&quot;);
+  message_filters::Subscriber&lt;sensor_msgs::Image&gt; rgb_sub(nh, &quot;rgb_image&quot;, 10);
+    ROS_INFO(&quot;%s&quot;, &quot;Suscriber of RGB set&quot;);
+
+  // Aproximate Time Synchronizer
+typedef message_filters::sync_policies::ApproximateTime&lt;sensor_msgs::Image, sensor_msgs::Image&gt; MySyncPolicy;
+  // ApproximateTime takes a queue size as its constructor argument, hence MySyncPolicy(10)
+  message_filters::Synchronizer&lt;MySyncPolicy&gt; sync(MySyncPolicy(10), depth_sub, rgb_sub);
+  sync.registerCallback(boost::bind(&amp;callback,nh_priv,_1, _2));
+  ROS_INFO(&quot;%s&quot;, &quot;Depth and RGB synchronized&quot;);
+
+  ros::spin();
+
+
+  return 0;
+}
+
+// ADDED to have good conversion
+void depthToCV8UC1(const cv::Mat&amp; float_img, cv::Mat&amp; mono8_img){
+  //Process images
+  if(mono8_img.rows != float_img.rows || mono8_img.cols != float_img.cols){
+    mono8_img = cv::Mat(float_img.size(), CV_8UC1);}
+  cv::convertScaleAbs(float_img, mono8_img, 100, 0.0);
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3548">Stephane.M</a> on 2013-04-11 04:50:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi, Thanks for the answer. I tried your code but i still get black jpg images. What i would like to have is images similar to /depth_registered/image so I can extract depth information to generate point clouds. Can you tell me how to achieve that? Thanks,</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4585">Faizan A.</a> on 2013-07-16 07:11:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Black jpeg images is normal, as the information is coded as a distance, so it won&#39;t go until value 255 :-) if you try to watch the images (for example in matlab with the function imagesc) you will see what I mean.
+I edited my answer to have also a synchronized extraction of rgb and depth.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2013-07-16 07:17:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What I mean is that you have to &quot;rescale&quot; the pixel intensity values of the images in order to have an image &quot;as you see in ROS&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2013-07-16 07:32:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That did the trick for me. Thanks a lot Stephane :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4585">Faizan A.</a> on 2013-07-16 22:37:04 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

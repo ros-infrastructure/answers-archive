@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Transformation between two coordinate frames (tf) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/415136">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Transformation between two coordinate frames (tf)</h2>
+      <div class="question">
+        <h2>PROBLEM SOLVED</h2>
+
+<p>The previous issue arose due to an incorrect configuration of the tracepen matrix, which was not right-handed. However, I have successfully resolved this problem by extracting the rotation and adjusting the orientation of the x and y axes accordingly. Consequently, the correct origin has been determined, and it remains unaffected by the position of the calibration socket.</p>
+
+<p>Moreover, this updated function incorporates improved error handling mechanisms to ensure smoother operation.</p>
+
+<p>The function:</p>
+
+<pre><code>def tracepenMatrix(self):
+    &quot;&quot;&quot;
+    Returns the transformation matrix of the tracepen device as a homogeneous 4x4 matrix.
+
+    This method retrieves the pose matrix from the controller, converts it into
+    a numpy array, and inserts it into the first three rows of a 4x4 identity matrix.
+    The resulting matrix represents the pose of the tracepen in homogeneous coordinates.
+
+    The transformation matrix consists of a 3x3 rotation matrix and a 1x3 translation vector. 
+    The rotation matrix is flipped along the z-axis to change the frame handedness.
+
+    Returns:
+        np.ndarray or None: A 4x4 homogeneous transformation matrix representing the pose of the tracepen.
+                            If the tracepen device is not available, it returns None.
+
+    Raises:
+        TypeError: If the pose matrix from the controller is not properly formed.
+    &quot;&quot;&quot;
+    try:
+        # Fetch pose matrix from controller device
+        raw_tracepen_matrix = np.array(list(self.v.devices[&quot;controller_1&quot;].get_pose_matrix()))
+    except KeyError:
+        print(&quot;Controller not available. Sure that the tracepen is turned on?&quot;)
+        return None
+    except TypeError:
+        print(&quot;Tracepen not available&quot;)
+        print(&quot;Is SteamVR running?&quot;)
+        return None
+
+    # Create 4x4 identity matrix
+    tracepen_matrix = np.eye(4)
+
+    # Set the translation vector in the matrix
+    tracepen_matrix[:3, 3] = raw_tracepen_matrix[:3, 3]
+
+    # Create z flip matrix to mirror along the z axis and change the frame handedness
+    flip_z_matrix = np.diag([-1, -1, 1])
+
+    # Extract rotation component of the raw matrix, apply z-flip and set in the tracepen matrix
+    tracepen_matrix[:3, :3] = raw_tracepen_matrix[:3, :3] @ flip_z_matrix
+
+    return tracepen_matrix
+</code></pre>
+
+<hr>
+
+<p>Many thanks for your help! I am so glad that this is finally <strong>solved</strong>.</p>
+
+<hr>
+
+<h2>PROGRESS. 90% THERE! </h2>
+
+<p>The problem is so stupid i am ashamed of sharing where it came from.</p>
+
+<blockquote>
+<p>Additionally: is the triad_vr you are using a local customised version? Searching for getPoseQuaternion() only returns your two posts on SO and this ROS Answers post.</p>
+</blockquote>
+
+<p>Yep. That is it.
+To my defense, i got the workspace from my supervisor and nerver questined that the base is faulty. But it is.</p>
+
+<p><strong>getPoseQuaternion()</strong> should not exist. The name alone is suspicious.</p>
+
+<p>A pose has 6DOF. Translation AND rotation. A quaternion  has 3DOF.
+The implementation was complete nonsense and also not necessary at all.</p>
+
+<p>triad<em>vr comes with get</em>pose_matrix() which i want anyways for furrther calculation of the calibration matrix.</p>
+
+<hr>
+
+<p><strong>With this, things look much better.</strong></p>
+
+<p>I changed the socket orientation to support the tracepen as i want it.
+The tracepen axis are:</p>
+
+<ul>
+<li>z axial, positive towards the tip </li>
+<li>x is towards right</li>
+<li>y down (right
+handed)</li>
+</ul>
+
+<p>Now i have the following behaviour:</p>
+
+<ul>
+<li>Moving the (real) pen in z direction moves it in z direction. Rotations around z are also as expected.</li>
+<li>Moving in +x (real) gives me -x in rviz. Also rotation around x is mirrored.</li>
+<li>Moving +y (real) gives me -y in rviz.Also rotation around y is mirrored.</li>
+</ul>
+
+<hr>
+
+<p>Further, the tracepen origin calculation depends on the socket position, which should not be the case.</p>
+
+<p>Also, it is near the world orign (front bottom left) when actually it should be sometwhere reat top right near the start of the panel holder arm(as the tracepenMatrix values for translation are 0 there.</p>
+
+<p>First calibration pose. Everything looks ok:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16843398657291179.png" alt="First calibration Pose"></p>
+
+<hr>
+
+<p>Now with socket moved 0.2 in +x (tracepen still plugged in the socket) - the tracepen should also move +0.2x, but moves -0.2X.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1684339916322143.png" alt="Now +0.2x"></p>
+
+<hr>
+
+<p>New calibration in this pose. </p>
+
+<p>The tracepen base frame changed its location. It should actually be independent of the calibration socket pose and remain constant. </p>
+
+<h2><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16843400146655774.png" alt="Second calibration pose"></h2>
+
+<p>The full, prettied code with all unnecessary stuff removed:
+<a href="https://github.com/Infraviored/ThesisStuff/blob/main/tracepen_node_v3">https://github.com/Infraviored/ThesisStuff/blob/main/tracepen_node_v3</a></p>
+
+<p>or also here:</p>
+
+<pre><code>#!/usr/bin/env python3
+
+import rospy
+from geometry_msgs.msg import PoseStamped, TransformStamped, Pose
+from std_msgs.msg import Bool, String
+import tf2_ros
+import tf
+
+import numpy as np
+import triad_openvr as triad_openvr
+
+import tf.transformations
+import rospkg
+import os
+
+import argparse
+
+
+class TracepenNode(object):
+    def __init__(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument(&quot;--record&quot;, action=&#39;store_true&#39;)
+        parser.add_argument(&quot;interval&quot;, type=float, nargs=&#39;?&#39;,
+                            default=250.0, help=&quot;Interval for TracepenNode&quot;)
+        args = parser.parse_args()
+        self.record = args.record
+
+        try:
+            self.v = triad_openvr.triad_openvr()
+        except Exception as ex:
+            if (type(ex).__name__ == &#39;OpenVRError&#39; and ex.args[0] == &#39;VRInitError_Init_HmdNotFoundPresenceFailed (error number 126)&#39;):
+                print(&#39;Cannot find the Tracepen.&#39;)
+                print(&#39;Is SteamVR running?&#39;)
+                print(&#39;Is the Tracepen turned on, connected, and paired with SteamVR?&#39;)
+                print(
+                    &#39;Are the Lighthouse Base Stations powered and in view of the tracepen?\n\n&#39;)
+            else:
+                rospy.logerr(
+                    f&quot;An exception of type {type(ex).__name__} occurred. Arguments:\n{ex.args}&quot;)
+            quit()
+
+        self.interval = 1/args.interval
+
+        rospy.loginfo(&#39;fmp_tracepen_node: initialized&#39;)
+
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+
+        print(self.waitForTracepen())
+        self.calibration()
+
+    def waitForTracepen(self):
+        &quot;&quot;&quot; Waits for the tracepen to be connected to the system
+
+        &quot;&quot;&quot;
+        tracepenMatrix = None
+        while tracepenMatrix is None:
+            tracepenMatrix = self.tracepenMatrix()
+            rospy.sleep(0.1)
+
+    def tracepenMatrix(self):
+        &quot;&quot;&quot;
+        Returns the tracepen matrix as a homogeneous 4x4 transformation matrix.
+
+        This method retrieves the pose matrix from the controller, converts it into
+        a numpy array, and inserts it into the first three rows of a 4x4 identity matrix.
+        The resulting matrix represents the pose of the tracepen in homogeneous coordinates.
+
+        Returns:
+            np.ndarray: A 4x4 homogeneous transformation matrix representing the pose of the tracepen.
+        &quot;&quot;&quot;
+        mirrorXYMatrix = np.array([[-1, 0, 0, 0],
+                                [0, -1, 0, 0],
+                                [0, 0, 1, 0],
+                                [0, 0, 0, 1]])
+        tracepenMatrix = np.eye(4)
+        tracepenMatrix[:3] = np.array(
+            list(self.v.devices[&quot;controller_1&quot;].get_pose_matrix()))
+        mirroredTracepenMatrix = mirrorXYMatrix@tracepenMatrix
+
+        return mirroredTracepenMatrix
+
+    def calculate_tf(self, parentFrame, childFrame, pose):
+        &quot;&quot;&quot;
+        Calculates a transformation from the &quot;world&quot; frame to a specified child frame,
+        based on a given PoseStamped message.
+
+        Args:
+            frameName (str): The name of the child frame for the transformation.
+            pose (PoseStamped): A PoseStamped message representing the pose of the child
+                frame relative to the &quot;world&quot; frame.
+
+        Returns:
+            TransformStamped: A TransformStamped message representing the transformation
+                from the &quot;world&quot; frame to the child frame.
+        &quot;&quot;&quot;
+        transformation = TransformStamped()
+        transformation.header.stamp = rospy.Time.now()
+        transformation.header.frame_id = parentFrame
+        transformation.child_frame_id = childFrame
+        transformation.transform.translation = pose.pose.position
+        transformation.transform.rotation = pose.pose.orientation
+        return transformation
+
+    def matrix_from_tf(self, tf_stamped):
+        translation = [tf_stamped.transform.translation.x,
+                    tf_stamped.transform.translation.y, tf_stamped.transform.translation.z]
+        rotation = [tf_stamped.transform.rotation.x, tf_stamped.transform.rotation.y,
+                    tf_stamped.transform.rotation.z, tf_stamped.transform.rotation.w]
+        tf_matrix = tf.transformations.translation_matrix(
+            translation) @ tf.transformations.quaternion_matrix(rotation)
+        return tf_matrix
+
+    def tf_from_matrix(self, matrix, parent_frame, child_frame):
+        translation = tf.transformations.translation_from_matrix(matrix)
+        rotation = tf.transformations.quaternion_from_matrix(matrix)
+        tf_stamped = TransformStamped()
+        tf_stamped.header.stamp = rospy.Time.now()
+        tf_stamped.header.frame_id = parent_frame
+        tf_stamped.child_frame_id = child_frame
+        tf_stamped.transform.translation.x = translation[0]
+        tf_stamped.transform.translation.y = translation[1]
+        tf_stamped.transform.translation.z = translation[2]
+        tf_stamped.transform.rotation.x = rotation[0]
+        tf_stamped.transform.rotation.y = rotation[1]
+        tf_stamped.transform.rotation.z = rotation[2]
+        tf_stamped.transform.rotation.w = rotation[3]
+        return tf_stamped
+
+    def calibration(self):
+        # I have a tracepen, a 3D tracked device. I can get its Data in ROS as tracepenPose(), but this Pose is w.r.t. some unknown_tracepenOrigin.
+        # So i want to find a calibration which transforms the data from this unknown frame to my world frame.
+
+        # Therefore i am looking for the tf(world,tracepenOrigin).
+
+        # The tracepenPose is w.r.t. some unknown tracepenOrigin. The tracepenPose is the transformation from the tracepenOriginin of this frame to the tracepen.
+        # As the tracepen is plugged, it is called tracepenPlugged.
+        matrix_tracepenOrigin_tracepenPlugged = self.tracepenMatrix()
+        tf_tracepenOrigin_tracepenPlugged = self.tf_from_matrix(
+            matrix_tracepenOrigin_tracepenPlugged, &quot;tracepenOrigin&quot;, &quot;tracepenPlugged&quot;)
+
+        matrix_tracepenPlugged_tracepenOrigin = np.linalg.inv(
+            matrix_tracepenOrigin_tracepenPlugged)
+
+        # I have a calibration socket which Pose i know relative to the world frame, so i know the tf(world,socket).
+        tf_world_socket = self.tf_buffer.lookup_transform(
+            &quot;world&quot;, &quot;socket&quot;,  rospy.Time())
+        matrix_world_socket = self.matrix_from_tf(tf_world_socket)
+        # while plugged, i know that tf(world,tracepenPlugged) must be the same as tf(world,socket).
+        # so matrix_world_tracepenPlugged = matrix_world_socket
+        matrix_world_tracepenPlugged = matrix_world_socket
+
+        self.matrix_world_tracepenOrigin = matrix_world_tracepenPlugged @ matrix_tracepenPlugged_tracepenOrigin
+
+    def run(self):
+        rate = rospy.Rate(4)
+
+        pkg_path = rospkg.RosPack().get_path(&#39;fmp_tracepen_node&#39;)
+        # Create the &#39;data&#39; directory inside the package directory (if it doesn&#39;t exist yet)
+        data_dir = os.path.join(pkg_path, &#39;data&#39;)
+        os.makedirs(data_dir, exist_ok=True)
+        # Open the file for writing before the while loop starts. Use mode=&#39;a&#39; to create the file if it doesn&#39;t exist yet.
+        with open(os.path.join(data_dir, &#39;tracepenPose.txt&#39;), &quot;a&quot;) as f:
+            while not rospy.is_shutdown():
+
+                # Get data from OpenVr
+                tracepenMatrix = self.tracepenMatrix()
+
+                # Publish the transformation from the world frame to the tracepenOrigin frame from the matrix of the calibration process.
+                self.tf_world_tracepenOrigin = self.tf_from_matrix(
+                    self.matrix_world_tracepenOrigin, &quot;world&quot;, &quot;tracepenOrigin&quot;)
+                self.tf_broadcaster.sendTransform(self.tf_world_tracepenOrigin)
+
+                tf_tracepenOrigin_tracepen = self.tf_from_matrix(
+                    tracepenMatrix, &quot;tracepenOrigin&quot;, &quot;tracepen&quot;)
+                self.tf_broadcaster.sendTransform(tf_tracepenOrigin_tracepen)
+
+                # Write to the file inside the while loop
+                if self.record == True:
+                    f.write(&quot;\n%s\n&quot; % tf_tracepenOrigin_tracepen)
+                print(&#39;\n\n %s \n\n&#39; % tf_tracepenOrigin_tracepen)
+
+                rate.sleep()
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        rospy.init_node(&#39;fmp_tracepen_node&#39;, anonymous=True)
+        tracepenNodeHandle = TracepenNode()
+        tracepenNodeHandle.run()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<hr>
+
+<h2>not important anymore</h2>
+
+<hr>
+
+<p><strong>Problem:</strong></p>
+
+<ul>
+<li>I have a tracepen, a 3D tracked device. </li>
+<li>I want to have its Pose w.r.t. the world frame. So tf(world,tracepen) is my goal.</li>
+<li>I can get its Data in ROS as tracepenPose(), but this Pose is w.r.t. some unknown tracepenOrig. So i get Data of the form tf(tracepenOrig,tracepen) with unknown tracepenOrig.</li>
+<li>I want to find a calibration process which gives me the transformation between world and tracepen_Orig tf(world,tracepenOrig).</li>
+<li>After having found this, i can apply this calibration transformation to my  tf(tracepenOrig,tracepen)  to obtain tf(world,tracepen)</li>
+<li>I have a calibration socket which Pose i know relative to the world frame, so i know the tf(world,socket).</li>
+<li>When i plug in the tracepen into the calibration socket, the tf(world,tracepenPlugged) must be the same as tf(world,socket).</li>
+</ul>
+
+<p><strong>Solution attempt</strong></p>
+
+<ul>
+<li>i pug in the tracepen to the socket</li>
+<li>i publish the Pose of the tracepen as tf(tracepenOrig,tracepenPlugged)</li>
+<li>i publish the transformation from world to socket as tf(world, socket)</li>
+<li>In plugged state, i know that tf(world,tracepenPlugged) must be the same as tf(world,socket)</li>
+<li>Or in as homogeneous transfomration: matrix<em>world</em>tracepenPlugged = matrix<em>world</em>socket</li>
+<li>I get the total homogeneous transformation from world to tracepenOrigin as</li>
+<li>matrix<em>world</em>tracepenOrigin = matrix<em>world</em>tracepenPlugged@ matrix<em>tracepenPlugged</em>tracepenOrigin</li>
+<li>from this i can publish the tf(world,tracepenOrigin)</li>
+<li>as i have the tracepenPose() as tf(tracepenOrigin, tracepen), i can now publish tf(world,tracepen)</li>
+</ul>
+
+<hr>
+
+<p>It almost works. 
+There is a tracepenOrigin frame published, with tracepen as child.
+While the tracepen is plugged in, the tracepen frame coincides with the socket frame. 
+but there remains unexpected bahaviour.</p>
+
+<hr>
+
+<p><strong>ERROR - TESTS</strong></p>
+
+<p>Reading out tracepenPose() directly and then moving it to find the 0 translation leads to a point on the right side up.
+I makred this with the Frame Demo Origin in the following images.</p>
+
+<p>The calulcated tracepenOrigin is not near this point. </p>
+
+<p>If everything works, the tracepenOrigin is found and should remain the same, independent of the Socket location.
+However when calulcating the tracepen Origin from 3 different socket locations, i get 3 different tracepen origin frames:</p>
+
+<p>First socket locaton</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16839065312260438.png" alt="First socket locaton"></p>
+
+<hr>
+
+<p>Second socket location, shiftet by x+0.4m from first</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16839065638021785.png" alt="Second socket location, shiftet by x+0.4m from first"></p>
+
+<hr>
+
+<p>Third socket location, rotated around x by 40 degrees from 2nd</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16839065831073107.png" alt="Third socket location, rotated around x by 40 degrees from 2nd"></p>
+
+<hr>
+
+<p>I think maybe this could be explained by wrongly defining the <code>tracepenPose()</code> rotation components. And the current assignment </p>
+
+<p><code>
+position.pose.orientation.x = tracepenpose[4]
+position.pose.orientation.y = tracepenpose[5]
+position.pose.orientation.z = tracepenpose[6]
+position.pose.orientation.w = tracepenpose[3]
+</code> </p>
+
+<p>also looks suspicious.
+I tried exchaning two indices, which completely cahnges the calculated tracepen Origin. 
+But i also did not find an order in which everything looks fine. </p>
+
+<p>Maybe the problem is here, maybe not.</p>
+
+<hr>
+
+<p><strong>Old tests</strong></p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16838168483235682.png" alt="after calibration everything looks fine"></p>
+
+<p>after calibration everything looks fine</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16838168772022068.png" alt="after moving the socket x+0.2 (tracepen still plugged), the tracepen moves in another dircetion. It should still be in the socket."></p>
+
+<p>after moving the socket x+0.2 (tracepen still plugged), the tracepen moves in another dircetion. It should still be in the socket.
+Also rotation of both frames is not the same.</p>
+
+<p><strong>CODE</strong></p>
+
+<pre><code>#!/usr/bin/env python3
+
+import rospy
+from geometry_msgs.msg import PoseStamped, TransformStamped, Pose
+from std_msgs.msg import Bool, String
+import tf2_ros
+import tf
+
+import numpy as np 
+import transforms3d
+from transforms import Transforms3DUtils
+from ur_msgs.msg import IOStates
+
+#tracepen dependencies
+import triad_openvr as triad_openvr
+import time
+
+
+import sys
+
+import tf.transformations
+
+
+class TracepenNode(object):
+  def __init__(self):
+
+    try:
+      self.v = triad_openvr.triad_openvr()
+    except Exception as ex:
+      if (type(ex).__name__ == &#39;OpenVRError&#39; and ex.args[0] == &#39;VRInitError_Init_HmdNotFoundPresenceFailed (error number 126)&#39;):
+        print(&#39;Cannot find the Tracepen.&#39;)
+        print(&#39;Is SteamVR running?&#39;)
+        print(&#39;Is the Tracepen turned on, connected, and paired with SteamVR?&#39;)
+        print(&#39;Are the Lighthouse Base Stations powered and in view of the tracepen?\n\n&#39;)
+      else:
+          rospy.logerr(f&quot;An exception of type {type(ex).__name__} occurred. Arguments:\n{ex.args}&quot;)
+      quit()
+
+    if len(sys.argv) == 1:
+      interval = 1/250
+    elif len(sys.argv) == 2:
+      interval = 1/float(sys.argv[1])
+    else:
+      print(&quot;Invalid number of arguments&quot;)
+      interval = False
+
+
+    self.rpy = PoseStamped()
+    self.calibPose = PoseStamped()
+    self.rawPose = PoseStamped()
+
+    rospy.loginfo(&#39;fmp_tracepen_node: initialized&#39;)
+
+    self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+    self.tf_buffer = tf2_ros.Buffer()
+    self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+    self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+
+    print(self.waitForTracepen())
+    self.calibration()
+
+
+  def waitForTracepen(self):
+    &quot;&quot;&quot; Waits for the tracepen to be connected to the system
+
+    &quot;&quot;&quot;
+    tracepenPose = None
+    while tracepenPose is None or (tracepenPose.pose.position.x == 0 and tracepenPose.pose.position.y == 0 and tracepenPose.pose.position.z == 0):
+          tracepenPose = self.tracepenPose()
+          rospy.sleep(0.1)
+    return tracepenPose
+
+
+  def tracepenPose(self):
+    &quot;&quot;&quot; Get the data from the VR tracker through the steamVR
+
+    rparam position: The position of the tracepen already fixed in the x, y and z directions
+    rtype position: geometry_msgs.PoseStamped()
+    &quot;&quot;&quot;
+    tracepenpose = self.v.devices[&quot;controller_1&quot;].getPoseQuaternion()
+    position = PoseStamped()
+
+    try:
+      position.pose.position.x = tracepenpose[0] #2
+      position.pose.position.y = tracepenpose[1] #0
+      position.pose.position.z = tracepenpose[2] #1
+      position.pose.orientation.x = tracepenpose[4]
+      position.pose.orientation.y = tracepenpose[5]
+      position.pose.orientation.z = tracepenpose[6]
+      position.pose.orientation.w = tracepenpose[3]
+    except:
+      rospy.logerr(&quot;fmp_tracepen_node: Data not received&quot;)
+
+    return position
+
+
+  def calculate_tf(self, parentFrame, childFrame, pose):
+    &quot;&quot;&quot;
+    Calculates a transformation from the &quot;world&quot; frame to a specified child frame,
+    based on a given PoseStamped message.
+
+    Args:
+        frameName (str): The name of the child frame for the transformation.
+        pose (PoseStamped): A PoseStamped message representing the pose of the child
+            frame relative to the &quot;world&quot; frame.
+
+    Returns:
+        TransformStamped: A TransformStamped message representing the transformation
+            from the &quot;world&quot; frame to the child frame.
+    &quot;&quot;&quot;
+    transformation = TransformStamped()
+    transformation.header.stamp = rospy.Time.now()
+    transformation.header.frame_id = parentFrame
+    transformation.child_frame_id = childFrame
+    transformation.transform.translation = pose.pose.position
+    transformation.transform.rotation = pose.pose.orientation
+    return transformation    
+
+
+
+  def matrix_from_tf(self, tf_stamped):
+    translation = [tf_stamped.transform.translation.x, tf_stamped.transform.translation.y, tf_stamped.transform.translation.z]
+    rotation = [tf_stamped.transform.rotation.x, tf_stamped.transform.rotation.y, tf_stamped.transform.rotation.z, tf_stamped.transform.rotation.w]
+    tf_matrix = tf.transformations.translation_matrix(translation) @ tf.transformations.quaternion_matrix(rotation)
+    return tf_matrix
+
+  def tf_from_matrix(self, matrix, parent_frame, child_frame):
+    translation = tf.transformations.translation_from_matrix(matrix)
+    rotation = tf.transformations.quaternion_from_matrix(matrix)
+    tf_stamped = TransformStamped()
+    tf_stamped.header.stamp = rospy.Time.now()
+    tf_stamped.header.frame_id = parent_frame
+    tf_stamped.child_frame_id = child_frame
+    tf_stamped.transform.translation.x = translation[0]
+    tf_stamped.transform.translation.y = translation[1]
+    tf_stamped.transform.translation.z = translation[2]
+    tf_stamped.transform.rotation.x = rotation[0]
+    tf_stamped.transform.rotation.y = rotation[1]
+    tf_stamped.transform.rotation.z = rotation[2]
+    tf_stamped.transform.rotation.w = rotation[3]
+    return tf_stamped
+
+
+  def calibration(self):
+    # I have a tracepen, a 3D tracked device. I can get its Data in ROS as tracepenPose(), but this Pose is w.r.t. some unknown_tracepenOrigin.
+    # So i want to find a calibration which transforms the data from this unknown frame to my world frame.
+
+    # Therefore i am looking for the tf(world,tracepenOrigin).
+
+
+    # The tracepenPose is w.r.t. some unknown tracepenOrigin. The tracepenPose is the transformation from the tracepenOriginin of this frame to the tracepen. 
+    # As the tracepen is plugged, it is called tracepenPlugged.
+    rawPluggedPose = self.tracepenPose()
+    tf_tracepenOrigin_tracepenPlugged = self.calculate_tf(&quot;tracepenOrigin&quot;, &quot;tracepenPlugged&quot;, rawPluggedPose)
+    self.tf_broadcaster.sendTransform(tf_tracepenOrigin_tracepenPlugged)
+    rospy.sleep(0.2)
+
+    # Look up the inverse trafo from tracepenPlugged to tracepenOrigin.
+    tf_tracepenPlugged_tracepenOrigin = self.tf_buffer.lookup_transform(&quot;tracepenPlugged&quot;, &quot;tracepenOrigin&quot;,  rospy.Time())
+    # Calculate the matrix from this tf.
+    matrix_tracepenPlugged_tracepenOrigin = self.matrix_from_tf(tf_tracepenPlugged_tracepenOrigin)
+
+
+    # I have a calibration socket which Pose i know relative to the world frame, so i know the tf(world,socket).
+    tf_world_socket = self.tf_buffer.lookup_transform(&quot;world&quot;, &quot;socket&quot;,  rospy.Time())
+    matrix_world_socket = self.matrix_from_tf(tf_world_socket)
+    # while plugged, i know that tf(world,tracepenPlugged) must be the same as tf(world,socket).
+    # so matrix_world_tracepenPlugged = matrix_world_socket
+    matrix_world_tracepenPlugged = matrix_world_socket
+
+    self.matrix_world_tracepenOrigin = matrix_world_tracepenPlugged @ matrix_tracepenPlugged_tracepenOrigin
+
+
+
+  def run(self):
+      rate = rospy.Rate(10)
+      while not rospy.is_shutdown():
+
+        # Get data from OpenVr
+        tracepenPose = self.tracepenPose()
+
+        # Publish the transformation from the world frame to the tracepenOrigin frame from the matrix of the calibration process.
+        self.tf_world_tracepenOrigin = self.tf_from_matrix(self.matrix_world_tracepenOrigin, &quot;world&quot;, &quot;tracepenOrigin&quot;)
+        self.tf_broadcaster.sendTransform(self.tf_world_tracepenOrigin)
+
+
+        #Use this tracepenOrigin to publish the tracepen Data.
+        tf_tracepenOrigin_tracepen = self.calculate_tf(&quot;tracepenOrigin&quot;, &quot;tracepen&quot;, tracepenPose)
+        self.tf_broadcaster.sendTransform(tf_tracepenOrigin_tracepen)
+
+        rate.sleep()
+
+
+if __name__ == &#39;__main__&#39;:
+  try:
+    rospy.init_node(&#39;fmp_tracepen_node&#39;, anonymous=True)
+    tracepenNodeHandle = TracepenNode()
+    tracepenNodeHandle.run()
+  except rospy.ROSInterruptException:
+    pass
+</code></pre>
+
+<hr>
+
+        <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-08 14:22:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is there any approach i can try?
+Anything related? I must make progress.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-09 03:55:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Same Q asked on <a href="https://robotics.stackexchange.com/questions/24753">https://robotics.stackexchange.com/questions/24753</a>. Actually, reviewing <a href="https://wiki.ros.org/Support">https://wiki.ros.org/Support</a> it&#39;s unclear if duplicating the same Q on different domains &quot;violates&quot; any rule. Just FYI active maintainers on this site has preferred not duplicating even on different sites.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/875">130s</a> on 2023-05-12 05:10:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@infraviored: have you taken a step back and verified the pose of your &#39;tracepen&#39; is actually correctly reported to your ROS application? I&#39;d agree with the comments by @Mike Scheutzow and verify chirality of the tracepen&#39;s system (should be in the documentation somewhere I&#39;d assume) in addition to making sure the data reported by the tracepen is compatible with how TF represents poses and rotations.</p>
+
+<p>So: right handed, X+ forward, Y+ left, Z+ up (body local frame). Orientations are quaternions, with <code>xyzw</code> order. Distances are metres, rotations in radians. See also <a href="https://www.ros.org/reps/rep-0103.html">REP-103: Standard Units of Measure and Coordinate Conventions</a>.</p>
+
+<p>It&#39;d be better to start with known good data than to try and hack your way around it later.</p>
+
+<p>You should be able to check all this with some simple experiments combined with the documentation of your device(s), which would not depend on any kind of calibration.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-05-13 01:43:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>In addition to what @130s reported, it seems there are multiple concurrent discussions about this going on. Even on SO there are already duplicates: <a href="https://stackoverflow.com/questions/76203373">ROS: Transform one CS into another one</a>.</p>
+
+<p>Cross-posting is not very nice, even if you are &quot;desperate&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-05-13 01:46:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Additionally: is the <code>triad_vr</code> you are using a local customised version? Searching for <code>getPoseQuaternion()</code> only returns your two posts on SO and this ROS Answers post.</p>
+
+<p>The function doesn&#39;t exist in <a href="https://github.com/TriadSemi/triad_openvr">TriadSemi/triad_openvr</a>. It does have <a href="https://github.com/TriadSemi/triad_openvr/blob/d389aacf2a4caa392398613a9daddba15ee24f92/triad_openvr.py#L137-L143">get_pose_quaternion()</a> though. This calls <a href="https://github.com/TriadSemi/triad_openvr/blob/d389aacf2a4caa392398613a9daddba15ee24f92/triad_openvr.py#L25-L35">convert_to_quaternion(..)</a>, which seems to return <code>[x,y,z,r_w,r_x,r_y,r_z]</code>. Provided that&#39;s all correct, that would mean the quaternion order it returns is <code>wxyz</code>, which would seem to make <a href="https://github.com/Infraviored/ThesisStuff/blob/04b93d6885a664fd967d9b457cbdc4e20497d512/tracepen_node.py#L85C52-L88">this</a> correct (your conversion), at least when it comes to the indices.</p>
+
+<p>Whether the chirality of <code>triad_vr</code> matches ROS I can&#39;t say.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-05-13 01:59:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Something else to check: even if the chirality matches, that doesn&#39;t mean the axes match between ROS and <code>triad_vr</code> match. Unexpected translations -- and rotations -- could be explained by mismatching axes (fi: <code>triad_vr</code>&#39;s X is actually ROS&#39; Y).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-05-13 02:07:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you so much for all of these responses! I can&#39;t wait to meet my robot again on Tuesday. If I could, i would skip the weekend and directly go there. I can not wait to finally figure out this bug, it&#39;s haunting me in my sleep.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-14 12:46:44 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Oh my god. You saved me. The triad_vr was customized / broken.</p>
+
+<p>Now the only thing remianing is inverting x and y axis.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-16 11:55:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Please post your last edit as an <em>answer</em>, and accept your own answer.</p>
+
+<p>That would be much clearer than a ton of edits.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-05-19 08:15:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The approach you are using is not valid. Your transform tree could look like:</p>
+
+<p><code>world-&gt;tracepen</code></p>
+
+<p>To be clear, this is the transform from the <strong>world-origin</strong> to the <strong>tracepen-origin</strong>. The pose of the device is reported in the tracepen frame. Based on the information you provided, this device pose does not need a frame of its own.</p>
+
+<p>During calibration, you need to calculate the <code>world-&gt;tracepen</code> transform. To calculate this, you need the transform from world to the socket (in the world frame), and you need the current pose of the device (in the tracepen frame.)</p>
+
+<p>Once you are publishing the <code>world-&gt;tracepen</code> transform, you can then use the tf2_ros.Buffer.transform() method to convert any pose of the device into the world frame.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-05-09 09:45:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you so much for answering me! Rellay, SO much. 
+You read all this and apparently already know my issue.</p>
+
+<p>However, I still struggle a bit to fully understand your response.</p>
+
+<p>So i understand why my old approach is wrong. 
+But Still not how to get the tf(world,tracepen) from tf(world,socket) and tf(tracepen_origin,tracepen_now)</p>
+
+<p>I add some structured answer below. Maybe you can tell me in which step the error is.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-11 04:51:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I think i almost did what you suggested now, the systems coincide right after calibration, but moving causes unexpected behaviour.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-11 10:04:37 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>matrix_world_tracepenOrigin = matrix_world_tracepenPlugged@ matrix_tracepenPlugged_tracepenOrigin</p>
+</blockquote>
+
+<p>Is this &quot;@&quot; a matrix multiply? If yes, then this equation is correct assuming you have correctly calculated the second term (i.e. the transform inverse of rawPluggedPose.)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-05-11 11:05:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>yes, it is a matrix multiply. 
+I calculated it by publishing tf(tracepenOrigin,tracepenPlugged), then looking up tf(tracepenPlugged,tracepenOrigin), then converting to a matrix. And compared it with directly calculating the inverse, it is identical.</p>
+
+<p>And i also think the approach is valid now, but how can it be that after calibration, tracepen frame moves in the wrong direciton anyways?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-11 11:21:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That sounds correct, although it&#39;s completely unnecessary to publish a transform just to get its inverse. See the answer to #q229329.</p>
+
+<p>Please update the code at the top of your post, and also show the code where you convert a tracepen pose to the world frame.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-05-11 11:52:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You are right, i will change this later on. </p>
+
+<p>What you mean &quot;at the top of my post&quot;? </p>
+
+<p>I just prettied up the full code, kicked everything unnecessary out, uploaded it on GitHub and also appended it to the post.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-11 13:25:23 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>after moving the socket x+0.2 (tracepen still plugged), the tracepen moves in another direction. It should still be in the socket.</p>
+</blockquote>
+
+<p>I don&#39;t understand this experiment. Why would you expect the transform world-&gt;socket to change just because you physically move the socket somewhere else?</p>
+
+<p>Have you verified the orientation returned by tracepenPose() is accurate in the <strong>tracepen</strong> frame? The quaternion value shuffle you do in there looks questionable to me. I would try to verify this by printing the roll/pitch/yaw euler angles while I physically change the pen orientation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-05-12 07:17:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Another thought: have you checked that the tracepen frame is a right-handed coordinate frame? If it&#39;s not, you must rename the axes so it is, and make the proper adjustments to the reported translation and orientation values.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-05-12 07:54:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Regarding the experiment:
+The socket is near the robot TCP.
+The transformation world-&gt;socket changes as soon as i move the robot, as the socket is part of the robot and updated regularly</p>
+
+<p>After calibration, i want to test if it worked. So i want to move the (physical) tracepen and see if the tracepen (simulation) in rviz changes in the same way.
+It is hard to move it exactly by say 20cm.</p>
+
+<p>But while it is still plugged into the socket, i can move the socket by 20cm, which also leads to the (physical) tracepen moving 20cm.
+However, the simulation tracepen does not move expectedly. </p>
+
+<p>Expected is that after moving the socket, the simulated tracepen moves along with it (as long as the physical tracepen remains plugged in the physical socket)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-12 09:30:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>which &quot;quaternion value shuffle&quot; do youo mean? I noticed that tracepenPose() [got this funciton from another person] uses another order of indices than my tf_from_matrix() funciton. </p>
+
+<p>So indeed this could be causing the problem. I tried to use the same order in tracepenPose(), but it still does not work.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-12 09:51:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I will now try to rotate the tracepen and try to see if the angles in tracepenPose() match with what is expected.</p>
+
+<p>And thanks once again so much for looking into this. You are the only person on this world which is at my side with this at the moment. Can i buy you a coffe?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-12 09:53:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I  did some tests and there is defenitely an error in the calculation of the tracepenOrigin frame. 
+It is not where it shoud be.</p>
+
+<p>I updated the main post, under <strong>ERROR - TESTS</strong></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-12 10:40:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@mike-scheutzow
+just to inform you as well: </p>
+
+<p>I found the problem. Now the only thing remianing is inverting x and y axis.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/148116">infraviored</a> on 2023-05-16 12:18:27 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

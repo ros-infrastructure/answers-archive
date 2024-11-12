@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Understanding the timeout parameter in lookupTransform - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/351419">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Understanding the timeout parameter in lookupTransform</h2>
+      <div class="question">
+        <p>I&#39;m trying to understand a bit how <code>lookupTransform</code> works, specifically what the <code>timeout</code> parameter does.  I&#39;ve always assumed that the <code>timeout</code> makes <code>lookupTransform</code> wait for the specified transform for up to the specified duration before throwing an exception.  However, looking at the source code, I can&#39;t quite connect the dots here...</p>
+
+<p>In buffer.cpp, <a href="https://github.com/ros/geometry2/blob/melodic-devel/tf2_ros/src/buffer.cpp#L57">lookupTransform</a> is defined as follows:</p>
+
+<pre><code>geometry_msgs::TransformStamped 
+Buffer::lookupTransform(const std::string&amp; target_frame, const std::string&amp; source_frame,
+                        const ros::Time&amp; time, const ros::Duration timeout) const
+{
+  canTransform(target_frame, source_frame, time, timeout);
+  return lookupTransform(target_frame, source_frame, time);
+}
+</code></pre>
+
+<p>And <a href="https://github.com/ros/geometry2/blob/melodic-devel/tf2_ros/src/buffer.cpp#L119">canTransform</a> is defined here:</p>
+
+<pre><code>bool
+Buffer::canTransform(const std::string&amp; target_frame, const std::string&amp; source_frame, 
+                     const ros::Time&amp; time, const ros::Duration timeout, std::string* errstr) const
+{
+  // Clear the errstr before populating it if it&#39;s valid.
+  if (errstr)
+    {
+      errstr-&gt;clear();
+    }
+
+  if (!checkAndErrorDedicatedThreadPresent(errstr))
+    return false;
+
+  // poll for transform if timeout is set
+  ros::Time start_time = now_fallback_to_wall();
+  const ros::Duration sleep_duration = timeout * CAN_TRANSFORM_POLLING_SCALE;
+  while (now_fallback_to_wall() &lt; start_time + timeout &amp;&amp; 
+         !canTransform(target_frame, source_frame, time) &amp;&amp;
+         (now_fallback_to_wall()+ros::Duration(3.0) &gt;= start_time) &amp;&amp;  //don&#39;t wait when we detect a bag loop
+         (ros::ok() || !ros::isInitialized())) // Make sure we haven&#39;t been stopped (won&#39;t work for pytf)
+    {
+      sleep_fallback_to_wall(sleep_duration);
+    }
+  bool retval = canTransform(target_frame, source_frame, time, errstr);
+  conditionally_append_timeout_info(errstr, start_time, timeout);
+  return retval;
+}
+</code></pre>
+
+<p>It seems <code>timeout</code> gets passed to <code>canTransform</code> where it blocks until either <code>timeout</code> expires or <code>canTransform</code> returns true, however, the <code>time</code> that gets passed into the inner <code>canTransform</code> doesn&#39;t seem to get updated, i.e. if it returns <code>false</code>, it always returns <code>false</code> throughout the duration.</p>
+
+<p>Furthermore, the results of this (outer) <code>canTransform</code> is not used at all, and <code>lookupTransform</code> just gets called with the initial <code>time</code> argument.</p>
+
+<p>It seems to me my previous interpretation of this <code>timeout</code> parameter was incorrect and that that this <code>timeout</code> is just a dumb wait, with which the initial time (before waiting) is used to lookup the transform afterwards.</p>
+
+<p>So my question is, what is the point of this <code>timeout</code> parameter and is my interpretation of its function is correct?
+Also, what is the point of calling <code>canTransform</code>, both the outer one (in <code>lookupTransform</code>) and the inner one (in <code>canTransform</code>)?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34739"></a> on 2020-05-05 00:09:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p><code>canTransform(..)</code> is used primarily as a check (an extensive one, as it checks 4 predicates).</p>
+
+<p>If it returns before the timeout expires, this means the requested transform is present in the underlying buffer. It it returns after the timeout expires, the transform is not available.</p>
+
+<p>But <code>BufferCore::lookupTransform(..)</code> which is eventually called (so not <code>Buffer::lookupTransform(..)</code>) will check again whether the buffer contains the transform, regardless of <em>why</em> <code>canTransform(..)</code> returned.</p>
+
+<p>So either the timeout expires, and the frame is not present (<code>BufferCore::lookupTransform(..)</code> will throw a <code>LookupException</code>), or the timeout is not hit and the frame is present (no exception).</p>
+
+<p>For this to work the result of <code>canTransform(..)</code> itself does not need to be passed to the caller.</p>
+
+<p>It does mean there is a chance of a race-condition, where after the timeout expires, the frame becomes available, or, between <code>canTransform(..)</code> returning before timeout expiry, the frame is pruned from the buffer.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-05-05 05:29:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

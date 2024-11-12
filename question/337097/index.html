@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Service call failed: transport error completing service call: unable to receive data from sender, check sender's logs for details - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/337097">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Service call failed: transport error completing service call: unable to receive data from sender, check sender's logs for details</h2>
+      <div class="question">
+        <p>I am trying to subscribe to a pose using a python script then from that script, I am trying to send a pose using service call which will be received later by a C++ server to perform a pick and place.</p>
+
+<p>Here is the python code:</p>
+
+<pre><code>#!/usr/bin/env python
+
+import sys
+import copy
+import rospy
+import roscpp
+import moveit_commander
+import moveit_msgs.msg
+import geometry_msgs.msg
+from geometry_msgs.msg import PoseStamped
+import tf
+import roslib
+import traceback
+from std_msgs.msg import String
+import numpy as np
+import tf2_ros
+import tf2_geometry_msgs
+import math
+import time
+from pr2_package.srv import *
+from numpy.linalg import inv
+from std_msgs.msg import String
+import math
+
+
+def Pose_Send_Client():
+
+    rospy.init_node(&#39;listener&#39;, anonymous=True)
+    msg=rospy.wait_for_message(&#39;chatter&#39;, PoseStamped)
+    print(&quot;Subscribed&quot;,msg.pose)
+
+    print &quot;============ Waiting for RVIZ...&quot;
+    rospy.sleep(10)
+
+
+
+    print &quot;============ Generating plan 1&quot;
+
+
+    load =  np.loadtxt(&#39;/home/tawfiq/pr2_ws/pose.txt&#39;)
+    quaternion3 = (msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w)
+    euler = tf.transformations.euler_from_quaternion(quaternion3) #, axes=&#39;szyx&#39;
+    roll=euler[0]
+    pitch=euler[1]
+    yaw=euler[2]
+
+    C00=math.cos(yaw)*math.cos(pitch)
+    C01=math.cos(yaw)*math.sin(pitch)*math.sin(roll) - math.sin(yaw)*math.cos(roll)
+    C02=math.cos(yaw)*math.sin(pitch)*math.cos(roll) + math.sin(yaw)*math.sin(roll)
+    C03=msg.pose.position.x
+    C10=math.sin(yaw)*math.cos(pitch)
+    C11=math.sin(yaw)*math.sin(pitch)*math.sin(roll) + math.cos(yaw)*math.cos(roll)
+    C12=math.sin(yaw)*math.sin(pitch)*math.cos(roll) -math.cos(yaw)*math.sin(roll)
+    C13=msg.pose.position.y
+    C20= -math.sin(pitch)
+    C21=math.cos(pitch)*math.sin(roll)
+    C22=math.cos(pitch)*math.cos(roll)
+    C23=msg.pose.position.z
+    C30=0
+    C31=0
+    C32=0
+    C33=1
+
+    object_new_mat=np.array([[C00, C01, C02, C03],[C10, C11, C12, C13],[C20, C21, C22, C23],[C30, C31, C32, C33]])
+    print(&quot;object_new_mat&quot;,object_new_mat)
+    transformation_mat = np.loadtxt(&#39;/home/tawfiq/pr2_ws_test/transform.txt&#39;)
+    Final_pose=np.dot(object_new_mat, transformation_mat)
+    roll=math.atan2(float(Final_pose[2][1]),float(Final_pose[2][2]))
+    pitch=math.atan2(-Final_pose[2][0],float(math.sqrt(Final_pose[2][1]**2 + Final_pose[2][2]**2)))
+    yaw=math.atan2(float(Final_pose[1][0]),float(Final_pose[0][0]))
+
+    print(&quot;Mine&quot;, roll, pitch, yaw)
+    quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+
+    pose_source = PoseStamped()
+    pose_source.header.frame_id = &quot;odom_combined&quot; 
+    pose_source.pose.orientation.x = msg.pose.orientation.x
+    pose_source.pose.orientation.y = msg.pose.orientation.y
+    pose_source.pose.orientation.z = msg.pose.orientation.z
+    pose_source.pose.orientation.w = msg.pose.orientation.z
+    pose_source.pose.position.x = msg.pose.position.x
+    pose_source.pose.position.y = msg.pose.position.y
+    pose_source.pose.position.z = msg.pose.position.z
+    rospy.wait_for_service(&#39;Pose_Send&#39;)
+    try:
+      Pose_Send = rospy.ServiceProxy(&#39;Pose_Send&#39;, PoseSend)
+      grasping = Pose_Send(msg.pose.position.x, msg.pose.position.y, msg.pose.position.z, msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w)
+    except rospy.ServiceException, e:
+      print &quot;Service call failed: %s&quot;%e
+
+if __name__==&#39;__main__&#39;:
+    Pose_Send_Client()
+</code></pre>
+
+<p>Here is the C++ code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &quot;pr2_package/PoseSend.h&quot;
+
+// MoveIt!
+#include &lt;moveit/planning_scene_monitor/planning_scene_monitor.h&gt;
+#include &lt;moveit/move_group_interface/move_group.h&gt;
+#include &lt;geometric_shapes/solid_primitive_dims.h&gt;
+static const std::string ROBOT_DESCRIPTION=&quot;robot_description&quot;;
+
+
+
+void openGripper(trajectory_msgs::JointTrajectory&amp; posture){
+  posture.joint_names.resize(6);
+  posture.joint_names[0] = &quot;r_gripper_joint&quot;;
+  posture.joint_names[1] = &quot;r_gripper_motor_screw_joint&quot;;
+  posture.joint_names[2] = &quot;r_gripper_l_finger_joint&quot;;
+  posture.joint_names[3] = &quot;r_gripper_r_finger_joint&quot;;
+  posture.joint_names[4] = &quot;r_gripper_r_finger_tip_joint&quot;;
+  posture.joint_names[5] = &quot;r_gripper_l_finger_tip_joint&quot;;
+
+  posture.points.resize(1);
+  posture.points[0].positions.resize(6);
+  posture.points[0].positions[0] = 1;
+  posture.points[0].positions[1] = 1.0;
+  posture.points[0].positions[2] = 0.477;
+  posture.points[0].positions[3] = 0.477;
+  posture.points[0].positions[4] = 0.477;
+  posture.points[0].positions[5] = 0.477;
+}
+
+void closedGripper(trajectory_msgs::JointTrajectory&amp; posture){
+  posture.joint_names.resize(6);
+  posture.joint_names[0] = &quot;r_gripper_joint&quot;;
+  posture.joint_names[1] = &quot;r_gripper_motor_screw_joint&quot;;
+  posture.joint_names[2] = &quot;r_gripper_l_finger_joint&quot;;
+  posture.joint_names[3] = &quot;r_gripper_r_finger_joint&quot;;
+  posture.joint_names[4] = &quot;r_gripper_r_finger_tip_joint&quot;;
+  posture.joint_names[5] = &quot;r_gripper_l_finger_tip_joint&quot;;
+
+  posture.points.resize(1);
+  posture.points[0].positions.resize(6);
+  posture.points[0].positions[0] = 0;
+  posture.points[0].positions[1] = 0;
+  posture.points[0].positions[2] = 0.002;
+  posture.points[0].positions[3] = 0.002;
+  posture.points[0].positions[4] = 0.002;
+  posture.points[0].positions[5] = 0.002;
+}
+
+
+
+void pick(moveit::planning_interface::MoveGroup &amp;group, geometry_msgs::PoseStamped p)
+{
+  std::vector&lt;moveit_msgs::Grasp&gt; grasps;
+  moveit_msgs::Grasp g;
+
+  g.pre_grasp_approach.direction.vector.x = 1.0;
+  g.pre_grasp_approach.direction.header.frame_id = &quot;r_wrist_roll_link&quot;;
+  g.pre_grasp_approach.min_distance = 0.2;
+  g.pre_grasp_approach.desired_distance = 0.4;
+
+  g.post_grasp_retreat.direction.header.frame_id = &quot;base_footprint&quot;;
+  g.post_grasp_retreat.direction.vector.z = 1.0;
+  g.post_grasp_retreat.min_distance = 0.1;
+  g.post_grasp_retreat.desired_distance = 0.25;
+  g.grasp_pose = p;
+
+  openGripper(g.pre_grasp_posture);
+
+  closedGripper(g.grasp_posture);
+
+  grasps.push_back(g);
+
+  group.pick(&quot;part&quot;, grasps);
+
+
+}
+
+
+
+
+bool serv(pr2_package::PoseSend::Request &amp;req, 
+  pr2_package::PoseSend::Response &amp;res){
+  ROS_INFO(&quot;Ready for service call&quot;);
+  ros::WallDuration(1.0).sleep();
+  moveit::planning_interface::MoveGroup group(&quot;right_arm&quot;);
+  group.setPlanningTime(45.0);
+  ros::WallDuration(1.0).sleep();
+  geometry_msgs::PoseStamped p;
+  p.header.frame_id = &quot;odom_combined&quot;;
+  p.pose.position.x = (float)req.a;
+  p.pose.position.y = (float)req.b;
+  p.pose.position.z = (float)req.c;
+  p.pose.orientation.x = (float)req.d;
+  p.pose.orientation.y = (float)req.e;
+  p.pose.orientation.z = (float)req.f;
+  p.pose.orientation.w = (float)req.g;
+
+  // p.pose.position.x = 0.68;
+  // p.pose.position.y = -0.01;
+  // p.pose.position.z = 1.1;
+  // p.pose.orientation.x = 0.5;
+  // p.pose.orientation.y = 0.5;
+  // p.pose.orientation.z = 0.5;
+  // p.pose.orientation.w = 0.5;
+
+
+
+  pick(group, p);
+  //pick(group, p);
+
+  //ros::WallDuration(1.0).sleep();
+  //place(group);
+
+  return true;
+}
+
+int main(int argc, char **argv)
+{
+  ros::init (argc, argv, &quot;right_arm_pick_place&quot;);
+  //ros::AsyncSpinner spinner(1);
+  //spinner.start();
+
+  ros::NodeHandle nh;
+
+  //ros::WallDuration(1.0).sleep();
+  ros::ServiceServer service = nh.advertiseService(&quot;Pose_Send&quot;, serv);
+  //ros::WallDuration(1.0).sleep();
+
+  ROS_INFO(&quot;Ready For Client Call&quot;);
+
+  //ros::waitForShutdown();
+  ros::spin();
+  return 0;
+}
+</code></pre>
+
+<p>The service call does not work so the pick and place is not performed and I receive the following error message:</p>
+
+<pre><code>Service call failed: transport error completing service call: unable to receive data from sender, check sender&#39;s logs for details
+</code></pre>
+
+<p>This is the sender&#39;s/client&#39;s log in terminal. Not sure what is the sender&#39;s log here, nothing found in terminal.</p>
+
+<p>I will appreciate any help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/39656">Tawfiq Chowdhury</a> on 2019-11-07 13:44:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

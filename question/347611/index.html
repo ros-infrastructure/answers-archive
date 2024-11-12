@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Code for processing point cloud is slow - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/347611">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Code for processing point cloud is slow</h2>
+      <div class="question">
+        <p>Hi All</p>
+
+<p>I have a follow up to my question that I asked over here : <a href="https://answers.ros.org/question/347392/point-cloud-filtering-and-processing-using-pcl-is-slow/">https://answers.ros.org/question/347392/point-cloud-filtering-and-processing-using-pcl-is-slow/</a></p>
+
+<p>For context, I&#39;m writing a piece of code that takes in a point cloud from a kinect2 using iai kinect (<a href="https://github.com/code-iai/iai_kinect2">https://github.com/code-iai/iai_kinect2</a>), and a keyboard input, using this guy&#39;s package (<a href="https://github.com/lrse/ros-keyboard">https://github.com/lrse/ros-keyboard</a>). The keyboard moves through the environment based on the keyboard input, and the points in the cloud exert a repulsive force on it if it gets too close.</p>
+
+<p>I expect the speed of my program for this too be mostly static, as it contains a while loop in which I spin my callbacks and iterate over the point cloud to compute force, and then some package of ROS messages, and that&#39;s it. However, I observe a gradual decrease in speed as I&#39;m running my code (it&#39;ll start at like 10Hz, and then next loop it will have been 5 Hz, then 2 Hz, then 0.5 Hz, etc...). This is quite unexpected, and I have no idea why this would be.</p>
+
+<p>Some things to note: as in my previous post, the loop seems to be hanging at the <code>spinOnce()</code> statement, and I have compiler optimisations turned on. The code is still slow if I remove all the ROS interfaces other than the one subscribing to the point cloud. Below is my code.</p>
+
+<p>EDIT: I also removed the loop_rate() from my code and that didn&#39;t seem to have an effect.</p>
+
+<pre><code>//containers for point clouds at different processing stages
+pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr outputCloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr outputCloudFilt(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+
+std::vector&lt;int&gt; indices;
+
+// Create the filtering object
+pcl::VoxelGrid&lt;pcl::PointXYZ&gt; sor;
+
+//the point interacting with the cloud
+std::vector&lt;double&gt; HIP = {0,0,0};
+
+//operating frequency
+double fc;
+
+//current distance from HIP to a given point in the cloud
+double current_point_distance;
+
+//vector from HIP toa given point in the cloud
+std::vector&lt;double&gt; current_Pkxi = {0,0,0};
+
+//output interaction force
+std::vector&lt;double&gt; force_render = {0,0,0};
+
+//output types
+visualization_msgs::Marker point_message;
+geometry_msgs::WrenchStamped force_message;
+
+//forward declare callbacks
+void cloudCallback(const sensor_msgs::PointCloud2ConstPtr&amp; msg);
+void keyCallback(const keyboard::KeyConstPtr&amp; msg);
+double norm3(std::vector&lt;double&gt; in);
+
+int main(int argc, char** argv){
+
+  // Initialize ROS
+  ros::init(argc, argv, &quot;pclistener&quot;);
+  ros::NodeHandle n;
+  ros::Rate loop_rate(50);
+  ros::Time previous_loop_entry = ros::Time::now();
+  ros::Time current_loop_entry = ros::Time::now();
+
+  ros::Subscriber key_sub = n.subscribe(&quot;/keyboard/keyup&quot;, 1000, keyCallback);
+  ros::Subscriber pc_sub = n.subscribe(&quot;/kinect2/qhd/points&quot;, 1000, cloudCallback);
+  ros::Publisher HIP_pub = n.advertise&lt;visualization_msgs::Marker&gt;(&quot;/pcbmmt/HIP&quot;,1000);
+  ros::Publisher force_pub = n.advertise&lt;geometry_msgs::WrenchStamped&gt;(&quot;/pcbmmt/force&quot;,1000);
+
+
+  while(ros::ok()){
+
+    //reset output force
+    force_render = {0,0,0};
+
+    //compute iteration frequency when it&#39;s below 50Hz
+    current_loop_entry = ros::Time::now();
+    fc = 1/(current_loop_entry-previous_loop_entry).toSec();
+    previous_loop_entry = current_loop_entry;
+
+    std::cout &lt;&lt; fc &lt;&lt; std::endl;
+    std::cout &lt;&lt; outputCloudFilt-&gt;points.size() &lt;&lt; std::endl;
+
+    ros::spinOnce();
+
+    //protect against the point cloud being empty
+    if (outputCloudFilt-&gt;points.size()&gt;0){
+
+      //add the force exerted on the HIP by all points in the cloud
+      for (int i=0; i &lt; outputCloudFilt-&gt;points.size(); ++i){
+
+        //compute vector between HIP and point
+        current_Pkxi.at(0) = HIP.at(0) - outputCloudFilt-&gt;points.at(i).x;
+        current_Pkxi.at(1) = HIP.at(1) - outputCloudFilt-&gt;points.at(i).y;
+        current_Pkxi.at(2) = HIP.at(2) - outputCloudFilt-&gt;points.at(i).z;       
+
+        //compute distance between HIP and point
+        current_point_distance = norm3(current_Pkxi);
+
+        //compute force
+        force_render.at(0) += (4000000/pow(1000*fabs(current_point_distance),6))
+                            * (current_Pkxi.at(0)/current_point_distance);
+
+
+        force_render.at(1) += (4000000/pow(1000*fabs(current_point_distance),6))
+                            * (current_Pkxi.at(1)/current_point_distance);
+
+
+        force_render.at(2) += (4000000/pow(1000*fabs(current_point_distance),6))
+                            * (current_Pkxi.at(2)/current_point_distance);
+      }
+    }
+
+    //output HIP position for debug
+    std::cout &lt;&lt; &quot;------POSITION---------&quot; &lt;&lt; std::endl;
+    std::cout &lt;&lt; HIP.at(0) &lt;&lt; std::endl;
+    std::cout &lt;&lt; HIP.at(1) &lt;&lt; std::endl;
+    std::cout &lt;&lt; HIP.at(2) &lt;&lt; std::endl;
+    std::cout &lt;&lt; &quot;----------------------&quot; &lt;&lt; std::endl;
+
+    //pack marker message. Position is that of HIP
+    point_message.header.frame_id = &quot;kinect2_link&quot;;
+    point_message.header.stamp = ros::Time();
+    point_message.ns = &quot;HIP&quot;;
+    point_message.id = 0;
+    point_message.type = visualization_msgs::Marker::SPHERE;
+    point_message.action = visualization_msgs::Marker::ADD;
+    point_message.pose.position.x = HIP.at(0);
+    point_message.pose.position.y = HIP.at(1);
+    point_message.pose.position.z = HIP.at(2);
+    point_message.pose.orientation.x = 0.0;
+    point_message.pose.orientation.y = 0.0;
+    point_message.pose.orientation.z = 0.0;
+    point_message.pose.orientation.w = 1.0;
+    point_message.scale.x = 0.1;
+    point_message.scale.y = 0.1;
+    point_message.scale.z = 0.1;
+    point_message.color.a = 1.0; // Don&#39;t forget to set the alpha!
+    point_message.color.r = 0.0;
+    point_message.color.g = 1.0;
+    point_message.color.b = 0.0;
+
+    //pack force message
+    force_message.header.frame_id = &quot;kinect2_link&quot;;
+    force_message.header.stamp = ros::Time();
+    force_message.wrench.force.x = force_render.at(0);
+    force_message.wrench.force.y = force_render.at(1);
+    force_message.wrench.force.z = force_render.at(2);
+    force_message.wrench.torque.x = 0;
+    force_message.wrench.torque.y = 0;
+    force_message.wrench.torque.z = 0;
+
+    HIP_pub.publish(point_message);
+    force_pub.publish(force_message);
+
+    loop_rate.sleep();
+  }
+}
+
+void cloudCallback(const sensor_msgs::PointCloud2ConstPtr&amp; msg){
+
+  pcl::fromROSMsg(*msg,*cloud);
+
+  pcl::removeNaNFromPointCloud(*cloud,*outputCloud, indices);
+
+  sor.setInputCloud(outputCloud);
+  sor.setLeafSize(0.01f, 0.01f, 0.01f);
+  sor.filter(*outputCloudFilt);
+}
+
+double norm3(std::vector&lt;double&gt; in){
+  return sqrt(pow(in.at(0),2)+pow(in.at(1),2)+pow(in.at(2),2));
+}
+
+void keyCallback(const keyboard::KeyConstPtr&amp; msg){
+  if (msg-&gt;code==113){//q moves HIP down
+    HIP.at(2) -= 0.005;
+  }
+  if (msg-&gt;code==101){//e moves HIP up
+    HIP.at(2) += 0.005;
+  }
+  if (msg-&gt;code==119){//w moves HIP back
+    HIP.at(1) += 0.005;
+  }
+  if (msg-&gt;code==115){//s moves HIP forward
+    HIP.at(1) -= 0.005;
+  }
+  if (msg-&gt;code==100){//d moves HIP backmoves HIP across to the right
+    HIP.at(0) += 0.005;
+  }
+  if (msg-&gt;code==97){//a moves HIP accross to the left
+    HIP.at(0) -= 0.005;
+  }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/52810">christophecricket</a> on 2020-03-26 10:35:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>I&#39;m leaving it formatted like shit because what the parser does and doesn&#39;t interpret as code seems to be decided by a coin flip or something</p>
+</blockquote>
+
+<p>no, that&#39;s caused by you not formatting it properly.</p>
+
+<p>Could I please ask you to watch your language?</p>
+
+<p>In any case: in the future: paste your code into your question, select the lines and press <code>ctrl+k</code> or the <em>Preformatted Text</em> button (ie: the one with <code>101010</code> on it).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-26 11:44:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Done. Sorry. That I&#39;m frustrated by my problem is no one else&#39;s fault but mine.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52810">christophecricket</a> on 2020-03-26 12:07:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As a quick comment: pub-sub with <code>PointCloud2</code> with regular nodes is going to always be difficult. <code>PointCloud2</code>s can just be <em>really</em> big, and seeing as you&#39;re subscribing to the <code>qhd</code> topic, they probably are. And with large I mean: several 100MB/sec, per topic.</p>
+
+<p>This potentially leads to situations where the deserialisation of the message itself already takes longer than you&#39;re willing to wait.</p>
+
+<p>To see whether (de)serialisation is actually the issue, you could do two things (I&#39;d actually do both):</p>
+
+<ol>
+<li>subscribe to the <code>sd</code> topic and see whether things improve, and</li>
+<li>rewrite your node as a <a href="http://wiki.ros.org/nodelet">nodelet</a>, and load it into the manager which the <code>iai-kinect2</code> driver starts</li>
+</ol>
+
+<p>Note that <code>nodelets</code> come with their own set of disadvantages, but it&#39;s always a trade-off between performance and other <code>*</code>-bilities in these cases.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-27 08:58:41 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

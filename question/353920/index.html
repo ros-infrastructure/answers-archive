@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>'No map received' in RVIZ when using a custom costmap2d-layer as plugin - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/353920">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>'No map received' in RVIZ when using a custom costmap2d-layer as plugin</h2>
+      <div class="question">
+        <p>Hello there,</p>
+
+<p>I&#39;m having an occupancy grid which has intermediate values from 1-100 and want it to be transformed to a costmap with also intermediate values. I&#39;ve noticed that this doesn&#39;t seem to be possible with the given layers (static layer, inflation layer, obstacle layer, ...)</p>
+
+<p>Therefore, I tried to write a custom layer for which I took the <a href="https://github.com/ros-planning/navigation/blob/melodic-devel/costmap_2d/plugins/static_layer.cpp">source code of the static_layer</a> and replaced the interpretValue-function in order to map the 100 values of the occupancygrid to the 255 values of the costmap.  I integrated my custom plugin into the global<em>costmap</em>params.yaml and the system appears to properly load the plugin (at least there are no further errors or warnings that it couldn&#39;t be loaded).</p>
+
+<p>The problem is: In RVIZ the global costmap - section throws a warning which says &quot;No map received&quot; (The Topic is &#39;/move<em>base/global</em>costmap/costmap&#39; which works fine when static_layer is set as plugin). As a result of that, I can only see the coordinate system, but no map.</p>
+
+<p>I&#39;m using <strong>ROS Melodic</strong>.</p>
+
+<p><strong>Plugin source code</strong> (occgrid<em>to</em>costmap_layer.cpp):</p>
+
+<pre><code>#include&lt;custom_layers/occgrid_to_costmap_layer.h&gt;
+
+#include &lt;ros/ros.h&gt;
+#include &lt;costmap_2d/costmap_layer.h&gt;
+#include &lt;costmap_2d/layered_costmap.h&gt;
+#include &lt;costmap_2d/GenericPluginConfig.h&gt;
+#include &lt;costmap_2d/static_layer.h&gt;
+#include &lt;costmap_2d/costmap_math.h&gt;
+#include &lt;tf2/LinearMath/Transform.h&gt;
+#include &lt;dynamic_reconfigure/server.h&gt;
+#include &lt;nav_msgs/OccupancyGrid.h&gt;
+#include &lt;map_msgs/OccupancyGridUpdate.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+
+ PLUGINLIB_EXPORT_CLASS(occgrid_to_costmap_layer_namespace::OTCLayer, costmap_2d::Layer)
+
+
+using costmap_2d::NO_INFORMATION;
+using costmap_2d::LETHAL_OBSTACLE;
+using costmap_2d::FREE_SPACE;
+
+namespace occgrid_to_costmap_layer_namespace
+{
+
+OTCLayer::OTCLayer() : dsrv_(NULL) {}
+
+OTCLayer::~OTCLayer()
+{
+  if (dsrv_)
+    delete dsrv_;
+}
+
+void OTCLayer::onInitialize()
+{
+  ros::NodeHandle nh(&quot;~/&quot; + name_), g_nh;
+  current_ = true;
+
+  global_frame_ = layered_costmap_-&gt;getGlobalFrameID();
+
+  std::string map_topic;
+  nh.param(&quot;map_topic&quot;, map_topic, std::string(&quot;map&quot;));
+  nh.param(&quot;first_map_only&quot;, first_map_only_, false);
+  nh.param(&quot;subscribe_to_updates&quot;, subscribe_to_updates_, false);
+
+  nh.param(&quot;track_unknown_space&quot;, track_unknown_space_, true);
+  nh.param(&quot;use_maximum&quot;, use_maximum_, false);
+
+  int temp_lethal_threshold, temp_unknown_cost_value;
+  nh.param(&quot;lethal_cost_threshold&quot;, temp_lethal_threshold, int(100));
+  nh.param(&quot;unknown_cost_value&quot;, temp_unknown_cost_value, int(-1));
+  nh.param(&quot;trinary_costmap&quot;, trinary_costmap_, true);
+
+  lethal_threshold_ = std::max(std::min(temp_lethal_threshold, 100), 0);
+  unknown_cost_value_ = temp_unknown_cost_value;
+
+  // Only resubscribe if topic has changed
+  if (map_sub_.getTopic() != ros::names::resolve(map_topic))
+  {
+    // we&#39;ll subscribe to the latched topic that the map server uses
+    ROS_INFO(&quot;Requesting the map...&quot;);
+    map_sub_ = g_nh.subscribe(map_topic, 1, &amp;OTCLayer::incomingMap, this);
+    map_received_ = false;
+    has_updated_data_ = false;
+
+    ros::Rate r(10);
+    while (!map_received_ &amp;&amp; g_nh.ok())
+    {
+      ros::spinOnce();
+      r.sleep();
+    }
+
+    ROS_INFO(&quot;Received a %d X %d map at %f m/pix&quot;, getSizeInCellsX(), getSizeInCellsY(), getResolution());
+
+    if (subscribe_to_updates_)
+    {
+      ROS_INFO(&quot;Subscribing to updates&quot;);
+      map_update_sub_ = g_nh.subscribe(map_topic + &quot;_updates&quot;, 10, &amp;OTCLayer::incomingUpdate, this);
+
+    }
+  }
+  else
+  {
+    has_updated_data_ = true;
+  }
+
+  if (dsrv_)
+  {
+    delete dsrv_;
+  }
+
+  dsrv_ = new dynamic_reconfigure::Server&lt;costmap_2d::GenericPluginConfig&gt;(nh);
+  dynamic_reconfigure::Server&lt;costmap_2d::GenericPluginConfig&gt;::CallbackType cb = boost::bind(
+      &amp;OTCLayer::reconfigureCB, this, _1, _2);
+  dsrv_-&gt;setCallback(cb);
+}
+
+void OTCLayer::reconfigureCB(costmap_2d::GenericPluginConfig &amp;config, uint32_t level)
+{
+  if (config.enabled != enabled_)
+  {
+    enabled_ = config.enabled;
+    has_updated_data_ = true;
+    x_ = y_ = 0;
+    width_ = size_x_;
+    height_ = size_y_;
+  }
+}
+
+void OTCLayer::matchSize()
+{
+  // If we are using rolling costmap, the static map size is
+  //   unrelated to the size of the layered costmap
+  if (!layered_costmap_-&gt;isRolling())
+  {
+    Costmap2D* master = layered_costmap_-&gt;getCostmap();
+    resizeMap(master-&gt;getSizeInCellsX(), master-&gt;getSizeInCellsY(), master-&gt;getResolution(),
+              master-&gt;getOriginX(), master-&gt;getOriginY());
+  }
+}
+
+unsigned char OTCLayer::interpretValue(unsigned char value)
+{
+  if(value==-1){
+    return 255;
+  }
+  else if(value==0){
+    return 0;
+  }
+  else if(value==100){
+    return 254;
+  }
+  else{
+    int stepsize = 254/100;
+    return int((254-100*stepsize)+stepsize*value);
+  }
+}
+
+void OTCLayer::incomingMap(const nav_msgs::OccupancyGridConstPtr&amp; new_map)
+{
+  unsigned int size_x = new_map-&gt;info.width, size_y = new_map-&gt;info.height;
+
+  ROS_DEBUG(&quot;Received a %d X %d map at %f m/pix&quot;, size_x, size_y, new_map-&gt;info.resolution);
+
+  // resize costmap if size, resolution or origin do not match
+  Costmap2D* master = layered_costmap_-&gt;getCostmap();
+  if (!layered_costmap_-&gt;isRolling() &amp;&amp;
+      (master-&gt;getSizeInCellsX() != size_x ||
+       master-&gt;getSizeInCellsY() != size_y ||
+       master-&gt;getResolution() != new_map-&gt;info.resolution ||
+       master-&gt;getOriginX() != new_map-&gt;info.origin.position.x ||
+       master-&gt;getOriginY() != new_map-&gt;info.origin.position.y))
+  {
+    // Update the size of the layered costmap (and all layers, including this one)
+    ROS_INFO(&quot;Resizing costmap to %d X %d at %f m/pix&quot;, size_x, size_y, new_map-&gt;info.resolution);
+    layered_costmap_-&gt;resizeMap(size_x, size_y, new_map-&gt;info.resolution, new_map-&gt;info.origin.position.x,
+                                new_map-&gt;info.origin.position.y,
+                                true /* set size_locked to true, prevents reconfigureCb from overriding map size*/);
+  }
+  else if (size_x_ != size_x || size_y_ != size_y ||
+           resolution_ != new_map-&gt;info.resolution ||
+           origin_x_ != new_map-&gt;info.origin.position.x ||
+           origin_y_ != new_map-&gt;info.origin.position.y)
+  {
+    // only update the size of the costmap stored locally in this layer
+    ROS_INFO(&quot;Resizing static layer to %d X %d at %f m/pix&quot;, size_x, size_y, new_map-&gt;info.resolution);
+    resizeMap(size_x, size_y, new_map-&gt;info.resolution,
+              new_map-&gt;info.origin.position.x, new_map-&gt;info.origin.position.y);
+  }
+
+  unsigned int index = 0;
+
+  // initialize the costmap with static data
+  for (unsigned int i = 0; i &lt; size_y; ++i)
+  {
+    for (unsigned int j = 0; j &lt; size_x; ++j)
+    {
+      unsigned char value = new_map-&gt;data[index];
+      costmap_[index] = interpretValue(value);
+      ++index;
+    }
+  }
+  map_frame_ = new_map-&gt;header.frame_id;
+
+  // we have a new map, update full size of map
+  x_ = y_ = 0;
+  width_ = size_x_;
+  height_ = size_y_;
+  map_received_ = true;
+  has_updated_data_ = true;
+
+  // shutdown the map subscrber if firt_map_only_ flag is on
+  if (first_map_only_)
+  {
+    ROS_INFO(&quot;Shutting down the map subscriber. first_map_only flag is on&quot;);
+    map_sub_.shutdown();
+  }
+}
+
+void OTCLayer::incomingUpdate(const map_msgs::OccupancyGridUpdateConstPtr&amp; update)
+{
+  unsigned int di = 0;
+  for (unsigned int y = 0; y &lt; update-&gt;height ; y++)
+  {
+    unsigned int index_base = (update-&gt;y + y) * size_x_;
+    for (unsigned int x = 0; x &lt; update-&gt;width ; x++)
+    {
+      unsigned int index = index_base + x + update-&gt;x;
+      costmap_[index] = interpretValue(update-&gt;data[di++]);
+    }
+  }
+  x_ = update-&gt;x;
+  y_ = update-&gt;y;
+  width_ = update-&gt;width;
+  height_ = update-&gt;height;
+  has_updated_data_ = true;
+}
+
+void OTCLayer::activate()
+{
+  onInitialize();
+}
+
+void OTCLayer::deactivate()
+{
+  map_sub_.shutdown();
+  if (subscribe_to_updates_)
+    map_update_sub_.shutdown();
+}
+
+void OTCLayer::reset()
+{
+  if (first_map_only_)
+  {
+    has_updated_data_ = true;
+  }
+  else
+  {
+    onInitialize();
+  }
+}
+
+void OTCLayer::updateBounds(double robot_x, double robot_y, double robot_yaw, double* min_x, double* min_y,
+                               double* max_x, double* max_y)
+{
+
+  if( !layered_costmap_-&gt;isRolling() ){
+    if (!map_received_ || !(has_updated_data_ || has_extra_bounds_))
+      return;
+  }
+
+  useExtraBounds(min_x, min_y, max_x, max_y);
+
+  double wx, wy;
+
+  mapToWorld(x_, y_, wx, wy);
+  *min_x = std::min(wx, *min_x);
+  *min_y = std::min(wy, *min_y);
+
+  mapToWorld(x_ + width_, y_ + height_, wx, wy);
+  *max_x = std::max(wx, *max_x);
+  *max_y = std::max(wy, *max_y);
+
+  has_updated_data_ = false;
+}
+
+void OTCLayer::updateCosts(costmap_2d::Costmap2D&amp; master_grid, int min_i, int min_j, int max_i, int max_j)
+{
+  if (!map_received_)
+    return;
+
+  if (!enabled_)
+    return;
+
+  if (!layered_costmap_-&gt;isRolling())
+  {
+    // if not rolling, the layered costmap (master_grid) has same coordinates as this layer
+    if (!use_maximum_)
+      updateWithTrueOverwrite(master_grid, min_i, min_j, max_i, max_j);
+    else
+      updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+  }
+  else
+  {
+    // If rolling window, the master_grid is unlikely to have same coordinates as this layer
+    unsigned int mx, my;
+    double wx, wy;
+    // Might even be in a different frame
+    geometry_msgs::TransformStamped transform;
+    try
+    {
+      transform = tf_-&gt;lookupTransform(map_frame_, global_frame_, ros::Time(0));
+    }
+    catch (tf2::TransformException ex)
+    {
+      ROS_ERROR(&quot;%s&quot;, ex.what());
+      return;
+    }
+    // Copy map data given proper transformations
+    tf2::Transform tf2_transform;
+    tf2::convert(transform.transform, tf2_transform);
+    for (unsigned int i = min_i; i &lt; max_i; ++i)
+    {
+      for (unsigned int j = min_j; j &lt; max_j; ++j)
+      {
+        // Convert master_grid coordinates (i,j) into global_frame_(wx,wy) coordinates
+        layered_costmap_-&gt;getCostmap()-&gt;mapToWorld(i, j, wx, wy);
+        // Transform from global_frame_ to map_frame_
+        tf2::Vector3 p(wx, wy, 0);
+        p = tf2_transform*p;
+        // Set master_grid with cell from map
+        if (worldToMap(p.x(), p.y(), mx, my))
+        {
+          if (!use_maximum_)
+            master_grid.setCost(i, j, getCost(mx, my));
+          else
+            master_grid.setCost(i, j, std::max(getCost(mx, my), master_grid.getCost(i, j)));
+        }
+      }
+    }
+  }
+}
+
+}  // namespace occgrid_to_costmap_layer_namespace
+</code></pre>
+
+<p><strong>Plugin XML</strong> (costmap_plugins.xml):</p>
+
+<pre><code>&lt;library path=&quot;lib/liboccgrid_to_costmap_layer&quot;&gt;
+  &lt;class type=&quot;occgrid_to_costmap_layer_namespace::OTCLayer&quot; base_class_type=&quot;costmap_2d::Layer&quot;&gt;
+    &lt;description&gt;Layer that maps occupancygrid to costmap with all intermediate values.&lt;/description&gt;
+  &lt;/class&gt;
+&lt;/library&gt;
+</code></pre>
+
+<p><strong>CMakeLists.txt:</strong></p>
+
+<pre><code>cmake_minimum_required(VERSION 3.0.2)
+project(custom_layers)
+
+ add_compile_options(-std=c++11)
+
+find_package(catkin REQUIRED COMPONENTS
+  costmap_2d
+  dynamic_reconfigure
+  map_msgs
+  message_filters
+  nav_msgs
+  roscpp
+  pluginlib
+  tf2
+)
+
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+)
+
+add_library(occgrid_to_costmap_layer
+  src/occgrid_to_costmap_layer.cpp
+)
+</code></pre>
+
+<p><strong>package.xml</strong>:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;package format=&quot;2&quot;&gt;
+  &lt;name&gt;custom_layers&lt;/name&gt;
+  &lt;version&gt;0.0.0&lt;/version&gt;
+  &lt;description&gt;The custom_layers package&lt;/description&gt;
+  &lt;maintainer email=&quot;faps@todo.todo&quot;&gt;faps&lt;/maintainer&gt;
+  &lt;license&gt;TODO&lt;/license&gt;
+
+  &lt;buildtool_depend&gt;catkin&lt;/buildtool_depend&gt;
+  &lt;build_depend&gt;costmap_2d&lt;/build_depend&gt;
+  &lt;build_depend&gt;dynamic_reconfigure&lt;/build_depend&gt;
+  &lt;build_depend&gt;map_msgs&lt;/build_depend&gt;
+  &lt;build_depend&gt;message_filters&lt;/build_depend&gt;
+  &lt;build_depend&gt;nav_msgs&lt;/build_depend&gt;
+  &lt;build_depend&gt;roscpp&lt;/build_depend&gt;
+  &lt;build_depend&gt;pluginlib&lt;/build_depend&gt;
+  &lt;build_depend&gt;tf2&lt;/build_depend&gt;
+  &lt;build_export_depend&gt;costmap_2d&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;dynamic_reconfigure&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;map_msgs&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;message_filters&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;nav_msgs&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;roscpp&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;pluginlib&lt;/build_export_depend&gt;
+  &lt;build_export_depend&gt;tf2&lt;/build_export_depend&gt;
+  &lt;exec_depend&gt;costmap_2d&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;dynamic_reconfigure&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;map_msgs&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;message_filters&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;nav_msgs&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;roscpp&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;pluginlib&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;tf2&lt;/exec_depend&gt;
+
+  &lt;export&gt;
+    &lt;costmap_2d plugin=&quot;${prefix}/costmap_plugins.xml&quot;/&gt;
+  &lt;/export&gt;
+&lt;/package&gt;
+</code></pre>
+
+<p>Thanks for any help!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34594">Zimba96</a> on 2020-06-03 01:11:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Doesn&#39;t answer your direct question, but have you tried setting <code>trinary_costmap</code> to false?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19">David Lu</a> on 2020-06-04 17:03:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I just figured out that the main problem is that my plugins somehow aren&#39;t able to read the params from the global_costmap_params.yaml (see my answer). Any ideas on how to fix that? Thanks for your answer btw!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34594">Zimba96</a> on 2020-06-05 06:33:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Btw, the reason that I wrote this custom plugin was, that the static_map couldn&#39;t represent intermediate values by setting the trinary_costmap-param. Turned out that it was the same issue: Instead of using the set trinary_costmap-value &quot;false&quot; of the global_costmap_params.yaml it somehow always used the default-value &quot;true&quot;. Manually changing the default value solved the problem..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34594">Zimba96</a> on 2020-06-05 06:41:04 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Turned out the plugins somehow aren&#39;t able to read the given params from global_costmap_params.yaml. Changing the default-value from</p>
+
+<p>nh.param(&quot;map_topic&quot;, map_topic, std::string(&quot;<strong>map</strong>&quot;));</p>
+
+<p>to</p>
+
+<p>nh.param(&quot;map_topic&quot;, map_topic, std::string(&quot;<strong>insert_required_topic_here</strong>&quot;));</p>
+
+<p>solved the issue.</p>
+
+<p>Since this isn&#39;t the clean way to do it, any ideas what could be the causes that the plugin doesn&#39;t read the params properly?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/34594">Zimba96</a> on 2020-06-05 06:38:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I would run <code>rosparam get /move_base</code> and make sure parameters are being loaded where you think they are being loaded. Failing that, post them here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19">David Lu</a> on 2020-06-05 16:53:44 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

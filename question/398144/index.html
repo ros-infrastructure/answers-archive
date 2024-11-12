@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to implement synchronization in multi threading with python and ROS Services? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/398144">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to implement synchronization in multi threading with python and ROS Services?</h2>
+      <div class="question">
+        <p>Im trying to implement multi threading (parallel processing) with python and using mutex threading. I have first process that check the Pressure Value and the modem update(in the code implemented with <code>odom_callback</code> and <code>callback_modem</code> functions), and second process that calls ROS SERVICES ( in the code implemented with <code>ros_serice_server</code> server and <code>imu_client</code> client functions). Here is the implementation code in python</p>
+
+<pre><code>#!/usr/bin/env python3
+
+from __future__ import print_function
+import rospy
+import numpy as np
+from os import system
+import time
+import threading
+import Microcontroller_Manager_Serial as Serial
+import IMU_Functions as IMU
+import Motors_Functions as Motor
+import Pressure_Functions as Pressure
+from geometry_msgs.msg import Vector3
+import Modem_Functions as Modem
+import threading 
+import time
+import serial
+import serial.tools.list_ports
+from time import sleep
+from std_msgs.msg import Float32
+from std_msgs.msg import String
+from demo_teleop.srv import ImuValue,ImuValueResponse
+
+P0 = 1.01325 #Default Pressure 
+mutex = threading.Lock()
+Communication_Mode_ = 0
+pub_pressure = rospy.Publisher(&#39;depth&#39;,Vector3,queue_size=1)
+pub_modem = rospy.Publisher(&#39;modem_data&#39;,Float32,queue_size=1)
+
+def handle_ros_services(req):
+    mutex.acquire(blocking=True)
+    print(&quot;Server Read Data:&quot;)
+    global T0
+    data_received = Pressure.Pressure_Get_Final_Values(1,1)
+    #print(&quot;Server Read Data:&quot;)
+    T0 = (np.int16((data_received[6]&lt;&lt;24) | (data_received[7]&lt;&lt;16) | (data_received[8]&lt;&lt;8) | (data_received[9])))/10000
+    T=T0
+    temperature = T
+    current_x_orientation_s = temperature
+    print(&quot;Returning Service Temperature Data&quot;, current_x_orientation_s)
+    return ImuValueResponse(current_x_orientation_s, True)
+    mutex.release()
+
+def ros_serice_server():
+    s = rospy.Service(&#39;imu_value&#39;, ImuValue, handle_ros_services)
+    print(&quot;Ready to get_value&quot;)
+
+def odom_callback():
+    # reentrang processing
+    mutex.acquire(blocking=True)
+    # work serial port here, e.g. send msg to serial port
+    global P0
+    data_received = Pressure.Pressure_Get_Final_Values(1,1)
+    #P1 = (np.int16((data_received_pressure[6]&lt;&lt;24) | (data_received_pressure[7]&lt;&lt;16) | (data_received_pressure[8]&lt;&lt;8) | (data_received_pressure[9])))/10000
+    P1 = (np.int16((data_received[6]&lt;&lt;24) | (data_received[7]&lt;&lt;16) | (data_received[8]&lt;&lt;8) | (data_received[9])))/10000
+    #P0 = (np.int16((data_received_pressure[6]&lt;&lt;24) | (data_received_pressure[7]&lt;&lt;16) | (data_received_pressure[8]&lt;&lt;8) | (data_received_pressure[9])))/10000
+    P0 = (np.int16((data_received[6]&lt;&lt;24) | (data_received[7]&lt;&lt;16) | (data_received[8]&lt;&lt;8) | (data_received[9])))/10000
+    P = P0 # Relative Measured Pressure
+    feedback =Vector3()
+    feedback.x = 0    #Angular Velocity
+    feedback.y = 0
+    feedback.z = P/9.81 #Depth
+    pressure = feedback.z
+    print(&quot;Pressure : &quot;, pressure)
+    pub_pressure.publish(feedback)
+    # reentrant processing
+    mutex.release()
+
+def callback_modem(event):
+    # reentrant processing
+    mutex.acquire(blocking=True)
+    # work serial port here, e.g. check for incoming data
+    event = Serial.Serial_Port_Receive_Data(20,0.2)
+    if (event == 1): # Received data from acoustic modem
+        modem_data= event
+        pub_modem.publish(modem_data)
+        print(&quot;received &quot;)
+    else:
+        print(&quot;not received...... &quot;)
+    mutex.release()
+
+if __name__ == &#39;__main__&#39;:
+    # initialize serial port here
+    Serial.Serial_Port_Standard()
+    rospy.init_node(&#39;imu_value&#39;)
+    ros_serice_server()
+    rospy.Timer(rospy.Duration(1), callback_modem) 
+    while not rospy.is_shutdown():
+        try:
+            odom_callback()
+        except:
+            print(&#39;pass&#39;)
+</code></pre>
+
+<p>And the client node</p>
+
+<pre><code>#!/usr/bin/env python3
+
+from __future__ import print_function
+import rospy
+import sys
+import numpy as np
+from os import system
+import threading
+import Microcontroller_Manager_Serial as Serial
+import IMU_Functions as IMU
+import Motors_Functions as Motor
+import Pressure_Functions as Pressure
+from geometry_msgs.msg import Vector3
+import Modem_Functions as Modem
+import time
+import serial
+import serial.tools.list_ports
+
+from time import sleep
+from std_msgs.msg import Float32
+from std_msgs.msg import String
+from demo_teleop.srv import *
+
+mutex = threading.Lock()
+Communication_Mode_ = 0
+pub_modem = rospy.Publisher(&#39;modem_data&#39;,Float32,queue_size=1)
+
+def imu_client():
+    mutex.acquire(blocking=True)
+    rospy.wait_for_service(&#39;imu_value&#39;)
+    imu_value = rospy.ServiceProxy(&#39;imu_value&#39;, ImuValue)
+    print(&quot;Request call send&quot;)
+    resp1 = imu_value(0.05)
+    return resp1.current_x_orientation_s
+    mutex.release()
+
+if __name__ == &quot;__main__&quot;:
+    rospy.init_node(&#39;client_node_f&#39;)
+    while not rospy.is_shutdown():
+        try:
+            print(&quot;entering client&quot;)
+            value = imu_client()
+            print(value)
+            time.sleep(1)
+        except:
+            print(&#39;pass&#39;)
+</code></pre>
+
+<p>So the output is following. The output of the first process with the ROS Services Server is</p>
+
+<pre><code>Pressure :  0.10602446483180428
+Server Read Data:
+Returning Service Temperature Data 1.0401
+</code></pre>
+
+<p>And then after calling the client I got</p>
+
+<pre><code>entering client
+Request call send
+1.0401
+</code></pre>
+
+<p>The problem is that after calling the ROS SERVICE client node the process stop so doesn&#39;t continue with the first process (Pressure value and modem update) . The ROS SERVICES process should be call only on demand and should HALT the first process (Pressure and modem) and then is should resume with the work. So, do I need to implement SEMAPHORES for the ROS SERVICES call ? If yes how it should be in the code. So I do need kind of synchronization , right?Please any help?</p>
+
+<p>entering client</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2022-03-29 01:57:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>would this not be a problem?</p>
+
+<blockquote>
+<pre><code>def handle_ros_services(req):
+    mutex.acquire(blocking=True)
+    [..]
+    return ImuValueResponse(...)
+    mutex.release()
+</code></pre>
+</blockquote>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-03-29 03:29:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

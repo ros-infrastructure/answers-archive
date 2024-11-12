@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Help with robot_localization warnings: &quot;Transform from A to odom was unavailable for the time requested. Using latest instead.&quot; - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/360236">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Help with robot_localization warnings: &quot;Transform from A to odom was unavailable for the time requested. Using latest instead.&quot;</h2>
+      <div class="question">
+        <p>Hello all,</p>
+
+<p>I have been trying to troubleshoot this for a while, but haven&#39;t gotten far with it. </p>
+
+<p>The SETUP:</p>
+
+<p>I am trying to fuse pose with odometry data from two cameras zed and realsense (rs). The pose comes from zed in map frame (<code>zed_map</code>) and the odom from realsense in odom frame (<code>camera_odom_frame</code>). Both have their own tf trees as both run their own estimation algorithms. The final output TF tree is present in the attachment: <a href="https://drive.google.com/file/d/1QYqbuG7zoZPTlPeuydlt6O5Q-3TK7Jmh/view?usp=sharing">frames</a> </p>
+
+<p>In order to link the rs <code>camera_odom_frame</code> to the robot <code>base_link</code>, I have written a custom tf broadcaster. Basically I know the tf between the <code>base_link --&gt; camera_link</code> and the rs generates <code>camera_link --&gt; camera_odom_frame</code>. Using this information I am able to derive the tf <code>base_link --&gt; camera_link</code>. Below is the code that I use to broadcast the new generated tf. A very identical node is written to generate <code>base_link --&gt; zed_map</code> tf.</p>
+
+<pre><code>int main(int argc, char** argv){
+    ros::init(argc, argv, &quot;rs_tf_broadcaster&quot;);
+    ros::NodeHandle node;
+
+    tf::TransformListener listener;
+
+    ros::Rate rate(200.0);
+    while (node.ok()){
+
+        tf::StampedTransform lu_tf;
+        try{
+            listener.waitForTransform(&quot;camera_link&quot;, &quot;camera_odom_frame&quot;,ros::Time::now(), ros::Duration(4.0));
+            listener.lookupTransform(&quot;camera_link&quot;,&quot;camera_odom_frame&quot;,
+                                    ros::Time(0), lu_tf);
+        }
+
+        catch (tf::TransformException ex){
+            ROS_ERROR(&quot;%s&quot;,ex.what());
+            //ros::Duration(1.0).sleep();
+        }
+        tf::Transform base_to_rsbase_tf;
+        tf::Quaternion q_rs;
+        q_rs.setRPY(0, 0.83, 0);
+        tf::Vector3 vec3_rs(0.265, 0.12, 1.0);
+
+        base_to_rsbase_tf.setOrigin(vec3_rs);
+        base_to_rsbase_tf.setRotation(q_rs);
+
+        tf::Transform rsbase_to_rsodom_tf;
+        rsbase_to_rsodom_tf.setOrigin(lu_tf.getOrigin());
+        rsbase_to_rsodom_tf.setBasis(lu_tf.getBasis());
+
+        tf::Transform base_to_rsodom_tf;
+        base_to_rsodom_tf = base_to_rsbase_tf * rsbase_to_rsodom_tf; //VERIFIED
+
+        static tf::TransformBroadcaster br_rs;
+        br_rs.sendTransform(tf::StampedTransform(base_to_rsodom_tf, ros::Time::now(), &quot;base_link&quot;, &quot;camera_odom_frame&quot;));
+
+        rate.sleep();
+    }
+  return 0;
+};
+</code></pre>
+
+<p>The launch file used to launch <code>robot_loclaization</code> is simple:</p>
+
+<pre><code>&lt;launch&gt;
+
+&lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_localization&quot;&gt;
+&lt;rosparam command=&quot;load&quot; file=&quot;$(find cognimo)/config/ekf_localization.yaml&quot;/&gt;
+&lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>The yaml file for localization is linked <a href="https://drive.google.com/file/d/12OdRjcNgCzk8MXAxqZqBzvg6HUYtVilX/view?usp=sharing">here</a>.</p>
+
+<p>Now I come to the ISSUE at hand:
+I am able to run the robot<em>localization node i.e. ekf</em>localization. Upon running I get the following error message and the repeated warnings: </p>
+
+<pre><code>[ WARN] [1598303517.049491085]: Could not obtain transform from camera_pose_frame to base_link. Error was Lookup would require extrapolation into the past.  Requested time 1598303517.048263512 but the earliest data is at time 1598303517.052134514, when looking up transform from frame [camera_pose_frame] to frame [base_link]
+
+[ WARN] [1598303517.054181358]: Transform from camera_pose_frame to base_link was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598303519.076994401]: Transform from camera_pose_frame to base_link was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598303521.077250369]: Transform from camera_pose_frame to base_link was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598303523.097323886]: Transform from camera_pose_frame to base_link was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598303525.123948904]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598303527.161387025]: Transform from camera_pose_frame to base_link was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598303529.191298926]: Transform from zed_map to odom was unavailable for the time requested... 
+</code></pre>
+
+<p>Full node execution output can be found <a href="https://drive.google.com/file/d/1yyH6uMB5ZLlC2AqNyQAjqhVaJo_R7r9T/view?usp=sharing">here</a>.</p>
+
+<p>These messages lead me to beleive that the custom tf broadcast nodes that I have written for the tf between <code>base_link--&gt;zed_map</code> and <code>base_link--&gt;camera_odom_frame</code> are at fault. But I am not sure how to go about fixing them. Or is there something else altogether that I might be missing?<br>
+As can be seen in the yaml file, I have tried using <code>transform_time_offset</code> and <code>predict_to_current_time</code> parameters independently, but it didn&#39;t help.</p>
+
+<p>I am very lost at this point and would really appreciate help on this issue.</p>
+
+<p>UPDATE Aug 26, 2020: As per Dragonslayer&#39;s advice, I have been playing around with the broadcast frequency and the <code>robot_localization</code> frequency. If I set the tf broadcast frequency for the <code>zed_map</code> to <code>15 Hz</code>, keep the <code>camera_odom_frame</code> to <code>100 Hz</code>, and run the <code>robot_localization</code> at <code>14 Hz</code>, the number of <code>zed_map to odom</code> messages increases. </p>
+
+<p>This prompted me to try the robot<em>localization with just the zed camera. The setup is the same, but this time I don&#39;t include the rs camera (i.e. no odom0 on /camera/odom/sample). But sadly I get similar results. Why does robot localization complains about the `zed</em>map--&gt;odom<code>unavailable most of the time? That link relies on the reliable generation of</code>odom--&gt;base<em>link`, which is handled by robot</em>localization itself.</p>
+
+<pre><code>[ WARN] [1598461229.390141848]: Could not obtain transform from zed_map to odom. Error was &quot;odom&quot; passed to lookupTransform argument target_frame does not exist. 
+
+[ WARN] [1598461229.860150748]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598461232.323418315]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598461234.795114786]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598461237.262097885]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598461239.657234745]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598461242.193920620]: Transform from zed_map to odom was unavailable for the time requested. Using latest instead.
+
+[ WARN] [1598461244.661178014]: Transform from zed_base_link to base_link was unavailable for the time requested. Using latest instead.
+</code></pre>
+
+<p>The weirdest thing is that even when the camera is stationary, I get really absurd values at /odometry/filtered</p>
+
+<pre><code>header: 
+  seq: 4212
+  stamp: 
+    secs: 1598461313
+    nsecs: 716253042
+  frame_id: &quot;odom&quot;
+child_frame_id: &quot;base_link&quot;
+pose: 
+  pose: 
+    position: 
+      x: -70.4410981338
+      y: 154.956925543
+      z: 1.69383294481e-05
+    orientation: 
+      x: -4.35878206073e-06
+      y: 5.00506781746e-06
+      z: -0.0741728057981
+      w: 0.997245403517
+  covariance: [0.003220596904930236, 1.5040125831047793e-05, -2.747268216044796e-08, 3.030887407194165e-09, -7.750532588397041e-09, -5.459369134897339e-05, 1.5040125764439664e-05, 0.0034159045406718658, -3.784113182593731e-10, 1.327915137917797e-08, -4.9758257432654884e-09, -0.0006776141787254283, -2.7472818244709587e-08, -3.7822713853210635e-10, 0.0036969870686042374, -2.3134858117128037e-05, 0.00033950877133803216, -3.046326187317339e-09, 3.030935881868432e-09, 1.327905797126086e-08, -2.3134858136202084e-05, 0.001800230939057936, -1.475496784393871e-09, -3.1686654547389663e-09, -7.750612861330443e-09, -4.975677413502899e-09, 0.000339508771348629, -1.475488282440258e-09, 0.001800230873950939, 6.243792829269099e-10, -5.4593691273465963e-05, -0.0006776141789185432, -3.0462182529259208e-09, -3.168717711368043e-09, 6.244560802620087e-10, 0.003599492952481492]
+twist: 
+  twist: 
+    linear: 
+      x: -14.139771684
+      y: -0.977607392607
+      z: -7.33404609454e-12
+    angular: 
+      x: -8.15143669202e-11
+      y: 8.55350930132e-11
+      z: 4.50128619447e-09
+  covariance: [0.0639996046092839, -0.00029988512905639085, -3.009631693941424e-14, -3.564377840425722e-14, -8.885143965150461e-15, 1.0178749155108405e-12, -0.0002998851291765633, 0.06529074704960706, -2.6957735636146654e-14, 5.060240299825747e-14, -7.065339510922626e-14, -2.952226402020233e-12, -3.009656971551817e-14, -2.6957682811522478e-14, 0.002400167448896485, -7.947135809266364e-16, 2.2859697280111917e-15, -3.4898375955535437e-23, -3.56434995695216e-14, 5.0602374906834885e-14, -7.947135810704116e-16, 0.000600355960917957, 1.4842041653361833e-16, 3.772499309272409e-23, -8.885914335339236e-15, -7.065311903682316e-14, 2.2859697281771156e-15, 1.4842041675084473e-16, 0.0006003559609175816, 8.704139079788332e-23, 1.0178749166717552e-12, -2.952226402662026e-12, -3.489777690414194e-23, 3.772427599198461e-23, 8.70429567565241e-23, 0.0011997137532950657]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-08-24 18:09:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>tf can be slow &quot;ros::Rate rate(200.0);&quot; might be on the high side, does the rest of the system update this fast? Quick try with rate(50) might give a clue. I cant access your google drive links. Also the warn is about camera_POSE_frame, the zed I assume? But all the code is about camera_odom_frame, the rs I assume? In the end its just a warn does it work at all? Would like to see your ekf configuration yaml. Did you set <code>transform_timeout: X.X</code> ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-08-25 10:10:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hello Dragonslayer: I have updated the links. They should be visible publicly now. I can drop the rate to 50 and try. I kept the rate to 200 to match the rate at which <code>camera_odom_frame--&gt;camera_pose_frame</code> is published by the rs camera. The rates should be visible in frames png linked now. The warn is for both <code>camera_pose_frame</code> (realsense  &quot;rs&quot;  camera) and the <code>zed_map</code> (zed camera). Yes, I only posted the code for the rs camera as the code for zed is identical. The only difference is that I kept the rate for zed to 20 Hz for the zed node. Initially I had set both zed and rs to 200 Hz, but later changed zed to 20 Hz while testing/experimenting. Also, I am running robot_localization at 5 Hz, but I have also experimented with 50, 100 Hz and I still get the same warnings.
+I have not tried <code>tansform_timeout</code>. I will try out dropping the rate to 50 and <code>transform_timeout</code> and post and update.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-08-25 10:51:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think its the different frequencies then. The ekf has some functionallity to take this into account, transform_timeout is part of that (might also help for little latencies, except for simulation and very specialized hardware I didnt ever see realtime like behaviour), on top of my head Iam not sure what else there is in this regard, but there for sure are parameters to take care of fusing different hz publishing sources/latencies.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-08-25 11:22:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer: Thanks for the reply. I tried out different frequencies and played around with the parameters yesterday , but little has helped. I am trying to understand why this issue would be coming up in the first place. The way timing works is a bit hazy on my end. As I would understand, as long as my robot_loclaization frequency is &lt;= less my slowest tf, I should be good? But maybe I am wrong and there are things I need to understand. I will keep on trudging. Let me know if you any more tips for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-08-26 08:22:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer: I have posted an update with a bit more information. At this point, I am begining to doubt my approach of generating the dynamic tf by multiplying a dynamic tf with a static tf. Still stumped at this -_-</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-08-26 12:39:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As far as I understand it the alghorythm is made for a perfect system, but in reallity via usb connected sensors you almost never get hard realtime. This is why ekf has functionallity to handle non syncronized topic publishing. Your first poostet error (camera_pose_frame to base_link) it complains about ca 3ms delay, thats not a unheard of delay for a usb-OS-PC system. I would asume the permanent warns you get are in the same scale. ROS was made with wheeled indoor service robots in mind, at that speeds such latencies arent a big thing. Now your saying your problem is &quot;absurd values&quot; in the output? I dont think those are related to the warn messages nessesarily. You could try predit_to_current_time: false and use a sensor_timeout.   What exactly is zed-map for a frame? to have it in the tf tree behind base_link seems strange.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-08-27 09:45:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>By the way ekf also has a transform_timeout setting (mot just sensor_timeout) you might want to check it out. <a href="https://github.com/cra-ros-pkg/robot_localization/blob/melodic-devel/params/ekf_template.yaml">link text</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-08-27 10:07:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer Yes. The absurd output is also an issue that i found subsequently. I experimented with the values as you advised. Regardless of the timing, the absurdity might be coming from my approach. The tree generated by the zed camera is <code>zed_map-&gt;zed_odom-&gt;zed_base_link-&gt;...</code>and so on.  Since <code>zed_base_link</code> already has a parent, I cannot directly connect it my robot <code>base_link</code> in the fashion <code>base_link-&gt;zed_base_link</code>. I can connect it as <code>zed_base_link-&gt;base_link</code> i.e. as a child but then it starts messing up the rs camera tree connection. As you can see in the <code>frames</code> png, there are two trees, one for rs (starting from <code>camera_odom_frame</code>) and one for zed (starting from <code>zed_map</code>). Since I cannot connect robot <code>base_link</code> to the <code>camera_link</code> and the <code>zed_base_link</code> as a parent, I decided to connect <code>base_link</code> to the top most link of each tree i.e. <code>base_link-&gt;zed_map</code> and <code>base_link-&gt;camera_odom_frame</code>. I described the approach in beginning. Now I have doubts about it -_-</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-08-29 22:00:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just to be clear &quot;zed_map&quot; is the map frame</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-08-29 22:01:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>To be clear frames.png does NOT show two trees. You might missunderstand something here. If zed_map is your map then it should be at the base of the tree (top of picture where you now have &quot;odom&quot;). 
+By the way be aware that the zed coordinate system is different from standard ros! zed has z where ros has x and so on, this will mess up things greatly when not taking care of. 
+There should be functionallity to stop zed from publishing to tf and instead use its topics, then use the topics of zed and rs in ekf, as well transform publishers or urdf to create base_link and camera_links. This way tf can make sense of the topic data stream and interpret it according to relative position in the tf tree.<br>
+Your tree should be: zed_map --&gt; odom_filtered --&gt; base_link --&gt; camera_links ...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-08-31 08:49:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer I think I messed up while explaining. What I meant when I said that frames.png has 2 trees is that there were two trees originally starting from <code>zed_map</code> and <code>camera_odom_frame</code> respectively. I had linked them to the robot <code>base_link</code>. And that is what gets shown in the frames.png
+Also you are right! I hadn&#39;t considered the fact that the zed coordinate system for the zed_base_link would be different. I am going to check this out.
+I am going to remove the <code>zed_map</code> and try to fuse the odom topics on <code>zed_odom</code> and <code>camera_odom_frame</code>. Will let you know how it goes.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-09-01 09:24:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>OK, but I dont understand what you want to do. If this all should get you navigation and localization down the line you need map--&gt;odom--&gt;base_link--&gt;sensor_frames. tf gives the position of the frames in reference-frame space(usually map), or the data (pointcloud) of sensors transformed to this space. Usually you have an urdf file describing the robot (where are the links in relation to base_link etc.). odom_frame is a virtual frame for correcting odometry error, and map is the world_frame/map_frame the space the robot &quot;lives&quot; in. I think your zed-setup is already a complete system that you now try to integrate into another complete system. I dont think you can gain anything this way, but lots of headache incoming. Is the zed package doing mapping and localization as well?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-09-01 09:48:55 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer: This is what I want to do: I have <code>pose</code> data in &quot;zed_map&quot; frame and I have <code>odom</code> data in &quot;camera_pose_frame&quot;. I want to fuse them both using robot_localization, but relative to the robot&#39;s &quot;base_link&quot; frame. And you are correct. There are other links (child) coming out of the robot&#39;s &quot;base_link&quot; (parent), that have been defined via. the robot&#39;s urdf file. But for the sake of simplicity I have omitted them in my testing and from frames.png. You may be right, I haven&#39;t gained much by this approach except headache. The zed package can do mapping, however for the current scenario it only does localization. My understanding is that it uses zed_odom frame to depict visual odometry and zed_map frame to depict corrected odometry (with the help of imu). I might want to drop the idea and just have zed_map as the base map frame.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-09-01 11:00:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer: In addition to the above, I was wondering though then how would the robot_localization ever fuse multiple odometries ? It sure gives us the provision to do so. Any odom produced by any system will have it&#39;s own tree. Just like this example: <code>odom1--&gt;base1--&gt;...</code> and <code>odom2--&gt;base2--&gt;...</code>. If the robot&#39;s <code>base_link</code> is different from <code>base1</code> and <code>base2</code>, I don&#39;t see any other way of fusing odom&#39;s in robot&#39;s base frame than what I have tried. Maybe I will create a new post querying this concern. <em>(P.S. The zed_base_link frame was already correct x forward, z up and y left when it comes to ros, so that wasn&#39;t the issue. Verified via. rviz)</em></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-09-01 11:09:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes a new question might be good, this isnt about the relativly neglectable latency anymore. </p>
+
+<p>&quot;Any odom ... its own tree&quot;: I dont think this is correct. You would fuse the two datastreams (odometry messages) to transform the one odom-frame in a fusion node. Some nodes have tf publishing as feature but it is optional(and mostly usefull). If you want to use the node data and take care of its integration into the tf tree thats fine. tf is not the main datastream its higher level as it already incorporates the pose and reference frame. </p>
+
+<p>If you have a map - odom - baselink tree and odom message tells you your at position x 1.0, if then the localization(odom correction node)  &quot;tells&quot; tf there is an error of x 0.2, tf (transform pose odom frame) will show x1.2. The pose changes but not the message data sent by odom node. The tf tree is not a direct representation of all published topics. If you have 2 links in the urdf but 4 encoders publishing data, the tf tree only has 2 frames.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-09-03 08:28:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just had a quick look at the zed package <a href="https://www.stereolabs.com/docs/ros/zed-node/#zed-parameters">link text</a>. At position-paramters: there are publish_tf and publish_map_tf parameters. I would assume setting publish_tf to false will diasapear most zed frames (all or just position related?) giving you control of tf routing. Maybe this way you can sneak odom_filtered and base_link between zed_map and zed_camera_center.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-09-03 08:56:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dragonslayer Sorry I had to take break from this. This was getting a bit too much for me to tackle continuously. I am back at it now. Thanks for all your help till now! I will definitely create a separate post on the fusion issue. I understand what you mean above but I am still not sure if I can derive how to go about fusing 2+ odom streams for a robot.
+Simply put if we have <code>odom1_frame-&gt;base1-&gt;sensor1_frame</code> and <code>odom2_frame-&gt;base2-&gt;sensor2_frame</code>, and we have our robot as <code>base_link(parent)-&gt;(multiple links)</code>, what should my final tree look like at/after fusion?
+You don&#39;t have to answer it right now, but I would really appreciate your help on the new thread. I will tag you once it is created. Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25519">Equaltrace</a> on 2020-09-10 14:13:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Your welcome. I still think its about misunderstanding tf. the odometry message just tells you that the base moved x 0.5 for example. It has no clue about frames, thus you can have two sources, fuse their data and interpret the fused data in map space, thats the tf part, interpreting different data in a single defined space. If you have a simple robot arm with two links and joints(only up and down joints), if both sensors give you -45° the tf pose of the second link (&quot;endeffektor&quot;), will be the added up -90°. But this -90° will be the pose not the position the sensor message of the joint publishes, that would still be -45° (ROS uses radians but I used degrees to make it simpler here). tf pose and sensor message position are two different values, have different references.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-09-10 15:18:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>odometry_filtered (fusion) gives you odom to base_link transform. The rest of the tree would just be the children and children of children etc. up from base_link. Sensor frames, manipulator etc.. All the links that sit on the base.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2020-09-10 15:20:22 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

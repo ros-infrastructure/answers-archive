@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>dynamic tf broadcaster updates stale/intermittent in tf view_frames - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/333071">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>dynamic tf broadcaster updates stale/intermittent in tf view_frames</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93291/dynamic-tf-broadcaster-updates-stale-intermittent-in-tf-view-frames">https://robotics.stackexchange.com/questions/93291/dynamic-tf-broadcaster-updates-stale-intermittent-in-tf-view-frames</a>.</p>
+        <p>Hello everybody, </p>
+
+<p>Description:    Ubuntu 18.04.2 LTS, 
+Jetson nano, 
+Ros melodic</p>
+
+<p>My robot platform is an inverted pendulum, and trying to implement a dynamic transform between the base<em>link (centered between wheels and fixed w/r/t gravity vector), and base</em>frame (co-located with base<em>link, but includes the pitch measurement).  The sensor that is providing the attitude measurement also produces a visual odometry measurement, so I have an odom</em>listener node that will send an updated base<em>link to base</em>frame transform, and a base<em>link to camera</em>odom_frame transform on every new measurement.</p>
+
+<p>However, when I run &quot;tf view<em>frames&quot;, I will only infrequently see the base</em>link to base<em>frame or camera</em>odom<em>frame nodes, and if I do, the measurements are typically many seconds old.  If I run &quot;tf tf</em>echo base<em>link base</em>frame&quot;, I can usually see tf broadcast updates, but interestingly, they can show the same &quot;At time&quot; values for multiple broadcasts:</p>
+
+<pre><code>$ rosrun tf tf_echo base_link base_frame 
+
+At time 1568583863.323
+- Translation: [0.000, 0.000, 0.000]
+- Rotation: in Quaternion [0.000, 0.002, 0.000, 1.000]
+            in RPY (radian) [0.000, 0.003, 0.000]
+            in RPY (degree) [0.000, 0.186, 0.000] 
+
+At time 1568583863.323
+- Translation: [0.000, 0.000, 0.000]
+- Rotation: in Quaternion [0.000, 0.002, 0.000, 1.000]
+            in RPY (radian) [0.000, 0.003, 0.000]
+            in RPY (degree) [0.000, 0.186, 0.000]
+</code></pre>
+
+<p>Looking at the code in the odom<em>listener.cpp, I print updates regularly, and can see the code is getting called with a much higher frequency that I&#39;m observing updates in view</em>frame or tf_echo.  Any thoughts why?</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &quot;nav_msgs/Odometry.h&quot;
+
+/**
+ * http://wiki.ros.org/evarobot_odometry/Tutorials/indigo/Writing%20a%20Simple%20Subscriber%20for%20Odometry
+ * https://answers.ros.org/question/11545/plotprint-rpy-from-quaternion/#17106
+ */
+
+/**
+ * on VO message from T265, updates base_link to base_frame transform used
+ * by GPS and laser.  Also transforms the VO data to the base_link frame
+ */
+void odomCallback(const nav_msgs::Odometry::ConstPtr&amp; msg)
+{
+    // Inspect incoming message
+    ROS_INFO(&quot;Seq: [%d]&quot;, msg-&gt;header.seq);
+    //ROS_INFO(&quot;Position-&gt; x: [%f], y: [%f], z: [%f]&quot;, msg-&gt;pose.pose.position.x,msg-&gt;pose.pose.position.y, msg-&gt;pose.pose.position.z);
+    //ROS_INFO(&quot;Orientation-&gt; x: [%f], y: [%f], z: [%f], w: [%f]&quot;, msg-&gt;pose.pose.orientation.x, msg-&gt;pose.pose.orientation.y, msg-&gt;pose.pose.orientation.z, msg-&gt;pose.pose.orientation.w);
+    //ROS_INFO(&quot;Vel-&gt; Linear: [%f], Angular: [%f]&quot;, msg-&gt;twist.twist.linear.x,msg-&gt;twist.twist.angular.z);
+
+    // Construct tf::Quaterion
+    tf::Quaternion quat(msg-&gt;pose.pose.orientation.x, 
+        msg-&gt;pose.pose.orientation.y, 
+        msg-&gt;pose.pose.orientation.z, 
+        msg-&gt;pose.pose.orientation.w);
+
+    // Get RPY from Quaternion
+    double roll, pitch, yaw;
+    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+
+    // Display converted RPY
+    ROS_INFO(&quot;published rpy angles: roll=%f pitch=%f yaw=%f&quot;, roll, pitch, yaw);
+
+    //Update tf::Quaternion with pitch only
+    tf::Quaternion qPitchOnly;
+    qPitchOnly.setRPY(0.0, pitch, 0.0);
+
+    //base_link to base_frame transformation
+    tf::TransformBroadcaster broadcaster;
+    ros::Time currentTime = ros::Time::now();
+
+    double secs = currentTime.toSec();
+    ROS_INFO(&quot;currentTime: [%f]&quot;, secs);
+
+    broadcaster.sendTransform(
+        tf::StampedTransform(
+            tf::Transform(qPitchOnly, tf::Vector3(0.0, 0.0, 0.0)),
+            currentTime,&quot;base_link&quot;, &quot;base_frame&quot;
+        )
+    );
+
+    // Transform T265 data to base_link frame and broadcast
+    tf::Vector3 baseLink2T265 = tf::Vector3(0.122, 0.0, 0.187);
+    tf::Vector3 result = tf::Matrix3x3(qPitchOnly) * baseLink2T265;
+
+    broadcaster.sendTransform(
+        tf::StampedTransform(
+            tf::Transform(tf::Quaternion(0, 0, 0, 1), result),
+            currentTime,&quot;base_link&quot;, &quot;camera_odom_frame&quot;
+        )
+    );
+
+    ROS_INFO(&quot;New location-&gt; x: [%f], y: [%f], z: [%f]&quot;, result.x(), result.y(), result.z());
+
+    //ROS_INFO(&quot;New Orientation-&gt; x: [%f], y: [%f], z: [%f], w: [%f]&quot;, quat.x(), quat.y(), quat.z(), quat.w());
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;odom_listener&quot;);
+
+  ros::NodeHandle n;
+
+  ros::Subscriber sub = n.subscribe(&quot;/camera/odom/sample&quot;, 1000, odomCallback);
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/45653">Jimboner</a> on 2019-09-15 16:51:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Your code shows this:</p>
+
+<pre><code>void odomCallback(const nav_msgs::Odometry::ConstPtr&amp; msg)
+{
+    [..]
+
+    tf::TransformBroadcaster broadcaster;
+
+    [..]
+
+    broadcaster.sendTransform(..);
+
+    [..]
+}
+</code></pre>
+
+<p>you&#39;re (re)creating the <code>tf::TransformBroadcaster</code> in every <code>odomCallback(..)</code>.</p>
+
+<p>As broadcasters essentially wrap regular <code>ros::Publisher</code>s, the same requirements and constraints apply: <em>never</em> create <code>Publisher</code>s inside the body of callbacks.</p>
+
+<p>Setting up a publication takes time. Setting up subcriptions takes time. There is almost no time between creating the <code>TransformBroadcaster</code> and sending transforms with it in your code. And even if the subscription is setup, the <code>Publisher</code> disappears almost immediately after the frames have been broadcast, which increases the chance that the data never actually reaches the subscriber(s).</p>
+
+<p>Create the <code>TransformBroadcaster</code> in a scope that has a longer lifetime than your callback -- such as your <code>main(..)</code>, or use a class to wrap all of this -- and I expect things to start working properly.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2019-09-16 05:26:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Gvdhoorn,</p>
+
+<p>Thanks for the quick response, wrapping it into a class works great!</p>
+
+<p>Jim</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/45653">Jimboner</a> on 2019-09-19 22:53:31 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

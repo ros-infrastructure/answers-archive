@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Can ROS2 services still be expected to be 'flakey'? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/411860">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Can ROS2 services still be expected to be 'flakey'?</h2>
+      <div class="question">
+        <p>Hello, </p>
+
+<p>I have stumbled upon a problem, when trying to use services in ROS2 humble.  I haven&#39;t tried other distros. </p>
+
+<p><strong>In short:</strong> My service-clients occasionally doesn&#39;t receive a service-response, when I have multiple clients calling the same service at the same time. It can also happen with 1 client however it occurs more rarely and also depends on which DDS/RTPS vendor I use. </p>
+
+<p>I have scoured varies ROS2-related packages, issue lists and so forth. I found <a href="https://github.com/ros2/ros2/issues/922">this issue</a>, which seems to be a similar issue. From the history, then I can see that they have added &#39;flakey&#39; services to the list of known issues for ROS2 foxy. Yet, the later released distributions&#39; release notes doesn&#39;t contain this as a known issue. 
+I can see that some of the related subissues are open.<br>
+Are anyone aware whether this behavior is still to be expected? </p>
+
+<p>If yes, are you aware of any good workarounds? Currently, the only way I have found is to wait for a timeout, prune pending requests and try again. However, this is not a particular great pattern for my application.  </p>
+
+<p>Thanks in advance! Let me know if you need more details. </p>
+
+<p><strong>Recreate issue</strong>
+To recreate the issue, then compile the provided package <a href="https://we.tl/t-GVijkfAXjM">cpp_pubsub</a> and execute the following commands in 3 different terminals:</p>
+
+<p><code>ros2 run cpp_pubsub service --ros-args -r __node:=service --log-level debug</code></p>
+
+<p><code>ros2 run cpp_pubsub client --ros-args -r __node:=client1 --log-level debug</code></p>
+
+<p><code>ros2 run cpp_pubsub client --ros-args -r __node:=client2 --log-level debug</code></p>
+
+<p><strong>My platform</strong></p>
+
+<p>Ubuntu 22 kernel 5.15.0-58-generic<br>
+I also use rmw<em>cyclonedds</em>cpp as the RMW_implementation</p>
+
+<p><strong>Alternatively you can see the package files here</strong></p>
+
+<p>client<em>member</em>function.cpp:</p>
+
+<pre><code>#include &lt;chrono&gt;
+#include &lt;functional&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &lt;cpp_pubsub/srv/node_call.hpp&gt;
+int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    std::shared_ptr&lt;rclcpp::Node&gt; node = rclcpp::Node::make_shared(&quot;client&quot;);
+    auto client =node-&gt;create_client&lt;cpp_pubsub::srv::NodeCall&gt;(&quot;/service&quot;);
+    client-&gt;wait_for_service();
+    uint limit = 500000;
+    for(size_t i = 0; i &lt; limit ; i ++)
+    {
+    auto request = std::make_shared&lt;cpp_pubsub::srv::NodeCall::Request&gt;();
+    request-&gt;node_name = node-&gt;get_name();
+    client-&gt;wait_for_service();
+    auto shared_future = client-&gt;async_send_request(request);
+   if (rclcpp::spin_until_future_complete(node, shared_future, std::chrono::seconds(10)) == rclcpp::FutureReturnCode::SUCCESS)
+    {
+        std::stringstream str;
+        str &lt;&lt; &quot;Received response &quot; &lt;&lt; i;
+        RCLCPP_INFO(rclcpp::get_logger(&quot;rclcpp&quot;), str.str().c_str());
+    } else {
+        RCLCPP_ERROR(rclcpp::get_logger(&quot;rclcpp&quot;), &quot;Failed to call service. Stopping execution now&quot;);
+        return 1;
+    }
+   }
+   rclcpp::shutdown();
+   return 0;
+ }
+</code></pre>
+
+<p>service<em>member</em>function.cpp</p>
+
+<pre><code>#include &lt;functional&gt;
+#include &lt;memory&gt;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &lt;cpp_pubsub/srv/node_call.hpp&gt;
+class MinimalService : public rclcpp::Node
+{
+public:
+    MinimalService()
+    : Node(&quot;Service&quot;)
+    {
+        service_ = create_service&lt;cpp_pubsub::srv::NodeCall&gt;(&quot;/service&quot;, std::bind(&amp;MinimalService::callback,this, std::placeholders::_1,std::placeholders::_2));
+    }
+
+private:
+    void callback(cpp_pubsub::srv::NodeCall::Request::ConstSharedPtr req ,  cpp_pubsub::srv::NodeCall::Response::SharedPtr)
+    {
+        RCLCPP_INFO(get_logger(), &quot;Received request from %s&quot;,req-&gt;node_name.c_str());
+    }
+    rclcpp::Service&lt;cpp_pubsub::srv::NodeCall&gt;::SharedPtr service_;
+
+};
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared&lt;MinimalService&gt;();
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>CMakeLists.txt</p>
+
+<pre><code>cmake_minimum_required(VERSION 3.8)
+project(cpp_pubsub)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES &quot;Clang&quot;)
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+# find dependencies
+find_package(ament_cmake REQUIRED)
+# uncomment the following section in order to fill in
+# further dependencies manually.
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  &quot;srv/NodeCall.srv&quot;
+  #DEPENDENCIES builtin_interfaces
+)
+rosidl_get_typesupport_target(cpp_typesupport_target &quot;${PROJECT_NAME}&quot; &quot;rosidl_typesupport_cpp&quot;)
+
+add_executable(client src/client_member_function.cpp)
+target_link_libraries(client &quot;${cpp_typesupport_target}&quot;)
+ament_target_dependencies(client rclcpp std_msgs std_srvs )
+
+add_executable(service src/service_member_function.cpp)
+target_link_libraries(service &quot;${cpp_typesupport_target}&quot;)
+ament_target_dependencies(service rclcpp std_msgs std_srvs)
+
+install(TARGETS
+  client
+  service
+  DESTINATION lib/${PROJECT_NAME})
+
+ament_export_dependencies(rosidl_default_runtime)
+ament_package()
+</code></pre>
+
+<p>package.xml</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;?xml-model href=&quot;http://download.ros.org/schema/package_format3.xsd&quot; schematypens=&quot;http://www.w3.org/2001/XMLSchema&quot;?&gt;
+&lt;package format=&quot;3&quot;&gt;
+  &lt;name&gt;cpp_pubsub&lt;/name&gt;
+  &lt;version&gt;0.0.0&lt;/version&gt;
+  &lt;description&gt;TODO: Package description&lt;/description&gt;
+  &lt;maintainer email=&quot;jp@todo&quot;&gt;nordbo&lt;/maintainer&gt;
+  &lt;license&gt;TODO: License declaration&lt;/license&gt;
+
+  &lt;buildtool_depend&gt;ament_cmake&lt;/buildtool_depend&gt;
+
+  &lt;test_depend&gt;ament_lint_auto&lt;/test_depend&gt;
+  &lt;test_depend&gt;ament_lint_common&lt;/test_depend&gt;
+  &lt;depend&gt;rclcpp&lt;/depend&gt;
+  &lt;depend&gt;std_msgs&lt;/depend&gt;
+  &lt;depend&gt;std_srvs&lt;/depend&gt;
+
+  &lt;build_depend&gt;rosidl_default_generators&lt;/build_depend&gt;
+  &lt;exec_depend&gt;rosidl_default_runtime&lt;/exec_depend&gt;
+  &lt;member_of_group&gt;rosidl_interface_packages&lt;/member_of_group&gt;
+
+  &lt;export&gt;
+    &lt;build_type&gt;ament_cmake&lt;/build_type&gt;
+  &lt;/export&gt;
+&lt;/package&gt;
+</code></pre>
+
+<p>NodeCall.srv:</p>
+
+<pre><code>string node_name
+---
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/135423">jbp</a> on 2023-01-26 08:09:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I can confirm that your code is not working reliably on a default ROS2-humble installation with FastDDS or CyclonDDS (using docker). After a few seconds of running it, it starts to &quot;stutter&quot;, sometimes one or both clients even crash with the error message:
+<code>[ERROR] [1674831280.798867979] [rclcpp]: Failed to call service. Stopping execution now</code>
+after receiving some 1000-messages successfully before.</p>
+
+<p>I am also very interested in a workaround. Your code does not compile on foxy, but I would like to test that as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/76788">brean</a> on 2023-01-27 10:06:38 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for trying it out, Brean.</p>
+
+<p>By examining the logs I found that the client never receives the response as an event. The server reports that it was sent. 
+However, the stuck client would still receive responses from the second node that&#39;s still running. </p>
+
+<p>It&#39;s an odd behaiviour and I expect it to be a bug in the implementation.
+With the current interfaces for client/services I find it difficult to detect if it should occur unless I implement a timeout that waits &#39;long enough&#39;. However this approach is not particular great in a application, where timing is critical. </p>
+
+<p>I tried looking into accessing the rmw_request_id_t that follows the request, but I haven&#39;t found a way to access it on the client side(expect the sequence number). 
+If I could get it, then it would be easy to wrap the service/client in a class that would additionally publish/subscribe to this information, so I would have an extra method that could detect loss of packages.<br>
+However, it would be a hotfix.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/135423">jbp</a> on 2023-01-27 10:25:18 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

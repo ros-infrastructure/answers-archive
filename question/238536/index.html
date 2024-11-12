@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Issue using moveit::planning_interface::MoveGroup::setPoseTarget with non-empty end_effector_link - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/238536">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Issue using moveit::planning_interface::MoveGroup::setPoseTarget with non-empty end_effector_link</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/74929/issue-using-moveitplanning-interfacemovegroupsetposetarget-with-non-empty">https://robotics.stackexchange.com/questions/74929/issue-using-moveitplanning-interfacemovegroupsetposetarget-with-non-empty</a>.</p>
+        <p>I am having a confusing issue when trying to set pose targets wrt a frame other than the chain&#39;s end effector link.  I can set and get the poses specifying the end<em>effector</em>link argument successfully but when I call move(), I get errors to the effect of:</p>
+
+<pre><code>[ INFO] [1467279632.377325997]: Position constraint violated on link &#39;my_frame&#39;. Desired: -0.868717, -0.024240, 0.347688, current: -0.897177, -0.027324, 0.220500
+[ INFO] [1467279632.377386843]: Differences 0.0284601 0.00308382 0.127189
+[ INFO] [1467279632.377426372]: Orientation constraint satisfied for link &#39;my_frame&#39;. Quaternion desired: -0.001033 -0.015521 -0.704873 0.709163, quaternion actual: -0.000985 -0.015375 -0.705119 0.708921, error: x=0.000146, y=0.000269, z=0.000691, tolerance: x=0.001000, y=0.001000, z=0.001000
+</code></pre>
+
+<p>The confusing issue is that &quot;current: -0.897177, -0.027324, 0.220500&quot; makes no sense in the context of any of my frames that I can figure and furthermore, does NOT match the values read back from a call to getCurrentPose(&quot;my_frame&quot;).</p>
+
+<p>In an attempt to isolate my issue I have tried following two cases, the first of which works and the latter that fails:
+Works --</p>
+
+<pre><code>  geometry_msgs::PoseStamped debug = movegroup_.getCurrentPose();
+  debug.pose.position.x = debug.pose.position.x + 0.01;
+  movegroup_.setPoseTarget(debug.pose);
+  movegroup_.move();
+</code></pre>
+
+<p>Fails as mentioned above --</p>
+
+<pre><code>  geometry_msgs::PoseStamped debug = movegroup_.getCurrentPose(&quot;my_frame&quot;);
+  debug.pose.position.x = debug.pose.position.x + 0.01;
+  movegroup_.setPoseTarget(debug.pose, &quot;my_frame&quot;);
+  movegroup_.move();
+</code></pre>
+
+<p>Interestingly, trying one more case... if I remove the line</p>
+
+<pre><code>debug.pose.position.x = debug.pose.position.x + 0.01;
+</code></pre>
+
+<p>and send an unmodified current pose of my_frame as the pose target I get a success in the form of &quot;Goal constraints are already satisfied. No need to plan or execute any motions&quot;</p>
+
+<p>This leads me to believe there is a rotational and/or reference frame discrepancy somewhere... am I missing something?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27299">BrettHemes_</a> on 2016-06-30 10:06:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Not an answer but I can confirm that <code>moveGroup.setEndEffectorLink()</code> is probably not working right.</p>
+
+<p>Console output from moveGroup says it is using frame &#39;leap_motion_on_robot&#39;:</p>
+
+<pre><code>Attempting to follow 1 waypoints for link &#39;leap_motion_on_robot&#39;...
+</code></pre>
+
+<p><code>moveGroup.getCurrentPose()</code> always returns a pose in the /base_link frame.</p>
+
+<p>I set it to use a different EE frame:</p>
+
+<pre><code>moveGroup.setEndEffectorLink(&quot;camera_ee_link&quot;);
+</code></pre>
+
+<p>Similar to what you did, I get the current pose. I&#39;ve then tried converting the current pose to different frames and commanding them as the new EE pose. I expect it to report back that it&#39;s already at that pose within specified tolerances. Instead, it moves to a completely new pose. For example,</p>
+
+<pre><code>  // Current pose in base_link
+  currentPose = moveGroup.getCurrentPose();  // Always returns in base_link
+  ROS_INFO_STREAM( &quot;Current pose from moveGroup:  &quot; &lt;&lt; currentPose );
+
+  // Current pose in camera_ee_link
+  // Remove the leading &quot;/&quot; for tf2
+  if ( currentPose.header.frame_id.at(0) == &#39;/&#39; )
+    currentPose.header.frame_id.erase(0,1);
+
+  listener.waitForTransform( &quot;camera_ee_link&quot;, currentPose.header.frame_id, ros::Time(0), ros::Duration(10.0) );
+  try{
+    geometry_msgs::TransformStamped tf_to_camera_ee_link_frame = tfBuffer.lookupTransform(&quot;camera_ee_link&quot;, currentPose.header.frame_id, ros::Time(0), ros::Duration(1.0) );
+    tf2::doTransform(currentPose, currentPose, tf_to_camera_ee_link_frame);
+  }
+  catch(tf2::TransformException ex){
+    ROS_ERROR(&quot;%s&quot;,ex.what());
+    return false;
+  }
+  ROS_INFO_STREAM( &quot;Current pose in camera_ee_link:  &quot; &lt;&lt; currentPose );
+
+  // Test with currentPose:
+  waypoints.clear();
+  waypoints.push_back(currentPose.pose); // Sending it in base_link. leap_motion_on_robot, and camera_ee_link all fail.
+  fraction = move_base_to_manip::cartesian_motion(waypoints, trajectory, moveGroup, nh);
+  ROS_INFO(&quot;Cartesian path: %.2f%% achieved&quot;, fraction * 100.);
+  moveGroup.move();
+</code></pre>
+
+<p>The 3 frames I have tried are <code>base_link</code>, <code>leap_motion_on_robot</code>, and <code>camera_ee_link</code>. Basically, any frame that makes any sense whatsoever. It moves to 3 different poses, but none of them is the current pose.</p>
+
+<p>Github issue: <a href="https://github.com/ros-planning/moveit/issues/522">https://github.com/ros-planning/moveit/issues/522</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21281"></a> on 2017-06-08 12:41:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Interesting... this was a long time ago for me but I think I just ended up doing the appropriate transformation on my side so that everything was relative to the default end effector link.  At least I am not the only one having issues :/</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20527">BrettHemes</a> on 2017-06-09 09:20:25 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

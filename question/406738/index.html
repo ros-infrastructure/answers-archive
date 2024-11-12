@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros spin inside a class error - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/406738">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros spin inside a class error</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I&#39;m trying to subscribe to 4 different topics () and process the information (transform rpm to bytes) and then publish the result in a common topic (data don&#39;t need to be synchronized).</p>
+
+<p>Something like this:</p>
+
+<p>[topic1, topic2, topic3, topic4] ---&gt; | Node | ----&gt; [topic5]</p>
+
+<p>I&#39;m not proficient on C++, so I did my code based on:</p>
+
+<p><a href="https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f">https://levelup.gitconnected.com/ros-spinning-threading-queuing-aac9c0a793f</a></p>
+
+<p>Thus, my node is as follow:</p>
+
+<pre><code>#include &lt;sub_pub.hpp&gt;
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;steeringmotors_message&quot;);
+    ros::NodeHandle n1, n2, n3, n4, np;
+    sub_pub steering_motors(n1, n2, n3, n4, np);
+    steering_motors.spinners();
+
+    return 0;
+}
+</code></pre>
+
+<p>and my class is defined as follow:</p>
+
+<p>cpp:</p>
+
+<pre><code>#include &quot;sub_pub.hpp&quot;
+
+
+sub_pub::sub_pub(ros::NodeHandle n1, ros::NodeHandle n2, ros::NodeHandle n3, ros::NodeHandle n4, ros::NodeHandle np)
+{
+
+    this-&gt;_n1 = n1;
+    this-&gt;_n2 = n2;
+    this-&gt;_n3 = n3;
+    this-&gt;_n4 = n4;
+    this-&gt;_np = np;
+
+
+
+    this-&gt;_pidWheel_1 = this-&gt;_n1.subscribe(&quot;/wheel_1_steering_pid/control_effort&quot;, 1, &amp;sub_pub::_callback_pidWheel_1, this);
+
+    this-&gt;_n2.setCallbackQueue(&amp;_callback_queue_wheel_2);
+    this-&gt;_pidWheel_2 = this-&gt;_n2.subscribe(&quot;/wheel_2_steering_pid/control_effort&quot;, 1, &amp;sub_pub::_callback_pidWheel_2, this);
+
+    this-&gt;_n3.setCallbackQueue(&amp;_callback_queue_wheel_3);
+    this-&gt;_pidWheel_3 = this-&gt;_n3.subscribe(&quot;/wheel_3_steering_pid/control_effort&quot;, 1, &amp;sub_pub::_callback_pidWheel_3, this);
+
+    this-&gt;_n4.setCallbackQueue(&amp;_callback_queue_wheel_4);
+    this-&gt;_pidWheel_4 = this-&gt;_n4.subscribe(&quot;/wheel_4_steering_pid/control_effort&quot;, 1, &amp;sub_pub::_callback_pidWheel_4, this) ;
+
+    this-&gt;_pub = this-&gt;_np.advertise&lt;std_msgs::Int64MultiArray&gt;(&quot;/socket2/send&quot;, 1);
+
+}
+
+sub_pub::~sub_pub() 
+{
+}
+
+int* sub_pub::_rpmTobyte(double recv_rpm)
+{
+    int rpm = (int)recv_rpm;
+    static int bytes2return[2];
+    // If rpm are positive
+    if (rpm &gt;= 0)
+    {
+        // 16 bytes = 8bytes0 8bytes1 
+        bytes2return[1] = (rpm &gt;&gt; 8) &amp; 0xff; //byte0
+        bytes2return[0] = rpm &amp; 0xff; //byte1
+        return bytes2return;
+    }
+
+    // If rpm are negative
+    else
+    {
+        int neg_dec;
+        neg_dec = 65535 - abs(rpm); // FFFF- rpm
+        // 16 bytes = 8bytes0 8bytes1 
+        bytes2return[1] = (neg_dec &gt;&gt; 8) &amp; 0xff;
+        bytes2return[0] = neg_dec &amp; 0xff;
+        return bytes2return;
+    }
+
+}
+
+void sub_pub::spinners(void)
+{
+    std::thread spinner_thread_wheel2([&amp;]()
+    {
+        this-&gt;_spinner_2.spin(&amp;_callback_queue_wheel_2);
+    });
+
+    std::thread spinner_thread_wheel3([&amp;](){
+        this-&gt;_spinner_3.spin(&amp;_callback_queue_wheel_3);
+    });
+
+    std::thread spinner_thread_wheel4([&amp;](){
+        this-&gt;_spinner_4.spin(&amp;_callback_queue_wheel_4);
+    });
+
+    ros::spin(); // spin the n1
+
+    // Spin
+    spinner_thread_wheel2.join();
+    spinner_thread_wheel3.join();
+    spinner_thread_wheel4.join();
+}
+
+
+void sub_pub::_callback_pidWheel_1(const std_msgs::Float64&amp; value)
+{
+    //ros::NodeHandle np;
+    //ros::Publisher pub = np.advertise&lt;std_msgs::Int64MultiArray&gt;(&quot;/socket2/send&quot;, 1);
+
+    //                                     MotorID  PID130  b0   b1
+    int setup_array[13] = {0x00, 0x00, 0x00, 0x01, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+    // Get rpm bytes
+    int *temp_p;
+    temp_p = _rpmTobyte(value.data);
+    // Setup array
+    setup_array[5] = temp_p[0];
+    setup_array[6] = temp_p[1];
+
+    // Create and publish message
+    std_msgs::Int64MultiArray msg;
+    int i = 0;
+    for (int e : setup_array)
+    {
+        msg.data[i] = e;
+        i++;
+    }
+    this-&gt;_pub.publish(msg);
+}
+
+
+void sub_pub::_callback_pidWheel_2(const std_msgs::Float64&amp; value)
+{
+    //ros::NodeHandle np;
+    //ros::Publisher pub = np.advertise&lt;std_msgs::String&gt;(&quot;/socket2/send&quot;, 1);
+
+    //                                     MotorID  PID130  b0   b1
+    int setup_array[13] = {0x00, 0x00, 0x00, 0x02, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+    // Get rpm bytes
+    int *temp_p;
+    temp_p = _rpmTobyte(value.data);
+    // Setup array
+    setup_array[5] = temp_p[0];
+    setup_array[6] = temp_p[1];
+
+    // Create and publish message
+    std_msgs::Int64MultiArray msg;
+    int i = 0;
+    for (int e : setup_array)
+    {
+        msg.data[i] = e;
+        i++;
+    }
+    this-&gt;_pub.publish(msg);
+
+}
+
+void sub_pub::_callback_pidWheel_3(const std_msgs::Float64&amp; value)
+{
+    //ros::NodeHandle np;
+    //ros::Publisher pub = np.advertise&lt;std_msgs::String&gt;(&quot;/socket2/send&quot;, 1);
+
+    //                                     MotorID  PID130  b0   b1
+    int setup_array[13] = {0x00, 0x00, 0x00, 0x03, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+    // Get rpm bytes
+    int *temp_p;
+    temp_p = _rpmTobyte(value.data);
+    // Setup array
+    setup_array[5] = temp_p[0];
+    setup_array[6] = temp_p[1];
+
+    // Create and publish message
+    std_msgs::Int64MultiArray msg;
+    int i = 0;
+    for (int e : setup_array)
+    {
+        msg.data[i] = e;
+        i++;
+    }
+    this-&gt;_pub.publish(msg);
+}
+
+void sub_pub::_callback_pidWheel_4(const std_msgs::Float64&amp; value)
+{
+    //ros::NodeHandle np;
+    //ros::Publisher pub = np.advertise&lt;std_msgs::String&gt;(&quot;/socket2/send&quot;, 1);
+
+    //                                     MotorID  PID130  b0   b1
+    int setup_array[13] = {0x00, 0x00, 0x00, 0x03, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+    // Get rpm bytes
+    int *temp_p;
+    temp_p = _rpmTobyte(value.data);
+    // Setup array
+    setup_array[5] = temp_p[0];
+    setup_array[6] = temp_p[1];
+
+    // Create and publish message
+    std_msgs::Int64MultiArray msg;
+    int i = 0;
+    for (int e : setup_array)
+    {
+        msg.data[i] = e;
+        i++;
+    }
+    this-&gt;_pub.publish(msg);
+}
+</code></pre>
+
+<p>hpp:</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &lt;thread&gt;
+#include &lt;string&gt;
+#include &lt;ros/callback_queue.h&gt;
+
+#include &quot;std_msgs/Float64.h&quot;
+#include &quot;std_msgs/Int64MultiArray.h&quot;
+#include &quot;std_msgs/String.h&quot;
+
+// Motor IDs
+#define motorId1 0x01
+#define motorId2 0x02
+#define motorId3 0x03
+#define motorId4 0x04
+
+
+
+class sub_pub
+{
+    public:
+        sub_pub(ros::NodeHandle n1, ros::NodeHandle n2, ros::NodeHandle n3, ros::NodeHandle n4, ros::NodeHandle np);
+        ~sub_pub();
+
+        // Spinner
+        void spinners(void);
+
+    private:
+        // Variables
+        //string _pubTopic;
+        // Nodehandlers
+        ros::NodeHandle _n1;
+        ros::NodeHandle _n2;
+        ros::NodeHandle _n3;
+        ros::NodeHandle _n4;
+        ros::NodeHandle _np;
+        // Callbacks queues
+        ros::CallbackQueue _callback_queue_wheel_2;
+        ros::CallbackQueue _callback_queue_wheel_3;
+        ros::CallbackQueue _callback_queue_wheel_4;
+        // Subscribers
+        ros::Subscriber _pidWheel_1;
+        ros::Subscriber _pidWheel_2;
+        ros::Subscriber _pidWheel_3;
+        ros::Subscriber _pidWheel_4;
+        // Publisher
+        ros::Publisher _pub;
+        // Spinners
+        ros::SingleThreadedSpinner _spinner_2;
+        ros::SingleThreadedSpinner _spinner_3;
+        ros::SingleThreadedSpinner _spinner_4;
+        // Methods
+        int* _rpmTobyte(double);
+        // Callbacks
+        void _callback_pidWheel_1(const std_msgs::Float64&amp;);
+        void _callback_pidWheel_2(const std_msgs::Float64&amp;);
+        void _callback_pidWheel_3(const std_msgs::Float64&amp;);
+        void _callback_pidWheel_4(const std_msgs::Float64&amp;);
+};
+</code></pre>
+
+<p>The problem comes when running the ros::spin()</p>
+
+<pre><code>[remap_ce_node-6] process has died [pid 24109, exit code -11, cmd /home/sibl/github/Real-Four-Wheel-Independent-Steering-Robot/devel/lib/controllers/remap_ce_node __name:=remap_ce_node __log:=/home/sibl/.ros/log/e84f01ba-3966-11ed-841f-556160d11213/remap_ce_node-6.log].
+log file: /home/sibl/.ros/log/e84f01ba-3966-11ed-841f-556160d11213/remap_ce_node-6*.log
+</code></pre>
+
+<p>If I remove the <code>ros::spin()</code>, there is no error, but also it doesn&#39;t publish.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/84863">PabloV</a> on 2022-09-21 01:23:11 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I had a glance at the code and found 2 issue. </p>
+
+<ol>
+<li><code>msg.data[i] = e;</code> should be <code>msg.data.push_back(e);</code>. </li>
+<li>You need to define the data <code>layout</code> of your multi-array.</li>
+</ol>
+
+<p>To me, it seems like a 1D array, though. I am not sure why you are using a multi-array. Furthermore, I suspect that there could be more issues in your code. Please run a debugger and fix them one by one.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-09-21 01:49:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you!
+1) solved my problem.</p>
+
+<p>:D</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84863">PabloV</a> on 2022-09-29 09:17:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Glad you made it work!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-09-29 23:26:21 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

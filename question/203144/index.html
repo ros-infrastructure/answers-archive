@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Can't Display PointCloud2 in Rviz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/203144">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Can't Display PointCloud2 in Rviz</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/65828/cant-display-pointcloud2-in-rviz">https://robotics.stackexchange.com/questions/65828/cant-display-pointcloud2-in-rviz</a>.</p>
+        <p>I&#39;m trying to display a monochrome image/inverse depth map as a PointCloud2 in Rviz, but I&#39;m getting garbage (basically random points) and can&#39;t figure out what I&#39;m doing wrong. I&#39;ve verified that the image/K matrix is good and I&#39;m setting the inverse depth to 1, so it&#39;s something to do with how I&#39;m filling in the PointCloud2 message. Any help would be appreciated. Thanks! </p>
+
+<pre><code>void bufferVertices(const cv::Mat&amp; img,
+                    const Eigen::MatrixXfR&amp; idepth,
+                    const Eigen::Matrix3f&amp; Kinv,
+                    uint32_t point_step,
+                    std::vector&lt;uint8_t&gt;* buffer) {
+  Eigen::Vector3f uv1;
+  Eigen::Vector3f xyz;
+  uint32_t offset = 0;
+  for (int ii = 0; ii &lt; img.rows; ii++) {
+    for (int jj = 0; jj &lt; img.cols; jj++) {
+      uv1(0) = jj;
+      uv1(1) = ii;
+      uv1(2) = 1.0;
+
+      xyz = Kinv * uv1/idepth(ii, jj);
+      memcpy(&amp;((*buffer)[offset + 0]), &amp;(xyz(0)), sizeof(float));
+      memcpy(&amp;((*buffer)[offset + 4]), &amp;(xyz(1)), sizeof(float));
+      memcpy(&amp;((*buffer)[offset + 8]), &amp;(xyz(2)), sizeof(float));
+
+      float g = static_cast&lt;float&gt;(img.at&lt;uint8_t&gt;(ii, jj));
+      memcpy(&amp;((*buffer)[offset + 12]), &amp;g, sizeof(float));
+
+      // uint8_t g = img.at&lt;uint8_t&gt;(ii, jj);
+      // int32_t rgb = (g &lt;&lt; 16) | (g &lt;&lt; 8) | g;
+      // memcpy(&amp;((*buffer)[offset + 12]), &amp;rgb, sizeof(int32_t));
+
+      offset += point_step;
+    }
+  }
+
+  return;
+}
+
+void publishPointCloud(const std::string&amp; frame_id,
+                       const cv::Mat&amp; img,
+                       const Eigen::MatrixXfR&amp; idepth,
+                       const Eigen::Matrix3f&amp; Kinv,
+                       ros::Publisher* pub) {
+  sensor_msgs::PointCloud2Ptr msg(new sensor_msgs::PointCloud2());
+  msg-&gt;header = std_msgs::Header();
+  msg-&gt;header.stamp = ros::Time::now();
+  msg-&gt;header.frame_id = frame_id;
+
+  msg-&gt;height = img.rows;
+  msg-&gt;width = img.cols;
+
+  sensor_msgs::PointCloud2Modifier mod(*msg);
+  mod.setPointCloud2Fields(4, &quot;x&quot;, 1, sensor_msgs::PointField::FLOAT32,
+                           &quot;y&quot;, 1, sensor_msgs::PointField::FLOAT32,
+                           &quot;z&quot;, 1, sensor_msgs::PointField::FLOAT32,
+                           &quot;intensities&quot;, 1, sensor_msgs::PointField::FLOAT32);
+
+  msg-&gt;is_bigendian = false;
+  msg-&gt;point_step = 4*sizeof(float);
+
+  msg-&gt;row_step = msg-&gt;point_step * msg-&gt;width;
+  msg-&gt;is_dense = true;
+
+  msg-&gt;data.resize(msg-&gt;row_step * msg-&gt;height);
+  bufferVertices(img, idepth, Kinv, msg-&gt;point_step, &amp;msg-&gt;data);
+
+  pub-&gt;publish(msg);
+
+  return;
+}
+</code></pre>
+
+<p>EDIT:
+I&#39;ve tried writing the PointCloud2 message to a PCD file using pcl<em>ros and can visualize it just fine in pcl</em>viewer. In addition, the cloud appeared in Rviz for maybe a single frame and then disappeared. Maybe this is a tf issue? I thought I was publishing the requisite transforms (world -&gt; camera_world -&gt;keyframe). This is my main loop:</p>
+
+<pre><code>  /* Main loop. */
+  tf::Transform camworld_to_world_tf;
+  tf::Quaternion camworld_to_world_q(0.5, -0.5, 0.5, -0.5);
+  camworld_to_world_tf.setOrigin(tf::Vector3(0, 0, 0));
+  camworld_to_world_tf.setRotation(camworld_to_world_q);
+
+  std::string frame_id;
+  ros::Rate loop_rate(30);
+  while (ros::ok()) {
+    /* Do optimization step. */
+
+    /* Publish tf from camera_world to world. */
+    tf_camworld_to_world_pub.sendTransform(tf::StampedTransform(
+      camworld_to_world_tf, ros::Time::now(), &quot;world&quot;, &quot;camera_world&quot;));
+
+    /* Publish tf from camera to camera_world. */
+    frame_id = &quot;keyframe&quot; + std::to_string(kf.id);
+    Eigen::Vector3f eig_trans = cam_to_world.translation();
+    Eigen::Quaternionf eig_q = cam_to_world.quaternion();
+
+    tf::Transform cam_to_camworld_tf;
+    cam_to_camworld_tf.setOrigin(tf::Vector3(eig_trans[0],
+                                             eig_trans[1],
+                                             eig_trans[2]));
+    tf::Quaternion q(eig_q.x(), eig_q.y(), eig_q.z(), eig_q.w());  // This is scaled!
+    // cam_to_camworld_tf.setRotation(q);
+    // cam_to_camworld_tf.setOrigin(tf::Vector3(0, 0, 0));
+    cam_to_camworld_tf.setRotation(tf::Quaternion(0, 0, 0, 1));
+    tf_cam_to_camworld_pub.sendTransform(tf::StampedTransform(
+                         cam_to_camworld_tf, ros::Time::now(),
+                         &quot;camera_world&quot;, frame_id));
+
+    /* Publish point cloud. */
+    publishPointCloud(frame_id,
+                      img,
+                      mu_idepth,
+                      Kinv,
+                      &amp;keyframe_pub);
+
+    loop_rate.sleep();
+  }
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2471">wng</a> on 2015-02-14 19:43:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Just tried this on another machine and it worked fine. Seems like the issue was that my machine was using an older version of OpenGL (2.1 GLSL 1.2). On a machine with OpenGL 4.4 GLSL 4.4, it works fine.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2471">wng</a> on 2015-02-15 16:44:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

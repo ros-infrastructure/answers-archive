@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscribe to a custom message and publish in the same node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/298265">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscribe to a custom message and publish in the same node</h2>
+      <div class="question">
+        <p>Hi all,</p>
+
+<p>I have looked in the forum for days trying to find a solution to my problem, but I can&#39;t find it. 
+I&#39;m trying to use a custom message that I have created in order to subscribe to that message, do some computation on it and then publish a standard message. </p>
+
+<p>My custom message is called TractionData.msg and is:</p>
+
+<pre><code>Header header
+int8 state
+int8 mode
+int16 speed
+int16 vel_l
+int16 vel_r
+int16 throttle
+int16 brake
+int8 reverse_flag
+int32 odo_travel
+</code></pre>
+
+<p>My node is based on <a href="http://wiki.ros.org/navigation/Tutorials/RobotSetup/Odom">this tutorial</a> and is:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;furbot_msgs/TractionData.h&gt;
+
+furbot_msgs::TractionData msg;
+msg.vel_l = 0;
+msg.vel_r = 0;
+
+void odometryCallback(const std_msgs::String::ConstPtr&amp; msg)
+{
+    msg.vel_r = *msg-&gt;data.vel_r;
+    msg.vel_l = *msg-&gt;data.vel_l;
+    ROS_INFO(&quot;Rear wheels angular speed is: [%s]RL [%s]RR&quot;, msg-&gt;data.vel_l, msg-&gt;data.vel_r);
+}
+
+int main(int argc, char** argv){
+    ros::init(argc, argv, &quot;odometry_publisher&quot;);
+
+    ros::NodeHandle n;
+    ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 50);
+    tf::TransformBroadcaster odom_broadcaster;
+
+    //getting traction data subscribing to TractionData message
+    ros::Subscriber sub = n.subscribe(&quot;TractionData&quot;, 1000, odometryCallback);
+
+    //furbot specification
+    double radius = 0.3; //wheel radius
+    double L = 0.6425; //distance between wheel and origin of robot frame
+    double pi = 3.1415926535;
+
+
+    //v = 2πr × RPM × (60/1000) km/hr
+
+    double x = 0.0;
+    double y = 0.0;
+    double th = 0.0;
+
+    double vx = 0.1;
+    double vy = -0.1;
+    double vth = 0.1;
+
+
+    //assuming furbot works in rad for angles
+
+    ros::Time current_time, last_time;
+    current_time = ros::Time::now();
+    last_time = ros::Time::now();
+
+    ros::Rate r(1.0);
+    while(n.ok()){
+
+    ros::spinOnce();               // check for incoming messages
+    current_time = ros::Time::now();
+
+    /*
+    //compute odometry in a typical way given the velocities of the robot
+    double dt = (current_time - last_time).toSec();
+    double delta_x = (vx * cos(th) - vy * sin(th)) * dt;
+    double delta_y = (vx * sin(th) + vy * cos(th)) * dt;
+    double delta_th = vth * dt;
+    */
+
+    //converting rear speeds in linear velocities (from RPM to m/s)
+    // m/s = 60*RPM/(4*pi^2*r)
+    double vel_r_lin = (60*msg.vel_r)/(4*pi*pi*radius);
+    double vel_l_lin = (60*msg.vel_l)/(4*pi*pi*radius);
+
+    //compute v and w using matlab formulas (challenge emaro days)
+    double v = (vel_r_lin + vel_l_lin)/2;
+    double w = (vel_l_lin - vel_r_lin)/L;
+
+    /*
+    //furbot [v, w] computation
+    double v = th * r; //phi1*r/2 + phi2*r/2
+    double w = th * r / L;
+    */
+
+    //furbot odometry equations
+    double dt = (current_time - last_time).toSec();
+    double x_new = x + v*dt*cos(th);
+    double y_new = y + v*dt*sin(th);
+    double th_new = th + w*dt;
+
+    x = x_new;
+    y = y_new;
+    th = th_new;
+
+    //since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+
+    //first, we&#39;ll publish the transform over tf
+    geometry_msgs::TransformStamped odom_trans;
+    odom_trans.header.stamp = current_time;
+    odom_trans.header.frame_id = &quot;odom&quot;;
+    odom_trans.child_frame_id = &quot;base_link&quot;;
+
+    odom_trans.transform.translation.x = x;
+    odom_trans.transform.translation.y = y;
+    odom_trans.transform.translation.z = 0.0;
+    odom_trans.transform.rotation = odom_quat;
+
+    //send the transform
+    odom_broadcaster.sendTransform(odom_trans);
+
+    //next, we&#39;ll publish the odometry message over ROS
+    nav_msgs::Odometry odom;
+    odom.header.stamp = current_time;
+    odom.header.frame_id = &quot;odom&quot;;
+
+    //set the position
+    odom.pose.pose.position.x = x;
+    odom.pose.pose.position.y = y;
+    odom.pose.pose.position.z = 0.0;
+    odom.pose.pose.orientation = odom_quat;
+
+    //set the velocity
+    odom.child_frame_id = &quot;base_link&quot;;
+    odom.twist.twist.linear.x = vx;
+    odom.twist.twist.linear.y = vy;
+    odom.twist.twist.angular.z = vth;
+
+    //publish the message
+    odom_pub.publish(odom);
+
+    last_time = current_time;
+    r.sleep();
+    }
+}
+</code></pre>
+
+<p>When I try to build everything with the command <code>catkin build</code> I get the following output: </p>
+
+<blockquote>
+<p>error: ‘msg’ does not name a type 
+msg.vel_l = 0;</p>
+</blockquote>
+
+<p>Could you help me? To be honest I&#39;m not really sure about what I have done for subscriber, but I think that the main problem now is to include the custom message to catkin in order to let it build everything.</p>
+
+<p>Thank you for your help!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36603">Luigi</a> on 2018-07-23 09:04:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>your odometry callback is subscribing to a std/string message type and you&#39;re publishing nav_msgs/odometry. What are you using a custom message type for?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-23 11:33:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Luigi: is this solved? If so, can you add your answer?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4469">destogl</a> on 2018-07-26 02:08:24 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

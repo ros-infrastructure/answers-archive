@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>node crashes when initializing object from shared lib - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/380950">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>node crashes when initializing object from shared lib</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99346/node-crashes-when-initializing-object-from-shared-lib">https://robotics.stackexchange.com/questions/99346/node-crashes-when-initializing-object-from-shared-lib</a>.</p>
+        <p>I&#39;ve been banging my head against my keyboard for the last week or so trying to figure this one out and still havent - so here I am asking for help from the internet!</p>
+
+<p>I have this package I&#39;ve been porting from ROS1 to ROS2, lets call it <code>lidar_driver</code>.
+There is a provided SDK via a static lib (.a) file that I link to in the CMakeList file and use some additional header files as well from this SDK.</p>
+
+<p>For ROS1 I use the normal <code>find_package()</code> , specify the path to the static lib and can link to it just fine and run the ROS1 node.
+This all works as expected and overall a very pleasant experience in ROS1.</p>
+
+<p>Now when I try to migrate over to ROS2, still using <code>find_package()</code> and specifying the path I still can find it (<em>FOUND CMake variable is 1) and all the other CMake variables needed are set and look great.
+I am using `ament</em>auto<em>add</em>library<code>to create the library with the node so all my</code>depends<code>in my</code>package.xml<code>are accounted for, and also creating a ROS2 component via</code>rclcpp<em>components</em>register_node`.</p>
+
+<p>This all compiles fine using <code>colcon build</code>, but when I try and run the node using <code>ros2 run</code> it executes up until I use the cpp object provided by the static lib like so <code>shared_ptr.reset(new sdk::Lidar())</code></p>
+
+<p>So my question is what step am I missing thats different between catkin and ament/colcon to link to a static lib?</p>
+
+<p>Any help or advice would be greatly appreciated!</p>
+
+<p><strong>UPDATE3:</strong> thank you to @404RobotNotFound for the tips, I ended up using <code>gdb</code> to debug the problem and finally got an error to print out!  After <a href="https://answers.ros.org/question/267261/how-can-i-run-ros2-nodes-in-a-debugger-eg-gdb/">following the answer here on how to run gdb for a ros2 node</a> I was able to see this error printing out:</p>
+
+<p><code>
+Thread 1 &quot;some_node&quot; received signal SIGSEGV, Segmentation fault.
+</code></p>
+
+<p>and it went on to print out in what exact function the error was occuring.  It was happening inside the StaticLib, so that means we are successfully linking to it, just maybe missing some dependency for it somehow.  I will dig into this with the library provider and see what we can come up with. thanks again so much for the support digging into this problem.</p>
+
+<p><strong>UPDATE2:</strong> the StaticLib does use some UDP functions to open a UDP socket for receiving/sending....I wonder if that is interferring with something ROS2 has already open while doing its underlying DDS stuff...?  Going to ask the provider of the SDK what exactly is going on there.</p>
+
+<p><strong>UPDATE:</strong> here is the basic CMakeList file that is causing me issues in ROS2:</p>
+
+<pre><code> cmake_minimum_required(VERSION 3.5.2)
+ project(some_driver)
+
+ # Default to C++14
+ if(NOT CMAKE_CXX_STANDARD)
+   set(CMAKE_CXX_STANDARD 14)
+ endif()
+
+ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES &quot;Clang&quot;)
+   add_compile_options(-Wall -Wextra -Wpedantic)
+ endif()
+
+ find_package(ament_cmake_auto REQUIRED)
+ ament_auto_find_build_dependencies()
+
+ unset(STATIC_LIB_DEV)
+
+ find_package(StaticLib
+   PATHS ${CMAKE_CURRENT_SOURCE_DIR}/StaticLib/Apps/sdk/lib/cmake/libStaticLib
+   REQUIRED)
+
+ get_target_property(StaticLib_INCLUDE_DIRS
+     StaticLib INTERFACE_INCLUDE_DIRECTORIES)
+ get_target_property(StaticLib_LIB_DIRS
+     StaticLib INTERFACE_LIBRARY_DIRECTORIES)
+ get_target_property(StaticLib_LINK_LIBRARIES
+     StaticLib INTERFACE_LINK_LIBRARIES)
+ get_target_property(StaticLib_STATIC_LIB
+     StaticLib IMPORTED_LOCATION_RELEASE)
+
+ message(STATUS ${StaticLib_FOUND})
+ message(STATUS ${StaticLib_INCLUDE_DIRS})
+ message(STATUS ${StaticLib_LIB_DIRS})
+ message(STATUS ${StaticLib_LINK_LIBRARIES})
+ message(STATUS ${StaticLib_STATIC_LIB})
+
+ set(BUILD_SHARED_LIBS True)
+
+ ament_auto_add_library(${PROJECT_NAME} SHARED
+   src/some_node.cpp
+ )
+
+ ament_export_dependencies(StaticLib)
+
+ target_include_directories(${PROJECT_NAME}
+   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include 
+   ${StaticLib_INCLUDE_DIRS}
+ )
+
+ target_link_libraries(${PROJECT_NAME}
+   StaticLib
+ )
+
+ if(WIN32)
+   target_compile_definitions(${PROJECT_NAME} PUBLIC &quot;SOME_DRIVER_BUILDING_DLL&quot;)
+ endif(WIN32)
+
+ rclcpp_components_register_node(${PROJECT_NAME}
+   PLUGIN &quot;drivers::some_driver::SomeNode&quot;
+   EXECUTABLE some_node
+ )
+
+ install(DIRECTORY ${StaticLib_INCLUDE_DIRS}/
+   DESTINATION ${CMAKE_INSTALL_PREFIX}/include/${PROJECT_NAME}
+ )
+
+ install(
+   FILES ${StaticLib_STATIC_LIB}
+   TYPE LIB
+ )
+
+ ament_auto_package(
+   INSTALL_TO_SHARE
+     launch
+     params
+ )
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-23 13:14:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is there a specific error you are seeing when your code tries to reset the shared pointer? That might help in identifying the problem.</p>
+
+<p>On a separate note, by default in ROS 1 libraries were built as shared libraries (.so files in linux), but in ROS 2 you need to specify them or they build as static libraries (.a files). You need to pass in &quot;SHARED&quot; to the <code>ament_auto_add_library</code> call to make it a shared library again.</p>
+
+<p>Also, in ROS 2, you have to install build artifacts to generally be able to use them, see <a href="https://docs.ros.org/en/foxy/Guides/Ament-CMake-Documentation.html#building-a-library">the ament cmake documentation for building a library</a> on the correct way to install the library and export the library target correctly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-23 18:31:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>none what-so-ever...thats the frustrating bit. it just crashes. i am already using SHARED in my <code>ament_auto_add_library</code> step....so thats not it. and as far as installing properly goes, my understanding of <code>ament_auto</code> is that it does all the installation for you, automatically. i might be wrong though?</p>
+
+<p>im leaning more towards the static lib that im trying to use isnt added as a runtime dependency somehow. do you know how to add that in so ament can know to install that too?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-25 09:03:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Without looking at the CMakeList file it would be hard to guess, but another problem could be that <code>ament_auto_add_library</code> only calls <code>target_link_libraries(&quot;${target}&quot; ${${PROJECT_NAME}_LIBRARIES})</code> and nothing that would be external would be caught with that. After calling the auto_add_library, you might need to also call <code>target_link_libraries(&lt;LIB_TARGET&gt; ${&lt;external_pkg&gt;_LIBRARIES})</code> assuming it is exported correctly from that package. How was it built in ROS 1?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-25 09:22:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@404RobotNotFound thanks so much for your help with this! I think ive done both of those as well - to help ive added the problem CMakeList file. the same <code>find_package</code> approach as above works for ROS1....but for some reason doesnt work for ROS2 and ament.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-25 10:38:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As another follow up, when it crashes do you get some kind of stacktrace or anything?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-29 16:46:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>there is nothing printed out in the console and ive added prints just before and after the <code>shared_ptr.reset</code> call so i know it is that line.</p>
+
+<p>ive checked also the <code>$HOME/.ros/log</code> file generated but its absolutely empty (nothing in them).</p>
+
+<p>any tips on how to turn on some sort of &quot;debug mode&quot;?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-29 17:37:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>So if your node is closing unexpectedly, there should at least be something like a &quot;Segmentation Fault&quot; or &quot;process has died, exit code [some code]&quot;. However, in either case looking at logs probably won&#39;t capture that info.</p>
+
+<p>For turning on some debug mode, you can add debug symbols with adding <code>--cmake-args -DCMAKE_BUILD_TYPE=Debug</code> or <code>--cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo</code> I believe both work (I usually use RelWithDebInfo). However, this is really useful when debugging a code dump, which is something you can do with GDB to track down what call is having the issue. However, you already know what line is having the issue. So I am not sure if it is a problem with finding the library in the first place, or maybe some kind of error happening when you create the object - that is something GDB could probably tell you was the case by following the stack trace.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-29 18:43:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@404RobotNotFound thanks for the tips on gdb! I updated the question with some updates...but also posting this here for anyone else that ends up here: to run gdb for a ros2 node:</p>
+
+<p><a href="https://answers.ros.org/question/267261/how-can-i-run-ros2-nodes-in-a-debugger-eg-gdb/">https://answers.ros.org/question/267261/how-can-i-run-ros2-nodes-in-a-debugger-eg-gdb/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-30 10:23:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Instead of </p>
+
+<pre><code>target_link_libraries(${PROJECT_NAME}
+   StaticLib
+ )
+</code></pre>
+
+<p>try </p>
+
+<pre><code>target_link_libraries(${PROJECT_NAME}
+   ${StaticLib_LIBRARIES}
+ )
+</code></pre>
+
+<p>Another option if that doesn&#39;t work is check the variable <code>${${PROJECT_NAME}_FOUND_BUILD_DEPENDS}</code> before / after the <code>ament_auto_add_library</code> call. </p>
+
+<p>If <code>StaticLib</code> is not in there, you might be able to add <code>ament_target_dependencies(${PROJECT_NAME} StaticLib)</code></p>
+
+<p>Edit:</p>
+
+<p>It seems like you have found your answer for the time being, which was you were successfully linking to it but there might be some missing dependency inside of the library when the object is created.</p>
+
+<p>Out of curiosity, are you building this library and can look at the code or just received a static library to use and did not build it?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-25 14:08:26 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>so yeah I tried the <code>${StaticLib_LIBRARIES}</code> but that variable is empty...probably not set by the FindStaticLib cmake script. whats tough is this static lib is 3rd party so I cant change it really.</p>
+
+<p>the output of  <code>message(STATUS ${${PROJECT_NAME}_FOUND_BUILD_DEPENDS})</code> shows the library that im looking for....so that means cmake found it, right?</p>
+
+<p><code>StaticLibrclcpprclcpp_componentsstd_msgssensor_msgscv_bridgecamera_info_managerimage_transport</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-29 15:52:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>the weird thing to me is that this approach works for ROS1 but not ROS2. so the <code>find_package</code> and <code>target_link_libraries</code> as I show above works perfectly fine for ROS1.....but not for ROS2. I dont understand what the difference is here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-29 15:59:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What does the <code>message(STATUS ${StaticLib_STATIC_LIB})</code> output?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-29 16:11:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>the full path to the lib with the static lib filename, ive tried to put that into <code>target_link_libraries</code> as well...same story.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-29 16:58:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@404RobotNotFound to answer your edit, I do not have access to the staticlib source - just receive it prebuilt to use and i did not build it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44351">flynneva</a> on 2021-06-30 15:18:58 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>to update everyone - the StaticLib was compiled using C++ 11 and does not support C++ 14 (ROS2 default) just yet.  by changing the <code>CMAKE_CXX_STANDARD</code> variable to <code>11</code> I was able to compile and run successfully the node.</p>
+
+<pre><code># Default to C++14 for ROS2
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 11)  #  changed this to 11
+endif()
+</code></pre>
+
+<p>thanks so much @404RobotNotFound for the help with debugging this problem!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/44351">flynneva</a> on 2021-07-01 13:16:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

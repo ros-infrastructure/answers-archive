@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Problem using TFs - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/95841">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Problem using TFs</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/55130/problem-using-tfs">https://robotics.stackexchange.com/questions/55130/problem-using-tfs</a>.</p>
+        <p>Hello,</p>
+
+<p>I&#39;m working on a robot based on a trutlebot2 and with some motors and a kinect as a head. I would like to use TFs to do some transforms but I have some problems using them.</p>
+
+<p>In our project, we have nodes for the head based on the PR2 code and this is working pretty well.</p>
+
+<p>On the other hand, we want to use the TFs in another node to transform a point from camera<em>link frame to base</em>link frame. Here is the code:</p>
+
+<pre><code>class LookAt
+{
+    private:
+        ros::Publisher _handPositionPub;
+        int _lastHandId;
+
+        ros::Publisher _transformedHandPositionPub;
+        ros::Publisher _initHandPositionPub;
+
+        geometry_msgs::PointStamped _lastHandPosition;
+
+    public:
+        LookAt(ros::NodeHandle&amp; nodeHandle)
+        {
+            _handPositionPub = nodeHandle.advertise&lt;package_msgs::PointHead&gt;(
+                &quot;/head_controller/point_head/goal&quot;, 1000);
+            _initHandPositionPub =
+                nodeHandle.advertise&lt;geometry_msgs::PointStamped&gt;(
+                    &quot;/ui/init_hand_position&quot;, 1000, true);
+            _transformedHandPositionPub =
+                nodeHandle.advertise&lt;geometry_msgs::PointStamped&gt;(
+                    &quot;/ui/hand_position&quot;, 1000, true);
+            _lastHandId = -1;
+        }
+
+        void handDetectionCallback(const package_msgs::HandPosition::ConstPtr&amp; msg)
+        {
+            int id = msg-&gt;nId;
+            package_msgs::PointHead handPosition;
+            handPosition.point = msg-&gt;point;
+            bool isHandLost = msg-&gt;lostHand;
+            bool isInit = false;
+
+            if(_lastHandId != -1)
+            {
+                if(_lastHandId != id)
+                {
+                    return;
+                }
+                transformCamFrameToRobotFrame(msg);
+            }
+            else
+            {
+                transformCamFrameToRobotFrame(msg);
+                _initHandPositionPub.publish(_lastHandPosition);
+                _lastHandId = id;
+                isInit = true;
+            }
+
+            if(!isHandLost)
+            {
+                if(!isInit)
+                {
+                    _transformedHandPositionPub.publish(_lastHandPosition);
+                }
+                _handPositionPub.publish(handPosition);
+            }
+        }
+
+        void transformCamFrameToRobotFrame(const package_msgs::HandPositionConstPtr&amp; msg)
+        {
+            package_msgs::PointHead handPosition;
+            handPosition.point = msg-&gt;point;
+            tf::TransformListener listener;
+            std::string error_msg;
+            std::string parent;
+
+            bool ret1 = false;
+            try
+            {
+                ret1 = listener.waitForTransform(&quot;base_footprint&quot;, &quot;camera_link&quot;,
+                                                 msg-&gt;header.stamp,
+                                                 ros::Duration(5.0),
+                                                 ros::Duration(0.01),
+                                                 &amp;error_msg);
+                std::cout &lt;&lt; &quot;waitForTranform &quot; &lt;&lt; ret1 &lt;&lt; std::endl;
+
+                std::string targetFrame = &quot;base_footprint&quot;;
+
+                geometry_msgs::PointStamped targetPoint;
+                targetPoint.header.frame_id = &quot;camera_link&quot;;
+                targetPoint.point.x = handPosition.point.x;
+                targetPoint.point.y = handPosition.point.y;
+                targetPoint.point.z = handPosition.point.z;
+
+                ros::Time currentTransform = ros::Time::now();
+                listener.getLatestCommonTime(targetPoint.header.frame_id,
+                                             &quot;base_footprint&quot;,
+                                             currentTransform,
+                                             NULL);
+                targetPoint.header.stamp = currentTransform;
+
+                listener.transformPoint(targetFrame, targetPoint,
+                                        _lastHandPosition);
+            }
+            catch(const tf::TransformException &amp;ex)
+            {
+                ROS_ERROR(&quot;Transform failure %d: %s&quot;,
+                          ret1, ex.what());
+                return;
+            }
+        }
+};
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;look_at&quot;);
+
+    ros::NodeHandle nodeHandle;
+    LookAt lookAt(nodeHandle);
+    ros::Subscriber handSubscriber = nodeHandle.subscribe(
+        &quot;/tracker/hand/info&quot;, 1000, &amp;LookAt::handDetectionCallback, &amp;lookAt);
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>The msg is a custom message containing:</p>
+
+<pre><code>Header header
+geometry_msgs/Point point     # Position
+int32 nId                     # Id of the hand
+bool lostHand                 # True if the hand has just been lost
+</code></pre>
+
+<p>And when the message is sent from the hand tracker, msg-&gt;header.stamp is set to ros::Time::now().</p>
+
+<p>The problem is that each time the waitForTransform function is called, it returns false and no exception is raised. When we look at the topic where we publish the info, we have a message each 5sec (5.01-5.03). When we set the first duration (4th argument) to 1.0, we have a message each 1sec (1.01-1.09) but the result is the same.
+If I understood, this means the transform between the 2 frames can&#39;t be made.</p>
+
+<p>When we replace msg-&gt;header.stamp by ros::Time() or ros::Time(0), the waitForTransform function returns true and it takes about 1sec to get message in the topic with ros::Duration(5.0) as the 4th argument.
+So the transform is ok but takes around 1sec. With the head nodes, everything is fluid and nice and we can have a good tracking with the head. Here is the working source code:</p>
+
+<pre><code>typedef package_head_controller::PointHeadAction HeadAction;
+typedef actionlib::SimpleActionClient&lt;HeadAction&gt; PointHeadClient;
+
+class PointHead
+{
+    private:
+        ros::NodeHandle _node;
+        PointHeadClient* _pointHeadClient;
+
+    public:
+        PointHead(const ros::NodeHandle &amp;n);
+        ~PointHead();
+
+        void lookAt(std::string frameId, float x, float y, float z,
+                    float tilt, float pan);
+
+        void callbackGoal(const package_msgs::PointHead::ConstPtr&amp; msg);
+};
+
+
+PointHead::PointHead(const ros::NodeHandle &amp;n): _node(n)
+{
+    // Initialize the client
+    _pointHeadClient = new PointHeadClient(&quot;/head_controller/point_head_action&quot;, true);
+
+    while(!_pointHeadClient-&gt;waitForServer(ros::Duration(5.0)))
+    {
+        ROS_INFO(&quot;Waiting for the point_head_action server to come up&quot;);
+    }
+}
+
+PointHead::~PointHead()
+{
+    delete _pointHeadClient;
+}
+
+void PointHead::lookAt(std::string frameId, float x, float y, float z,
+                       float tilt, float pan)
+{
+    package_head_controller::PointHeadGoal goal;
+
+    // The target point, expressed in the requested frame
+    geometry_msgs::PointStamped point;
+    point.header.frame_id = frameId;
+    point.point.x = x;
+    point.point.y = y;
+    point.point.z = z;
+    point.header.stamp = ros::Time::now();
+    goal.target = point;
+    goal.tilt = tilt;
+    goal.pan = pan;
+
+    goal.pointingFrame = &quot;camera_link&quot;;
+    _pointHeadClient-&gt;sendGoal(goal);
+}
+
+void PointHead::callbackGoal(const package_msgs::PointHead::ConstPtr&amp; msg)
+{
+    if(msg-&gt;point.x != 0 || msg-&gt;point.y != 0 || msg-&gt;point.z != 0)
+    {
+        lookAt(&quot;camera_link&quot;, msg-&gt;point.x, msg-&gt;point.y,
+               msg-&gt;point.z, msg-&gt;tilt, msg-&gt;pan);
+    }
+}
+
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;point_head&quot;);
+    ros::NodeHandle n;
+
+    PointHead pointHead(n);
+    ros::Subscriber goalSub = n.subscribe(&quot;/head_controller/point_head/goal&quot;,
+                                          1, &amp;PointHead::callbackGoal,
+                                          &amp;pointHead);
+    ros::spin();
+}
+
+typedef actionlib::ActionServer&lt;package_head_controller::PointHeadAction&gt; Server;
+typedef Server::GoalHandle GoalHandle;
+
+class HeadAction
+{
+    private:
+        std::string _panLink;
+        std::string _tiltLink;
+
+        ros::NodeHandle _node;
+        tf::TransformListener _tf;
+
+        ros::Publisher _commandMotors;
+
+        Server _actionServer;
+        bool _hasActiveGoal;
+        GoalHandle _activeGoal;
+
+        tf::Stamped&lt;tf::Point&gt; _targetInPan;
+        std::string _panParent;
+
+        void cancelCallback(GoalHandle gh);
+
+    public:
+        HeadAction(const ros::NodeHandle &amp;n);
+        ~HeadAction();
+
+        void goalCallback(GoalHandle gh);
+};
+
+HeadAction::HeadAction(const ros::NodeHandle &amp;n):
+    _node(n), _hasActiveGoal(false),
+    _actionServer(_node, &quot;/head_controller/point_head_action&quot;,
+                  boost::bind(&amp;HeadAction::goalCallback, this, _1),
+                  boost::bind(&amp;HeadAction::cancelCallback, this, _1))
+{
+    ros::NodeHandle pn(&quot;~&quot;);
+    pn.param(&quot;pan_link&quot;, _panLink, std::string(&quot;link_2_left&quot;));
+    pn.param(&quot;tilt_link&quot;, _tiltLink, std::string(&quot;linf_3_left&quot;));
+
+    _commandMotors = _node.advertise&lt;package_msgs::PointHeadCommand&gt;
+        (&quot;/head_controller/point_head/result&quot;, 1000);
+}
+
+HeadAction::~HeadAction()
+{
+
+}
+
+void HeadAction::goalCallback(GoalHandle gh)
+{
+    // Need to know that name of the pan_link&#39;s parent.
+    if(_panParent.empty())
+    {
+        for(int i = 0; i &lt; 10; ++i)
+        {
+            try
+            {
+                _tf.getParent(_panLink, ros::Time(), _panParent);
+                break;
+            }
+            catch(const tf::TransformException &amp;ex)
+            {
+            }
+            ros::Duration(0.01).sleep();
+        }
+
+        if(_panParent.empty())
+        {
+            ROS_ERROR(&quot;Could not get parent of %s in the TF tree&quot;,
+                      _panLink.c_str());
+            gh.setRejected();
+            return;
+        }
+    }
+
+    std::vector&lt;double&gt; q_goal(2);  // [pan, tilt]
+
+    // Transform the target point into the pan and tilt links.
+    const geometry_msgs::PointStamped &amp;target = gh.getGoal()-&gt;target;
+    bool ret1 = false, ret2 = false;
+    try
+    {
+        std::string error_msg;
+        ret1 = _tf.waitForTransform(_panParent, target.header.frame_id,
+                                    target.header.stamp,
+                                    ros::Duration(5.0),
+                                    ros::Duration(0.01), &amp;error_msg);
+        ret2 = _tf.waitForTransform(_panLink, target.header.frame_id,
+                                    target.header.stamp,
+                                    ros::Duration(5.0),
+                                    ros::Duration(0.01), &amp;error_msg);
+
+        // Perform calculation to determine the desired joint angles
+
+        // Transform the target into the pan and tilt frames
+        tf::Stamped&lt;tf::Point&gt; targetPoint, targetInTilt;
+        tf::pointStampedMsgToTF(target, targetPoint);
+        _tf.transformPoint(_panParent, targetPoint, _targetInPan);
+        _tf.transformPoint(_panLink, targetPoint, targetInTilt);
+
+        // Compute the desired joint positions.
+        q_goal[0] = atan2(_targetInPan.y(), _targetInPan.x());
+        q_goal[1] = atan2(-targetInTilt.z(),
+                          sqrt(pow(targetInTilt.x(),2) +
+                               pow(targetInTilt.y(),2)));
+        // Remove false positives problem
+        if(q_goal[1] &gt; 0.5)
+        {
+            q_goal[0] = 0.0;
+            q_goal[1] = 0.0;
+        }
+
+        if(gh.getGoal()-&gt;tilt != 0.0)
+        {
+            q_goal[1] = gh.getGoal()-&gt;tilt;
+        }
+        if(gh.getGoal()-&gt;pan != 0.0)
+        {
+            q_goal[0] = gh.getGoal()-&gt;pan;
+        }
+
+        package_msgs::PointHeadCommand command;
+        command.header.stamp = ros::Time::now();
+        command.id = target.header.seq;
+        command.pan = q_goal[0];
+        command.tilt = q_goal[1];
+        _commandMotors.publish(command);
+
+
+    }
+    catch(const tf::TransformException &amp;ex)
+    {
+        ROS_ERROR(&quot;Transform failure (%d,%d): %s&quot;,
+                  ret1, ret2, ex.what());
+        gh.setRejected();
+        return;
+    }
+
+    // Remove the previous goal and keep this one in memory
+    if(_hasActiveGoal)
+    {
+        _activeGoal.setCanceled();
+        _hasActiveGoal = false;
+    }
+
+    gh.setAccepted();
+    _activeGoal = gh;
+    _hasActiveGoal = true;
+}
+
+void HeadAction::cancelCallback(GoalHandle gh)
+{
+
+}
+
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;point_head_action&quot;);
+    ros::NodeHandle node;
+
+    HeadAction headAction(node);
+
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+<p>I can&#39;t find the problem with the look_at node using transform and I&#39;m wondering what&#39;s the problem observed with the stamp argument. Is there a &quot;standard&quot; way of using TFs. Do we forget to do something?</p>
+
+<p>If you see any mistake of the way we are using TFs in the look_at node, please let me know.</p>
+
+<p>Thanks,</p>
+
+<p>Lucie</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4908">LucieR</a> on 2013-10-29 22:49:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Please work on providing a more concise sample and include both your expected output and observed output.  </p>
+
+<p>From a quick look at your code. One thing pops out as incorrect usage of TransformListener, in that you&#39;re allocating it inside your callback such that it doesn&#39;t have time to build up it&#39;s cache of data. You should allocate it in a way that it will persist for the duration of your program. </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2013-11-04 11:01:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I saw that problem too and even if I allocate it outside the callback (in the constructor for example) nothing changes. I&#39;ll print output time in both cases. And I can&#39;t do or more concise sample; only first part of code is the sample I have a problem on, the second one is working fine.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4908">LucieR</a> on 2013-11-04 21:21:09 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

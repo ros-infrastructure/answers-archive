@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Cannot resize buffers in rosserial, Arduino runs out of RAM - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/320581">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Cannot resize buffers in rosserial, Arduino runs out of RAM</h2>
+      <div class="question">
+        <p>I am using ROS kinetic on Ubuntu 16.04. The Adruino used is an <a href="htvtps://www.arduino.cc/en/Main/ArduinoBoardUnoSMD">Arduino UNO SMD (ATMega328P, 16MHz)</a> plus an <a href="https://www.adafruit.com/product/1438">Adafruit Motor/Stepper/Servo Shield</a>. The Arduino sketch includes ros_lib and <a href="https://github.com/adafruit/Adafruit_Motor_Shield_V2_Library">Adafruit&#39;s shield&#39;s library</a>.</p>
+
+<p>What I am trying to do with the Arduino is to use it to drive a linear actuator according to (<code>std_msgs::Int16</code>) instructions sent by other ROS nodes from the computer, as well as publish the position (also <code>std_msgs::Int16</code>) of the motor from its encoder.</p>
+
+<p>My sketch takes around 73% of the Arduino&#39;s RAM, leaving less than 600 bytes free after compiling. When I run a toy program, without the motor shield, there is enough memory for the Arduino to function properly but, with it, the controller stops responding very few milliseconds after the actuator starts running (and the positions start being published). I tested the sketch independently from the ROS library and it worked normally, taking instructions and printing the positions through a serial monitor.</p>
+
+<p>The default buffer lengths for the Arduino UNO are 280 bytes each, which is probably trying to eat up more RAM than the controller has left. What I have been trying to do to fix this was resizing the publisher and  subscriber buffers in <code>ros_lib</code> arduino library as well as in the <code>rosserial_arduino</code> ROS package (I did remake it with <code>catkin_make</code>). In both cases I changed every default buffer length value to 64 and every default or maximum number of publishers/subscribers to 6 (that last number should not be the problem, though). However, when running <code>rosrun rosserial_arduino serial_node.py _port:=/dev/ttyACM0</code>, the node connects to the Arduino and prints:</p>
+
+<pre><code>[INFO] [1554732556.538001]: Note: publish buffer size is 280 bytes
+[INFO] [1554732556.538715]: Setup publisher on /Actuator_Position [std_msgs/Int16]
+[INFO] [1554732556.554360]: Note: subscribe buffer size is 280 bytes
+[INFO] [1554732556.554954]: Setup subscriber on /Actuator_Control [std_msgs/Int16]
+</code></pre>
+
+<p>which indicates to me (along with the Arduino crashing after the actuator starts moving) that the buffers are still unchanged.</p>
+
+<p>The files I changed in <code>ros_lib</code> are: <code>ros.h</code> and <code>ros/node_handle.h</code></p>
+
+<p>Files changed in <code>rosserial</code>: <code>rosserial_arduino/src/ros.h</code></p>
+
+<p>Here is my Arduino sketch, with some simplifications and commentings that I tried using to make it lighter (please don&#39;t judge ;p). I am including the whole sketch because the minimal working example does work, since its RAM consumption is low enough to allow <code>ros_lib</code>&#39;s buffers to be allocated.</p>
+
+<pre><code>/*
+* Controlling the linear actuator:
+* this node is subscribed to a ROS topic named &quot;/Actuator_Control&quot;, of type
+* `std_msgs::Int16&#39; and will control the position of the linear actuator accor-
+* ding to the Hall sensor units in the actuator.
+* The instructions sent to this node should be formatted as follows:
+* 2-byte instruction ([INS][DIR][RES][VAL])
+*   bit[15:14], INSruction: 0b00 for GO-TO
+*                           0b01 for STEP
+*                           0b10 for FORCE
+*                           0b11 for RESET
+*   bit[13],    DIRection:  0b0 for FORWARD
+*                           0b1 for BACKWARD
+*   bit[12],    REServed:   Unused
+*   bit[11:0],  VALue:      0x0000 - 0x0FFF step size, absolute position or PWM
+*                           signal width.
+* Bear in mind: &quot;forward&quot; means protracting the actuator, &quot;backward&quot; means re-
+* tracting it. If the oposite is happening, switch the motor power wires.
+*/
+
+#include &lt;Arduino.h&gt;
+
+#include &lt;ros.h&gt;
+#include &lt;std_msgs/Int16.h&gt;
+
+#include &lt;Wire.h&gt;
+#include &lt;Adafruit_MotorShield.h&gt;
+
+////////////////////////////////////////////////////////////////////////////////
+// Defines /////////////////////////////////////////////////////////////////////
+
+// Arduino pins
+#define ENCB_PIN     2 // Hall sensor B
+#define ENCA_PIN     3 // Hall sensor A
+#define ENCODER_MASK 0b00001100 // Mask for pins 2 and 3 on PIND register
+
+// Instructions for actuator control
+#define ACT_GTO 0x0 // GO-TO: Go to specified position
+#define ACT_STP 0x1 // STEP:  Go forward/backward a certain number of units
+#define ACT_FRC 0x2 // FORCE: Set the PWM width (which sets the force)
+#define ACT_RST 0x3 // RESET: Retract actuator completely and set `zeroPosition&#39;
+
+#define ACT_FWR 0x0 // FORWARD:  Step forward
+#define ACT_BCK 0x1 // BACKWARD: Step backward
+
+#define ACT_INS_MSK 0xC000 // Instruction mask (bit[15:14])
+#define ACT_DIR_MSK 0x2000 // Direction mask   (bit[13])
+#define ACT_RES_MSK 0x1000 // Reserved mask    (bit[12])
+#define ACT_VAL_MSK 0x0FFF // Value mask       (bit[11:0])
+#define ACT_INS_SFT 14 // Instruction shift
+#define ACT_DIR_SFT 13 // Direction shift
+#define ACT_RES_SFT 12 // Reserved shift
+// Value needs no shift
+
+////////////////////////////////////////////////////////////////////////////////
+// Function headers ////////////////////////////////////////////////////////////
+
+ISR (TIMER2_COMPA_vect);
+void EncoderISR ();
+void ActuatorControlCallback(const std_msgs::Int16 &amp;msg);
+
+////////////////////////////////////////////////////////////////////////////////
+// Global variables ////////////////////////////////////////////////////////////
+
+// ROS node
+ros::NodeHandle n;
+// Position publisher
+vstd_msgs::Int16 position_msg;
+ros::Publisher  position_pub(&quot;/Actuator_Position&quot;, &amp;position_msg);
+volatile bool publishPosition = false; // Publish flag
+// Control subscriber
+ros::Subscriber&lt;std_msgs::Int16&gt; control_sub(&quot;/Actuator_Control&quot;,
+    &amp;ActuatorControlCallback);
+
+// Encoder variables
+// Hall sensors signals
+//volatile uint8_t state;
+//volatile uint8_t lastState;
+// Current position according to the encoder
+volatile int16_t currentPosition;
+
+// Control variables (Check if they need to be volatile, I&#39;m not sure)
+// Forward (0) or backward (1). In the motor shield library, &#39;FORWARD&#39; is 1 and
+// &#39;BACKWARD&#39; is 2, so add 1 to the direction when setting up the motor object!
+volatile int8_t direction = 0;
+// Desired position
+volatile int16_t goal = 0;
+// PWM signal width. This means both force and speed!
+volatile uint8_t force = 255;
+// Flags that a change in the control is needed
+volatile bool gotInstruction;
+// Flags to reset the actuator&#39;s position
+volatile bool resetZeroPosition;
+
+// Motor shield objects
+Adafruit_MotorShield AFMS;
+Adafruit_DCMotor *actuator;
+
+////////////////////////////////////////////////////////////////////////////////
+// Callbacks and interruptions /////////////////////////////////////////////////
+
+/* ENCODER&#39;S STATE MACHINE
+ *    ____     A = 1      ____
+ *   / AB \&lt;-------------/ AB \
+ * &gt;|  00  |   A = 0    |  10  |
+ *   \_0d_/-------------&gt;\_2d_/
+ *    |  ^                |  ^
+ *    |  |       ___      |  |
+ *   B|  |B     /   \    B|  |B    (  On the register,  )
+ *   =|  |=    V  +  |   =|  |=    (  AB are bit[3:2]:  )
+ *   0|  |1       __/    0|  |1    (  PIND = [XXXXABXX] )
+ *    |  |                |  |
+ *    v__|     A = 1      v__|
+ *   / AB \&lt;-------------/ AB \
+ *  |  01  |   A = 0    |  11  |
+ *   \_1d_/-------------&gt;\_3d_/
+ *   Note: If the position is running backwards, just switch the encoder wires
+ */
+void EncoderISR ()
+{
+  /*
+  lastState = state;
+  // Reads pins 3:2 of 7:0&#39;s register. Using direct register access to make
+  // this interruption as fast as possible
+  state = PIND &amp; ENCODER_MASK;
+  switch (state) {
+    case 0b0000: // State AB = 00
+      if (lastState == 0b1000) // Going backward
+        currentPosition--; // Decrease position
+      if (lastState == 0b0100) // Going forward
+        currentPosition++; // Increase position
+      break;
+    case 0b0100: // State AB = 01
+      if (lastState == 0b0000) // Going backward
+        currentPosition--; // Decrease position
+      if (lastState == 0b1100) // Going forward
+        currentPosition++; // Increase position
+      break;
+    case 0b1000: // State AB = 10
+      if (lastState == 0b1100) // Going backward
+        currentPosition--; // Decrease position
+      if (lastState == 0b0000) // Going forward
+        currentPosition++; // Increase position
+      break;
+    case 0b1100: // State AB = 11
+      if (lastState == 0b0100) // Going backward
+        currentPosition--; // Decrease position
+      if (lastState == 0b1000) // Going forward
+        currentPosition++; // Increase position
+      break;
+    default: // Does nothing
+      break;
+  }
+  BECAUSE THE ACTUATOR IS VERY STIFF AND MOST UNLIKELY TO BE DRIVEN AGAINST THE
+  INTENDED DIRECTION, POSITION WILL BE UPDATED SIMPLY BY ADDING/SUBTRACTING WHEN
+  AN ENCODER INTERRUPTION ARRIVES
+  */
+  if (direction) // `direction&#39; == 1 (backward)
+  {
+    currentPosition--;
+    // Stop motor if the new position is the goal
+    if (currentPosition &lt;= goal) actuator-&gt;run(RELEASE); // Stop motor
+  }
+  else // `direction&#39; == 0 (forward)
+  {
+    currentPosition++;
+    // Stop motor if the new position is the goal
+    if (currentPosition &gt;= goal) actuator-&gt;run(RELEASE); // Stop motor
+  }
+
+  // Flags main loop to publish current position
+  publishPosition = true;
+}
+
+void ActuatorControlCallback(const std_msgs::Int16 &amp;msg)
+{
+  // Decode instruction
+  uint8_t instructionType = (msg.data &amp; ACT_INS_MSK) &gt;&gt; ACT_INS_SFT;
+  uint8_t value           =  msg.data &amp; ACT_VAL_MSK;
+  switch (instructionType)
+  {
+    case ACT_GTO:
+      direction = currentPosition &gt; value;
+      goal = value;
+      break;
+    case ACT_STP:
+      direction = (msg.data &amp; ACT_DIR_MSK) &gt;&gt; ACT_DIR_SFT;
+      // Backward steps can also be used to reset the 0 position
+      goal = currentPosition + (2*(!direction)-1) * value;
+      break;
+    case ACT_FRC:
+      force = value &amp; 0xFF; // `force&#39; only goes up to 255
+      break;
+    case ACT_RST:
+      resetZeroPosition = true;
+      break;
+    default:
+      break;
+  }
+  gotInstruction = true; // Flags main loop to execute instruction
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// &quot;Main&quot; //////////////////////////////////////////////////////////////////////
+
+void setup()
+{
+  n.initNode();
+
+  // Publishers &amp; Subscribers
+  n.advertise(position_pub);
+  n.subscribe(control_sub);
+
+  noInterrupts(); // Disable interrupts for setup
+
+  // Encoder interruption
+  pinMode(ENCA_PIN, INPUT);
+  pinMode(ENCB_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(ENCA_PIN), EncoderISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCB_PIN), EncoderISR, CHANGE);
+  //state = state = PINB &amp; ENCODER_MASK;
+
+  interrupts(); // Reenable interrupts
+
+  // Actuator setup
+  currentPosition = 0; // Magic number
+  goal = currentPosition;
+  gotInstruction = true; // Allow reset if true (check next line of code)
+  resetZeroPosition = true; // Start by reseting the actuator&#39;s position
+
+  // Motor shield setup
+  AFMS = Adafruit_MotorShield(); // Use default I2C address
+  actuator = AFMS.getMotor(1);   // Use motor &#39;port&#39; M1
+  AFMS.begin();                  // Use default frequency (1.6KHz)
+  actuator-&gt;setSpeed(force);     // Set starting force
+}
+
+void loop()
+{
+  // Checks if needs to start moving actuator
+  if (gotInstruction)
+  {
+    gotInstruction = false; // Reset flag
+    // If the actuator needs to be reset
+    if (resetZeroPosition)
+    {
+      resetZeroPosition = false; // Reset flag
+      // Stop actuator
+      actuator-&gt;run(RELEASE);
+      // Set position and goal as zero
+      currentPosition = 0;
+      goal = 0;
+      publishPosition = true; // publish current, updated position (0)
+    }
+    // If the actuator is not in position
+    else if (currentPosition != goal)
+    {
+      //direction = currentPosition &gt; goal; // Check direction to go
+      actuator-&gt;setSpeed(force);  // Set force
+      // Start running!
+      actuator-&gt;run(direction+1); // Set direction (see lines 94 and 95)
+    }
+  }
+
+  // Publish current position
+  if (publishPosition)
+  {
+    publishPosition = false; // Reset flag
+    position_msg.data = currentPosition;
+    position_pub.publish(&amp;position_msg);
+  }
+
+  // Manage messages and callbacks; sync with ROS at the computer side
+  n.spinOnce();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/40777">lmrosset</a> on 2019-04-08 09:43:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

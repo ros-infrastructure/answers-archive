@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Plugin for rotating velodyne around an axis passing through its center. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/334125">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Plugin for rotating velodyne around an axis passing through its center.</h2>
+      <div class="question">
+        <p>Hi, </p>
+
+<p>I&#39;m trying to create a plugin to make velodyne VLP-16 Lidar rotate around an axis passing through its center (X or Y axis).
+This generates 16 rotating scan lines subject to the effect of their natural rotation around the Z axis and another rotation of the velodyne body around X or Y axis.</p>
+
+<p>I&#39;m using gazebo 9.0 and ros Melodic.</p>
+
+<p>The URDF joint definition is :</p>
+
+<pre><code>    &lt;joint name=&quot;${name}_base_mount_joint&quot; type=&quot;continuous&quot;&gt;
+      &lt;xacro:insert_block name=&quot;origin&quot; /&gt;
+      &lt;parent link=&quot;${namespace}/${parent}&quot;/&gt;
+      &lt;child link=&quot;${namespace}/${name}&quot;/&gt;
+      &lt;!-- origin xyz=&quot;0 0 -0.11885&quot; rpy=&quot;3.14 0 0&quot; /--&gt;
+      &lt;axis xyz=&quot;1 0 0&quot; rpy=&quot;0 0 0&quot; /&gt;
+      &lt;limit effort=&quot;100&quot; velocity=&quot;1&quot;/&gt;
+      &lt;joint_properties damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+    &lt;/joint&gt;
+
+  &lt;!-- Transmission is important to link the joints and the controller --&gt;
+    &lt;transmission name=&quot;${name}_base_mount_joint_trans&quot;&gt;
+      &lt;type&gt;transmission_interface/SimpleTransmission&lt;/type&gt;
+      &lt;joint name=&quot;${name}_base_mount_joint&quot;&gt;
+     &lt;hardwareInterface&gt;EffortJointInterface&lt;/hardwareInterface&gt;
+      &lt;/joint&gt;
+      &lt;actuator name=&quot;${name}_base_mount_joint_motor&quot;&gt;
+    &lt;hardwareInterface&gt;EffortJointInterface&lt;/hardwareInterface&gt;
+        &lt;mechanicalReduction&gt;1&lt;/mechanicalReduction&gt;
+      &lt;/actuator&gt;
+    &lt;/transmission&gt;
+
+  &lt;gazebo&gt;
+    &lt;plugin name=&quot;gazebo_rotate_velodyne_plugin&quot; filename=&quot;libgazebo_ros_rotate_velodyne.so&quot;&gt;
+      &lt;alwaysOn&gt;true&lt;/alwaysOn&gt;
+      &lt;updateRate&gt;100.0&lt;/updateRate&gt;
+      &lt;velocity&gt;50&lt;/velocity&gt;
+      &lt;MotorJoint&gt;velodyne_base_mount_joint&lt;/MotorJoint&gt;
+      &lt;torque&gt;60&lt;/torque&gt;
+      &lt;broadcastTF&gt;1&lt;/broadcastTF&gt;
+      &lt;commandTopic&gt;cmd_vel&lt;/commandTopic&gt;
+      &lt;robotBaseFrame&gt;base_link&lt;/robotBaseFrame&gt;
+    &lt;/plugin&gt;
+  &lt;/gazebo&gt;
+</code></pre>
+
+<p>The plugin configuration is this:</p>
+
+<pre><code> #ifndef _VELODYNE_PLUGIN_HH_
+#define _VELODYNE_PLUGIN_HH_    
+#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+// Boost
+#include &lt;boost/thread.hpp&gt;
+// Custom Callback Queue
+#include &lt;ros/callback_queue.h&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &quot;ros/callback_queue.h&quot;
+#include &quot;ros/subscribe_options.h&quot;
+#include &quot;std_msgs/Float32.h&quot;
+#include &lt;gazebo/transport/transport.hh&gt;
+#include &lt;gazebo/msgs/msgs.hh&gt;
+
+namespace gazebo
+{
+  /// \brief A plugin to control a Velodyne sensor.
+  class GazeboRotateVelodynePlugin : public ModelPlugin
+  {
+    /// \brief Constructor
+    public: GazeboRotateVelodynePlugin() {}
+    /// \brief The load function is called by Gazebo when the plugin is
+    /// inserted into simulation
+    /// \param[in] _model A pointer to the model that this plugin is
+    /// attached to.
+    /// \param[in] _sdf A pointer to the plugin&#39;s SDF element.
+    public: virtual void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
+{
+    // Output this message to see if this plugin is attached to our velodyne model
+    std::cerr &lt;&lt; &quot;\nThe velodyne plugin is attach to model[&quot; &lt;&lt;
+              _model-&gt;GetName() &lt;&lt; &quot;]\n&quot;;
+  // Safety check
+  if (_model-&gt;GetJointCount() == 0)
+  {
+    std::cerr &lt;&lt; &quot;Invalid joint count, Velodyne plugin not loaded\n&quot;;
+    return;
+  }
+  // Store the model pointer for convenience.
+  this-&gt;model = _model;
+  // Get the first joint. We are making an assumption about the model
+  // having one joint that is the rotational joint.
+  this-&gt;joint = _model-&gt;GetJoints()[0];
+  // Setup a P-controller, with a gain of 0.1.
+  this-&gt;pid = common::PID(0.1, 0.1, 0.1);
+  // Apply the P-controller to the joint.
+  this-&gt;model-&gt;GetJointController()-&gt;SetVelocityPID(
+      this-&gt;joint-&gt;GetScopedName(), this-&gt;pid);
+  // Default to zero velocity
+  this-&gt;velocity = 0;
+  // Check that the velocity element exists, then read the value
+  if (_sdf-&gt;HasElement(&quot;velocity&quot;))
+      velocity = _sdf-&gt;Get&lt;double&gt;(&quot;velocity&quot;);
+
+  this-&gt;SetVelocity(velocity);
+
+  // Create the node
+  this-&gt;node = transport::NodePtr(new transport::Node());
+    #if GAZEBO_MAJOR_VERSION &lt; 8
+              this-&gt;node-&gt;Init(this-&gt;model-&gt;GetWorld()-&gt;GetName());
+    #else
+              this-&gt;node-&gt;Init(this-&gt;model-&gt;GetWorld()-&gt;Name());
+    #endif
+
+  // Create a topic name
+  std::string topicName = &quot;~/&quot; + this-&gt;model-&gt;GetName() + &quot;/vel_cmd&quot;;
+
+  // Subscribe to the topic, and register a callback
+  this-&gt;sub = this-&gt;node-&gt;Subscribe(topicName,
+                                    &amp;GazeboRotateVelodynePlugin::OnMsg, this);
+
+  this-&gt;torque = 50.0;
+    if (!_sdf-&gt;HasElement(&quot;torque&quot;)) {
+      ROS_WARN_NAMED(&quot;rotate_velodyne_plugin&quot;, &quot;GazeboRotateVelodynePlugin Plugin (ns = %s) missing &lt;torque&gt;, defaults to %f&quot;,
+          this-&gt;robot_namespace_.c_str(), this-&gt;torque);
+    } else {
+      this-&gt;torque = _sdf-&gt;GetElement(&quot;torque&quot;)-&gt;Get&lt;double&gt;();
+    }
+
+    this-&gt;command_topic_ = &quot;cmd_vel&quot;;
+    if (!_sdf-&gt;HasElement(&quot;commandTopic&quot;)) {
+      ROS_WARN_NAMED(&quot;rotate_velodyne_plugin&quot;, &quot;GazeboRotateVelodynePlugin Plugin (ns = %s) missing &lt;commandTopic&gt;, defaults to \&quot;%s\&quot;&quot;,
+          this-&gt;robot_namespace_.c_str(), this-&gt;command_topic_.c_str());
+    } else {
+      this-&gt;command_topic_ = _sdf-&gt;GetElement(&quot;commandTopic&quot;)-&gt;Get&lt;std::string&gt;();
+    }
+
+    this-&gt;robot_base_frame_ = &quot;base_link&quot;;
+    if (!_sdf-&gt;HasElement(&quot;robotBaseFrame&quot;)) {
+      ROS_WARN_NAMED(&quot;rotate_velodyne_plugin&quot;, &quot;GazeboRotateVelodynePlugin Plugin (ns = %s) missing &lt;robotBaseFrame&gt;, defaults to \&quot;%s\&quot;&quot;,
+          this-&gt;robot_namespace_.c_str(), this-&gt;robot_base_frame_.c_str());
+    } else {
+      this-&gt;robot_base_frame_ = _sdf-&gt;GetElement(&quot;robotBaseFrame&quot;)-&gt;Get&lt;std::string&gt;();
+    }
+
+    this-&gt;update_rate_ = 100.0;
+    if (!_sdf-&gt;HasElement(&quot;updateRate&quot;)) {
+      ROS_WARN_NAMED(&quot;rotate_velodyne_plugin&quot;, &quot;GazeboRosRotateVelodynePlugin Plugin (ns = %s) missing &lt;updateRate&gt;, defaults to %f&quot;,
+          this-&gt;robot_namespace_.c_str(), this-&gt;update_rate_);
+    } else {
+      this-&gt;update_rate_ = _sdf-&gt;GetElement(&quot;updateRate&quot;)-&gt;Get&lt;double&gt;();
+    }
+          // Initialize ros, if it has not already bee initialized.
+          if (!ros::isInitialized())
+          {
+              int argc = 0;
+              char **argv = NULL;
+              ros::init(argc, argv, &quot;gazebo_client&quot;,
+                        ros::init_options::NoSigintHandler);
+          }
+// Create our ROS node. This acts in a similar manner to
+// the Gazebo node
+          this-&gt;rosNode.reset(new ros::NodeHandle(&quot;gazebo_client&quot;));
+
+          // Create a named topic, and subscribe to it.
+          ros::SubscribeOptions so =
+                  ros::SubscribeOptions::create&lt;std_msgs::Float32&gt;(
+                          &quot;/&quot; + this-&gt;model-&gt;GetName() + &quot;/vel_cmd&quot;,
+                          1,
+                          boost::bind(&amp;GazeboRotateVelodynePlugin::OnRosMsg, this, _1),
+                          ros::VoidPtr(), &amp;this-&gt;rosQueue);
+          this-&gt;rosSub = this-&gt;rosNode-&gt;subscribe(so);
+// Spin up the queue helper thread.
+          this-&gt;rosQueueThread =
+                  std::thread(std::bind(&amp;GazeboRotateVelodynePlugin::QueueThread, this));
+}
+       /// \brief Set the velocity of the Velodyne
+      /// \param[in] _vel New target velocity
+  public: void SetVelocity(const double &amp;_vel)
+      {
+          // Set the joint&#39;s target velocity.
+          this-&gt;model-&gt;GetJointController()-&gt;SetVelocityTarget(
+                  this-&gt;joint-&gt;GetScopedName(), _vel);
+      }
+      /// \brief Handle incoming message
+      /// \param[in] _msg Repurpose a vector3 message. This function will
+      /// only use the x component.
+  private: void OnMsg(ConstVector3dPtr &amp;_msg)
+      {
+          this-&gt;SetVelocity(_msg-&gt;x());
+      }
+      /// \brief A node used for transport
+  private: transport::NodePtr node;
+
+      /// \brief A subscriber to a named topic.
+  private: transport::SubscriberPtr sub;
+
+      /// \brief Handle an incoming message from ROS
+      /// \param[in] _msg A float value that is used to set the velocity
+      /// of the Velodyne.
+  public: void OnRosMsg(const std_msgs::Float32ConstPtr &amp;_msg)
+      {
+          this-&gt;SetVelocity(_msg-&gt;data);
+      }
+
+      /// \brief ROS helper function that processes messages
+  private: void QueueThread()
+      {
+          static const double timeout = 0.01;
+          while (this-&gt;rosNode-&gt;ok())
+          {
+              this-&gt;rosQueue.callAvailable(ros::WallDuration(timeout));
+          }
+      }
+    /// \brief Pointer to the model.
+  private: physics::ModelPtr model;
+
+    /// \brief Pointer to the joint.
+  private: physics::JointPtr joint;
+
+    /// \brief A PID controller for the joint.
+  private: common::PID pid;
+
+      /// \brief A node use for ROS transport
+  private: std::unique_ptr&lt;ros::NodeHandle&gt; rosNode;
+
+    /// \brief A ROS subscriber
+  private: ros::Subscriber rosSub;
+
+    /// \brief A ROS callbackqueue that helps process messages
+  private: ros::CallbackQueue rosQueue;
+
+    /// \brief A thread the keeps running the rosQueue
+  private: std::thread rosQueueThread;
+
+private:
+      double update_rate_;
+      double velocity;
+      double torque;
+      double x_;
+      double rot_;
+      std::string robot_namespace_;
+      std::string command_topic_;
+      std::string robot_base_frame_;
+      boost::mutex lock;
+      ros::CallbackQueue queue_;
+      boost::thread callback_queue_thread_;
+      ros::Subscriber cmd_vel_subscriber_;
+      ros::NodeHandle* rosnode_;
+  };
+  // Tell Gazebo about this plugin, so that Gazebo can call Load on this plugin.
+  GZ_REGISTER_MODEL_PLUGIN(GazeboRotateVelodynePlugin)
+}
+#endif
+</code></pre>
+
+<p>The problem is when I come to get rviz to publish the <code>PointCloud2</code> message I get difformed data. All data are published on one single axis.</p>
+
+<p>The second problem is that I can&#39;t control the rotating joint by the <code>/cmd_vel</code> topic, I send commmands using : <code>rostopic pub /vel_cmd std_msgs/Float32 5.0</code> but nothing changes.</p>
+
+<p>Anyone any idea where the problem lies please? </p>
+
+        <div class="owner"><p>Asked by <a href="/users/27094">lotfishtaine</a> on 2019-09-27 10:38:51 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Could you please stop bumping your question (ie: editing without actually editing it). If you haven&#39;t received any answers, that probably means that no one knows how to answer.</p>
+
+<p>I would actually suggest you post this over at <code>answers.gazebosim.org</code>, as right now it looks like a Gazebo-specific question. Not a ROS question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-10-01 08:52:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Okay, Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27094">lotfishtaine</a> on 2019-10-01 09:38:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p><a href="https://gazebosim.org/tutorials?cat=guided_i&tut=guided_i5">https://gazebosim.org/tutorials?cat=guided_i&amp;tut=guided_i5</a> This should help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/98711">BM</a> on 2022-03-04 08:53:35 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

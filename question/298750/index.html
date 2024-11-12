@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>getMTNodeHandle/getMTPrivateNodeHandle doesn't result in additional callbacks, but does take more cpu - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/298750">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>getMTNodeHandle/getMTPrivateNodeHandle doesn't result in additional callbacks, but does take more cpu</h2>
+      <div class="question">
+        <p>I&#39;ve made an example nodelet <a href="https://github.com/lucasw/nodelet_demo">https://github.com/lucasw/nodelet_demo</a> that has a callback that takes a lot of time to complete, more time than is available before the next message is received.  For non-nodelets in the past I&#39;ve successfully used asyncspinners to handle that case (TODO make an example of that in same repo above), but with nodelets I see the following behavior:</p>
+
+<p>The MTNodeHandle callback gets called no more often than the regular NodeHandle one.  The nodelet manager in my case declares it has 8 worker threads, and in a more complex situation (not shown in the example, TODO add it later) I can see that multiple nodelets do spread across multiple threads.</p>
+
+<p>The cpu usage goes way up (<code>top</code> show 500% cpu instead of 100%, 800% being the max for my cpu) when using the MTNodeHandle, as if what are otherwise dropped messages for single threads are still eating up cpu somewhere, but there is no external indication- no additional log messages from the callback or publishes from within the callback are seen.</p>
+
+<pre><code>void NodeletDemo::callback(const std_msgs::Float32ConstPtr&amp; msg)
+{
+  ROS_INFO_STREAM(&quot;cpu id &quot; &lt;&lt; get_cpu_id() &lt;&lt; &quot;, count &quot; &lt;&lt; msg-&gt;data);
+  // track cpu usage if true
+  bool busy_wait = true;
+  if (!busy_wait)
+  {
+    ros::Duration(callback_delay_).sleep();
+  }
+  else
+  {
+    ros::Time t0 = ros::Time::now();
+    while ((ros::Time::now() - t0).toSec() &lt; callback_delay_)
+    {
+    }
+  }
+  pub_.publish(msg);
+}
+...
+nh = getMTNodeHandle();
+sub_ = nh.subscribe(&quot;input&quot;, input_queue_size,
+    &amp;NodeletDemo::callback, this);
+</code></pre>
+
+<p>The default delay is 1.0 seconds, these launches result in 10 times as many messages being sent as a single threaded callback is able to handle:</p>
+
+<pre><code>roslaunch nodelet_demo demo.launch period:=0.1 mt_callback:=false
+roslaunch nodelet_demo demo.launch period:=0.1 mt_callback:=true
+</code></pre>
+
+<p>Should I instance more nodelets of the same type into the manager subscribing to the same topics, and they will get messages distributed to them properly?  This works as long as information doesn&#39;t need to be shared between the instances- that could be handled with addtional topics but is more cumbersome than using asyncspinner (though the likely required mutex locks could be equally or more cumbersome).
+<strong>Update</strong> Trying this crashes the nodelet manager.</p>
+
+<p>Multiple subs to the same topic within the same nodelet?  (I don&#39;t think that works elsewhere, but maybe here?)
+<strong>Update</strong> Trying this crashes the nodelet manager.</p>
+
+<p><strong>Update</strong> Trying to create an async spinner within the nodelet results in the error <code>AsyncSpinnerImpl: Attempt to spin a callback queue from two spinners, one of them being single-threaded.
+In the future this will throw an exception!</code> Which is maybe a clue to what is going wrong- is the nodelet locked in to be single threaded at a higher level?</p>
+
+<p>Is there a good online example of using getMTNodeHandle()?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/120"></a> on 2018-07-26 10:52:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Created <a href="https://github.com/ros/nodelet_core/issues/77">https://github.com/ros/nodelet_core/issues/77</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-07-28 09:38:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>With additional tests it looks like the answer is that a single subscriber will be single threaded, the MT node handles will just allow other subscribers to run concurrently.  (And I was probably misremembering ASyncSpinner, it is the same?)</p>
+
+<p>That doesn&#39;t explain the cpu usage increase though.</p>
+
+<p>So the solution would be to demux the input then have a number of corresponding subscribers inside the nodelet that can run in parallel.  This is inflexible which is good in that it limits the ability of too many incoming messages to take every thread available.</p>
+
+<p>The <a href="http://wiki.ros.org/nodelet_topic_tools#DEMUX">nodelet topic tools demux</a>  for std would look like this (except demux doesn&#39;t do what I want it to <a href="https://github.com/ros/nodelet_core/issues/79):">https://github.com/ros/nodelet_core/issues/79):</a></p>
+
+<p>Two subscribers on different topics going to same callback:</p>
+
+<pre><code>sub1_ = nh.subscribe(&quot;input1&quot;, input_queue_size,
+    &amp;NodeletDemo::callback, this);
+
+sub2_ = nh.subscribe(&quot;input2&quot;, input_queue_size,
+    &amp;NodeletDemo::callback, this);
+
+...
+#include &lt;nodelet_topic_tools/nodelet_demux.h&gt;
+typedef nodelet::NodeletDEMUX&lt;std_msgs::Float32&gt; Float32NodeletDemux;
+PLUGINLIB_EXPORT_CLASS(Float32NodeletDemux, nodelet::Nodelet);
+</code></pre>
+
+<p>and in the plugin xml:</p>
+
+<pre><code>&lt;class name=&quot;Float32NodeletDemux&quot;
+  type=&quot;Float32NodeletDemux&quot;
+  base_class_type=&quot;nodelet::Nodelet&quot;&gt;
+&lt;description&gt;
+  NodeletDEMUX Float32 instance
+&lt;/description&gt;
+&lt;/class&gt;
+</code></pre>
+
+<p>and the launch:</p>
+
+<pre><code> &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;data_demux&quot;
+      args=&quot;load Float32NodeletDemux manager&quot; output=&quot;screen&quot;&gt;
+   &lt;rosparam&gt;
+      output_topics: [input1, input2]
+   &lt;/rosparam&gt;
+ &lt;/node&gt;
+</code></pre>
+
+<p>but it isn&#39;t working working (fails with:</p>
+
+<pre><code>typename boost::detail::sp_dereference&lt;T&gt;::type boost::shared_ptr&lt;T&gt;::operator*() const [with T = ros::Publisher; typename boost::detail::sp_dereference&lt;T&gt;::type = ros::Publisher&amp;]: Assertion `px != 0&#39; failed`)
+</code></pre>
+
+<p><a href="https://github.com/ros/nodelet_core/issues/78">https://github.com/ros/nodelet_core/issues/78</a>) but I&#39;ll update this when it does work.  (also should update the wiki for demux when it is working, it has the old <code>PLUGINLIB_DECLARE_CLASS</code>)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2018-07-28 11:14:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>One of your problems has a solution described here: <a href="https://stackoverflow.com/a/48544551/1076564">https://stackoverflow.com/a/48544551/1076564</a> . In short, you&#39;re looking for <code>SubscribeOptions.allow_concurrent_callbacks</code>, which effectively allows more threads to process callbacks for a single subscriber. You just have to make sure then to correctly handle shared data access (e.g. accessing class member variables).</p>
+
+<p>Borrowing code from Fruchtzwerg:</p>
+
+<pre><code>ros::SubscribeOptions ops;
+ops.template init&lt;std_msgs::String&gt;(&quot;chatter&quot;, 1000, chatterCallback);
+ops.transport_hints = ros::TransportHints();
+ops.allow_concurrent_callbacks = true;
+ros::Subscriber sub = nh.subscribe(ops);
+</code></pre>
+
+<p>I haven&#39;t tested that, but it should work.</p>
+
+<p>EDIT: the following statement about busy-waiting is no longer a problem in Melodic. It has been fixed in <a href="https://github.com/ros/ros_comm/pull/1684">https://github.com/ros/ros_comm/pull/1684</a> and <a href="https://github.com/ros/ros_comm/pull/2014">https://github.com/ros/ros_comm/pull/2014</a> and released in ROS 1.14.7 in July 2021.</p>
+
+<p>However, I faced the very same problem you have with the high CPU usage when the callback blocks for longer then is the interval between messages. I&#39;d expect queue_size to slowly crawl in and start throwing away messages that did not make it, but instead the Async/Multithreaded spinner just spins all the threads in a busy-wait for some reason. The only case where it doesn&#39;t happen is when you start these spinners with a single thread. I looked for what&#39;s the difference, and it seems it&#39;s <a href="https://github.com/ros/ros_comm/blob/669fbd32d2f92cc295f4b024fcb2f982fddec0f0/clients/roscpp/src/libros/spinner.cpp#L253">either calling callAvailable() in the 1-threaded case, or callOne() in the more-threaded case</a>. So I&#39;d look for the bug somehere around, but I haven&#39;t succeeded yet. Maybe <a href="https://github.com/ros/ros_comm/issues/1343">https://github.com/ros/ros_comm/issues/1343</a> is also relevant (however I debug this problem in Indigo which is not affected by the mentioned bug, or at least a fix for it hasn&#39;t been backported there; and I do not have a custom build of ros_comm).</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/7736"></a> on 2018-11-23 20:04:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I created an issue for that: <a href="https://github.com/ros/ros_comm/issues/1545">https://github.com/ros/ros_comm/issues/1545</a> .</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2018-11-23 20:31:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Probably <code>ops.template init&lt;std_msgs::String&gt;(&quot;chatter&quot;, 1000, chatterCallback);</code> will make more sense with closer inspection, but here&#39;s how I did it using more familiar forms in <a href="https://github.com/lucasw/nodelet_demo/blob/6160a2f28b351ee4da76ed48111a2927cb05972f/nodelet_demo/src/nodelet_demo.cpp#L127">https://github.com/lucasw/nodelet_demo/blob/6160a2f28b351ee4da76ed48111a2927cb05972f/nodelet_demo/src/nodelet_demo.cpp#L127</a> - and it is doing concurrency as desired:</p>
+
+<pre><code>  ros::SubscribeOptions so1;
+  so1.init&lt;std_msgs::Float32&gt;(
+      &quot;input1&quot;,
+      input_queue_size,
+      boost::bind(&amp;NodeletDemo::callback, this, _1));
+
+  so1.allow_concurrent_callbacks = true;
+
+  sub1_ = nh.subscribe(so1);
+</code></pre>
+
+<p>(any other examples of this in open source would be welcome, if it does something useful would be very nice to see- maybe a any number of people know how to do this but only have ever put it into practice closed source?)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2021-09-23 15:26:53 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

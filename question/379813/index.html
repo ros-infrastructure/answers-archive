@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>RViz writes to incorrect directory when starting using robot_startup - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/379813">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>RViz writes to incorrect directory when starting using robot_startup</h2>
+      <div class="question">
+        <p><strong>Background</strong></p>
+
+<p>I have an application that requires that I start several RViz windows in a headless ROS environment.  The system is required to send image files to some locally networked dumb terminals which can barely but adequately show image files (.jpg).  Therefore, I simply take screen snapshots of the RViz displays and send those.  This works well, however, I need to run the RViz windows on startup.     </p>
+
+<p><strong>Implementation</strong></p>
+
+<p>The ROS noetic system is running on Ubuntu 20.04.  I used robot<em>upstart to give me a working skeleton for a systemd service and then modified the core service file to allow display</em>manager access</p>
+
+<p>This is my working system.d service file called &#39;test.service&#39; in /lib/systemd/system</p>
+
+<pre><code>[Unit]
+Description=&quot;bringup test&quot;
+After=network.target
+After=display_manager.service
+Wants=display_manager.service
+
+[Service]
+Type=simple
+Environment=&quot;XAUTHORITY=/run/user/1000/gdm/Xauthority&quot;
+Environment=&quot;DISPLAY=:0&quot;
+Environment=&quot;XDG_RUNTIME_DIR=/home/&lt;my_username&gt;/catkin_ws/tmp&quot;
+Environment=&quot;/home/&lt;my_username&gt;&quot;    # THIS IS THE SOLUTION SOUGHT BY THIS QUESTION
+ExecStart=/usr/sbin/test-start
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+
+<p>This <em>almost</em> works.  <code>journalctl -f -u test.service</code> lists an error:</p>
+
+<pre><code>Jun 06 21:10:22 aoede test-start[10209]: /opt/ros/noetic/lib/rviz/rviz: line 1: 10220 Aborted                 (core dumped) $0 $@
+Jun 06 21:10:25 aoede dbus-daemon[10259]: [session uid=1000 pid=10257] AppArmor D-Bus mediation is enabled
+Jun 06 21:10:28 aoede test-start[10237]: terminate called after throwing an instance of &#39;boost::filesystem::filesystem_error&#39;
+Jun 06 21:10:28 aoede test-start[10237]:   what():  boost::filesystem::create_directory: Permission denied: &quot;/.rviz&quot;
+Jun 06 21:10:28 aoede test-start[10218]: Aborted (core dumped)
+</code></pre>
+
+<p>It is trying to write to a directory <code>/.rviz</code> .  When I create this directory myself off the root directory with relaxed permissions it then works correctly and the RViz windows all start.  This directory seems to be filled with persistence files for the RViz instances. </p>
+
+<p>I have tried setting XDG<em>RUNTIME</em>DIR as above but it had no effect.  What environment variable should I set, or other way, so that RViz is looking in a more rational place?  Also, would appreciate any recommendations on better practices than above.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/43049">James NT</a> on 2021-06-08 00:18:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>This is set in the VisualizationFrame::initConfigs()</p>
+
+<pre><code>void VisualizationFrame::initConfigs()
+ {
+   home_dir_ = QDir::toNativeSeparators(QDir::homePath()).toStdString();
+
+   config_dir_ = (fs::path(home_dir_) / &quot;.rviz&quot;).string();
+   persistent_settings_file_ = (fs::path(config_dir_) / &quot;persistent_settings&quot;).string();
+   default_display_config_file_ = (fs::path(config_dir_) / &quot;default.&quot; CONFIG_EXTENSION).string();
+   ...
+</code></pre>
+
+<p>With the config_dir in this cas ending up as &quot;.rviz&quot; because home_dir is null.
+home_dir is derived from QDir::homePath() documented here: <a href="https://doc.qt.io/qt-5/qdir.html#homePath">https://doc.qt.io/qt-5/qdir.html#homePath</a></p>
+
+<p>This includes the helpful statement:</p>
+
+<pre><code>Under non-Windows operating systems the HOME environment variable is used if it exists, otherwise the path returned by the rootPath().
+</code></pre>
+
+<p>Which is the answer sought.  Without HOME being set QDir::rootPath() will return &quot;/&quot;.
+This environment variable is set after the service is started.</p>
+
+<p>Added environment</p>
+
+<pre><code>Environment=&quot;HOME=/home/&lt;my_username&gt;&quot;
+</code></pre>
+
+<p>to system.d service file </p>
+
+<p>Fixed</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/43049">James NT</a> on 2021-06-09 06:20:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I would&#39;ve expected packages like <a href="http://wiki.ros.org/robot_upstart">robot_upstart</a> (which also supports <code>systemd</code>) to do this already.</p>
+
+<p>Could you not use those?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-06-09 07:40:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I did use robot_upstart to create the systemd service files skeleton that I then expanded.  The robot_upstart implementation I used (command line) failed with an RViz node because it could not get a graphics context.  Hence the additional service entries.</p>
+
+<p>This was my robot_upstart install request which provided the skeleton I used:</p>
+
+<pre><code>rosrun robot_upstart install --job test --user &lt;my_username&gt; --setup ~/catkin_ws/devel/setup.bash --rosdistro noetic --logdir ~/catkin_ws/.ros --provider systemd --symlink &lt;my_package&gt;/launch/test_start.launch
+</code></pre>
+
+<p>The systemd entries provided by this successfully started all nodes in my launch file <em>except</em> RViz&#39;s</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/43049">James NT</a> on 2021-06-10 05:53:34 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

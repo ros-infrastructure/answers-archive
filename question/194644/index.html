@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>boost::lock_error when joining a broadcasting thread - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/194644">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>boost::lock_error when joining a broadcasting thread</h2>
+      <div class="question">
+        <p>I have been  using a class, RvizPlotter, that I wrote to broadcast tf frames and visualization markers to rviz.
+Here&#39;s the relevant part of the header:</p>
+
+<pre><code>class RvizPlotter{
+
+
+    class RvizFrame{
+        public:
+            std::string parentName;
+            std::string childName;
+            tf::Transform transform;
+            RvizFrame(tf::Transform transform, std::string parentName, std::string childName);
+    };
+std::vector&lt;RvizFrame&gt; frames;
+std::vector&lt;visualization_msgs::Marker&gt; vectors;
+tf::TransformBroadcaster br;
+ros::Publisher pb;
+boost::thread *broadcastThread;
+
+void broadcast();
+
+public:
+    RvizPlotter();
+    RvizPlotter(ros::NodeHandle &amp;n);
+    RvizPlotter(const RvizPlotter&amp; other);
+    ~RvizPlotter();
+    RvizPlotter&amp; operator=(const RvizPlotter&amp; other);
+    void plotf(Eigen::Matrix4f f, std::string parentName, std::string childName);
+    void plotf(Eigen::Matrix4f f, std::string frameName);
+    void plotv(std::string frameName, Eigen::Vector3f point1, Eigen::Vector3f point2);
+
+};
+</code></pre>
+
+<p>And here&#39;s the corresponding source code:</p>
+
+<pre><code>RvizPlotter::RvizFrame::RvizFrame(tf::Transform transform, std::string parentName, std::string childName){
+  this-&gt;transform = transform; 
+  this-&gt;parentName = parentName; 
+  this-&gt;childName = childName;
+}
+
+void RvizPlotter::plotf(Eigen::Matrix4f h, std::string parentName, std::string childName){
+  tf::Transform transform;
+  transform.setOrigin(tf::Vector3(h(0,3), h(1,3), h(2,3)));
+  transform.setBasis(tf::Matrix3x3(h(0,0), h(0,1), h(0,2),
+                               h(1,0), h(1,1), h(1,2),
+                               h(2,0), h(2,1), h(2,2)));
+  for(int i=0; i &lt; frames.size(); i++)
+  {
+    if(childName.compare(frames[i].childName.c_str()) == 0)
+    {
+      frames[i].parentName = parentName;
+      frames[i].transform = transform;
+      usleep(50000);
+      return;
+    }  
+  }
+  frames.push_back(RvizPlotter::RvizFrame(transform, parentName, childName));
+  usleep(50000);
+}
+
+void RvizPlotter::plotf(Eigen::Matrix4f h, std::string frameName){
+  plotf(h,&quot;map&quot;,frameName);
+}
+
+
+
+void RvizPlotter::plotv(std::string frameName, Eigen::Vector3f start, Eigen::Vector3f end)
+{
+  frameName.insert(0,&quot;/&quot;);
+  visualization_msgs::Marker marker;
+  marker.header.frame_id = frameName;
+  marker.header.stamp = ros::Time();
+  marker.ns = &quot;vectors&quot;;
+  marker.id = vectors.size();
+  marker.type = visualization_msgs::Marker::ARROW;
+  marker.action = visualization_msgs::Marker::ADD;
+  marker.color.a = 1.0;
+  marker.color.r = 1.0;
+  marker.color.g = 1.0;
+  marker.color.b = 0.4;
+  geometry_msgs::Point point1;
+  geometry_msgs::Point point2;
+  point1.x = start(0);
+  point1.y = start(1);
+  point1.z = start(2);
+  point2.x = end(0);
+  point2.y = end(1);
+  point2.z = end(2);
+  marker.scale.x = 0.03;
+  marker.scale.y = 0.07;
+  marker.scale.z = 0.1;
+  marker.points.push_back(point1);
+  marker.points.push_back(point2);
+  marker.lifetime = ros::Duration();
+  vectors.push_back(marker);
+}
+
+void RvizPlotter::broadcast(){
+  while(ros::ok()){
+    boost::this_thread::interruption_point();
+    for(int i = 0; i &lt; frames.size(); i++){
+      br.sendTransform(tf::StampedTransform(frames[i].transform, ros::Time::now(), frames[i].parentName, frames[i].childName));
+    }
+    for(int i = 0; i &lt; vectors.size(); i++){
+      pb.publish(vectors[i]);
+    }
+    boost::this_thread::sleep(boost::posix_time::millisec(10));
+  }
+}
+
+/**
+ * Default constructor included to allow RvizPlotters to be 
+ * declared before calling proper constructor with NodeHandle. 
+ */
+RvizPlotter::RvizPlotter(){}
+
+RvizPlotter::RvizPlotter(ros::NodeHandle &amp;n){
+  tf::TransformBroadcaster br;
+  pb = n.advertise&lt;visualization_msgs::Marker&gt;( &quot;visualization_marker&quot;, 0 );
+  broadcastThread = new boost::thread(boost::bind(&amp;RvizPlotter::broadcast, this));
+}
+
+RvizPlotter::~RvizPlotter()
+{
+  //Keep plotting around for long enough
+  usleep(500000);
+  try{
+    broadcastThread-&gt;interrupt();
+  } catch(boost::exception const&amp;  ex)
+  {
+    ROS_ERROR(&quot;Interrupting thread causes exception.&quot;);
+  }
+  broadcastThread-&gt;join();
+  delete broadcastThread;
+}
+
+RvizPlotter::RvizPlotter(const RvizPlotter&amp; other){
+  frames = other.frames;
+  vectors = other.vectors;
+  br = other.br;
+  pb = other.pb;
+  broadcastThread = other.broadcastThread;
+}
+
+RvizPlotter&amp; RvizPlotter::operator=(const RvizPlotter&amp; other){
+  frames = other.frames;
+  vectors = other.vectors;
+  br = other.br;
+  pb = other.pb;
+  broadcastThread = other.broadcastThread;
+  return *this;
+}
+</code></pre>
+
+<p>When I use this class as a member variable in another class, however, it throws a lock_error when joining the parallel thread in the destructor for RvizPlotter. I&#39;m wondering what might be causing the problem when using RvizPlotter as a member variable rather than as a stand-alone instantiation. </p>
+
+<p>The class in which RvizPlotter is used as a member is below.</p>
+
+<p>Header:</p>
+
+<pre><code>class UR5 {
+//Creating a publisher for the forward kinematics
+ros::Publisher fwd_pb;
+//An array holding the names of the links
+std::vector&lt;std::string&gt; link_names;
+//Plotter for rviz
+RvizPlotter rvizPlotter;
+
+    public:
+        //An array of the six alpha D-H parameters for the UR5
+        static double alpha[];
+        //An array of the six a D-H parameters for the UR5
+        static double a[];
+        //An array of the six d D-H parameters for the UR5
+        static double d[];
+
+        /**
+         * Creates an instance of the class to allow plotting 
+         * of the UR5 in rviz.
+         */
+        UR5(ros::NodeHandle &amp;n);
+
+        /**
+         * Plots the coordinate frames (according to D-H convention) for the
+         * UR5 given a set of joint angles. Each frame is plotted relative to
+         * fixed frame base_link.
+         */ 
+        void plotframes(double q[]);
+
+        /**
+         * Returns the 4x4 transformation given the a 4x1 vector of
+         * Denavit-Hartenberg parameters.
+         */
+        static Eigen::Matrix4f dhf(double alpha, double a, double d, double theta);
+};
+</code></pre>
+
+<p>And the source:</p>
+
+<pre><code>#define PI 3.1415926
+
+//An array of the six alpha D-H parameters for the UR5
+double UR5::alpha[] = {PI/2,0,0,PI/2,-PI/2,0};
+//An array of the six a D-H parameters for the UR5
+double UR5::a[] = {0,-0.425,-0.39225,0,0,0};
+//An array of the six d D-H parameters for the UR5
+double UR5::d[] = {0.089159,0,0,0.10915,0.09465,0.0823};
+
+
+/**
+ * Creates an instance of the class to allow plotting 
+ * of the UR5 in rviz.
+ */
+UR5::UR5(ros::NodeHandle &amp;n):rvizPlotter(n) {
+    fwd_pb = n.advertise&lt;ur5::ur5_joints&gt;(&quot;forwardKinematics&quot;, 10);
+    link_names.push_back(&quot;shoulder&quot;);
+    link_names.push_back(&quot;upper_arm&quot;);
+    link_names.push_back(&quot;forearm&quot;);
+    link_names.push_back(&quot;wrist_1&quot;);
+    link_names.push_back(&quot;wrist_2&quot;);
+    link_names.push_back(&quot;wrist_3&quot;);
+    link_names.push_back(&quot;end-effector&quot;);
+    rvizPlotter = RvizPlotter(n);
+}
+
+/**
+ * Returns the 4x4 transformation given the a 4x1 vector of
+ * Denavit-Hartenberg parameters.
+ */
+Eigen::Matrix4f UR5::dhf(double alpha, double a, double d, double theta){
+
+    //Creating the matrix which describes the rotation of theta about Z_i-1
+    Eigen::Matrix4f Rz;
+    Rz &lt;&lt; cos(theta), -sin(theta), 0, 0, 
+          sin(theta),  cos(theta), 0, 0, 
+                   0,           0, 1, 0, 
+                   0,           0, 0, 1;
+
+    //Creating the matrix which describes the translation of d along Z_i-1
+    Eigen::Matrix4f Tz = Eigen::MatrixXf::Identity(4,4);
+    Tz.col(3) = Eigen::Vector4f(0,0,d,1); 
+
+    //Creating the matrix which describes the translation of a along X_i
+    Eigen::Matrix4f Tx = Eigen::MatrixXf::Identity(4,4);
+    Tx.col(3) = Eigen::Vector4f(a,0,0,1); 
+
+    //Creating the matrix which describes the rotation of alpha about X_i
+    Eigen::Matrix4f Rx;
+    Rx &lt;&lt; 1,          0,          0, 0, 
+          0, cos(alpha), -sin(alpha), 0, 
+          0, sin(alpha), cos(alpha), 0, 
+          0,          0,          0, 1;
+
+    //The matrix composed of the sucessive rotations and translations
+    Eigen::Matrix4f h = Rz*Tz*Tx*Rx;
+    return h;
+}
+
+/**
+ * Plots the coordinate frames (according to D-H convention) for the
+ * UR5 given a set of joint angles. Each frame is plotted relative to
+ * fixed frame base_link.
+ */ 
+ void UR5::plotframes(double q[]){
+    Eigen::Matrix4f H_total = Eigen::MatrixXf::Identity(4,4);
+    for(int i = 0; i &lt; 6; i++)
+    {
+        H_total = H_total*dhf(UR5::alpha[i],UR5::a[i],UR5::d[i],q[i]);
+        this-&gt;rvizPlotter.plotf(H_total,&quot;base_link&quot;,link_names[i]);
+    }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/19735">rkeatin3</a> on 2014-10-09 15:51:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Why are you initializing rvizPlotter twice in the constructor of UR5?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3102">kmhallen</a> on 2014-10-09 20:40:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Oops, I changed around the constructor when debugging and forgot to change it back. That shouldn&#39;t be contributing to the issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19735">rkeatin3</a> on 2014-10-10 09:02:20 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

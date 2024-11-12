@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Subscriber in component - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/403073">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Subscriber in component</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102045/ros2-subscriber-in-component">https://robotics.stackexchange.com/questions/102045/ros2-subscriber-in-component</a>.</p>
+        <h3>Configuration</h3>
+
+<ul>
+<li>ROS Distro: Humble</li>
+<li>OS Version: Ubuntu 22.04</li>
+</ul>
+
+<h3>Description</h3>
+
+<p>Hi, 
+I am trying to create a <code>hardware_interface</code> plugin for ros2_control. I want to create a publisher to <code>write()</code> and a subscriber to <code>read()</code>. 
+I am running into issues setting up the subscriber.
+Then code is given below.</p>
+
+<h3>Code</h3>
+
+<pre>
+<code>
+#include <cstdlib>
+#include <chrono>
+#include <memory>
+
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/float64.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
+#include "custom_interfaces/msg/motor_command.hpp"
+
+#include "test_hardware_interface/test_hardware_interface.hpp"
+#include "hardware_interface/actuator_interface.hpp"
+#include "hardware_interface/types/hardware_interface_type_values.hpp"
+
+using namespace hardware_interface;
+
+static const auto LOGGER = rclcpp::get_logger("Grab-Hardware");
+
+namespace test_hardware_interface
+{
+  //HardwareComms Methods
+  HardwareComms::HardwareComms() : Node("joint_comms")
+  {
+    //Lamda callback for stateSub_
+    auto stateCB =
+      [this](const std_msgs::msg::Float64::SharedPtr state) -> void
+      {
+        RCLCPP_INFO(this->get_logger(), "Callback");
+        state_ = state->data;
+      };
+    commandPub_ = this->create_publisher<custom_interfaces::msg::MotorCommand>(
+      "/test_pub",
+      0
+    );
+
+    stateSub_ = this->create_subscription<std_msgs::msg::Float64>(
+      "/test_sub",
+      0,
+      stateCB
+    );
+  }
+
+  void HardwareComms::sendCommand(double position, double velocity, double acceleration)
+  {
+    auto command = custom_interfaces::msg::MotorCommand();
+    command.position = position;
+    command.velocity = velocity;
+    command.acceleration = acceleration;
+    commandPub_->publish(command);
+  }
+
+  double HardwareComms::getState()
+  {
+    return state_;
+  }
+  
+  //HardwareInterface Methods
+  CallbackReturn HardwareInterface::on_init(const hardware_interface::HardwareInfo &info)
+  {
+    RCLCPP_INFO(LOGGER, "Initialising...");
+    if(
+      hardware_interface::ActuatorInterface::on_init(info) !=
+        hardware_interface::CallbackReturn::SUCCESS)
+    {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    comms = std::make_shared<HardwareComms>();
+
+    hw_joint_state_           = std::numeric_limits<double>::quiet_NaN();
+    hw_position_command_      = std::numeric_limits<double>::quiet_NaN();
+    hw_velocity_command_      = std::numeric_limits<double>::quiet_NaN();
+    hw_acceleration_command_  = std::numeric_limits<double>::quiet_NaN();
+
+    const ComponentInfo &joint = info_.joints[0];
+    if(joint.command_interfaces.size() != 3) {
+      RCLCPP_FATAL(
+        LOGGER,
+        "Joint '%s' has %zu command interfaces found. 3 expected.", joint.name.c_str(),
+        joint.command_interfaces.size()
+      );
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    RCLCPP_INFO(LOGGER, "Checking Position IF");
+    if (joint.command_interfaces[0].name != hardware_interface::HW_IF_POSITION) {
+      RCLCPP_FATAL(
+        LOGGER,
+        "Joint '%s' have %s command interfaces found. '%s' expected.", joint.name.c_str(),
+        joint.command_interfaces[0].name.c_str(), hardware_interface::HW_IF_POSITION
+      );
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    RCLCPP_INFO(LOGGER, "Clear!");
+
+    RCLCPP_INFO(LOGGER, "Checking Velocity IF");
+    if (joint.command_interfaces[1].name != hardware_interface::HW_IF_VELOCITY) {
+      RCLCPP_FATAL(
+        LOGGER,
+        "Joint '%s' have %s command interfaces found. '%s' expected.", joint.name.c_str(),
+        joint.command_interfaces[1].name.c_str(), hardware_interface::HW_IF_VELOCITY
+      );
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    RCLCPP_INFO(LOGGER, "Clear!");
+
+    RCLCPP_INFO(LOGGER, "Checking Acceleration IF");
+    if (joint.command_interfaces[2].name != hardware_interface::HW_IF_ACCELERATION) {
+      RCLCPP_FATAL(
+        LOGGER,
+        "Joint '%s' have %s command interfaces found. '%s' expected.", joint.name.c_str(),
+        joint.command_interfaces[2].name.c_str(), hardware_interface::HW_IF_ACCELERATION
+      );
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    RCLCPP_INFO(LOGGER, "Clear!");
+
+    if (joint.state_interfaces.size() != 1) {
+      RCLCPP_FATAL(
+        LOGGER, "Joint '%s' has %zu state interface. 1 expected.",
+        joint.name.c_str(), joint.state_interfaces.size());
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    if (joint.state_interfaces[0].name != hardware_interface::HW_IF_POSITION) {
+      RCLCPP_FATAL(
+        LOGGER, "Joint '%s' have %s state interface. '%s' expected.",
+        joint.name.c_str(), joint.state_interfaces[0].name.c_str(),
+        hardware_interface::HW_IF_POSITION);
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    RCLCPP_INFO(LOGGER, "Done!");
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  CallbackReturn HardwareInterface::on_configure(const rclcpp_lifecycle::State & /*previous_state*/)
+  {
+    RCLCPP_INFO(LOGGER, "Configuring...");
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  std::vector<StateInterface> HardwareInterface::export_state_interfaces()
+  {
+    std::vector<hardware_interface::StateInterface> state_interfaces;
+
+    state_interfaces.emplace_back(hardware_interface::StateInterface(
+      info_.joints[0].name, hardware_interface::HW_IF_POSITION, &hw_joint_state_));
+
+    return state_interfaces;
+  }
+
+  std::vector<CommandInterface> HardwareInterface::export_command_interfaces()
+  {
+    std::vector<hardware_interface::CommandInterface> command_interfaces;
+
+    command_interfaces.emplace_back(hardware_interface::CommandInterface(
+      info_.joints[0].name, hardware_interface::HW_IF_POSITION, &hw_position_command_));
+    command_interfaces.emplace_back(hardware_interface::CommandInterface(
+      info_.joints[0].name, hardware_interface::HW_IF_VELOCITY, &hw_velocity_command_));
+    command_interfaces.emplace_back(hardware_interface::CommandInterface(
+      info_.joints[0].name, hardware_interface::HW_IF_ACCELERATION, &hw_acceleration_command_));
+
+    return command_interfaces;
+  }
+
+  CallbackReturn HardwareInterface::on_activate(const rclcpp_lifecycle::State & /*previous_state*/)
+  {
+    if (std::isnan(hw_joint_state_)) {
+      hw_joint_state_ = 0.0;
+      hw_position_command_ = 0.0;
+      hw_velocity_command_ = 5.0;
+      hw_acceleration_command_ = 0.0;
+    }
+
+    RCLCPP_INFO(LOGGER, "Successfully activated!");
+
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  CallbackReturn HardwareInterface::on_deactivate(
+    const rclcpp_lifecycle::State & /*previous_state*/)
+  {
+    RCLCPP_INFO(LOGGER, "Successfully deactivated!");
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  return_type HardwareInterface::read(
+    const rclcpp::Time & /*time*/,
+    const rclcpp::Duration & /*period*/)
+  {
+    hw_joint_state_ = comms->getState();
+    RCLCPP_INFO(rclcpp::get_logger("HardwareRead"), "State: %f", hw_joint_state_);
+    return hardware_interface::return_type::OK;
+  }
+
+  return_type HardwareInterface::write(
+    const rclcpp::Time & /*time*/,
+    const rclcpp::Duration & /*period*/)
+  {
+    comms->sendCommand(hw_position_command_, hw_velocity_command_, hw_acceleration_command_);
+    return hardware_interface::return_type::OK;
+  }
+} //namespace grab_hardware
+
+#include "pluginlib/class_list_macros.hpp"
+
+PLUGINLIB_EXPORT_CLASS(test_hardware_interface::HardwareInterface, hardware_interface::ActuatorInterface)
+</code>
+</pre>
+
+<p>The publisher works fine, but the callback of the subscriber does not get called. Am I missing something?
+Any help is appreciated
+Thank you.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/102028">Cryoschrome</a> on 2022-06-28 12:17:05 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I specified a new node to handle communication to and from the hardware interface.
+Since the an executor is necessary to spin the node, I defined one in the hardware interface component and executed it in a detached thread.</p>
+
+<h3>joint_hardware_interface.hpp</h3>
+
+<pre>
+<code>
+#ifndef JOINT_HARDWARE_INTERFACE
+#define JOINT_HARDWARE_INTERFACE
+
+#include &ltmemory>
+#include &ltstring>
+#include &ltvector>
+
+#include "hardware_interface/actuator_interface.hpp"
+
+#include "rclcpp/rclcpp.hpp"
+#include "rclcpp/macros.hpp"
+#include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
+#include "rclcpp_lifecycle/state.hpp"
+#include "joint_limits/joint_limits.hpp"
+
+#include "std_msgs/msg/float64.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
+#include "custom_interfaces/msg/motor_command.hpp"
+#include <custom_interfaces/msg/motor_state.hpp>
+
+namespace join_hardware_interface
+{
+  class JointComms : public rclcpp::Node
+  {
+    public:
+      /**
+       * @brief Constructor a new Grab Joint Comms object
+       */
+      JointComms();
+
+      /**
+       * @brief Create the msg and publish to MCU
+       */
+      void sendCommand(double position, double velocity, double acceleration);
+
+      /**
+       * @brief Position and velocity getters
+       */
+      double getPosition();
+      double getVelocity();
+    private:
+      double position_;
+      double velocity_;
+      rclcpp::Subscription<custom_interfaces::msg::MotorState>::SharedPtr stateSub_;
+      rclcpp::Publisher<custom_interfaces::msg::MotorCommand>::SharedPtr commandPub_;
+  };
+
+  class JointHardware : public hardware_interface::ActuatorInterface
+  {
+    public:
+      JointHardware();    
+      CallbackReturn on_configure(const rclcpp_lifecycle::State &previous_state);
+      CallbackReturn on_activate(const rclcpp_lifecycle::State &previous_state);
+      CallbackReturn on_deactivate(const rclcpp_lifecycle::State &previous_state);
+      CallbackReturn on_init(const hardware_interface::HardwareInfo &info);
+
+      std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
+      std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
+      hardware_interface::return_type read(
+        const rclcpp::Time & time, const rclcpp::Duration & period) override;
+      hardware_interface::return_type write(
+        const rclcpp::Time & time, const rclcpp::Duration & period) override;
+
+      std::shared_ptr&ltJointComms> comms;
+      
+    private:
+      rclcpp::executors::SingleThreadedExecutor executor_;  //Executor needed to subscriber
+      double hw_position_command_;
+      double hw_velocity_command_;
+      double hw_acceleration_command_;
+      double hw_position_state_;
+      double hw_velocity_state_;
+      int setSpeed_;
+      int setAccelaration_;
+      bool isActive_;
+
+      joint_limits::JointLimits limits;
+  };
+}
+</code>
+</pre>
+
+<p>and in the .cpp file, within the <code>on_init()</code> function, I created the thread.
+<pre>
+<code>
+    comms = std::make_shared&amp;ltJointComms&gt;();
+    executor_.add_node(comms);
+    std::thread(<a href="">this</a> { executor_.spin(); }).detach();
+</code>
+</pre></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/102028">Cryoschrome</a> on 2023-02-02 16:33:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

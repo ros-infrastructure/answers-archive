@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>pcl_ros::transformPointCloud shows Lookup would require extrapolation into the past - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/283013">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>pcl_ros::transformPointCloud shows Lookup would require extrapolation into the past</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/85382/pcl-rostransformpointcloud-shows-lookup-would-require-extrapolation-into-the-p">https://robotics.stackexchange.com/questions/85382/pcl-rostransformpointcloud-shows-lookup-would-require-extrapolation-into-the-p</a>.</p>
+        <p>I was trying to transform point cloud from camera frame to base<em>link frame using pcl</em>ros::transformPointCloud. However, the TF always show the error of Lookup would require extrapolation into the past. I checked carefully to make sure I have everything setup correctly but can&#39;t figure out why I have this error. 
+Could you show me what I did wrong? 
+Here is my code:</p>
+
+<pre><code>#include &lt;...my stuffs..&gt;
+class cloudHandler{
+    public:
+        cloudHandler():
+        {
+            main_sub = nh.subscribe(&quot;pico_flexx/points&quot;,1,&amp;cloudHandler::mainCB,this);  
+            rail_plane_pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;rail_plane&quot;,1);
+            fit_rails_sub = nh.subscribe(&quot;rail_plane&quot;,1,&amp;cloudHandler::fit_railsCB,this);   
+        }
+        void mainCB(const sensor_msgs::PointCloud2ConstPtr&amp; input){ 
+
+            pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+            pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud_projected (new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+
+            pcl::fromROSMsg(*input,*cloud);
+            cloud_direction_y(cloud);
+            cloud_direction_z(cloud);
+            cloud_stat_remove(cloud);
+
+            rail_plane(cloud, cloud_projected);     
+        }
+        void rail_plane(pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr input, pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud_projected){
+            pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+            *cloud = *input;
+
+            pcl::ModelCoefficients::Ptr floor_coefficients(new pcl::ModelCoefficients());
+            pcl::PointIndices::Ptr floor_indices(new pcl::PointIndices());
+            pcl::SACSegmentation&lt;pcl::PointXYZ&gt; floor_finder;
+            floor_finder.setOptimizeCoefficients(true);
+        floor_finder.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
+            floor_finder.setMethodType(pcl::SAC_RANSAC);
+            floor_finder.setMaxIterations(500);
+            floor_finder.setAxis(Eigen::Vector3f(0,1,0));
+            floor_finder.setDistanceThreshold(0.07);
+            floor_finder.setEpsAngle(MYDEG2RAD(5));
+            floor_finder.setInputCloud(boost::make_shared&lt;pcl::PointCloud&lt;pcl::PointXYZ&gt; &gt;(*cloud));
+            floor_finder.segment(*floor_indices, *floor_coefficients);
+
+            if (floor_indices-&gt;indices.size() &gt; 3)
+            {
+                pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr floor_points(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+                pcl::ExtractIndices&lt;pcl::PointXYZ&gt; extractor;
+                extractor.setInputCloud(boost::make_shared&lt;pcl::PointCloud&lt;pcl::PointXYZ&gt; &gt;(*cloud));
+                extractor.setIndices(floor_indices);
+                extractor.filter(*floor_points);
+                extractor.setNegative(true);
+                extractor.filter(*cloud);
+
+
+                pcl::ProjectInliers&lt;pcl::PointXYZ&gt; proj;
+                proj.setModelType(pcl::SACMODEL_PLANE);
+                proj.setInputCloud(floor_points);
+                proj.setModelCoefficients(floor_coefficients);
+                proj.filter(*cloud_projected);
+
+                floor_points-&gt;header.frame_id = input-&gt;header.frame_id;
+                floor_points-&gt;header.stamp = input-&gt;header.stamp;
+
+                sensor_msgs::PointCloud2 msg;
+                msg.header.stamp = ros::Time().now();
+                pcl::toROSMsg(*cloud_projected,msg);
+
+                rail_plane_pub.publish(msg);
+            }
+        }
+        void fit_railsCB(const sensor_msgs::PointCloud2ConstPtr&amp; input_from_camera_frame){              
+            try{
+                    cam_bl.waitForTransform(&quot;base_link&quot;,&quot;pico_flexx_optical_frame&quot;,ros::Time(0),ros::Duration(5));
+                    cam_bl.lookupTransform(&quot;base_link&quot;,&quot;pico_flexx_optical_frame&quot;,ros::Time(0),cam_bl_tf);
+            }
+            catch(tf::TransformException &amp;ex){
+                    ROS_WARN(&quot;%s&quot;,ex.what());
+            };
+
+            sensor_msgs::PointCloud2 input_in_bl; 
+            pcl_ros::transformPointCloud(&quot;base_link&quot;,*input_from_camera_frame,input_in_bl,cam_bl);
+        }
+    private:
+        tf::TransformListener cam_bl;
+        ros::NodeHandle nh;
+        ros::Subscriber main_sub, fit_rails_sub;
+        ros::Publisher  rail_pose_pub;  
+};
+int main(int argc, char **argv){
+    ros::init(argc, argv, &quot;pico_rails_node&quot;);
+    cloudHandler handler;
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+<p>And the error message:</p>
+
+<pre><code>[ERROR] [1518908418.439292642, 1518732053.305808327]: Lookup would require extrapolation into the past.  Requested time 1518732053.118709000 but the earliest data is at time 1518732053.201569502, when looking up transform from frame [pico_flexx_optical_frame] to frame [base_link]
+</code></pre>
+
+<p>A static tf between base<em>link -&gt; pico</em>flexx<em>link is called in a launch file. pico</em>flexx<em>link -&gt; pico</em>flexx<em>optical</em>frame is provided by the camera&#39;s driver.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28760">tuandl</a> on 2018-02-17 18:36:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You&#39;ll get that error until the tf listener gets some history into it, the first few callbacks should just return when it happens instead of continuing on to try the transformPointCloud- except you aren&#39;t correctly using waitForTransform to detect the problem.</p>
+
+<p>Put the timestamp of the received PointCloud2 into waitForTransform instead of <code>ros::Time(0)</code>.  lookupTransform isn&#39;t necessary at all unless you are using cam_bl_tf somewhere else in this code that you didn&#39;t paste here.  The code in #q90246 is a decent example - they are also more correctly using the frame supplied in the incoming message and not a hardcoded one. </p>
+
+<p><a href="http://wiki.ros.org/tf/Tutorials/tf%20and%20Time%20(C++)">http://wiki.ros.org/tf/Tutorials/tf%20and%20Time%20(C++)</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2018-02-17 22:25:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Lucasw,
+Thank you for your quick reply. I followed your suggestion, use time stamp of incoming messages instead of asking for the most current one and the first few callbacks now return when it can&#39;t transform point cloud. It works now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28760">tuandl</a> on 2018-02-18 04:14:23 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

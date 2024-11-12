@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ros-CanOpen Initialization Fails - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/341810">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ros-CanOpen Initialization Fails</h2>
+      <div class="question">
+        <p>Hello,
+I have a SV2D10-C-CE CanOpen Controller from Applied Motion: <a href="https://www.applied-motion.com/products/servo-drives/sv2d10-c-ce">https://www.applied-motion.com/products/servo-drives/sv2d10-c-ce</a></p>
+
+<p>I am attempting to use it with ros-canopen. I have mapped the following PDOs, and i ensured that this is reflected correctly in the .eds file:</p>
+
+<blockquote>
+<p>RPDO1: transmission: 255 mapped:
+       0x60400010
+       0x60600008</p>
+
+<p>RPDO2: transmission: 255 mapped:
+       0x607A0020
+       0x60840020</p>
+
+<p>RPDO3: transmission: 255 mapped:
+       0x60FF0020</p>
+
+<p>TPDO1: transmission: 01 mapped:
+      0x60410010
+      0x60610008</p>
+
+<p>TPDO2: transmission: 01 mapped:
+      0x60640020</p>
+
+<p>TPDO3: transmission: 01 mapped:
+      0x606C0020</p>
+</blockquote>
+
+<p>When I called the /drivier/init service, the following error is displayed:</p>
+
+<pre><code>[ INFO] [1579109777.314460976]: Using fixed control period: 0.010000000
+[ INFO] [1579109830.961996313]: Initializing XXX
+[ INFO] [1579109830.962750802]: Current state: 1 device error: system:0 internal_error: 0 (OK)
+[ INFO] [1579109830.963268901]: Current state: 2 device error: system:0 internal_error: 0 (OK)
+[ERROR] [1579109836.659053103]: Transition timeout
+[ERROR] [1579109841.659389982]: Transition timeout
+[ INFO] [1579109841.663667053]: Current state: 2 device error: system:125 internal_error: 0 (OK)
+[ INFO] [1579109841.663777128]: Current state: 0 device error: system:125 internal_error: 0 (OK)
+[ INFO] [1579109841.663908567]: Current state: 0 device error: system:0 internal_error: 0 (OK)
+[ERROR] [1579109841.663994661]: CAN not ready
+[ INFO] [1579109841.664163760]: Current state: 0 device error: system:0 internal_error: 0 (OK)
+</code></pre>
+
+<p>I have figured out why this is occuring, to explain, please see the following output of the candump:</p>
+
+<pre><code>  can0  701   [1]  7F
+  can0  000   [2]  82 01
+  can0  701   [1]  00
+  can0  601   [8]  2B 17 10 00 E8 03 00 00
+  can0  581   [8]  60 17 10 00 00 00 00 00
+  can0  000   [2]  01 01
+  can0  701   [1]  05
+  can0  080   [0]                     #This block repeats (Sync+PDO transmit) until timeout occurs
+  can0  181   [3]  00 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00        #End of block
+  can0  080   [0] 
+  can0  181   [3]  00 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  701   [1]  05
+  can0  601   [8]  2B 17 10 00 00 00 00 00
+  can0  581   [8]  60 17 10 00 00 00 00 00
+  can0  000   [2]  02 01
+</code></pre>
+
+<p>As you can see, the first tpdo transmit, which is mapped to the status word, is returning the the value 0x1400, which corresponds to the &quot;NOT READY TO SWITCH ON&quot; State. When the device is in this state, the ros-canopen driver waits until the controller automatically transitions to &quot;SWITCH ON DISABLED&quot;, from which the ros-canopen driver begins to write the control words necessary to transition up to &quot;OPERATION ENABLED&quot;. At first i thought there is a problem with my controller firmware/hardware, that was preventing it from transitioning to &quot;SWITCH ON DISABLED&quot; on power up. However, after inspecting this with SDO requests for the status word, I realized that the controller was properly transitioning to &quot;SWITCH ON DISABLED&quot; on power up. I then realized that the ros-canopen driver was doing something that the controller did not like, and which was preventing it from re-transitioning to the &quot;SWITCH ON DISABLED&quot; state. After inspecting the above candump, specifically, this can frame:</p>
+
+<pre><code>  can0  000   [2]  82 01
+</code></pre>
+
+<p>I see that a &quot;reset communication&quot; command was being sent via the NMT protocol. I also realized that the supplied software for the controller (from the manufacturer), does not perform any NMT commands when connecting to the controller. So i figured that this might be the difference. I modified the ros-canopen driver by modifying the following in canopen_master/src/node.cpp:</p>
+
+<pre><code>bool Node::reset_com(){
+    boost::timed_mutex::scoped_lock lock(mutex); // TODO: timed lock?
+    getStorage()-&gt;reset();
+
+    interface_-&gt;send(NMTcommand::Frame(node_id_, NMTcommand::Reset_Com));
+    if(wait_for(BootUp, boost::chrono::seconds(10)) != 1){
+        return false;
+    }
+
+    state_ = PreOperational;
+
+    setHeartbeatInterval();
+    return true;
+}
+</code></pre>
+
+<p>To:</p>
+
+<pre><code>bool Node::reset_com(){
+    boost::timed_mutex::scoped_lock lock(mutex); // TODO: timed lock?
+    getStorage()-&gt;reset();
+    /*
+    interface_-&gt;send(NMTcommand::Frame(node_id_, NMTcommand::Reset_Com));
+    if(wait_for(BootUp, boost::chrono::seconds(10)) != 1){
+        return false;
+    }
+    */
+    state_ = PreOperational;
+
+    setHeartbeatInterval();
+    return true;
+}
+</code></pre>
+
+<p>I did this so that the communications are not reset.
+After this, the ros-canopen managed to transition the controller to Operation Enabled (i figured this out with print statements)! But i run into another problem, which is the topic of this post. The following is the terminal output when i run the /drivir/init service now:</p>
+
+<pre><code>[ INFO] [1579111207.193513150]: Using fixed control period: 0.010000000
+[ INFO] [1579111223.837674714]: Initializing XXX
+[ INFO] [1579111223.838231714]: Current state: 1 device error: system:0 internal_error: 0 (OK)
+[ INFO] [1579111223.838652047]: Current state: 2 device error: system:0 internal_error: 0 (OK)
+canopen_motor_node: /usr/include/boost/smart_ptr/shared_ptr.hpp:648: typename boost::detail::sp_member_access&lt;T&gt;::type boost::shared_ptr&lt;T&gt;::operator-&gt;() const [with T = canopen::Mode; typename boost::detail::sp_member_access&lt;T&gt;::type = canopen::Mode*]: Assertion `px != 0&#39; failed.
+[can_driver-2] process has died [pid 23120, exit code -6, cmd /home/jad/Applied_ws/devel/lib/canopen_motor_node/canopen_motor_node __name:=can_driver __log:=/home/jad/.ros/log/dc466e6c-37c0-11ea-8db7-f828197a1d95/can_driver-2.log].
+</code></pre>
+
+<p>And the following is the corresponding candump:</p>
+
+<pre><code>can0  701   [1]  00
+  can0  701   [1]  7F
+  can0  701   [1]  7F
+  can0  701   [1]  7F
+  can0  701   [1]  7F
+  can0  701   [1]  7F
+  can0  601   [8]  2B 17 10 00 E8 03 00 00
+  can0  581   [8]  60 17 10 00 00 00 00 00
+  can0  000   [2]  01 01
+  can0  701   [1]  05
+  can0  080   [0] 
+  can0  181   [3]  60 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  080   [0] 
+  can0  181   [3]  60 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  201   [3]  06 00 00
+  can0  080   [0] 
+  can0  181   [3]  21 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  080   [0] 
+  can0  181   [3]  21 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  201   [3]  07 00 00
+  can0  080   [0] 
+  can0  181   [3]  33 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  080   [0] 
+  can0  181   [3]  33 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  201   [3]  0F 00 00
+  can0  080   [0] 
+  can0  181   [3]  37 14 00
+  can0  281   [4]  00 00 00 00
+  can0  381   [4]  00 00 00 00
+  can0  701   [1]  05
+  can0  701   [1]  05
+  can0  701   [1]  05
+  can0  701   [1]  05
+  can0  701   [1]  05
+  can0  701   [1]  05
+  can0  701   [1]  05
+  can0  701   [1]  05
+</code></pre>
+
+<p>As you can see, the status word is indicating proper transition of states, showing that my &quot;fix&quot; helps me progress in my problems. But then a mysterious pointer issue arises, and i do not know why. In cases like this, i usually step through the program with a debugger to see where it breaks, but the problem is that the timing of the software gets messed up when i paused with breakpoints, throwing all kinds of timeout/heartbeat problems, preventing me from troubleshooting further.</p>
+
+<p>Has anyone used ros-canopen with applied motion products? Has anyone experienced similar things?</p>
+
+<p>Thank you very much</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29121">JadTawil</a> on 2020-01-15 13:06:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

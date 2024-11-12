@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>What can cause spinOnce to stop processing messages? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/259765">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>What can cause spinOnce to stop processing messages?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80348/what-can-cause-spinonce-to-stop-processing-messages">https://robotics.stackexchange.com/questions/80348/what-can-cause-spinonce-to-stop-processing-messages</a>.</p>
+        <p>I&#39;m trying to debug a very rare instance (that happens randomly) in my node when I will be waiting for a specific message and it never gets received. I&#39;ve created a very rough code example to help illustrate how things are happening. My actual code has a lot more subscribers and classes, but this should get the point across.</p>
+
+<h3>Key Points</h3>
+
+<ul>
+<li><code>spinOnce()</code> is being called inside a <code>createTimer()</code> callback</li>
+<li>Messages are not being added to subscribers queue. (verified)</li>
+<li>Messages are being published by publisher. (verified)</li>
+<li>After the <code>TimerCallback()</code> function completes, messages will get received again.</li>
+</ul>
+
+<h3>Publisher Node:</h3>
+
+<pre><code>int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;Publisher&quot;);
+  ros::NodeHandle node;
+  ros::Rate r(1);
+  publisher = node-&gt;advertise&lt;Message_type&gt;(topic_string, 1, true);
+  int count = 0;
+  while (ros::ok())
+  {
+    count++;
+    publisher.publish(Message_type(count));
+    r.sleep();
+  }
+}
+</code></pre>
+
+<h3>Subscriber Node:</h3>
+
+<pre><code>bool message_received_ = false;
+
+void ImportantCallback(const Message_type&amp; msg)
+{
+  ROS_INFO_STREAM(&quot;count: &quot; &lt;&lt; msg.count);
+  message_received_ = true;
+} 
+
+void TimerCallback(const ros::TimerEvent &amp;timer_event)
+{
+  // wait for a particular message to be received
+  while(message_received_ == false)
+  {
+    ros::spinOnce();
+    ros::Duration(0.01).sleep();
+  }
+  // do stuff
+  ROS_INFO(&quot;Message received&quot;);
+}
+
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;Subscriber&quot;);
+  ros::NodeHandle node;
+  ros::NodeHandle pr_node(&quot;~&quot;);
+  ros::Rate r(10);
+  // Other subscribers initialized here
+  subscriber = node-&gt;subscribe(topic_string, 1, ImportantCallback, this);
+  InitializeSubscribers(node);
+
+  plan_timer_ = node-&gt;createTimer
+    (ros::Duration(0.01), &amp;TimerCallback, this);
+
+  while (ros::ok())
+  {
+    ros::spinOnce();
+    r.sleep();
+  }
+}
+</code></pre>
+
+<p>Any ideas are greatly appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-20 13:07:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Recursively calling spinOnce() can be dangerous. You might end up calling your <code>TimerCallback()</code> recursively, particularly with the timer&#39;s duration being so short.</p>
+
+<p>As an alternative to recursively calling <code>spinOnce()</code>, you could try using a separate callback queue for the timer. See here for how this works:</p>
+
+<p><a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning#Advanced:_Using_Different_Callback_Queues">http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning#Advanced:_Using_Different_Callback_Queues</a></p>
+
+<p>If you want to ignore all data received on other topics until a particular message is received, there might be better ways to do it. For example removing subscribers (<code>sub.shutdown()</code>) and re-creating them when ready to handle data again - although this is costly in destroying and setting up connections. Another would be a flag that tells other subscriber callbacks to ignore all received data until that particular message is received.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20134"></a> on 2017-04-20 22:26:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I had performed some experiments and found out that the timer callbacks are specially handled. I.e. once you&#39;re in a timer callback function, a call to <code>spinOnce()</code> will not trigger another time callback until your timer callback function has completed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-21 10:03:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It seems the problem might have been fixed by avoiding the use of the timer callbacks, but I don&#39;t understand why. I also did some experiments to test the limit on recursively calling <code>spinOnce()</code> inside my callbacks (with the use of infinite loops). It seemed that, aside from the timer callback...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-21 10:05:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p><code>spinOnce()</code> functioned as normal.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-21 10:05:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah, I made a mistake when I was reading the code and docs. It turns out that the <code>CallbackQueue</code> class is actually designed to handle things like callbacks calling the queue again. See #9 in <a href="http://wiki.ros.org/roscpp/Internals">http://wiki.ros.org/roscpp/Internals</a> . So the first part of my answer is wrong, I think.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-23 19:35:13 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>[<strong>Edit:</strong> looking into this, it&#39;s not clear to me <strong>why</strong> non-timer messages are being dropped, but this can be avoided by removing the loop/<code>spinOnce</code> in <code>TimerCallback</code>. Since there doesn&#39;t seem to be a <em>strike-through</em> markup and in the interest of some measure of clarity, I apologize, but changes to my original answer text will not be apparent.]</p>
+
+<p>Here&#39;s the root of the problem: you should <strong>never</strong> put a loop in a callback (that is not explicitly bounded/controlled). In your case, it&#39;s not that timer callbacks are &quot;specially handled&quot;, it&#39;s that <code>TimerCallback</code> doesn&#39;t complete. I think <em>that&#39;s</em> the issue, coupled with the <code>spinOnce</code> it contains and with the subscriber&#39;s limited queue size.</p>
+
+<p>It appears to me that (as @Geoff has called them) the &quot;recursive&quot; <code>spinOnce</code> calls are not clearing the subscriber&#39;s queue; so further messages are being dropped, <code>message_received_</code> is never being set to <code>true</code>, and the loop never exits. You can see some aspect of this with the following:
+<pre><code>void TimerCallback(const ros::TimerEvent &amp;timer_event) {
+  int wait_count_ = 0;
+  while(message_received_ == false) {
+    ros::spinOnce();
+    ros::Duration(0.01).sleep();
+    if (wait_count_++ &gt; 10) {
+      break;
+    }
+  }
+}
+</code></pre>
+In my testing (which matches your original description of the situation, but <strong>not</strong> your comment that other messages are processed), exiting <code>TimerCallback</code> will then return to expected processing, in that calling of <code>ImportantCallback</code> will resume. More evidence: there will be a gap in the <code>count</code> from the publisher, indicating to me that messages are being dropped. (Also, increasing the queue size to 2 was beneficial, but I think would exhibit the same problem if let go longer than I&#39;m willing to watch.) This might also explain what I see as a discrepancy in what you&#39;ve said about processing other messages -- since I&#39;m only looking at a single subscriber, I don&#39;t know how others would behave...perhaps their queue limits are not being reached and their messages are not being dropped.</p>
+
+<p>While the above isn&#39;t a complete answer, I think there is a solution: reduce the sleep duration in <code>main</code> and remove the timer completely, moving whatever logic is currently there to an <code>if (message_received_) { // do stuff }</code> after the <code>spinOnce</code> in <code>main</code> (obviously, setting <code>message_received_</code> to <code>false</code> when appropriate). Assuming single-threaded operation, the callback queue inherently synchronizes message reception, so the logic should be straightforward.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2050">kramer</a> on 2017-04-22 09:14:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The actual loop is bounded by a time limit. The code sample is just for communication and I didn&#39;t crowd it with handling. I don&#39;t agree with your statement: <code>The next message in the callback queue is not processed until the current one completes.</code> I&#39;ve conducted experiments and...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-22 13:14:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>found that this is not the case. At least for any messages besides the <code>TimerCallback</code> messages. I.e., if I enter a infinite while loop in a callback, I can still process other messages even though the callback has not been completed. I have heard someone also say that callbacks should be as fast...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-22 13:16:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>as possible, but I don&#39;t understand why. These aren&#39;t interrupt service routines, so what&#39;s the reason for that? Does it say that in the docs somewhere with an explanation?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29737">cpagravel</a> on 2017-04-22 13:17:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>OK, new information for me as to other messages processing. I&#39;ll edit my answer shortly. <strong>Edit:</strong> ok, not as shortly as I had hoped. :(</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2050">kramer</a> on 2017-04-22 15:07:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If the node is single-threaded nothing else will be processed while the callback is running. If the callback takes long enough then this might result in messages being lost or timers being missed due to queues filling up. That&#39;s probably the reason some people say make callbacks short.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-23 19:37:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>A possible reason is the timer is very short relative to the callback processing time (actually probably shorter). If the timer fires again before that callback returns the new timer event might get on the queue before any messages. If this repeats enough, unprocessed messages might be dropped.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-23 19:41:44 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

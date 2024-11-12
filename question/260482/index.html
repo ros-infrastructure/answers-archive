@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Move base default tolerance - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/260482">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Move base default tolerance</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80469/move-base-default-tolerance">https://robotics.stackexchange.com/questions/80469/move-base-default-tolerance</a>.</p>
+        <p>Hi,</p>
+
+<p>Im implementing an explorer algorithm that takes the map from a SLAM algorithm, processes it and sends a goal to move base. The problem is that sometimes the goal is not away enough from a wall and move base takes a long time to stop replanning and reject the goal (up to several minutes).</p>
+
+<p>I saw the parameter &quot;default_tolerance&quot;, by planning to a goal within a tolerance raidus, should be the answer to my prayers but a bit of investigating here in ros answers and in the code showed me that the parameter has no effect whatsoever in the execution of the code.</p>
+
+<p>Does anybody have any suggestion on how to fix this?</p>
+
+<p>Thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29661">juanlu</a> on 2017-04-27 11:49:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>So, here is what I did:</p>
+
+<p>First, I cloned the global_planner package from source, and renamed the class to be global_replanner. So in the code that follows, if you didn&#39;t want to rename the package, you could just replace the &quot;global_replanner&quot; with the standard &quot;global_planner&quot;. </p>
+
+<p>Aside from the renaming changes, in the package, there were 3 files I changed: planner_core.h, planner_core.cpp, and plan_node.cpp. The main changes were in planner_core.cpp. In this file, there is a portion that is the main planning algorithm that starts with <code>if (found_legal) {</code> and ends with <code>ROS_ERROR(&quot;Failed to get a plan.&quot;);</code>. This is the portion that needs to change [Lines 306-318]. So I replaced this section with the following:</p>
+
+<pre><code>    // Start time for loop time
+double start_time = ros::Time::now().toSec();
+
+// Need functions from navfn planner for this
+replanner_-&gt;setNavArr(nx,ny);
+replanner_-&gt;setCostmap(costmap_-&gt;getCharMap(),true,allow_unknown_);
+
+// Start loop for if goal is not the same as previous one
+if((prev_goal_.x != goal.pose.position.x || prev_goal_.y != goal.pose.position.y)){
+  // Set map start and goal in new planner
+  int map_start[2];
+  map_start[0] = start_x;
+  map_start[1] = start_y;
+  int map_goal[2];
+  map_goal[0] = goal_x;
+  map_goal[1] = goal_y;
+  replanner_-&gt;setStart(map_goal);
+  replanner_-&gt;setGoal(map_start);
+
+  // Calculate potentials along path using Astar
+  // replanner_-&gt;calcNavFnAstar();
+  replanner_-&gt;setupNavFn(true);
+
+  int astarint1 = replanner_-&gt;nx*replanner_-&gt;ny/1000;
+  int astarint2 = replanner_-&gt;nx+replanner_-&gt;ny;
+  // replanner_-&gt;propNavFnAstar(std::max(astarint1,astarint2));
+  replanner_-&gt;propNavFnAstar(astarint2/2);
+
+  int len = replanner_-&gt;calcPath(replanner_-&gt;nx*4);
+
+  if (len &gt; 0){
+  ROS_DEBUG(&quot;path found&quot;);
+}
+  else{
+ROS_DEBUG(&quot;no path found&quot;);
+  }
+
+
+  // Get resolution, tolerance (from parameters) and initialize some vars
+  double resolution = costmap_-&gt;getResolution();
+  double tol = tolerance;
+  geometry_msgs::PoseStamped p,check_best_change;
+  p = goal;
+  check_best_change = best_pose;
+  double best_sdist = DBL_MAX;
+
+  // This will make the algorithm restart as long as it hasn&#39;t found a goal by increasing the tolerance
+  bool tolerance_check = false;
+
+  // Potential searching algorithm -- finds lowest potential closest to goal by cycling through a tolerance x tolerance sized square around the goal (if it fails, it increases the tolerance and goes through the loop again)
+  while (!tolerance_check){
+p.pose.position.y = goal.pose.position.y - tol;
+while (p.pose.position.y &lt;= goal.pose.position.y + tol){
+  p.pose.position.x = goal.pose.position.x - tol;
+  while (p.pose.position.x &lt;= goal.pose.position.x + tol){
+    unsigned int mx,my;
+    double potential;
+    if(!costmap_-&gt;worldToMap(p.pose.position.x,p.pose.position.y,mx,my)){
+      potential = DBL_MAX;
+    }
+    else {
+      unsigned int index = my * nx + mx;
+      potential = replanner_-&gt;potarr[index];
+    }
+    double sdist = sq_distance(p,goal);
+    if (potential &lt; POT_HIGH &amp;&amp; sdist &lt; best_sdist){
+      best_sdist = sdist;
+      best_pose = p;
+    }
+    p.pose.position.x += resolution;
+  }
+  p.pose.position.y += resolution;
+}
+// Check to see if best_pose changed, if it didn&#39;t, set best pose as current position
+if(check_best_change.pose.position.x == best_pose.pose.position.x &amp;&amp; check_best_change.pose.position.y == best_pose.pose.position.y){
+  tol += 1.0;
+  ROS_WARN(&quot;Goal still in obstacle, increasing tolerance to: %.2f&quot;,tol);
+}
+else{
+  tolerance_check = true;
+}
+  }
+  // Push goal further away from obstacle by a factor of scale * distance between goal and best pose -- This is just because I felt it was getting too close to obstacles
+  double diff_x,diff_y,scale;
+  scale = 0.3;
+  diff_x = best_pose.pose.position.x - goal.pose.position.x;
+  diff_y = best_pose.pose.position.y - goal.pose.position.y;
+  best_pose.pose.position.x += diff_x * scale;
+  best_pose.pose.position.y += diff_y * scale;
+
+  // If gone through this loop, that means you had a new goal
+  prev_goal_.x = goal.pose.position.x;
+  prev_goal_.y = goal.pose.position.y;
+}
+
+// Convert to cell coordinates
+double gx,gy;
+worldToMap(best_pose.pose.position.x,best_pose.pose.position.y,gx,gy);
+goal_x = gx;
+goal_y = gy;
+
+// Clear the plan, just in case
+plan.clear();
+
+// Set new goal
+geometry_msgs::PoseStamped new_goal = goal;
+new_goal.pose.position.x = best_pose.pose.position.x;
+new_goal.pose.position.y = best_pose.pose.position.y;
+
+// Check if calculated potentials are legal and make plan if they are
+bool found_legal = planner_-&gt;calculatePotentials(costmap_-&gt;getCharMap(), start_x, start_y, goal_x, goal_y, nx * ny * 2, potential_array_);
+if (found_legal){
+  if (getPlanFromPotential(start_x,start_y, goal_x, goal_y,new_goal,plan)){
+// geometry_msgs::PoseStamped goal_copy = goal;
+// goal_copy.header.stamp = ros::Time::now();
+// plan.push_back(goal_copy);
+  }
+  else{
+ROS_ERROR(&quot;Plan potential not legal. Will not plan path.&quot;);
+  }
+}
+
+// Inform of total time loop took
+double end_time = ros::Time::now().toSec();
+double total_time = end_time - start_time;
+if (total_time &gt; 1.0){
+  ROS_WARN(&quot;Total replan-loop time exceeded 1.0 s. Time was: %.2f&quot;,total_time);
+}
+</code></pre>
+
+<p>This was essentially based on NavFN behavior, which was able to plan even when the goal was in an obstacle. The part that helps the planner escape from being in an obstacle is the <code>//Potential searching algorithm</code>. This takes the goal and searches in a tolerance x tolerance square for the best non-obstacle place to set as a new goal. In this way I was able to use tolerance to specify a distance to search around goal for a new obstacle-free goal. </p>
+
+<p>If this doesn&#39;t make sense, or you need the other files to see what changes I have made, I can upload this to git and you can clone it.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/27456">emielke</a> on 2017-04-27 12:19:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>You ought to make a pull request to fix this, IMO. It&#39;s an annoying issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2017-04-27 17:43:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi emielke, thanks for fixing this! It really is annoying. Would you mind sharing your modifications to plan_node.cpp and planner_core.h as well? They are probably minor, but I&#39;m having some trouble compiling the updated code, so I&#39;m probably missing something somewhere. Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30761">Sherry Haibara</a> on 2017-06-14 07:21:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ll include a link to my repo that has all the changes made to it, and you can look there. It was mostly including the navfn stuff that took some work. <a href="https://github.com/emielke12/global_replanner.git" title="Planner">Here</a> is the link</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27456">emielke</a> on 2017-06-14 13:02:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for the link! If you&#39;re not aware, there seems to be a bug on line 285 in gradient_path.cpp where xs_+1 should probably be n+xs_. They discussed the bug <a href="http://answers.ros.org/question/219109/no-path-error-and-questions-to-gradient_pathcpp-in-global_plan">here</a>, not sure about nx vs xs...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30761">Sherry Haibara</a> on 2017-06-14 13:52:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks! But is this just me or now move_base won&#39;t take into consideration yaw anymore? The robot arrives at correct XY, but always turns to yaw = 0, informing &quot;goal reached&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49885">felipeduque</a> on 2020-05-05 10:12:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>When I made these changes I wasn&#39;t so concerned with yaw, so that behavior seems like what I was experiencing. Unfortunately I no longer have access to the code base I tested this on, so I can&#39;t confirm that is the behavior. Perhaps you could look into adding a check for yaw as well, as the code above only really checks the x and y locations of the pose and doesn&#39;t take any other dimensions into consideration.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27456">emielke</a> on 2020-05-14 11:27:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I did that, and noticed that indeed the goal&#39;s quaternion was being set to (0, 0, 0, 1) in the original global_planner. I changed that and things are working fine now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49885">felipeduque</a> on 2020-05-15 06:38:07 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>You&#39;ll probably have to tweak your local planner to fix this. I&#39;m still using <a href="http://wiki.ros.org/pose_follower">pose_follower</a>, and I <a href="https://github.com/UTNuclearRoboticsPublic/navigation_experimental/commit/05dc9f027c9324b0ad1a0c955e3ab256b7166db3">made some changes</a> just after:</p>
+
+<pre><code>while(fabs(diff.linear.x) &lt;= tolerance_trans_ &amp;&amp;
+      fabs(diff.linear.y) &lt;= tolerance_trans_ &amp;&amp;
+      fabs(diff.angular.z) &lt;= tolerance_rot_)
+{
+</code></pre>
+
+<p>^This is where the tolerances are checked. Originally there was:</p>
+
+<pre><code>if(current_waypoint_ &lt; global_plan_.size() - 1)
+{
+  current_waypoint_++;
+  tf::poseStampedMsgToTF(global_plan_[current_waypoint_], target_pose);
+  diff = diff2D(target_pose, robot_pose);
+}
+</code></pre>
+
+<p>^Notice, no stop command unless it&#39;s the last waypoint. Change the code so it does stop, regardless of whether it&#39;s the last waypoint:</p>
+
+<pre><code>    goal_position = false;
+    while(fabs(diff.linear.x) &lt;= tolerance_trans_ &amp;&amp;
+          fabs(diff.linear.y) &lt;= tolerance_trans_ &amp;&amp;
+          fabs(diff.angular.z) &lt;= tolerance_rot_)
+    {
+      // We&#39;re close enough, despite not being at the final waypoint. Stop here.
+      if(current_waypoint_ &lt; global_plan_.size() - 1)
+      {
+        current_waypoint_++;
+        tf::poseStampedMsgToTF(global_plan_[current_waypoint_], target_pose);
+        diff = diff2D(target_pose, robot_pose);
+        geometry_msgs::Twist empty_twist;
+        cmd_vel = empty_twist; // Stop
+      }
+      else
+      {
+        ROS_INFO(&quot;Reached goal: %d&quot;, current_waypoint_);
+        in_goal_position = true;
+        break;
+      }
+    }
+</code></pre>
+
+<p>I&#39;ll try to make a PR for this.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21281"></a> on 2017-04-28 14:50:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

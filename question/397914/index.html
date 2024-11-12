@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf2 lookup_transform target_frame does not exist - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/397914">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf2 lookup_transform target_frame does not exist</h2>
+      <div class="question">
+        <p>I&#39;m having troubles getting the static transform between two links which is broadcasted by the <code>robot_state_publisher</code> node.</p>
+
+<p>The simple example below shows my problem. I expected <code>tf_buffer.lookup_transform()</code> to return the static transform between the base link and the gps antenna but I always get an exception <code>&quot;gps_antenna&quot; passed to lookupTransform argument target_frame does not exist</code>. </p>
+
+<p>I read somewhere that this might be because the <code>tf_buffer</code> needs time to &quot;fill up&quot;, but I haven&#39;t found a way to give it that time. The only way I could get things to work is by creating a timer and setting the <code>get_dist()</code> method as a callback. However, since I&#39;m just looking up a static transform once, that approach doesn&#39;t seem right.</p>
+
+<p>Can anybody help me out? Thanks a lot!</p>
+
+<pre><code>class Example(Node):
+
+    def __init__(self):
+        super().__init__(&quot;example_node&quot;)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.dist_gps = self.get_dist()
+
+    def get_dist(self):
+        source_frame = &quot;base_link&quot;
+        target_frame = &quot;gps_antenna&quot;
+        dist = 0
+
+        try:
+            now = rclpy.time.Time()
+            trans = self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                now)
+        except TransformException as ex:
+             self.get_logger().error(ex)
+        else:
+            dist =  trans.transform.translation.x
+
+        return dist
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    example = Example()
+    rclpy.spin(example)
+
+    example.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p><strong>Note</strong>: I&#39;m running ROS2 Galactic in a docker container (osrf/ros:galactic-desktop)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/42017">mauro</a> on 2022-03-23 18:49:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>can you confirm that the transform does exist as you would expect through other means? what does your tf tree look like (<code>ros2 run tf2_tools view_frames</code>)? Can you query tf directly and get a response (<code>ros2 run tf2_ros tf2_echo base_link gps_antenna</code>)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69938">shonigmann</a> on 2022-03-25 14:33:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes, the transform exists. The tf tree looks correct and I get a response with <code>ros2 run tf2_ros tf2_echo base_link gps_antenna</code>. I also tried the <code>async_wait_for_transform.py</code> example from the geometry2 examples, which works fine as well (<a href="https://github.com/ros2/geometry2/blob/ros2/examples_tf2_py/examples_tf2_py/async_waits_for_transform.py">https://github.com/ros2/geometry2/blob/ros2/examples_tf2_py/examples_tf2_py/async_waits_for_transform.py</a>). The only issue is that I don&#39;t need this to run regularly but only once.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/42017">mauro</a> on 2022-03-25 17:13:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi, have you solved this issue?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/39713">songanz</a> on 2022-12-13 01:24:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Unfortunately not, but I also haven&#39;t tried much since I posted the issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/42017">mauro</a> on 2022-12-13 02:44:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I have the same issue in ROS2 Humble. I suspect this is a threading issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2023-02-14 13:25:06 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <blockquote>
+<p>I read somewhere that this might be because the tf_buffer needs time to &quot;fill up&quot;, but I haven&#39;t found a way to give it that time. The only way I could get things to work is by creating a timer and setting the get_dist() method as a callback. However, since I&#39;m just looking up a static transform once, that approach doesn&#39;t seem right.</p>
+</blockquote>
+
+<p>That&#39;s correct. </p>
+
+<p>You create the TransformListener and then immediately query it with zero delay. </p>
+
+<pre><code>    self.tf_listener = TransformListener(self.tf_buffer, self)
+    self.dist_gps = self.get_dist()
+</code></pre>
+
+<p>As such it will likely have received zero messages from any broadcaster not to mention a specific one that you&#39;re looking for. </p>
+
+<p>A standard approach for this sort of thing would be to try to look up the trasnform and if it fails, wait a little bit and try again. Once you have confirmed receipt your startup process has completed. </p>
+
+<p>However at the higher level I would question if this is the right approach overall. You are explicitly baking in your assumption about the source of the specific coordinate frames to your algorithm. A more robust way to approach this is to simply query the TransformListener for the transform when you need it, and don&#39;t make an assumption about the source or structure of the tree nor the frames that you&#39;re querying about. You can then make the frames parameters too. I bet that you won&#39;t see a significant performance improvement from precaching this one transform.</p>
+
+<p>Of course when you do this make sure to use a try block and catch an error at or near startup before the TransformListener has received enough messages. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2023-02-14 17:26:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Try this. The commented code is the first attempt that did not work.</p>
+
+<pre><code>              import asyncio
+...
+                tf_future = self.tf_buffer.wait_for_transform_async(
+                    target_frame=pose_stamped.header.frame_id,
+                    source_frame=reference_frame,
+                    time=rclpy.time.Time()
+                )
+
+                rclpy.spin_until_future_complete(self, tf_future)
+                print(&quot;Got it!&quot;)
+
+#                world_to_reference_transform = self.tf_buffer.lookup_transform(
+#                    pose_stamped.header.frame_id,
+#                    reference_frame,
+#                    rclpy.time.Time(),
+#                    timeout=rclpy.duration.Duration(seconds=5.0))
+
+                world_to_reference_transform = asyncio.run(self.tf_buffer.lookup_transform_async(
+                    pose_stamped.header.frame_id,
+                    reference_frame,
+                    rclpy.time.Time()
+                ))
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21281"></a> on 2023-02-17 09:39:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

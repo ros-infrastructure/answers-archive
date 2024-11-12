@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS node slow to receive messages after publisher disconnect/reconnect - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/351650">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS node slow to receive messages after publisher disconnect/reconnect</h2>
+      <div class="question">
+        <p>I&#39;m having a problem where a node that subscribes to an image topic being published by ros webrtc does a good job getting messages. But then once ros webrtc disconnects and reconnects, there is a long delay before getting new messages (in the 5-45 second range, occasionally longer). I&#39;ve dropped print statements in the code and found that the callback just doesn&#39;t get called for a very long time after the image topic is being published. I know the image topic is being published because I have checked with rostopic echo. I am running a rosbridge server on the system, but it does not touch these topics. Rostopic info shows that the only two nodes that ever interact with the topic of interest are my subscriber and webrtc ros. Any thoughts on what might be going on?</p>
+
+<p>Specifics:</p>
+
+<ul>
+<li>topic name: <code>/remote_video</code></li>
+<li><a href="https://github.com/Rehab-Robotics-Lab/LilFloSystem/blob/00b52fd48476e3504eefecd350e2c003710ecb52/flo_telepresence/src/display-cv.py#L1">subsciber permalink</a></li>
+</ul>
+
+<p>I am happy to provide logs and explanations if someone has some idea of what I might be doing wrong!</p>
+
+<p>Edit: This seems very similar to a previous <a href="https://answers.ros.org/question/48400/huge-delay-in-subscriber-connection-with-new-publisher-at-same-node/">unanswered question</a></p>
+
+<p>Edit:
+I tried this out with the standard image<em>view node. That node works perfectly, the moment publishing happens on the `remote</em>video` topic, the image shows up. </p>
+
+<p>I made a minimal version of my subscriber node that still shows the problem:</p>
+
+<pre>
+#!/usr/bin/env python
+"""A module to display the robot screen using opencv"""
+
+import rospy
+from sensor_msgs.msg import Image as smImage
+from cv_bridge import CvBridge, CvBridgeError
+import numpy as np
+import cv2
+import Queue
+
+# Screen is 800x480
+
+HOME_TIME = 5
+UPDATE_HOME_TIME = 1
+
+
+class RobotScreen(object):
+
+    def __init__(self):
+        rospy.init_node('robot_screen')
+        self.window = cv2.namedWindow('remote_vid', cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(
+            'remote_vid', cv2.WND_PROP_FULLSCREEN, 1)
+
+        self.image_queue = Queue.Queue()
+
+        rospy.loginfo('Started Robot Screen Node')
+
+        self.bridge = CvBridge()
+        rospy.Subscriber('/remote_video', smImage, self.__new_img)
+        self.__run_display()
+
+    def __run_display(self):
+        rate = rospy.Rate(45)
+        while not rospy.is_shutdown():
+            img = None
+            empty = False
+            while not empty:
+                try:
+                    img = self.image_queue.get_nowait()
+                except Queue.Empty:
+                    empty = True
+            if img is not None:
+                cv2.imshow('remote_vid', img)
+                cv2.waitKey(1)
+            rate.sleep()
+
+    def __new_img(self, msg):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        except CvBridgeError as err:
+            rospy.logerr('error converting message to cvmat: %s', err)
+            return
+        self.image_queue.put(cv_image)
+
+
+if __name__ == '__main__':
+    RobotScreen()
+</pre>
+
+<p>Edit:
+I tried publishing a video feed using video<em>stream</em>opencv from a file. Killing that, restarting it, onward. The results were good. The subscriber node got the images immediately. So that implies that webrtc<em>ros (the publisher in my real setup) is doing something wonky that messes with my node. But image view can handle that. There is a difference here in that I wasn&#39;t pausing the feed with video</em>stream<em>opencv, but actually killing the whole node. Maybe someone who is very familiar with image</em>view can speak to what that code does to reconnect so well.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/45255">mjsobrep</a> on 2020-05-06 17:09:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Ok, with some help I continued to narrow down the problem. The telling finding was this:</p>
+
+<ol>
+<li>A process running my now super minimal subscriber (literally just listens to topics)</li>
+<li>An instance of image view</li>
+<li>A process of rostopic hz</li>
+<li>connect through webrtc_ros using web portal which should start publishing the video. Both the subscriber and rostopic hz show received packets immediately and the image view shows the feed</li>
+<li>disconnect from webrtc ros on the web portal</li>
+<li>Start another rostopic hz feed</li>
+<li>reconnect on web portal to webrtc_ros. The subscriber and first rostopic hz show no new messages for a while. However the fresh (never seen a message until now) rostopic hz shows new messages immediately and image view works immediately.</li>
+</ol>
+
+<p>I can disconnect and reconnect as many times as I want, image view always keeps up. Digging into both webrtc_ros and image_view one finds that they both use the image transport library. I think that webrtc_ros might do something a little bit wrong with its usage (might be totally fine) and so it confuses normal subscribers, but other image transport subscribers work well. </p>
+
+<p><strong>Solution</strong>
+The solution I went with was to drop an image transport republisher in between webrtc_ros and my subscriber. To do that I added this:</p>
+
+<pre><code>  &lt;node name=&quot;remote_vid_repub&quot; pkg=&quot;image_transport&quot; type=&quot;republish&quot; args=&quot;in:=/remote_video raw out:=/remote_video_clean&quot;/&gt;
+</code></pre>
+
+<p>to my launch files and changed my subscriber to listed to /remote_video_clean. Now the system works well, although I am sure it cost me a very small amount of compute power</p>
+
+<p><strong>Open Question</strong>
+What is going on under the hood here? Image transport isn&#39;t exposed to rospy but is there something that I can do in my node to handle this? Is this a mistake in webrtc_ros (I&#39;m going to drop an issue over there)? Or is my solution actually the best practice?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/45255">mjsobrep</a> on 2020-05-07 15:28:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I just got the same issue, but not with ImageTransport, but trajectory_msgs/JointTrajectory. It does not happen with cpp publisher and subscriber, so it must be related to rospy. But unfortunately, I couldn&#39;t reproduce it in a minimal example.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/68784">luckyyou</a> on 2021-01-27 10:14:37 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

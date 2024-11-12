@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Rosserial Arduino - Serial Port failure when interrupted - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/236051">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Rosserial Arduino - Serial Port failure when interrupted</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/74289/rosserial-arduino-serial-port-failure-when-interrupted">https://robotics.stackexchange.com/questions/74289/rosserial-arduino-serial-port-failure-when-interrupted</a>.</p>
+        <p>Hello, I am trying to make a DC motor controller using an arduino mega 2560 and <a href="https://www.pololu.com/product/2503/resources">this dual motor shield</a>. The motors used are <a href="https://www.pololu.com/product/3244">these</a>.</p>
+
+<p>Ideally I want to use the rosserial library in such a way that I can send commands to both motors, and read the current position, as well as the current through the motor (the driver gives you this info). Whether this feedback will be an advertised topic or a service is still to be determined, given the problems I am having. </p>
+
+<p>Here is the code running in my Arduino. I&#39;m not a huge fan of using arduino libraries, so it is mostly microcontroller code (registers). The class DCMotorPID is my own and has been extensively tested. This whole code works perfectly on its own without the ROS communication on top. </p>
+
+<pre><code>/********************************************************************************
+  Includes
+********************************************************************************/
+#include &lt;Arduino.h&gt;
+#include &lt;ArduinoHardware.h&gt;
+#define USE_USBCON 1
+#include &lt;ros.h&gt;
+#include &lt;avr/io.h&gt;
+#include &lt;avr/interrupt.h&gt;
+#include &lt;std_msgs/Int32.h&gt;
+#include &lt;std_msgs/Int16.h&gt;
+#include &lt;DCMotorPID.h&gt;
+
+/********************************************************************************
+  Macros and Defines
+********************************************************************************/
+
+#define BAUD_RATE 115200
+#define SAMPLING_FREQ 100.00
+#define DT 1/SAMPLING_FREQ
+
+/********************************************************************************
+  Global Variables
+********************************************************************************/
+
+//DcMotorPID(PWM, DIR, FB, D2, SF)
+DCMotorPID m1(6,8,A0,4,12);
+DCMotorPID m2(7,9,A1,4,12);
+
+// Global variables for ROS 
+ros::NodeHandle nh;
+
+//ROS subscribers and their callbacks
+void sub_cmd1_cb (const std_msgs::Int32&amp; pos1_msg)
+{
+  m1.command= pos1_msg.data;
+}
+ros::Subscriber&lt;std_msgs::Int32&gt; sub_cmd1(&quot;command1&quot;, sub_cmd1_cb);
+
+void sub_cmd2_cb (const std_msgs::Int32&amp; pos2_msg)
+{
+  m2.command= pos2_msg.data;
+}
+ros::Subscriber&lt;std_msgs::Int32&gt; sub_cmd2(&quot;command2&quot;, sub_cmd2_cb);
+
+/********************************************************************************
+  Program Code
+********************************************************************************/
+void setup()
+{
+  //Initialize PID
+  m1.init();
+  m2.init();
+
+  //ROS initialization
+  nh.getHardware()-&gt;setBaud(BAUD_RATE);
+  nh.initNode();
+  nh.subscribe(sub_cmd1);
+  nh.subscribe(sub_cmd2);
+
+  //Configure External Interrupts to handle encoder signal
+  EICRA |= (1 &lt;&lt; ISC30) | (1&lt;&lt;ISC10);  // INT3 &amp; INT1 (channel A) interrupts on both flanks
+  EIMSK |= (1 &lt;&lt; INT3) | (1&lt;&lt;INT1);   // INT3 &amp; INT1 interruptions enabled
+
+  //Initialize Timer5 for sampling frequency 100Hz
+  TIMSK5 = (1 &lt;&lt; TOIE5);    //enable timer overflow interrupt for Timer5
+  TCNT5 = 45535;            //set counter to 45535, 20000 clicks will be 10 ms
+  TCCR5B = (1 &lt;&lt; CS51);     //start timer5 with prescaler=8
+}
+
+void loop()
+{
+  nh.spinOnce();
+}
+
+//Takes up about 156 us
+ISR(TIMER5_OVF_vect)
+{
+  // Reset the timer5 count for 10ms
+  TCNT5 = 45535;
+  //PID routine
+  //Proportional term
+  long error1 = m1.getError();
+  long error2 = m2.getError();       
+
+  //Integral term
+  m1.integral = m1.integral + (error1 * (float)DT);         
+  m2.integral = m2.integral + (error2 * (float)DT);         
+
+  //Derivative term
+  m1.derivative = (error1 - m1.last_error) * (float)SAMPLING_FREQ;
+  m2.derivative = (error2 - m2.last_error) * (float)SAMPLING_FREQ;  
+
+  // Compute Duty Cycle
+  long output1 = m1.KP*error1 + m1.KI*m1.integral + m1.KD*m1.derivative;
+  long output2 = m2.KP*error2 + m2.KI*m2.integral + m2.KD*m2.derivative;
+  m1.setSpeed(output1);
+  m2.setSpeed(output2);
+
+  // Remember last state
+  m1.last_error = error1;
+  m2.last_error = error2;
+}
+
+//Encoder handling routine for Motor1 (channel A is PD3, channel B is PD2)
+//Interrupt time is about 4us
+ISR(INT3_vect)
+{
+  unsigned char enc_state;
+  unsigned char dir;
+  enc_state = ((PIND &amp; 12) &gt;&gt; 2);             //read the port D pins 2 &amp; 3
+  dir = (enc_state &amp; 1) ^ ((enc_state &amp; 2) &gt;&gt; 1); //determine direction of rotation
+  if (dir == 1) m1.position++; else m1.position--;        //update encoder position
+}
+
+//Encoder handling routine for Motor2 (channel A is PD1, channel B is PD0)
+//Interrupt time is about 4us
+ISR(INT1_vect)
+{
+  unsigned char enc_state;
+  unsigned char dir;
+  enc_state = (PIND &amp; 3);             //read the port D pins 0 &amp; 1
+  dir = (enc_state &amp; 1) ^ ((enc_state &amp; 2) &gt;&gt; 1); //determine direction of rotation
+  if (dir == 1) m2.position++; else m2.position--;        //update encoder position
+}
+</code></pre>
+
+<p>This is a barebones version where I can only send commands to the motors through the topics /command1 and /command2. To reproduce the problem, I run roscore in a terminal, then the rosserial_python node:</p>
+
+<blockquote>
+<p>rosrun rosserial<em>python serial</em>node.py
+_port:=/dev/ttyACM3 _baud:=115200</p>
+</blockquote>
+
+<p>Initially the connection is succesfull, and the subscribers are setup. However, as soon as I command any motor to move (by typing in a terminal <em>rostopic pub /command1 std_msgs/Int32 -- 800</em> ) the serial communication breaks down:</p>
+
+<pre><code>pedro@Dell-i7559:~$ rosrun rosserial_python serial_node.py _port:=/dev/ttyACM3 _baud:=115200
+[INFO] [WallTime: 1464991088.633517] ROS Serial Python Node
+[INFO] [WallTime: 1464991088.636234] Connecting to /dev/ttyACM3 at 115200 baud
+[INFO] [WallTime: 1464991091.176181] Note: subscribe buffer size is 1024 bytes
+[INFO] [WallTime: 1464991091.176375] Setup subscriber on command1 [std_msgs/Int32]
+[INFO] [WallTime: 1464991091.495696] Setup subscriber on command2 [std_msgs/Int32]
+[WARN] [WallTime: 1464991098.348677] Serial Port read returned short (expected 1 bytes, received 0 instead).
+[WARN] [WallTime: 1464991098.348987] Serial Port read failure: 
+[ERROR] [WallTime: 1464991110.824118] Lost sync with device, restarting...
+[ERROR] [WallTime: 1464991125.825286] Lost sync with device, restarting...
+[WARN] [WallTime: 1464991126.035587] Serial Port read returned short (expected 2 bytes, received 0 instead).
+[WARN] [WallTime: 1464991126.035847] Serial Port read failure: 
+[WARN] [WallTime: 1464991126.491159] Serial Port read returned short (expected 1 bytes, received 0 instead).
+[WARN] [WallTime: 1464991126.491435] Serial Port read failure: 
+[WARN] [WallTime: 1464991127.559198] Serial Port read returned short (expected 2 bytes, received 0 instead).
+</code></pre>
+
+<p>After this Serial Port failure, the communications never recover.</p>
+
+<ul>
+<li>I am running ROS Jade, and rosserial version 0.7.1. I have tried running the same in ROS Indigo with the same results.</li>
+<li>The lost sync message sometimes shows, sometimes it doesn&#39;t. </li>
+<li>I have tried various baud rates for the serial communication, from 9600 up to 115200 with no effect</li>
+<li>I have also tried adding a delay in my loop when the nh.spinOnce() is. </li>
+<li>It looks like the encoder interruptions are the problem, since the communication breaks down when the motors start moving. These routines have been timed at 4us. They can&#39;t get much faster than that. However they do get called significantly, since these encoders provide 4123 pulses per revolution at X2 encoding. This means those interruptions happen every 692us in the worst case (max speed). I have tried going to X1 encoding, meaning 2061 pulses per revolution, interruptions every 1.384ms (again, worst case)</li>
+</ul>
+
+<p>Is it possible that rosserial doesn&#39;t play nice with being interrupted? The PID loop interruptions are much longer (about 156us) and happens every 10ms but those don&#39;t seem to cause any problem somehow. </p>
+
+<p>Any help will be very appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/25723">Piachnp</a> on 2016-06-03 17:53:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Nothing jumps to mind as a problem in your code. Does Hello World run on the arduino mega? If it does, I suggest you break the system down to try &amp; discover exactly what&#39;s breaking it, and why. </p>
+
+<p>Some suggestions:
+- Publish &quot;Hello&quot; in your main loop and when you stop seeing it come out in ROS is the exact time when the system died
+- Turn the motor by hand (vs sending a command). If it crashes when you turn it by hand then it&#39;s the encoder interrupts, as you suspect. If not, then something else is going on.
+- Blink the arduino LED in your main loop. Does it keep blinking when the serial port read failure happens? If not, Arduino has crashed.</p>
+
+<p>Hope this helps</p>
+
+<p>Paul</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2700">PaulBouchier</a> on 2016-06-05 08:41:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Thanks for the suggestions Paul. I actually managed to fix the problem, which was a sum of many little ones. I&#39;m leaving some tips for anyone who might encounter this in the future:</p>
+
+<ul>
+<li>One of the problems was the line TCCR5B = (1 &lt;&lt; CS51); that should be TCCR5B |= (1 &lt;&lt; CS51);
+I have no idea why this is a problem, since that register should be all zero except for the bit CS51.... but it works with the pipe, and doesn&#39;t work without it.</li>
+<li>Another thing to take into account for people losing sync over time, is to make sure your baud rate matches the crystal you are running on your board/arduino. For arduinos with 16Mhz clock, running at 115200 is not a good idea, since this baud rate yields a 2.1% maximum error in the communication. Sadly, the rosserial_python won&#39;t accept custom baud rates like 250000 which yield no error. For more info consult this link: <a href="http://wormfood.net/avrbaudcalc.php">http://wormfood.net/avrbaudcalc.php</a>. </li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25723">Piachnp</a> on 2016-06-07 09:20:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>That link to the avr baud rate error calculator appears to be now dead, but here&#39;s an alternative link for anyone looking:
+<a href="http://ruemohr.org/%7Eircjunk/avr/baudcalc/avrbaudcalc-1.0.8.php">http://ruemohr.org/~ircjunk/avr/baudcalc/avrbaudcalc-1.0.8.php</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37776">jared</a> on 2020-11-04 22:12:17 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

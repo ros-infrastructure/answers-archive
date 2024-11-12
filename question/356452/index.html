@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Multiprocessing OpenAI ROS environments w/ python multiprocessing library - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/356452">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Multiprocessing OpenAI ROS environments w/ python multiprocessing library</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I am trying to train a Turtlebot agent using the OpenAI_ROS package.
+While my goal is forking multiple processes to create multiple gazebo environments, I created an only single process, to start from a simple scenario.</p>
+
+<p>OpenAI baseline package provides SubprocVecEnv(), which depends on the python multiprocessing library.
+I was able to initialize a TurtleBot3WorldEnv using SubprocVecEnv(). </p>
+
+<p>However, for some reason, the Turtlebot3 spawned in the world cannot subscribe to messages even though they are all available in ROS. For example, I can echo /odom and /scan, but I cannot subscribe to them from TurtleBot3Env. Instead, I get an error message: &quot; Current /odom not ready yet, retrying for getting doom&quot;.</p>
+
+<p>I use ROS noetic w/ Ubuntu 2020
+Does anyone know how to solve this issue?</p>
+
+<p>Best, </p>
+
+<p><strong>env_fn</strong> below is  lambda: make_env()  which is a simple wrapper of  <strong>gym.make()</strong> </p>
+
+<blockquote>
+</blockquote>
+
+<pre><code>import multiprocessing as mp
+import os
+import numpy as np
+from .vec_env import VecEnv, CloudpickleWrapper, clear_mpi_env_vars
+import time
+
+class SubprocVecEnv(VecEnv):
+def __init__(self, env_fns, spaces=None, context=&#39;fork&#39;):  #env_fns: iterable of callables -  functions that create environments to run in subprocesses. Need to be cloud-pickleable
+
+    self.waiting = False
+    self.closed = False
+    nenvs = len(env_fns)
+    ctx = mp.get_context(context)
+    self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(nenvs)]) # remote (parent) and work_remote (child) are connected by a pipe
+    self.ps = [ctx.Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
+               for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
+    for p in self.ps:
+        p.daemon = True  # if the main process crashes, we should not cause things to hang
+        with clear_mpi_env_vars():
+            p.start()
+    for remote in self.work_remotes:
+        remote.close()
+    self.remotes[0].send((&#39;get_spaces_spec&#39;, None))
+
+    observation_space, action_space, self.spec = self.remotes[0].recv()
+
+    self.viewer = None
+    VecEnv.__init__(self, len(env_fns), observation_space, action_space)
+</code></pre>
+
+<blockquote>
+</blockquote>
+
+<pre><code>def worker(remote, parent_remote, env_fn_wrapper):
+parent_remote.close()
+env = env_fn_wrapper.x()
+try:
+    while True:
+        cmd, data = remote.recv()
+        if cmd == &#39;step&#39;:
+            ob, reward, done, info = env.step(data)
+            if done:
+                ob = env.reset()
+            remote.send((ob, reward, done, info))
+        elif cmd == &#39;reset&#39;:
+            ob = env.reset()
+            remote.send(ob)
+        elif cmd == &#39;render&#39;:
+            remote.send(env.render(mode=&#39;rgb_array&#39;))
+        elif cmd == &#39;close&#39;:
+            remote.close()
+            break
+        elif cmd == &#39;get_spaces_spec&#39;:
+            remote.send((env.observation_space, env.action_space, env.spec))
+        else:
+            raise NotImplementedError
+except KeyboardInterrupt:
+    print(&#39;SubprocVecEnv worker: got KeyboardInterrupt&#39;)
+finally:
+    env.close()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/56372">hankm</a> on 2020-07-05 06:57:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Althoug it does not answer your question directly, there is a new package &quot;robo_gym&quot; which targets distributed RL training: <a href="https://github.com/jr-robotics/robo-gym">https://github.com/jr-robotics/robo-gym</a>. At least, it seems to have more recent support than openai_ros</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52949">christianlandgraf</a> on 2020-07-09 05:25:55 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It seems that the new package supports ROS melodic and kinetic at this point. I am having several errors during the package installation... Thanks for your answer though.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56372">hankm</a> on 2020-07-10 07:03:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I was able to build it in melodic, but I agree it lacks in providing examples and tutorials yet. Do you need to use noetic? I think it&#39;s quite early, there are a lot of packages missing and building packages from source often raises python issues for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52949">christianlandgraf</a> on 2020-07-10 08:43:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Nothing wrong with the package. I think the problem is coming from two different python versions. That is, melodic is supported by python 2 while noetic uses python3. It seems that the new package was looking for python2 at some point. I can go back to melodic. But, were you able to use openai-baseline and melodic together? The former is made of python3 while the latter use python2. Besides, I agree with you that it would be better if the author could provide more examples and tutorials.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56372">hankm</a> on 2020-07-10 10:45:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I did not try openAI baselines but openAI gym is working for me. Besides that, you can find instructions to set up Melodic with Python3, but I never tried it by myself so far. I think robo-gym uses docker, too.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52949">christianlandgraf</a> on 2020-07-13 06:24:14 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How does tf do interpolation? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10285">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How does tf do interpolation?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/32309/how-does-tf-do-interpolation">https://robotics.stackexchange.com/questions/32309/how-does-tf-do-interpolation</a>.</p>
+        <p>I am sending a tf transform every 3s. What happens when I try to transform a point with timestamp between these 3 seconds? Which transform is used? Does an interpolation happen? </p>
+
+<p>Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/559">miltos</a> on 2011-06-16 21:06:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>It should do the right thing, i.e. the earlier transform from the timestamp of the point is used - or you get a failure if there is not transform for that time.</p>
+
+<p>As the transform is delayed it might be a good idea to use a tf::MessageFilter.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2011-06-16 23:27:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>TF will do a linear interpolation between the transform right before and the transform right after.  In practice almost every tf request will require an interpolation; the only time this does not happen is when you ask for a transform that has the exact same timestamp as a transform received by tf.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/38">Wim</a> on 2011-06-17 04:05:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This is right see the TePRA paper for more info: <a href="http://wiki.ros.org/Papers/TePRA2013_Foote">http://wiki.ros.org/Papers/TePRA2013_Foote</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2017-12-05 21:27:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What about extrapolation? (Asking for a position at a timestamp later than last transform) Does it work?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31804">mescarra</a> on 2018-04-11 08:08:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>tf no longer allows extrapolation as it was determined to amplify noise in the system and cause bad behavior.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2018-04-11 12:14:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ok, so whenever you ask for a transform with timestamp ros::Time::now(), what you get is the last transform, and that&#39;s it, right? What options do I have if I&#39;m in a real-time environment which needs a precise localization  and transforms don&#39;t come to me as frequently as I would need them?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31804">mescarra</a> on 2018-05-23 14:32:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I mean, I really need extrapolation, what can I do? Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31804">mescarra</a> on 2018-05-23 14:32:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You cannot get precise localization faster than the information arrives. Extrapolation results should not be considered precise. You can either focus on making sure the data is available sooner, make your algorithm robust to using older data, or add applicatoin specific forward projection.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2018-05-23 14:47:43 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>example code below for tf in Indigo (on Ubuntu 14.04) interpolating between the two transforms nearest in time . You will need to run a map server or similar to set up the /map frame.</p>
+
+<p>note: I think that <a href="http://wiki.ros.org/tf/FAQ#How_does_tf_deal_with_interpolation_and_extrapolation.3F">http://wiki.ros.org/tf/FAQ#How_does_tf_deal_with_interpolation_and_extrapolation.3F</a> is ambiguous in its description of interpolation.</p>
+
+<p>(gvdhoorn: thanks for your help, and updated this into an answer rather than a question)</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+
+#include &lt;string&gt;
+
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;geometry_msgs/Point.h&gt;
+#include &lt;geometry_msgs/PointStamped.h&gt;
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;tf/LinearMath/Vector3.h&gt;
+
+
+int main(int argc, char** argv){ ros::init(argc, argv, &quot;pose_repeater_service&quot;);
+
+ros::NodeHandle node;
+
+//  http://wiki.ros.org/tf/Overview/Broadcasting%20Transforms
+//  http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20broadcaster%20%28C%2B%2B%29
+//  void sendTransform(const StampedTransform &amp; transform);
+//  void sendTransform(const geometry_msgs::TransformStamped &amp; transform);
+
+  static tf::TransformListener    tfListener(ros::Duration(100));
+  static tf::TransformBroadcaster tfBroadcaster;
+  tf::Transform transform;
+    transform.setOrigin( tf::Vector3(0.0, 0.0, 0.0) );
+  tf::Quaternion q(0.0, 0.0, 0.0, 1.0);
+    q.setRPY(0, 0, 0);
+  transform.setRotation(q);
+
+  ros::Time time1;
+  time1 = ros::Time::now();
+  tfBroadcaster.sendTransform(tf::StampedTransform(transform, time1, &quot;/map&quot;, &quot;/turtle_bob&quot;));
+  tfBroadcaster.sendTransform(tf::StampedTransform(transform, time1, &quot;/map&quot;, &quot;/turtle_bob_1&quot;));
+
+  ros::Duration(1.0).sleep();
+  ros::Time time2 = ros::Time::now();
+
+    transform.setOrigin( tf::Vector3(5.0, 5.0, 0.0) );
+    q = tf::Quaternion(0.0, 0.0, 0.707106781, 0.707106781);
+    transform.setRotation(q);
+  ros::Duration(1.0).sleep();
+//  ros::Time time3(1000000,2000000);
+  ros::Time time3;
+  time3 = ros::Time::now();
+  tfBroadcaster.sendTransform(tf::StampedTransform(transform, time3, &quot;/map&quot;, &quot;/turtle_bob&quot;));
+  tfBroadcaster.sendTransform(tf::StampedTransform(transform, time3, &quot;/map&quot;, &quot;/turtle_bob_2&quot;));
+
+
+  ros::Rate rate(10.0);
+  int i_ = 0;
+  while (node.ok()){
+    transform.setOrigin( tf::Vector3(0.0, 2.0+(0.01*i_), 0.0) );
+    transform.setRotation( tf::Quaternion(0, 0, 0, 1.0) );
+    tfBroadcaster.sendTransform(tf::StampedTransform(transform, ros::Time::now(), &quot;map&quot;, &quot;carrot1&quot;));
+    i_++;
+
+    for(int j_=0; j_&lt;=10; j_++) {        
+        tf::StampedTransform transformFound;
+
+//        ros::Time time_(1000000,1000000+(j_*100000));
+        ros::Time time_;
+        time_ = time2;
+        uint64_t time2_ns = time2.toNSec()+(j_*100*1000*1000);
+
+        time_.fromNSec(time2_ns);
+            try{
+              tfListener.waitForTransform(&quot;/turtle_bob&quot;, &quot;/map&quot;, time_, ros::Duration(1.0)); //ros::Time(0)
+              tfListener.lookupTransform( &quot;/turtle_bob&quot;, &quot;/map&quot;, time_, transformFound);
+              tfBroadcaster.sendTransform(tf::StampedTransform(transformFound, ros::Time::now(), &quot;map&quot;, &quot;turtle_bob_2_1&quot;));        
+            }
+            catch (tf::TransformException &amp;ex) {
+              ROS_ERROR(&quot;%s&quot;,ex.what());
+              ros::Duration(1.0).sleep();
+              continue;
+            }
+            try{
+              tfListener.waitForTransform(&quot;/map&quot;, &quot;/turtle_bob&quot;, time_, ros::Duration(1.0)); //ros::Time(0)
+              tfListener.lookupTransform( &quot;/map&quot;, &quot;/turtle_bob&quot;, time_, transformFound);
+              tfBroadcaster.sendTransform(tf::StampedTransform(transformFound, ros::Time::now(), &quot;map&quot;, &quot;turtle_bob_2_2&quot;));        
+            }
+            catch (tf::TransformException &amp;ex) {
+              ROS_ERROR(&quot;%s&quot;,ex.what());
+              ros::Duration(1.0).sleep();
+              continue;
+            }
+        rate.sleep();
+    }
+    tfBroadcaster.sendTransform(tf::StampedTransform(transform, ros::Time::now(), &quot;map&quot;, &quot;carrot1&quot;));
+    rate.sleep();
+  }
+
+return 0;
+
+};
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21723">Will Chamberlain</a> on 2017-12-05 04:33:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Please do not ask question by posting new answers, it does not make much sense.</p>
+
+<p>Post this as a new question, <em>or</em> shorten it a little and post it as a comment under the accepted answer.</p>
+
+<p>re: your question: TF hasn&#39;t changed much since the answer by @Wim, so I assume his answer is still correct.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-12-05 04:44:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Could you clarify what you are showing here? The code is rather confusing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-12-06 08:24:06 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rviz (occupancy grid) map doesn't match the one I save as pgm - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/289714">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rviz (occupancy grid) map doesn't match the one I save as pgm</h2>
+      <div class="question">
+        <p>Kinetic, Linux 16.04</p>
+
+<p>I&#39;ve done an experiment with a SLAM algorithm (gmapping) which makes a &#39;map&#39; in rviz, from black and white cells (this is the occupancy grid). I then use a little script to save that map to a pgm. </p>
+
+<p>The map looks like this: <img src="https://i.imgur.com/9zxSf9h.png" alt="image description">. </p>
+
+<p>As you can see, a nice little map. The algorithm figured out its data and printed it as a reasonably straight, accurate map. </p>
+
+<p>So I use this script from the &#39;occupancy<em>grid</em>server&#39; package (I got from I know not where) to save the map:</p>
+
+<pre><code>#include &lt;cstdio&gt;
+#include &quot;ros/ros.h&quot;
+#include &quot;ros/console.h&quot;
+#include &quot;nav_msgs/OccupancyGrid.h&quot;
+#include &quot;tf2/LinearMath/Matrix3x3.h&quot;
+#include &quot;geometry_msgs/Quaternion.h&quot;
+using namespace std;
+/**
+ * @brief Map generation node.
+ */
+class MapGenerator
+{
+  public:
+    MapGenerator(const std::string&amp; mapname) : mapname_(mapname), saved_map_(false)
+    {
+      ros::NodeHandle n;
+      ROS_INFO(&quot;Waiting for the map&quot;);
+      map_sub_ = n.subscribe(&quot;/map&quot;, 10000, &amp;MapGenerator::mapCallback, this);    }
+    void mapCallback(const nav_msgs::OccupancyGridConstPtr&amp; map)
+    {
+      ROS_INFO(&quot;Received a %d X %d map @ %.3f m/pix&quot;,
+               map-&gt;info.width,
+               map-&gt;info.height,
+               map-&gt;info.resolution);
+      std::string mapdatafile = mapname_ + &quot;.pgm&quot;;
+      ROS_INFO(&quot;Writing map occupancy data to %s&quot;, mapdatafile.c_str());
+      FILE* out = fopen(mapdatafile.c_str(), &quot;w&quot;);
+      if (!out)
+      {        ROS_ERROR(&quot;Couldn&#39;t save map file to %s&quot;, mapdatafile.c_str());
+        return;      }
+      fprintf(out, &quot;P5\n# CREATOR: Map_generator.cpp %.3f m/pix\n%d %d\n255\n&quot;,
+              map-&gt;info.resolution, map-&gt;info.width, map-&gt;info.height);
+      for(unsigned int y = 0; y &lt; map-&gt;info.height; y++) {
+        for(unsigned int x = 0; x &lt; map-&gt;info.width; x++) {
+          unsigned int i = x + (map-&gt;info.height - y - 1) * map-&gt;info.width;
+          if (map-&gt;data[i] == -1) { //occ [0,0.1)
+            fputc(127, out);
+          } else if (map-&gt;data[i] &lt;= +100) { //occ (0.65,1]
+            float value = 254-(map-&gt;data[i]*2.54);
+            fputc(value, out);
+          } else { //occ [0.1,0.65]
+            fputc(127, out);
+          }
+        }
+      }
+      fclose(out);
+      std::string mapmetadatafile = mapname_ + &quot;.yaml&quot;;
+      ROS_INFO(&quot;Writing map occupancy data to %s&quot;, mapmetadatafile.c_str());
+      FILE* yaml = fopen(mapmetadatafile.c_str(), &quot;w&quot;);
+      geometry_msgs::Quaternion orientation = map-&gt;info.origin.orientation;
+      tf2::Matrix3x3 mat(tf2::Quaternion(
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w
+      ));
+      double yaw, pitch, roll;
+      mat.getEulerYPR(yaw, pitch, roll);
+      fprintf(yaml, &quot;image: %s\nresolution: %f\norigin: [%f, %f, %f]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n\n&quot;,
+              mapdatafile.c_str(), map-&gt;info.resolution, map-&gt;info.origin.position.x, map-&gt;info.origin.position.y, yaw);
+      fclose(yaml);
+      ROS_INFO(&quot;Done\n&quot;);
+      saved_map_ = true;
+    }
+    std::string mapname_;
+    ros::Subscriber map_sub_;
+    bool saved_map_;
+};
+#define USAGE &quot;Usage: \n&quot; \
+              &quot;  map_saver -h\n&quot;\
+              &quot;  map_saver [-f &lt;mapname&gt;] [ROS remapping args]&quot;
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;map_saver&quot;);
+  time_t thetime = time(0);
+  std::string dt = ctime(&amp;thetime);
+  std::string mapname = dt+&quot;map&quot;;
+  for(int i=1; i&lt;argc; i++)
+  {
+    if(!strcmp(argv[i], &quot;-h&quot;))
+    {
+      puts(USAGE);
+      return 0;    }
+    else if(!strcmp(argv[i], &quot;-f&quot;))
+    {
+      if(++i &lt; argc)
+        mapname = argv[i];
+      else
+      {
+        puts(USAGE);
+        return 1;      }
+    }
+    else
+    {
+      puts(USAGE);
+      return 1;    }
+  }
+  MapGenerator mg(mapname);
+  while(!mg.saved_map_ &amp;&amp; ros::ok())
+    ros::spinOnce();
+  return 0;
+}
+</code></pre>
+
+<p>From what I understand, it saves the data on the map server, which should be what rviz also shows visually.</p>
+
+<p>Then, I do <code>$ roslaunch occupancy_grid_saver listener.cpp</code> to launch this little script, and save the map as an image.</p>
+
+<p>The image looks like this: <img src="https://i.imgur.com/5wz5PPK.png" alt="image description"></p>
+
+<p>So obviously, there&#39;s a big discrepancy between the map on the map server, and the map that rviz is showing.</p>
+
+<p><strong>Question</strong></p>
+
+<ul>
+<li><p>How come there&#39;s a difference?</p></li>
+<li><p>Where does rviz get its map from?</p></li>
+<li><p>How do I get access to that rviz map source, and how to save it as an image?</p></li>
+</ul>
+
+        <div class="owner"><p>Asked by <a href="/users/32749">anonymous32749</a> on 2018-04-26 05:07:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Client call to service from another ROS2 package hangs - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402395">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Client call to service from another ROS2 package hangs</h2>
+      <div class="question">
+        <p>I am trying to write a client for a service defined in a separate ROS2 package, but it is hanging waiting for the service to become available.</p>
+
+<p>The other package is a servo package for an AWS DeepRacer car, found <a href="https://github.com/aws-deepracer/aws-deepracer-servo-pkg">here</a>.  In my workspace, I <code>git clone</code> this package and build it, then it works just fine.  I run this package in one terminal, and then I can run another terminal and call one of the package&#39;s services directly:</p>
+
+<pre><code>ros2 service call /servo_pkg/get_led_state deepracer_interfaces_pkg/srv/GetLedCtrlSrv  
+</code></pre>
+
+<p>This call to the service returns as expected.</p>
+
+<p>So now I want to create my own package called <code>gg_led_pkg</code> with a single client to call this <code>get_led_state</code> service based on a timer every 5 seconds. I am using a <code>ReentrantCallbackGroup</code> for the client and the timer, with a <code>MultiThreadedExecutor</code> to spin the node. I set up my <code>setup.py</code> and my <code>package.xml</code> files, dependencies are fine, and everything builds.  The client executable runs, but it hangs when trying to call the service.  </p>
+
+<p><strong>What am I doing wrong?  Is it not possible to call a service from a client defined in a different package but in the same workspace?</strong> </p>
+
+<p>Here is the output from my client call</p>
+
+<blockquote>
+<p>~/environment/deepracer<em>ws $ ros2 run gg</em>led_pkg client</p>
+
+<p>[INFO] [1655305042.750526039] [led<em>minimal</em>client_async]: Beginning demo, end with CTRL-C </p>
+
+<p>[INFO] [1655305047.741162292] [led<em>minimal</em>client_async]: Client sending request </p>
+
+<p>[INFO][1655305052.741094414] [led<em>minimal</em>client_async]: Client sending request </p>
+</blockquote>
+
+<p>And so on and so on...</p>
+
+<p>My client code:</p>
+
+<pre><code>import sys 
+from time import sleep 
+from threading import Thread
+
+#import the two service interfaces we need to use 
+from deepracer_interfaces_pkg.srv import SetLedCtrlSrv, GetLedCtrlSrv
+
+# this imports the ROS2 Client Library for Python 
+import rclpy
+# the main object for ROS nodes 
+from rclpy.node import Node
+# import a multi-threaded executor to be used when spinning the node.  
+# This allows &quot;parallel&quot; execution of threads
+# but the python GIL is still present (so not truly parallel) 
+from rclpy.executors import MultiThreadedExecutor
+# the re-entrant callback group allows the executor to schedule and execute the group&#39;s callbacks
+# in any way it sees fit.  This is not necessarily thread safe 
+from rclpy.callback_groups import ReentrantCallbackGroup
+
+
+class LedMinimalClientAsync(Node):
+
+    def __init__(self, client_cb_group, timer_cb_group, manual_call):
+        # first initialize 
+        super().__init__(&#39;led_minimal_client_async&#39;)
+
+        self.client_cb_group = client_cb_group
+        self.timer_cb_group = timer_cb_group
+        self.manual_call = manual_call
+
+        # create a CLI interface for this getter method
+        # we set the client to use the GetLedCtrlSrv defined in the deepracer interfaces package
+        # we define the name as get_led_ctrl_srv
+        # we define a callback group here (going to make it reentrant)
+        self.get_led_status = self.create_client(GetLedCtrlSrv, 
+                                                &#39;get_led_ctrl_srv&#39;, 
+                                                callback_group=self.client_cb_group)
+
+        # # wait for the client to become available (this is where it is locking)
+        # while not self.get_led_status.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().info(&#39;service not available, waiting again...&#39;)
+
+        # make a simple request payload, which is empty
+        self.req = GetLedCtrlSrv.Request()   
+
+
+    def start(self):
+        &#39;&#39;&#39;a method to call the server request outside the __init__()&#39;&#39;&#39;
+        # if we are not making manual calls to the server
+        # then this is false and will use the timer to make calls every second
+        if not self.manual_call:
+            self.call_timer = self.create_timer(5, 
+                                                self.timer_cb, 
+                                                callback_group=self.timer_cb_group)
+
+
+    def call_srv(self, delay: float = 1):
+        &#39;&#39;&#39;
+        this method is called manually and imposes a delay with sleep.  
+        Then is calls the private method _call_srv() that actually makes the service call
+        &#39;&#39;&#39;
+        sleep(delay)
+        self._call_srv()
+
+
+    def _call_srv(self):
+        &#39;&#39;&#39;
+        this is the method that actually makes the service call
+        &#39;&#39;&#39;
+        self.get_logger().info(&#39;Client sending request&#39;)
+
+        # is this a synchronous request?
+        self.reponse = self.get_led_status.call(self.req)
+        self.get_logger().info(&#39;Client received response &#39; + self.reponse)
+
+        # not sure if we need this one of the synchronous one
+        # self.future = self.get_led_status.call_async(self.req)
+        # self.get_logger().info(&#39;Client received response &#39; + self.reponse)
+
+
+    def timer_cb(self):
+        &#39;&#39;&#39;
+        if a timer is used to make the service call, and therefore not a manual call
+        then this is the method used.  The timer will handle the wait period
+        &#39;&#39;&#39;
+        self._call_srv()
+
+
+    # def _call_srv_async(self):
+        # &#39;&#39;&#39;
+        # this is the ansynchronous call to the service, making a future object
+        # This future object can be called by an external method like so:
+        # if minimal_client.future.done():
+        #     response = minimal_client.future.result()
+        # &#39;&#39;&#39;
+
+    #     self.future = self.get_led_status.call_async(self.req)
+
+
+def call_srv_manually(client_node):
+    &#39;&#39;&#39;
+    this is a way to have the client call the service manually
+    &#39;&#39;&#39;
+    client_node.call_srv()
+    client_node.get_logger().info(&#39;Test finished successfully.\n&#39;)
+
+
+
+def run(client_cb_group, timer_cb_group, manual_call):
+    &#39;&#39;&#39;
+    the main function for running the various pieces of the code
+    &#39;&#39;&#39;
+    # initialize the ros2 client library for python
+    rclpy.init()
+
+    # instatiate a client node with the callback groups (default to None)
+    client_node = LedMinimalClientAsync(client_cb_group, timer_cb_group, manual_call)
+
+    # make a multithreaded executor to spin up parallel threads
+    executor = MultiThreadedExecutor()
+    executor.add_node(client_node)
+
+    # make a thread to call the service manually.  This currently isn&#39;t used
+    call_thread = Thread(target=call_srv_manually, args=(client_node, ), daemon=True)
+
+    # if there is a manual call to the service, then 
+    if manual_call:
+        call_thread.start()
+    # added this else case for moving the callback outside the __init__ definition
+    else:
+        client_node.start()
+
+    try:
+        print(&quot;&quot;)
+        client_node.get_logger().info(&#39;Beginning demo, end with CTRL-C&#39;)
+        executor.spin()
+    except KeyboardInterrupt:
+        client_node.get_logger().info(&#39;KeyboardInterrupt, shutting down.\n&#39;)
+    client_node.destroy_node()
+    rclpy.shutdown()
+
+    if manual_call:
+        call_thread.join()
+
+
+def main(args=None):
+    # make a single instance of a re-entrant callback group, 
+    # assign it to both the timer and the client node
+    # let the timer callback make the requests to the server node, instead of manual
+    cb_group = ReentrantCallbackGroup()
+    run(client_cb_group=cb_group, timer_cb_group=cb_group, manual_call=False)
+
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>I am using <code>ROS2 Foxy</code> on an <code>Ubuntu 20.04 x86</code> machine (AWS Robomaker)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108233">brieb</a> on 2022-06-15 12:27:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

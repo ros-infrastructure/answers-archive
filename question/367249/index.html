@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>simulate python scrpits on gazebo - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/367249">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>simulate python scrpits on gazebo</h2>
+      <div class="question">
+        <p>I want to test my scripts on gazebo but I don&#39;t know how can I edit my scripts for . Actually I have a script and it works in real but I can&#39;t see action on gazebo. So I need help, What I have to do before rosrun my scrpits (drawline.py)</p>
+
+<p>drawline.py:</p>
+
+<pre><code>#!/usr/bin/env python
+
+
+## TODO:: fix: during rospy.sleep(2.0) velocity still remians 2.0, DAC10 does not work, Because of sleep Drone goes 4meter more
+##
+##
+
+import rospy
+from std_msgs.msg import String, Float64
+from mavros_msgs.msg import State, HomePosition
+from sensor_msgs.msg import NavSatFix
+from mavros_msgs.srv import *
+from geometry_msgs.msg import Twist
+from decimal import *
+from math import radians, cos, sin, asin, sqrt
+
+
+# Message publisher
+velocity_pub = rospy.Publisher(&#39;/mavros/setpoint_velocity/cmd_vel_unstamped&#39;, Twist, queue_size=10)
+msg = Twist()
+
+
+# Current Position
+latitude = 0.0
+longitude = 0.0
+altitude = 0.0
+
+
+# Position before Move function execute
+previous_latitude = 0.0
+previous_longitude = 0.0
+previous_altitude = 0.0
+
+
+# Drone State Status
+stateConnected = False
+stateArmed = False
+stateGuided = False
+
+
+
+
+# ########################################################################
+# ------------------------------- SERVICES -------------------------------
+# ########################################################################
+
+def setArm():
+  rospy.wait_for_service(&#39;/mavros/cmd/arming&#39;)
+  try:
+    armService = rospy.ServiceProxy(
+        &#39;/mavros/cmd/arming&#39;, mavros_msgs.srv.CommandBool)
+    armService(True)
+  except rospy.ServiceException, e:
+    print &quot;Service arm call failed: %s&quot; % e
+
+
+
+def setTakeoffMode(alt):
+  rospy.wait_for_service(&#39;/mavros/cmd/takeoff&#39;)
+  try:
+    takeoffService = rospy.ServiceProxy(
+        &#39;/mavros/cmd/takeoff&#39;, mavros_msgs.srv.CommandTOL)
+    takeoffService(altitude=int(alt))
+  except rospy.ServiceException, e:
+    print &quot;Service takeoff call failed: %s&quot; % e
+
+
+
+def setLandMode():
+  rospy.wait_for_service(&#39;/mavros/cmd/land&#39;)
+  try:
+    takeoffService = rospy.ServiceProxy(
+        &#39;/mavros/cmd/land&#39;, mavros_msgs.srv.CommandTOL)
+    takeoffService(altitude=0)
+  except rospy.ServiceException, e:
+    print &quot;Service takeoff call failed: %s&quot; % e
+
+
+
+def setGuidedMode():
+    rospy.wait_for_service(&#39;/mavros/set_mode&#39;)
+    try:
+        flightModeService = rospy.ServiceProxy(&#39;/mavros/set_mode&#39;, mavros_msgs.srv.SetMode)
+        #http://wiki.ros.org/mavros/CustomModes for custom modes
+        isModeChanged = flightModeService(custom_mode=&#39;GUIDED&#39;) #return true or false
+    except rospy.ServiceException, e:
+        print &quot;service set_mode GUIDED call failed: %s. GUIDED Mode could not be set. Check that GPS is enabled&quot;%e
+
+
+
+
+
+# ###############################################################################
+# ------------------------------- END OF SERVICES -------------------------------
+# ###############################################################################
+
+
+# ###############################################################################
+# ------------------------------- CALLBACK FUNCTIONS ----------------------------
+# ###############################################################################
+
+def globalPositionCallback(globalPositionCallback):
+    global latitude
+    global longitude
+    latitude = globalPositionCallback.latitude
+    longitude = globalPositionCallback.longitude
+
+def globalAltitudeCallback(globalAltitudeCB):
+    global altitude
+    altitude = globalAltitudeCB.data
+
+def globalStateCallback(globalStateCB):
+    global stateConnected
+    global stateArmed
+    global stateGuided
+    stateConnected = globalStateCB.connected
+    stateArmed = globalStateCB.armed
+    stateGuided = globalStateCB.guided
+
+&quot;&quot;&quot;
+def globalHomePositionCallback(globalHomePositionCallback):
+    global home_altitude
+    global home_longitude
+    global home_latitude
+    home_altitude = globalHomePositionCallback.geo.altitude
+    home_latitude = globalHomePositionCallback.geo.latitude
+    home_longitude = globalHomePositionCallback.geo.longitude&quot;&quot;&quot;
+
+
+# ###############################################################################
+# ------------------------------- END OF CALLBACK -------------------------------
+# ###############################################################################
+
+
+# Function to calculate the distance of 2 points in earth. 
+# Uses current position from gps and data before movement.
+# Return value will always positive no matter what direction drone goes.
+# Using haversine formula to calculate distance
+def haversine():
+    global previous_longitude
+    global previous_latitude
+    global longitude
+    global latitude
+
+
+
+    lon1, lat1, lon2, lat2 = previous_longitude, previous_latitude, longitude, latitude
+
+    # lat, long in radians
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+
+    # difference lat, long
+    dlon = abs(lon2 - lon1) 
+    dlat = abs(lat2 - lat1) 
+    ## haversine formula 
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a)) 
+    r = 6371 # Radius of earth in kilometers
+    return Decimal(c * r * 1000)
+
+
+
+
+# Distance must be meter
+# Pass argument speed as float if possible
+def moveX(distance, speed):
+    # for print statements, debugging, delete later
+    global latitude
+    global longitude
+    global previous_latitude
+    global previous_longitude
+    # end of debug
+
+    msg.linear.x = speed
+
+    while not rospy.is_shutdown():
+        # compute the distance with haversine formula
+        # home_latitude = starting latitude before movement
+        # home longitude = starting longitude before movement
+        # latitude = current latitude during move
+        # longitude = current longitude during move
+        haversine_distance = haversine()
+        # break loop if desired distance covered 
+        if haversine_distance &gt; distance:
+            break
+
+        velocity_pub.publish(msg)
+
+        # This line might cause error because function have no access to rate object in main. 
+        # Should i move into global space or pass as argument
+        rate.sleep()
+
+        # TODO:: lower speed while getting closer to the final position
+        # TODO:: check if rospy.sleep() or rate.sleep() is better
+        # TODO:: is creating rate object necessary?
+
+    print(&quot;Latitude: {:.7f} ,Longitude: {:.7f}\nDistance Covered: {:.7f}&quot;.format(latitude, longitude, haversine_distance))
+
+    # Tell drone to stop its movement
+    # Not sure if this works. Need to test on gazebo
+    msg.linear.x = 0.
+    msg.linear.y = 0.
+    msg.linear.z = 0.
+    for i in range(100):
+        velocity_pub.publish(msg)
+
+    # DEBUG
+    print(&quot;Speed X: {} ,Speed Y: {} ,Speed Z: {} &quot;.format(msg.linear.x, msg.linear.y, msg.linear.z))
+
+    rospy.sleep(1.)
+
+    # after reaching desired position, set home_latitude, home_longitude to current position value
+    previous_latitude = latitude
+    previous_longitude = longitude
+
+
+
+
+# Distance must be meter
+# Pass argument speed as float if possible
+def moveY(distance, speed):
+    # for print statements, debugging, delete later
+    global latitude
+    global longitude
+    global previous_latitude
+    global previous_longitude
+    # end of debug
+
+    msg.linear.y = speed
+
+    while not rospy.is_shutdown():
+        # compute the distance with haversine formula
+        # home_latitude = starting latitude before movement
+        # home longitude = starting longitude before movement
+        # latitude = current latitude during move
+        # longitude = current longitude during move
+        haversine_distance = haversine()
+        # break loop if desired distance covered 
+        if haversine_distance &gt; distance:
+            break
+
+        velocity_pub.publish(msg)
+
+        # This line might cause error because function have no access to rate object in main. 
+        # Should i move into global space or pass as argument
+        rate.sleep()
+
+        # TODO:: lower speed while getting closer to the final position
+        # TODO:: check if rospy.sleep() or rate.sleep() is better
+        # TODO:: is creating rate object necessary?
+
+    print(&quot;Latitude: {:.7f} ,Longitude: {:.7f}\nDistance Covered: {:.7f}&quot;.format(latitude, longitude, haversine_distance))
+
+    # Tell drone to stop its movement
+    # Not sure if this works. Need to test on gazebo
+    msg.linear.x = 0.
+    msg.linear.y = 0.
+    msg.linear.z = 0.
+    for i in range(100):
+        velocity_pub.publish(msg)
+
+    # DEBUG
+    print(&quot;Speed X: {} ,Speed Y: {} ,Speed Z: {} &quot;.format(msg.linear.x, msg.linear.y, msg.linear.z))
+
+    rospy.sleep(1.)
+
+    # after reaching desired position, set home_latitude, home_longitude to current position value
+    previous_latitude = latitude
+    previous_longitude = longitude
+
+
+
+&quot;&quot;&quot;
+def moveWithImage(data):
+    # TODO:: Implement move using data
+    # Data (string x,y,Radius)
+
+    XY = data.data
+    XY = XY.split(&quot;,&quot;)
+
+    x = float(XY[0])
+    y = float(XY[1])
+    radius = float(XY[2])
+    print(&quot;X:{:.3f}   Y:{:.3f}   Radius:{:.3f}&quot;.format(x,y,radius))
+
+    # x or y not equal to 0 ?
+    if not x or not y:
+        move(&#39;-x&#39;, 40, 1)
+    else:
+        msg.linear.x = x
+        msg.linear.y = y
+        msg.linear.z = -0.5 # -1 go down  ?
+    # z = ?
+&quot;&quot;&quot;
+
+
+def testDrawSquare4M():
+    moveX(4, 2)
+    rospy.sleep(.5)
+    moveY(4, 2)
+    rospy.sleep(.5)
+    moveX(4, -2)
+    rospy.sleep(.5)
+    moveY(4, -2)
+    rospy.sleep(1.)
+
+
+
+
+
+
+if __name__ == &#39;__main__&#39;:
+
+    rospy.init_node(&#39;drone&#39;, anonymous=True)
+    rate = rospy.Rate(10)
+    rospy.Subscriber(&quot;/mavros/global_position/raw/fix&quot;, NavSatFix, globalPositionCallback)
+    rospy.Subscriber(&quot;mavros/global_position/rel_alt&quot;, Float64, globalAltitudeCallback)
+    rospy.Subscriber(&quot;mavros/state&quot;, State, globalStateCallback)
+    &quot;&quot;&quot;
+    rospy.Subscriber(&quot;mavros/home_position/home&quot;, HomePosition, globalHomePositionCallback)&quot;&quot;&quot;
+
+
+    while not stateConnected:
+        rospy.sleep(1.)
+    # You can define publisher as global variable without initializing it.
+    # You can later initialize publisher with node handler within main() after ros::init().
+    # In this way you can use publisher outside main within any function.
+
+
+    # Services executes on another thread. Sleeping rospy is a must!
+
+    setGuidedMode()
+    while not stateGuided:
+        rospy.sleep(.1)
+
+    print(&quot;Drone Guided:{}&quot;.format(stateGuided))
+
+    # Check if drone is armed
+    setArm()
+    while not stateArmed:
+        rospy.sleep(.1)
+        setArm()
+
+    rospy.sleep(3.)
+
+    print(&quot;Drone Armed:{}&quot;.format(stateArmed))
+    # UP until desired altitude
+    setTakeoffMode(6)
+    while altitude &lt; 5.:
+        rospy.sleep(.5)
+
+
+    previous_longitude = longitude
+    previous_latitude = latitude
+
+
+    moveX(3, 2)
+
+    rospy.sleep(5.)
+
+    # END OF MISSION
+    setLandMode()
+</code></pre>
+
+<p>this is my command line for launch gazebo:</p>
+
+<pre><code>abdulsamet@AT:~/ros/PX4-Autopilot$ roslaunch px4 posix_sitl.launch
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/64924">abdupa</a> on 2020-12-08 12:38:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

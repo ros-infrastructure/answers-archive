@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Limit ROS traffic to specific network interface - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/405753">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Limit ROS traffic to specific network interface</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102329/limit-ros-traffic-to-specific-network-interface">https://robotics.stackexchange.com/questions/102329/limit-ros-traffic-to-specific-network-interface</a>.</p>
+        <p>I have a computer that is acting as a ROS master that has 5 network interfaces, 1 WiFi and 4 ethernet ports.  I&#39;d like to limit ROS traffic to just one of the ethernet ports so that I can leave the wifi on for SSH, but not have to set ROS<em>LOCALHOST</em>ONLY=1, that way I am able to e.g. run RVIZ on another computer over ethernet without touching the wifi.  Is this possible?</p>
+
+<p>I&#39;m running ROS2 Humble on Ubuntu 22.04 and using Cyclone DDS, though I may also need to use FastRTPS instead/as well.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/89824">Barty</a> on 2022-08-30 12:30:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I believe you can use iptables to block the udp ports</p>
+
+<p>example of using port blocking. You will probably want to block both in and out.
+<a href="https://bobcares.com/blog/iptables-block-port-range/">https://bobcares.com/blog/iptables-block-port-range/</a></p>
+
+<p>you will want to include the -i flag to block only on the interfaces you do not want the ros2 traffic to go on
+<a href="https://serverfault.com/questions/286488/iptables-blocking-ports-on-eth0x-network-interfaces">https://serverfault.com/questions/286488/iptables-blocking-ports-on-eth0x-network-interfaces</a></p>
+
+<p>the specific ports you will want to block will be in the ros domain id documentation
+<a href="https://docs.ros.org/en/galactic/Concepts/About-Domain-ID.html">https://docs.ros.org/en/galactic/Concepts/About-Domain-ID.html</a></p>
+
+<p>assuming your domain id is 0 try something like:</p>
+
+<pre><code>iptables -I INPUT -p udp -i eth0:1 --dport 7400:7649 -j REJECT
+iptables -A OUTPUT -p udp -i eth0:1 --dport 7400:7649 -j DROP
+</code></pre>
+
+<p>these rules will probably disappear on reboot by default so you will probably need to do something to save them off
+<a href="https://askubuntu.com/questions/119393/how-to-save-rules-of-the-iptables">https://askubuntu.com/questions/119393/how-to-save-rules-of-the-iptables</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1652">johnjamesmiller</a> on 2022-08-30 16:23:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Both CycloneDDS and FastRTPS have ways to restrict the comms to a given network interface.</p>
+
+<p><a href="https://dds-demonstrators.readthedocs.io/en/latest/Teams/1.Hurricane/setupCycloneDDS.html">https://dds-demonstrators.readthedocs.io/en/latest/Teams/1.Hurricane/setupCycloneDDS.html</a>
+<a href="https://fast-dds.docs.eprosima.com/en/latest/fastdds/transport/whitelist.html">https://fast-dds.docs.eprosima.com/en/latest/fastdds/transport/whitelist.html</a></p>
+
+<p>On Ubuntu I use a small bash function to hide this:</p>
+
+<pre><code># restrict fastrtps / Cyclone DDS to this network interface
+ros_restrict()
+{
+    if [[ $# -eq 0 ]]; then
+        echo &quot;ros_restrict: give a network interface&quot;
+        return
+    fi
+
+    # auto-detect if basic name
+    local interface=$1
+    if [[ $1 == &quot;WIFI&quot; ]]; then
+        local interface=$(for dev in /sys/class/net/*; do [ -e &quot;$dev&quot;/wireless ] &amp;&amp; echo ${dev##*/}; done)
+    fi
+    if [[ $1 == &quot;ETH&quot; ]]; then
+        local interface=$(ip link | awk -F: &#39;$0 !~ &quot;lo|vir|wl|^[^0-9]&quot;{print $2;getline}&#39;)
+        local interface=$(for dev in $interface; do [ ! -e /sys/class/net/&quot;$dev&quot;/wireless ] &amp;&amp; echo ${dev##*/}; done)
+    fi
+    if [[ $1 == &quot;lo&quot; ]]; then
+        export ROS_LOCALHOST_ONLY=1
+        unset ROS_DOMAIN_ID
+        unset FASTRTPS_DEFAULT_PROFILES_FILE
+        # https://answers.ros.org/question/365051/using-ros2-offline-ros_localhost_only1/
+        export CYCLONEDDS_URI=&#39;&lt;General&gt;
+            &lt;NetworkInterfaceAddress&gt;lo&lt;/NetworkInterfaceAddress&gt;
+            &lt;AllowMulticast&gt;false&lt;/AllowMulticast&gt;
+        &lt;/General&gt;
+        &lt;Discovery&gt;
+            &lt;ParticipantIndex&gt;auto&lt;/ParticipantIndex&gt;
+            &lt;MaxAutoParticipantIndex&gt;100&lt;/MaxAutoParticipantIndex&gt;
+            &lt;Peers&gt;
+                &lt;Peer address=&quot;localhost&quot;/&gt;
+            &lt;/Peers&gt;
+        &lt;/Discovery&gt;&#39;
+        return
+    fi
+
+    # Fast-DDS https://fast-dds.docs.eprosima.com/en/latest/fastdds/transport/whitelist.html
+    # needs actual ip for this interface
+    ipinet=&quot;$(ip a s $interface | egrep -o &#39;inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}&#39;)&quot;
+    echo &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot; ?&gt;
+    &lt;profiles xmlns=\&quot;http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles\&quot;&gt;
+        &lt;transport_descriptors&gt;
+            &lt;transport_descriptor&gt;
+                &lt;transport_id&gt;CustomUDPTransport&lt;/transport_id&gt;
+                &lt;type&gt;UDPv4&lt;/type&gt;
+                &lt;interfaceWhiteList&gt;
+                    &lt;address&gt;${ipinet##inet }&lt;/address&gt;
+                &lt;/interfaceWhiteList&gt;
+            &lt;/transport_descriptor&gt;
+
+            &lt;transport_descriptor&gt;
+                &lt;transport_id&gt;CustomTcpTransport&lt;/transport_id&gt;
+                &lt;type&gt;TCPv4&lt;/type&gt;
+                &lt;interfaceWhiteList&gt;
+                    &lt;address&gt;${ipinet##inet }&lt;/address&gt;
+                &lt;/interfaceWhiteList&gt;
+            &lt;/transport_descriptor&gt;
+
+        &lt;/transport_descriptors&gt;
+
+        &lt;participant profile_name=\&quot;CustomUDPTransportParticipant\&quot;&gt;
+            &lt;rtps&gt;
+                &lt;userTransports&gt;
+                    &lt;transport_id&gt;CustomUDPTransport&lt;/transport_id&gt;
+                &lt;/userTransports&gt;
+            &lt;/rtps&gt;
+        &lt;/participant&gt;
+
+        &lt;participant profile_name=\&quot;CustomTcpTransportParticipant\&quot;&gt;
+            &lt;rtps&gt;
+                &lt;userTransports&gt;
+                    &lt;transport_id&gt;CustomTcpTransport&lt;/transport_id&gt;
+                &lt;/userTransports&gt;
+            &lt;/rtps&gt;
+        &lt;/participant&gt;
+    &lt;/profiles&gt;&quot; &gt; /tmp/fastrtps_interface_restriction.xml
+    # tell where to look
+    export FASTRTPS_DEFAULT_PROFILES_FILE=/tmp/fastrtps_interface_restriction.xml
+
+    # Cyclone DDS https://dds-demonstrators.readthedocs.io/en/latest/Teams/1.Hurricane/setupCycloneDDS.html
+    export CYCLONEDDS_URI=&quot;&lt;General&gt;&lt;NetworkInterfaceAddress&gt;$interface&quot;
+
+    # we probably do not want to limit to localhost
+    unset ROS_LOCALHOST_ONLY  
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/11856"></a> on 2022-08-31 03:56:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

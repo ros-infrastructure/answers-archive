@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Arduino (rosserial) node hangs during I2C reading + PWM - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/250366">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Arduino (rosserial) node hangs during I2C reading + PWM</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/77925/arduino-rosserial-node-hangs-during-i2c-reading-pwm">https://robotics.stackexchange.com/questions/77925/arduino-rosserial-node-hangs-during-i2c-reading-pwm</a>.</p>
+        <p>I&#39;ve been trying to troubleshoot a strange problem for a few days now. I&#39;ve got a ROS Kinetic node running on a Raspberry Pi 3 (Ubuntu Mate). I&#39;m utilizing the rosserial_arduino package to handle communication between the Arduino and my master node. Current setup is basically an Arduino Mega 2560 with a SEED Studio Motor Shield powering 2 wheels, plus an ITG3205/ADXL345/HMC5883L 9-DOF chip. I currently have two publishers set up - one outputting twistStamped messages and one chatter topic outputting loop iterations and debug information.  I&#39;ve got one subscriber set up receiving an int16 message from a homespun teleop script - basically listening for keys 2,4,5,6,8.</p>
+
+<p>Everything works perfectly if there is no power to the motor shield (I&#39;m using an external 6v pack). I am able to echo out twist messages which are directly linked to the xyz axis on my gyro and accel. My chatter topic shows me my current loop iteration and when I send key commands I see  them echoing out as well. Similarly, if the motor power is off, I still get LED signals on the shield showing the current motor states.</p>
+
+<p>If I turn on power supply to the motors and send a signal other than &quot;full stop&quot; which is key 5, everything hangs up. it might take a few loops but it will hang within 1-4 seconds of the motor signal being sent and received. Resetting the board alleviates the issue and all my topics begin to send/receive again.</p>
+
+<p>I have traced this problem down to the ITG3205 portion that performs the I2C communication (itgRead function) - specifically after the first call to Wire.endTransmission().</p>
+
+<p>Any ideas? I&#39;ve tried swapping out the arduino, the shield, and the 9-dof chip with no success. As long as i&#39;ve got wheels are spinning, everything hangs on gyro read. I&#39;ve included relevant code snippets below.</p>
+
+<p><strong>Motor Shield code. Only included forward for brevity.</strong></p>
+
+<pre><code>void SeeedMotorV2::allStop()
+{
+    digitalWrite(leftmotorspeed,0);
+    digitalWrite(rightmotorspeed,0);
+      digitalWrite(leftmotorForward,LOW);
+     digitalWrite(rightmotorBackward,LOW);
+      digitalWrite(leftmotorBackward,LOW);
+      digitalWrite(rightmotorForward,LOW);
+
+}
+
+void SeeedMotorV2::forward(int speed)
+{
+  allStop();
+  analogWrite(leftmotorspeed,speed); //pin 10
+  analogWrite(rightmotorspeed,speed);//pin 9
+  digitalWrite(leftmotorBackward,LOW);//pin 13
+  digitalWrite(rightmotorBackward,LOW);//pin 11
+  digitalWrite(leftmotorForward,HIGH);//pin 12
+  digitalWrite(rightmotorForward,HIGH);//pin 8
+}
+</code></pre>
+
+<p><strong>ITG3205 code snippet.</strong></p>
+
+<pre><code>unsigned char ITG3205::itgRead(char address, char registerAddress)
+{
+  //This variable will hold the contents read from the i2c device.
+  unsigned char data=0;
+
+  //Send the register address to be read.
+  Wire.beginTransmission(address);
+  //Send the Register Address
+  Wire.write(registerAddress);
+
+  //End the communication sequence.
+  Wire.endTransmission();
+
+  //Ask the I2C device for data
+  Wire.beginTransmission(address);
+  Wire.requestFrom(address, 1);
+
+  //Wait for a response from the I2C device
+  if(Wire.available()){
+    //Save the data sent from the I2C device
+    data = Wire.read();
+  }
+
+  //End the communication sequence.
+  Wire.endTransmission();
+
+  //Return the data read during the operation
+  return data;
+}
+
+//itgAddress = 0x68
+//GYRO_XOUT_H = 0x1D
+//GYRO_YOUT_L = 0x1DE
+int ITG3205::readX(void)
+{
+  int data=0;
+  data = itgRead(itgAddress, GYRO_XOUT_H)&lt;&lt;8;
+  data |= itgRead(itgAddress, GYRO_XOUT_L);
+
+  return data;
+}
+</code></pre>
+
+<p><strong>Main Sketch. Shortened to code in question.</strong></p>
+
+<pre><code>#include &lt;Wire.h&gt;
+#include &lt;Vectors.h&gt;
+#include &lt;ITG3205.h&gt;
+#include &lt;SeeedMotorV2.h&gt;
+
+#include &lt;ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;ros/time.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;geometry_msgs/TwistStamped.h&gt;
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+#include &lt;std_msgs/Int16.h&gt;
+char base_link[] = &quot;/base_link&quot;;
+
+
+SeeedMotorV2 motors;
+ITG3205 gyroscope;
+
+
+unsigned long timer;
+int cntr = 0;
+char loops[25];
+
+
+void cmd_int_vel(const std_msgs::Int16&amp; message)
+{
+  switch(message.data)
+  {
+    case 1:
+      sendMessage(&quot;1&quot;);
+      break;
+    case 2:
+      sendMessage(&quot;2&quot;);
+      motors.backward();
+      break;
+    case 3:
+      sendMessage(&quot;3&quot;);
+      break;
+    case 4:
+      sendMessage(&quot;4&quot;);
+      motors.left();
+      break;
+    case 5:
+      sendMessage(&quot;5&quot;);
+      motors.allStop();
+      break;
+    case 6:
+      sendMessage(&quot;6&quot;);
+      motors.right();
+      break;
+    case 7:
+      sendMessage(&quot;7&quot;);
+      break;
+    case 8:
+      sendMessage(&quot;8&quot;);
+      motors.forward();
+      break;
+    case 9:
+      sendMessage(&quot;9&quot;);
+      break;
+    default:
+      sendMessage(&quot;Unknown Velocity Command&quot;);
+      break;
+  }
+}
+
+
+ros::Subscriber&lt;std_msgs::Int16&gt; int_movement(&quot;cmd_int_vel&quot;, &amp;cmd_int_vel);
+
+
+ros::NodeHandle nh;
+std_msgs::String str_msg;
+ros::Publisher chatter(&quot;chatter&quot;, &amp;str_msg);
+
+
+geometry_msgs::TwistStamped twistMsg;
+ros::Publisher twists(&quot;twists&quot;, &amp;twistMsg);
+
+
+void setup()
+{
+  nh.getHardware()-&gt;setBaud(115200);
+  nh.initNode();
+  nh.advertise(chatter);
+  nh.advertise(twists);
+  nh.subscribe(int_movement);
+
+  motors.begin();
+
+  timer = 0;
+
+  gyroscope.begin();
+  gyroscope.calibrate(100, 10);
+
+  delay(10);
+  nh.spinOnce();
+}
+
+
+
+void loop()
+{
+  sprintf(loops, &quot;%i&quot;, cntr);
+  cntr++;
+  sendMessage(loops);
+
+  Vector acc2 = accelerometer.readNormalize();
+
+  Vector gyr = gyroscope.readNormalize();
+
+
+  twistMsg.header.frame_id = base_link;
+  twistMsg.twist.linear.x = acc2.XAxis;
+  twistMsg.twist.linear.y = acc2.YAxis;
+  twistMsg.twist.linear.z = acc2.ZAxis;
+  twistMsg.twist.angular.x = gyr.XAxis;
+  twistMsg.twist.angular.y = gyr.YAxis;
+  twistMsg.twist.angular.z = gyr.ZAxis;
+
+  twistMsg.header.stamp = nh.now();
+  twists.publish(&amp;twistMsg);
+
+
+  nh.spinOnce();
+  delay(10);
+
+}
+
+void sendMessage(char* message)
+{
+
+  str_msg.data = message;
+  chatter.publish(&amp;str_msg);
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/28846">david.1982</a> on 2016-12-19 15:10:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>From my testing, it appears rosserial_arduino can subscribe to both Twist and TwistStamped messages correctly; but, the callback will not work if the message type is TwistStamped.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/28605">Void</a> on 2019-06-27 11:25:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

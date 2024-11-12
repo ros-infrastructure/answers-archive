@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Possible (risk of a) deadlock in ros::Timer impl? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/355644">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Possible (risk of a) deadlock in ros::Timer impl?</h2>
+      <div class="question">
+        <p>Hi all,</p>
+
+<p>I am using <code>ros::Timer</code> as illustrated in the following snippet:</p>
+
+<p>Called from a thread A:</p>
+
+<pre><code>std::lock_guard&lt;std::mutex&gt; lock(my_mutex);
+if (some_condition) {
+  tm = nh.createTimer(ros::Duration(...), MyClass::timerCallback);
+}
+</code></pre>
+
+<p>Called from a thread B:</p>
+
+<pre><code>std::lock_guard&lt;std::mutex&gt; lock(my_mutex);
+if (some_other_condition) {
+  tm.stop();
+}
+</code></pre>
+
+<p>Called from a thread C:</p>
+
+<pre><code>void MyClass::timerCallback(ros::TimerEvent ev) {
+  std::lock_guard&lt;std::mutex&gt; lock(my_mutex);
+    // ...
+}
+</code></pre>
+
+<p>All my threads are basically spinner from my pool of (async.) spinner threads that will handle events when they occur. However, nearly every thread needs to lock <code>my_mutex</code> first (as illustrated above). Thread A doesn&#39;t really matter here and I&#39;ve added it just for completeness.</p>
+
+<p>Problem: what happens is that the thread B locks (owns) <code>my_mutex</code>, the above mentioned condition is <code>true</code> so that it calls <code>lm.stop()</code> (verified with a debugger). Meanwhile (or most probably shortly before <code>lm.stop()</code> but <em>after</em> B acquired <code>my_mutex</code>) thread C enters the <code>timerCallback()</code> and tries to lock <code>my_mutex</code> (first line of that callback). Since <code>my_mutex</code> is already locked by thread B, this enters a passive wait so that <code>timerCallback()</code> cannot return. Unfortunately, <code>lm.stop()</code> will block forever (deadlock) so that <code>my_mutex</code> is never released in thread B and thread C can never continue. I&#39;ve tracked this down (debugger) by following the ROS code, to (ROS Noetic):</p>
+
+<pre><code>#0  futex_wait_cancelable (private=&lt;optimized out&gt;, expected=0, futex_word=0x7fbc10002950) at ../sysdeps/nptl/futex-internal.h:183
+#1  __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0x7fbc10002900, cond=0x7fbc10002928) at pthread_cond_wait.c:508
+#2  __pthread_cond_wait (cond=0x7fbc10002928, mutex=0x7fbc10002900) at pthread_cond_wait.c:638
+#3  0x00007fbc3bb552e3 in ros::CallbackQueue::removeByID(unsigned long) () from /opt/ros/noetic/lib/libroscpp.so
+#4  0x00007fbc3bb2eac0 in ros::TimerManager&lt;ros::Time, ros::Duration, ros::TimerEvent&gt;::remove(int) () from /opt/ros/noetic/lib/libroscpp.so
+#5  0x00007fbc3bb2d28b in ros::Timer::Impl::stop() () from /opt/ros/noetic/lib/libroscpp.so
+</code></pre>
+
+<p>and it seems that its stuck in an internal mutex of the <a href="http://docs.ros.org/noetic/api/roscpp/html/callback__queue_8cpp_source.html#l00142">ROS timer implemenation</a>. So my <code>lm.stop()</code> calls <code>ros::Timer::Impl::stop()</code> which, finally, calls <code>ros::CallbackQueue::removeByID()</code>. (Inside that function, there&#39;s a lot of locking going on and it appears to me that there&#39;s also a lot of corner cases being handled.)</p>
+
+<p>Is this intended behavior? Does it mean that I am not allowed to do the above locking scheme? Or is this a bug?</p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-06-23 10:45:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Since I got no answer here yet, I also <strong>posted it as an issue on Github</strong>: <a href="https://github.com/ros/ros_comm/issues/1980">https://github.com/ros/ros_comm/issues/1980</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-06-26 08:52:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>So this is not an answer to your question but more an observation: if all your threads need to lock <code>my_mutex</code>
+ first, wouldn&#39;t a single threaded spinner be more easy? This way you can remove all your mutexes and guaranty that everything is thread-safe.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46652">Rayman</a> on 2020-06-26 09:14:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thx for your hint! I was a bit simplifying in that not really ALL threads are locking that mutex. There are indeed some callbacks that are not using that &#39;global&#39; mutex or some other mutexes as well. But I don&#39;t think that this is relevant to my question here and that&#39;s way I omitted it. 🙈</p>
+
+<p>So, although there&#39;s some serialization enforced by that mutex, some events are (and even have to be) processed in parallel.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-06-26 09:57:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Any ideas on this? :-(</p>
+
+<ul>
+<li>push  *</li>
+</ul>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-09-04 09:27:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You could <a href="https://stackoverflow.com/questions/33980860/use-stdlock-guard-with-try-lock">try to lock</a> in your timer callback and return from the callback function if someone else holds the mutex, allowing thread B to stop the timer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30604">pcoenen</a> on 2020-09-07 09:43:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your idea! Unfortunately, there are many) situations where the mutex is locked and waiting for it to be released is the intended behavior (i.e., it would be wrong to not execute the code in the callback). In other words, calling timer.stop() isn&#39;t the only reason why my mutex is locked. And it&#39;s even not a problem if it would get executed even if a timer.stop() has been issued in parallel.</p>
+
+<p>More ideas?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-09-07 09:48:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If your timer can be stopped during callback execution, I don&#39;t see a reason to lock the timer mutex in your callback in the first place. Have you considered splitting the mutex&#39; responsibilities, i.e. timer_mutex, ressourceA_mutex, ressourceB_mutex... ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30604">pcoenen</a> on 2020-09-08 02:57:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your thoughts! <code>my_mutex</code> is not intended to protect the timer itself (because I thought ROS timers are thread-safe anyway) but rather to protect against data race <em>within</em> the callbacks (both the callback calling <code>timer.stop()</code> as well as the timer callback itself). Note that all my callbacks have to do a lot of more stuff that I excluded in my examples above for improved readability.</p>
+
+<p>So, I am already using multiple mutexes for a more fine-grained locking scheme but the somewhat generic mutex <code>my_mutex</code> must be locked in both places here.</p>
+
+<p>IMHO, it boils down to why is it necessary (in the ROS impl.) that <code>timer.stop()</code> must wait for the callback to return? I think this is a bug (or a very bad feature). In fact, the <code>stop()</code> docs (only) say &quot;Once this call returns, no more callbacks will be called.&quot; So to my understanding, it must ONLY ensure that after calling <code>stop()</code>, no MORE callbacks are called but not that an already executed callback returns (-&gt; deadlock possible).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-09-09 06:29:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>References:</p>
+
+<ul>
+<li><p>ROS client API thread-safety: <a href="https://answers.ros.org/question/9413/is-ros-client-c-code-thread-safe/">https://answers.ros.org/question/9413/is-ros-client-c-code-thread-safe/</a></p></li>
+<li><p><code>ros::Timer::stop()</code> docs: <a href="http://docs.ros.org/indigo/api/roscpp/html/classros_1_1Timer.html#a39421e7413a77df0efef696e8ddf93f6">http://docs.ros.org/indigo/api/roscpp/html/classros_1_1Timer.html#a39421e7413a77df0efef696e8ddf93f6</a></p></li>
+</ul>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-09-09 06:32:20 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>You have to really think about what resource your mutex is protecting, it was not clear what your intention is. I guess you have some protected process that you want to start/stop. In that case, it would look something like this:</p>
+
+<p>Called from a thread A:</p>
+
+<pre><code>tm = nh.createTimer(ros::Duration(...), MyClass::timerCallback);
+</code></pre>
+
+<p>Called from a thread B:</p>
+
+<pre><code>my_mutex.lock();
+// at this point, we are guaranteed that no protected process is running, but a timerCallback could be blocked
+if (some_condition) {
+  need_to_process = false
+  my_mutex.unlock();
+
+  // don&#39;t lock around timer because it has an internal mutex
+  tm.stop(); // wait for finishing of the timerCallback
+
+  // at this point in the code, the timer is timerCallback not running anymore
+} else {
+  my_mutex.unlock();
+}
+</code></pre>
+
+<p>Called from a thread C:</p>
+
+<pre><code>void MyClass::timerCallback(ros::TimerEvent ev) {
+  std::lock_guard&lt;std::mutex&gt; lock(my_mutex);
+  if (need_to_process)
+    // protected process ...
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/46652">Rayman</a> on 2020-09-09 07:20:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Sorry for not elaborating more on the background and making that clear(er). And thanks for your reply! :-)</p>
+
+<p>In my use-case, I have several callbacks that are called when ROS msgs are received. Such messages are used as events for processing state changes in a finite state machine (FSM). So, once <code>my_mutex.lock()</code> has been called, the entire callback (= processing of that particular event) <em>must</em> run until <code>return</code> to not break the FSM logic due to race conditions. That&#39;s why doing <code>my_mutex.unlock()</code> in between is not an option. Consider this &quot;called from a thread B&quot; as the logic to be executed as part of a particular event of my FSM and such logic/code must always be executed without interruption (thus, the mutex).</p>
+
+<p>I <strong>currently ended up in spawning a detachted thread</strong> in all my timer callbacks so that after thread creation, the callback can return w/o blocking and the just created thread does the locking/work. Not really a great solution but seems working.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-09-14 06:47:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>However, I am still not sure if this is a bug or intended behavior of the ROS timer logic. And I doubt that it&#39;s really intended...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2020-09-14 06:48:24 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

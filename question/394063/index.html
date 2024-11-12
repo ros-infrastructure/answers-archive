@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to project PointCloud2 points to image plane with known transformations. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/394063">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to project PointCloud2 points to image plane with known transformations.</h2>
+      <div class="question">
+        <p>Hello everyone,</p>
+
+<p>as the title says, I have a PointCloud2 topic and I am trying to project every point on an Image so I can extract the RGB values. I also have a known tf and the camera_info topic that corresponds to the Image topic, any ideas ?</p>
+
+<p>So, here is some more information about what I&#39;ve tried so far.</p>
+
+<p><em>Frame Selection</em></p>
+
+<p>First of all, I have 4 cameras and it is crucial to choose the best frame to project each point. For that, I&#39;ve implemented this: </p>
+
+<pre><code>def choose_frame(info_msgs, lidar_point, selected_cameras = [0, 1, 2, 3], tf_data = read_tf_yaml):
+
+computed_angles = []
+
+for camera in selected_cameras:
+    # Define the 3D ray from the projection point to the principal point
+    camera_object = image_geometry.PinholeCameraModel()
+    info_msg = info_msgs[camera]
+    camera_object.fromCameraInfo(info_msg)
+    principal_ray = camera_object.projectPixelTo3dRay((camera_object.cx(), camera_object.cy()))
+    # Define the 3D coordinates of the projection point referenced on the LiDAR&#39;s coordinate system.
+    camera_xyz = np.array(tf_data[f&#39;cam_{camera}&#39;][:3])
+    # Define a 3D point referenced which lays on the principal ray referenced on the LiDAR&#39;s coordinate system.
+    rot_quat = np.array(tf_data[f&#39;cam_{camera}&#39;][3:])
+    rotation = R.from_quat(rot_quat)
+    camera_helper_xyz = camera_xyz + rotation.apply(principal_ray)
+    # Define the LiDAR point.
+    point = lidar_point
+
+    # Find the angle between 
+    ba = camera_helper_xyz - camera_xyz
+    bc = point - camera_xyz
+
+    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+    angle = np.arccos(cosine_angle)
+    computed_angles.append(np.degrees(angle))
+
+index_min = np.argmin(computed_angles)
+return index_min
+</code></pre>
+
+<p>What this does is for each camera to compute the angle between the lidar point, the projection point and a point that lies on the principal axis (projection point - principal point). The camera with the smallest angle is the one that is selected to project the LiDAR point. Other than being badly written There probably must be a better way to select the best camera for each point.</p>
+
+<p>Now, let me show you how I&#39;ve approached the LiDAR point - camera projection.</p>
+
+<p><em>Method - 1</em></p>
+
+<p>This simplistic way of projecting the lidar point on an image uses image<em>geometry package but does not use any information that I have of the external calibration (tf</em>tree).</p>
+
+<pre><code>def extract_rgb(lidar_point, image, camera_info):
+    bridge = CvBridge()
+    camera_object = image_geometry.PinholeCameraModel()
+
+     camera_object.fromCameraInfo(msg = camera_info)
+     u,v = camera_object.project3dToPixel(lidar_point)
+     u_rectified, v_rectified = camera_object.rectifyPoint((u,v))
+     cv_image = bridge.imgmsg_to_cv2(image, desired_encoding=&#39;passthrough&#39;)
+     rgb = cv_image[int(u_rectified), int(v_rectified)].tolist()
+     return rgb
+</code></pre>
+
+<p><em>Method - 2</em></p>
+
+<p>This method is slightly more sophisticated, now I use the tf information but still the results are not correct. </p>
+
+<pre><code>def extract_rgb_1(lidar_point, image, camera_info, selected_camera_index, tf_data):
+    bridge = CvBridge()
+    camera_object = image_geometry.PinholeCameraModel()
+
+    rodrigues = quat_to_rodrigues(tf_data[f&#39;cam_{selected_camera_index}&#39;][3:])
+    rodrigues_rotation_vector = rodrigues[0]
+
+    t_vec = tf_data[f&#39;cam_{selected_camera_index}&#39;][:3]
+
+    camera_object.fromCameraInfo(msg = camera_info)
+    cv_image = bridge.imgmsg_to_cv2(image, desired_encoding=&#39;passthrough&#39;)
+
+    Image_points = cv2.projectPoints(objectPoints = np.array(lidar_point),
+                                rvec = rodrigues_rotation_vector,
+                                tvec = np.array(t_vec),
+                                cameraMatrix = camera_object.intrinsicMatrix(),
+                                distCoeffs = camera_object.distortionCoeffs(),
+                                )
+
+    point_uv = image_points[0][0][0]
+
+    if point_uv[0] &gt;= 0 and point_uv[0] &lt;= camera_info.width:
+         if point_uv[1] &gt;= 0 and point_uv[1] &lt;= camera_info.height:
+            rgb = cv_image[int(point_uv[1]), int(point_uv[0])].tolist()
+        return rgb
+</code></pre>
+
+<p>So now, as you can see it is not exactly clear to me what is the best way to approach this, the Method 2 that I used seems correct to me but I think that the frame selection part is actually the problem, am I correct? Any ideas or recommendations are welcome.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/70606">Ifx13</a> on 2022-01-11 09:54:03 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This question is basically requesting that someone write code for you. Please try to do this and update your question with what you&#39;re doing and why it doesn&#39;t work so we can help you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2022-01-11 12:07:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@tfoote My intentions were not to ask for code; I&#39;m sorry If that was how it appeared, I did not want to focus on the code part so much as actually to have a theoretical discussion, but yes, a more practical discussion might make things clear more easily.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70606">Ifx13</a> on 2022-01-12 03:41:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

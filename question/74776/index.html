@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Cartesian controller for ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/74776">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Cartesian controller for ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/53716/cartesian-controller-for-ros">https://robotics.stackexchange.com/questions/53716/cartesian-controller-for-ros</a>.</p>
+        <p>Hello everyone,</p>
+
+<p>I want to use a robot from the ROS industrial package (the Motoman arm). I have an Orocos module that generates cartesian commands, but I am still confused about the whole chain inside ROS Groovy.</p>
+
+<p>I have an URDF for the Motoman (available in the package). I&#39;d like to be able to visualize the robot in a simulator and perform inverse kinematics on the cartesian values (which are Eigen types). I would also like to send the resulting joint positions to the robot. </p>
+
+<p>I would need documentation pages, packages names, information about the types being exchanged, and it would be nice if I had nearly no code to write at all (which seems like a decent wish, since we have an IK solver, and a simulator through MoveIt. But I don&#39;t know how to plug it all together). </p>
+
+<p>Many thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/5572">Flavian</a> on 2013-08-26 03:10:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In ROS, the task of converting Cartesian goal positions into a stream of joint positions is traditionally described as the &quot;<a href="http://moveit.ros.org/wiki/Capabilities#Motion_Planning">planning</a>&quot; step.  This task typically involves not only IK, but also collision detection and joint-space search algorithms to identify a valid trajectory between the &quot;current&quot; joint state and the specified goal state.  Additionally, this planning step may include additional constraints (e.g. maintain desired end-effector orientation) and various trajectory-smoothing filters.</p>
+
+<p>As a first step, you&#39;ll need to describe how much of this planning capability you want/need to utilize.  I will outline 3 potential approaches below. I recommend #2, but have never used this method.  In the past, I have used #1, but that approach requires you to manually provide some of the functionality that MoveIt does automatically in method #2.</p>
+
+<h2>1) Direct IK Solution</h2>
+
+<p><em>In this approach, you will run IK to calculate a joint position for each cartesian point.  These joint points will be combined into a single trajectory and sent to the robot.  The trajectory may require additional code support to be robust: velocity/accel smoothing, arm-configuration continuity, etc.</em></p>
+
+<ul>
+<li>create a <a href="http://www.ros.org/doc/api/control_msgs/html/msg/FollowJointTrajectoryActionGoal.html">JointTrajectoryActionGoal</a> message to hold the joint trajectory</li>
+<li>create a MoveIt <a href="http://moveit.ros.org/doxygen/classrobot__state_1_1JointStateGroup.html">JointStateGroup</a> to use for calculating IK (as shown <a href="http://moveit.ros.org/wiki/Kinematics/C%2B%2B_API">here</a>)</li>
+<li>for each cartesian point:
+
+<ul>
+<li>call <code>joint_state_group-&gt;setFromIK()</code> to calc IK
+
+<ul>
+<li><em>NOTE: this can take an Eigen::Affine3d input</em></li>
+<li><em>NOTE: may need to call <code>joint_state_group-&gt;setVariableValues()</code> to set initial joint state</em></li>
+</ul></li>
+<li>call <code>joint_state_group-&gt;getVariableValues()</code> to get computed joint position</li>
+<li>create a <a href="http://www.ros.org/doc/api/trajectory_msgs/html/msg/JointTrajectoryPoint.html">JointTrajectoryPoint</a> from your joint position
+
+<ul>
+<li><em>NOTE: you&#39;ll need to compute the appropriate velocity/accel values yourself</em></li>
+</ul></li>
+<li>add <code>JointTrajectoryPoint</code> to <code>FollowJointTrajectoryActionGoal.goal.trajectory.points</code>*</li>
+</ul></li>
+<li>send the completed joint trajectory (<code>FollowJointTrajectoryActionGoal</code>) to the appropriate action.  For ROS-I nodes, this is typically &quot;<code>joint_trajectory_action</code>&quot;.</li>
+<li>When you start the motoman ROS-I nodes, it typically brings up both the interface to the actual robot and a <code>joint_trajectory_action</code> node that manages sending the <code>FollowJointTrajectoryActionGoal</code> to the robot interface nodes.
+
+<ul>
+<li>check to make sure that action node is running: <code>rosnode info joint_trajectory_action</code></li>
+</ul></li>
+</ul>
+
+<h2>2) MoveIt ComputeCartesianPath</h2>
+
+<p><em>In this approach, you pass the full sequence of cartesian points to MoveIt.  MoveIt computes the full joint trajectory between points, while also providing additional functionality beyond the basic approach described above:  It inserts additional points to maintain linear motion, automatically checks for collisions and arm-configuration &quot;flips&quot;, and generates the velocities and accelerations needed for smooth motion.</em></p>
+
+<ul>
+<li>create a MoveIt <a href="http://ros.org/rosdoclite/groovy/api/moveit_ros_planning_interface/html/classmove__group__interface_1_1MoveGroup.html">MoveGroupInterface</a> object, as shown <a href="http://moveit.ros.org/wiki/MoveGroup_Interface#motion_plan">here</a></li>
+<li>call <code>move_group-&gt;ComputeCartesianPath()</code> with your sequence of cartesian points
+
+<ul>
+<li><em>NOTE: this function accepts a <code>std::vector&lt;Pose&gt;</code>, so you&#39;ll need to convert your cartesian positions using <a href="http://ros.org/rosdoclite/groovy/api/eigen_conversions/html/namespacetf.html#aad8e6131b3c1439b674e7dd51e7da3b3">tf::poseEigenToMsg()</a></em></li>
+<li>this returns a <a href="http://ros.org/doc/groovy/api/moveit_msgs/html/msg/RobotTrajectory.html">RobotTrajectory</a>.</li>
+</ul></li>
+<li>send your trajectory to MoveIt
+
+<ul>
+<li>the easiest way I&#39;ve found is to use the 
+<code>move_group</code> node&#39;s <a href="http://ros.org/doc/groovy/api/moveit_msgs/html/srv/ExecuteKnownTrajectory.html">ExecuteKnownTrajectory</a> service, which is available on my setup at &quot;<code>/execute_kinematic_path</code>&quot;.</li>
+<li>alternatively, you could probably send it to the <code>TrajectoryExecutionManager</code> object directly, as shown <a href="http://moveit.ros.org/groovy/doxygen/execute__service__capability_8cpp_source.html">here</a>, but that seems messy</li>
+</ul></li>
+</ul>
+
+<h2>3) MoveIt Point-to-Point</h2>
+
+<p><em>This approach is probably the &quot;easiest&quot;, but is unlikely to give you the motion you are looking for.  You pass individual cartesian points to the MoveIt planning/execution pipeline, and MoveIt will handle everything from there.  However, the robot will stop at each cartesian waypoint, and the motion between waypoints is not guaranteed to be linear.</em></p>
+
+<ul>
+<li>Create a <code>move_group_interface</code> object, as above</li>
+<li>for each cartesian point:
+
+<ul>
+<li>call <code>group.setPoseTarget()</code> with your cartesian point</li>
+<li>call <code>group.move()</code> to plan and execute motion</li>
+</ul></li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3925">Jeremy Zoss</a> on 2013-08-26 06:23:12 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>First of all, you answer rocks!
+Secondly, one question: is the streaming asynchronous or synchronous? (do you have to send whole chunks of trajectories or can you just feed new positions continuously? My application requires the latter.).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5572">Flavian</a> on 2013-08-26 07:35:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks!  Much of ROS&#39;s internal design supports the idea of merging together successive trajectories using the &quot;time_from_start&quot; field in JointTrajectoryPoint.  I&#39;m not sure whether this is carried all the way through the robot drivers, though.  You may need to do some &quot;hacking&quot; to get it working.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3925">Jeremy Zoss</a> on 2013-08-26 07:38:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Flavian, do you only need IK, or do you also need collision checking, planning and/or filtering?. At which frequency do you expect to send task-space commands?. The appropriate solution will largely depend on the answer to the previous questions.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2013-08-26 21:44:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I need this for a teleoperation task in a possibly complex environment, so I would need IK, collision checking, and possibly filtering, but not planning (which is why I don&#39;t find Jeremy&#39;s answer completely satisfying, although it is quite useful).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5572">Flavian</a> on 2013-08-26 21:58:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What about the expected command frequency?. An order of magnitude should be enough (tens, hundreds, thousands of Hz?).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2013-08-26 22:05:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sorry I forgot this point. Ideally 1kHz with very low jitter but that&#39;s impossible in ROS. So let&#39;s say only 1kHz.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5572">Flavian</a> on 2013-08-26 22:06:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Some of your links are dead; it would be nice to update them to hydro links :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20682">VictorLamoine</a> on 2014-12-10 09:07:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Also note that with the second method; you should wait for the last transform before launching a new trajectory:</p>
+
+<pre><code>tf::TransformListener listener (*node_ptr);
+listener.waitForTransform(&quot;/base&quot;, &quot;/tool0&quot;, ros::Time::now(), ros::Duration(0.5));
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20682">VictorLamoine</a> on 2014-12-11 09:45:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I got a question about collision avoidance. While using computeCarteanPath, it indeed could avoid the collision objects, but it fail to re-plan the path. What should i do solve the problem? It will be delighted to receive your answers. thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25125">hecatezxx</a> on 2015-11-19 02:40:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Create a new question detailing your setup (code, screen-shot) and the problems you encounter.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20682">VictorLamoine</a> on 2015-11-19 03:11:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Here is my question. <a href="http://answers.ros.org/question/221199/avoid-obstacles-while-using-computecartesianpath/">http://answers.ros.org/question/221199/avoid-obstacles-while-using-computecartesianpath/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25125">hecatezxx</a> on 2015-11-19 03:40:52 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Feedback given in the comments section of another answer states the following requirements:</p>
+
+<ul>
+<li>Task-space commands updated at 1KHz.</li>
+<li>Collision checking.</li>
+<li>Some form of filtering (maybe enforcing joint limits? ie. position and some of its derivatives?).</li>
+<li>No motion planning.</li>
+</ul>
+
+<p>If the 1KHz update rate is a hard requirement, it will limit dramatically the list of possible solutions. I this case, you&#39;ll necessarily need to implement a realtime controller in some form or another. Existing tools for doing this are Orocos and ros_control, but no out-of-the-box solution exists yet. We have two interns working on precisely this problem, and their work will eventually be made public, but I wouldn&#39;t expect working deliverables to be available before the end of the year.</p>
+
+<p>The approach we&#39;re following is:</p>
+
+<ul>
+<li><p>Use the <a href="https://github.com/laas/soth">Stack</a> of <a href="http://hal.inria.fr/hal-00751924">Tasks</a> for multi-task prioritized IK. Tasks can be defined as equality and inequality linear constraints in the velocity domain. Inequality constraints are important, as they provide the framework for enforcing constraints like joint limits, collision avoidance and visibility.</p></li>
+<li><p>Wrap the Stack of Tasks inside a ros_control controller. We run ros_control inside an Orocos component when working with real hardware.</p></li>
+<li><p>Implement a (local) collision avoidance task leveraging simple collision models (eg. capsule decomposition) and fast collision checkers implementing minimum distance computation like FCL.</p></li>
+</ul>
+
+<p>The first two points are working well in simulation. We&#39;re in the process of testing in hardware with a RTOS, and are also starting with the collision avoidance task, which should take some time to complete. Let me know if you&#39;d like to be an early tester, or stay updated on progress.</p>
+
+<p><strong>Update:</strong> I&#39;ve started a thread on the <a href="https://groups.google.com/forum/?fromgroups#!forum/ros-sig-robot-control">robot control SIG</a> on <a href="https://groups.google.com/forum/?fromgroups#!topic/ros-sig-robot-control/y7L-AuqowZ8">whole-body control for ros_control</a>. Please joint the SIG and the discussion if you&#39;re interested in following the subject.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2013-08-26 23:04:08 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This seems really interesting. I didn&#39;t know that a ros_control could be run in an Orocos component, how do you do that?
+Do you use a visualization tool?
+I would indeed be interested in testing your solution as soon as possible.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5572">Flavian</a> on 2013-08-26 23:13:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I don&#39;t have public code to share at the moment, but the hooks of an Orocos component state machine (configure, start, update, stop, cleanup) provide a convenient structure for setting up a ros_control-based robot hardware abstraction. What kind of visualization are you referring to?.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2013-08-26 23:46:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Dear Flavian I am doing a similar task. Can you please give me some hints on how you did it ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28126">ZainMehdi</a> on 2016-11-22 17:56:43 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

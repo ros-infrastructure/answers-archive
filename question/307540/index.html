@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to send multiple messeage to arduino to move servos? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/307540">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to send multiple messeage to arduino to move servos?</h2>
+      <div class="question">
+        <p>Hey, guys!
+I&#39;m a beginner of ROS and programing.</p>
+
+<p>My probrem is that I can&#39;t move two servos using arduino.</p>
+
+<p>I want to send two messeages servo1,servo2 to arduino.</p>
+
+<pre><code>servo1_pub = nh.advertise&lt;std_msgs::UInt16&gt;(&quot;servo1&quot;,1000);
+servo2_pub = nh.advertise&lt;std_msgs::UInt16&gt;(&quot;servo2&quot;,1000);
+</code></pre>
+
+<p>I could confirm these are published.
+So, itried to send using rostopic pub.</p>
+
+<pre><code>$ rostopic pub servo std_msgs/UInt16MultiArray &#39;{data: [servo1, servo2]}&#39;
+</code></pre>
+
+<p>However, error occures when start servo1 and servo2 publish node.</p>
+
+<pre><code>~$  rostopic pub servos std_msgs/UInt16MultiArray &#39;{data:[servo1,servo2]}&#39;
+publishing and latching message. Press ctrl-C to terminate
+[WARN] [WallTime: 1541260030.242404] Inbound TCP/IP connection failed: field data[] must be unsigned integer type
+</code></pre>
+
+<p>Please tell me if someone know about it.</p>
+
+<hr>
+
+<p>Edit: Thank you for your reply!</p>
+
+<p>I don&#39;t know how to define the number of dimensions of the array data from command line.</p>
+
+<p>The arudino sketch is like this.</p>
+
+<p>Arduino:</p>
+
+<pre><code>#if (ARDUINO &gt;= 100)
+ #include &lt;Arduino.h&gt;
+#else
+ #include &lt;WProgram.h&gt;
+#endif
+
+#include &lt;Servo.h&gt; 
+#include &lt;ros.h&gt;
+#include &quot;std_msgs/MultiArrayLayout.h&quot;
+#include &quot;std_msgs/MultiArrayDimension.h&quot;
+
+#include &quot;std_msgs/UInt16MultiArray.h&quot;
+
+ros::NodeHandle  nh;
+
+Servo servo1;
+Servo servo2;
+
+void servo_cb( const std_msgs::UInt16MultiArray&amp;  cmd_msg){
+  servo1.write(cmd_msg.data[0]); //set servo angle, should be from 0-180  
+  servo2.write(cmd_msg.data[1]); 
+  digitalWrite(13, HIGH-digitalRead(13));  //toggle led  
+}
+
+
+ros::Subscriber&lt;std_msgs::UInt16MultiArray&gt; sub(&quot;servos&quot;, servo_cb);
+
+void setup(){
+  pinMode(13, OUTPUT);
+
+  nh.initNode();
+  nh.subscribe(sub);
+
+
+  servo1.attach(9); //attach it to pin 9
+  servo2.attach(10);//attach it to pin10
+}
+
+void loop(){
+  nh.spinOnce();
+  delay(1);
+}
+</code></pre>
+
+<p>publish node:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/TwistStamped.h&gt;
+
+#include &lt;iostream&gt;
+
+#include &quot;autoware_config_msgs/ConfigTwistFilter.h&quot;
+#include &lt;std_msgs/UInt16.h&gt;
+
+namespace {
+
+//Publisher
+ros::Publisher g_twist_pub;
+ros::Publisher servo1_pub;
+ros::Publisher servo2_pub;
+double g_lateral_accel_limit = 5.0;
+double g_lowpass_gain_linear_x = 0.0;
+double g_lowpass_gain_angular_z = 0.0;
+constexpr double RADIUS_MAX = 9e10;
+constexpr double ERROR = 1e-8;
+ uint16_t servo1 = 0;
+  uint16_t servo2 = 0;
+
+void configCallback(const autoware_config_msgs::ConfigTwistFilterConstPtr &amp;config)
+{
+  g_lateral_accel_limit = config-&gt;lateral_accel_limit;
+  ROS_INFO(&quot;g_lateral_accel_limit = %lf&quot;,g_lateral_accel_limit);
+  g_lowpass_gain_linear_x = config-&gt;lowpass_gain_linear_x;
+  ROS_INFO(&quot;lowpass_gain_linear_x = %lf&quot;,g_lowpass_gain_linear_x);
+  g_lowpass_gain_angular_z = config-&gt;lowpass_gain_angular_z;
+  ROS_INFO(&quot;lowpass_gain_angular_z = %lf&quot;,g_lowpass_gain_angular_z);
+}
+
+void TwistCmdCallback(const geometry_msgs::TwistStampedConstPtr &amp;msg)
+{
+
+  double v = msg-&gt;twist.linear.x;
+  double omega = msg-&gt;twist.angular.z;
+
+  if(fabs(omega) &lt; ERROR){
+    g_twist_pub.publish(*msg);
+    return;
+  }
+
+  double max_v = g_lateral_accel_limit / omega;
+
+  geometry_msgs::TwistStamped tp;
+  tp.header = msg-&gt;header;
+
+  double a = v * omega;
+  ROS_INFO(&quot;lateral accel = %lf&quot;, a);
+
+
+  tp.twist.linear.x = fabs(a) &gt; g_lateral_accel_limit ? max_v
+                    : v;
+  tp.twist.angular.z = 180-(1.57+omega)*180/3.14;
+
+  static double lowpass_linear_x = 0;
+  static double lowpass_angular_z = 0;
+  lowpass_linear_x = g_lowpass_gain_linear_x * lowpass_linear_x + (1 - g_lowpass_gain_linear_x) * tp.twist.linear.x;
+  lowpass_angular_z = g_lowpass_gain_angular_z * lowpass_angular_z + (1 - g_lowpass_gain_angular_z) * tp.twist.angular.z;
+
+ if (lowpass_angular_z &gt; 100 || lowpass_angular_z &lt; 80)
+  {
+    tp.twist.linear.x = 0.2 ;
+  }
+  else
+  {
+    tp.twist.linear.x = lowpass_linear_x;
+  }
+
+
+  tp.twist.angular.z = lowpass_angular_z;
+
+  // Controlled servo moto based on expected values
+  if (tp.twist.linear.x &lt;0.04)
+  {
+    servo1 = 90;
+  }
+  else if (tp.twist.linear.x &gt;= 0.04 &amp;&amp; tp.twist.linear.x &lt; 1.0)
+  {
+    servo1 = 45;
+  }
+  else
+  {
+    servo1 = 0;
+  }
+
+  servo2 = tp.twist.angular.z;
+  ROS_INFO(&quot;v: %f -&gt; %f&quot;,v,tp.twist.linear.x);
+  ROS_INFO(&quot;%d&quot;,servo1);
+  ROS_INFO(&quot;%d&quot;,servo2);
+
+  g_twist_pub.publish(tp);
+  servo1_pub.publish(servo1);
+  servo2_pub.publish(servo2);
+
+}
+} // namespace
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;twist_filter&quot;);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle private_nh(&quot;~&quot;);
+
+    ros::Subscriber twist_sub = nh.subscribe(&quot;twist_raw&quot;, 1, TwistCmdCallback);
+    ros::Subscriber config_sub = nh.subscribe(&quot;config/twist_filter&quot;, 10, configCallback);
+    g_twist_pub = nh.advertise&lt;geometry_msgs::TwistStamped&gt;(&quot;twist_cmd&quot;, 1000);
+    servo1_pub = nh.advertise&lt;std_msgs::UInt16&gt;(&quot;servo1&quot;,1000);
+    servo2_pub = nh.advertise&lt;std_msgs::UInt16&gt;(&quot;servo2&quot;,1000);
+
+
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/31912">shibaneko</a> on 2018-11-03 11:16:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Thanks for the updates, I&#39;ve edited my answer now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-11-04 05:32:15 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Okay, there are few things I could suggest. Can you show us the code you&#39;re running on your arduino. Have you updated this so that it&#39;s listening on the servo topic for std_msgs::Uint16MultiArray messages? Is the error being produced by the <code>rosserial</code> node or the <code>rostopic pub</code> node?</p>
+
+<p>All the <a href="http://docs.ros.org/api/std_msgs/html/msg/Int16MultiArray.html">MultiArray messages</a> include the layout information which describes the number of dimensions of the arrayed data. You need to specify this on the command line as well.</p>
+
+<p>Hope this helps.</p>
+
+<p><strong>UPDATE:</strong></p>
+
+<p>I think I&#39;ve spotted something, if you&#39;re running exactly the following command:</p>
+
+<pre><code>~$  rostopic pub servos std_msgs/UInt16MultiArray &#39;{data:[servo1,servo2]}&#39;
+</code></pre>
+
+<p>Are you trying to publish the contents of the two topics <code>servo1</code> &amp; <code>servo2</code> as a MultiArray message? If so that&#39;s not how this works. The <code>UInt16MultiArray</code> stores an array of base <code>Uint16</code> values not <code>UInt16</code> messages, so you need to give it literal values as shown below:</p>
+
+<pre><code>~$  rostopic pub servos std_msgs/UInt16MultiArray &#39;{data:[400, 300]}&#39;
+</code></pre>
+
+<p>You can try this quickly from the command line to see if it works. To make this work with your publish node too you&#39;ll need to modify it so it publishes a single <code>std_msgs/UInt16MultiArray</code> message containing the two values instead of two separate UInt16 messages.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-11-03 16:07:07 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

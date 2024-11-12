@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>how to save and read / load a trajectory - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/372866">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>how to save and read / load a trajectory</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98440/how-to-save-and-read-load-a-trajectory">https://robotics.stackexchange.com/questions/98440/how-to-save-and-read-load-a-trajectory</a>.</p>
+        <p>Hi, </p>
+
+<p>I want to capture a trajectory in one run of the program saving it to a file, and try to load the same trajectory the next time. So, actually skipping the <code>move_group.setJointValueTarget(jointVals)</code> or <code>move_group.setPoseTarget(sample_pose)</code> on next execution and trying to read the trajectory points directly from the file.  </p>
+
+<p><strong><em>Why we are looking to this option</em></strong>
+The real robotic arm is available for tests only occasionally for short times. Since planners are random sampling based planners, the planners might compute a different path to the goal point during different runs of the program. At certain times, we noticed that a certain trajectory found and played in <code>rviz</code>, took a different path when executed on the real robotic arm. Since, workspace of the robotic arm have some physical constraints in place, it was not possible to carry out the deviated trajectory execution. An example, a movement went through the negative z-axis before reaching the goal pose. The real robotic arm workspace is constrained that way. Hence, the robotic arm had to be emergency stopped using the red button on the panel. </p>
+
+<p>Below is the code that I use to save the trajectory, where <code>my_plan</code> is the successfully computed plan to the goal pose/joint-space goal. </p>
+
+<pre><code>moveit_msgs::RobotTrajectory path_points;
+  trajectory_msgs::JointTrajectory jt;
+  std::stringstream ss;
+  size_t size_trajectory;
+
+  path_points = my_plan.trajectory_;
+  jt = path_points.joint_trajectory;
+  size_trajectory = jt.points.size();
+
+  for (unsigned i=0; i&lt;size_trajectory; i++)
+  {
+          ss &lt;&lt; &quot;point_index: &quot; &lt;&lt; i &lt;&lt; std::endl
+             &lt;&lt; &quot;positions: &quot;
+             &lt;&lt; &quot;[&quot; &lt;&lt; jt.points[i].positions[0]
+             &lt;&lt; &quot;,&quot; &lt;&lt; jt.points[i].positions[1]
+             &lt;&lt; &quot;,&quot; &lt;&lt; jt.points[i].positions[2]
+             &lt;&lt; &quot;,&quot; &lt;&lt; jt.points[i].positions[3]
+             &lt;&lt; &quot;,&quot; &lt;&lt; jt.points[i].positions[4]
+             &lt;&lt; &quot;,&quot; &lt;&lt; jt.points[i].positions[5]
+             &lt;&lt; &quot;]&quot; &lt;&lt; endl;
+  }
+</code></pre>
+
+<p>My file contains entries of the following form (vector of joint-angles in radians). </p>
+
+<pre><code>point_index: 3
+positions: [-0.286826,-0.120969,0.155815,-0.0343112,-0.139144,0.295076]
+</code></pre>
+
+<p>Next, I read the above file. I parse it and create a <code>std::vector&lt;std::vector&lt;double&gt;&gt; traj_matrix</code> where each row is a joint-configuration vector. And, the total number of rows in this matrix is the total number of points in the original trajectory i.e. <code>size_trajectory</code>. Given each row of this matrix, I calculate the corresponding end-effector pose (forward kinematics). I can save all these poses as waypoints to  compute a cartesian path through these points. Following the tutorial on kinematics, I write the following code: </p>
+
+<pre><code>void SimpleMotionPlanning::computeFK()
+{
+   std::vector&lt;double&gt; joint_values;
+   geometry_msgs::Pose a_pose;
+
+  robot_model_loader::RobotModelLoader robot_model_loader(&quot;robot_description&quot;);
+  robot_model::RobotModelPtr kinematic_model = robot_model_loader.getModel();
+  robot_state::RobotStatePtr kinematic_state(new robot_state::RobotState(kinematic_model));
+  joint_model_group = kinematic_model-&gt;getJointModelGroup(PLANNING_GROUP);
+
+  for (int i = 0; i &lt; this-&gt;traj_matrix.size(); i++)
+  {
+    kinematic_state-&gt;setJointGroupPositions(joint_model_group, traj_matrix[i]);
+    kinematic_state-&gt;enforceBounds();
+    tf::poseEigenToMsg(kinematic_state-&gt;getGlobalLinkTransform(&quot;ee_link&quot;), a_pose);
+    this-&gt;waypoints.push_back(a_pose);
+  }
+
+}
+</code></pre>
+
+<p>Here is the launch file</p>
+
+<pre><code>&lt;launch&gt;
+  &lt;include file=&quot;$(find ur5_moveit_path_planner)/launch/planning_context.launch&quot; &gt;
+    &lt;arg name=&quot;load_robot_description&quot; value=&quot;true&quot; /&gt;
+  &lt;/include&gt;
+
+  &lt;!--
+    first try, in which, we do not have a robot connected. so, we publish fake joint states
+  --&gt;
+&lt;node
+    name=&quot;joint_state_publisher&quot;
+    pkg=&quot;joint_state_publisher&quot;
+    type=&quot;joint_state_publisher&quot;&gt;
+    &lt;param name=&quot;/use_gui&quot; value=&quot;false&quot;/&gt;
+    &lt;rosparam param=&quot;source_list&quot;&gt;[move_group/fake_controller_joint_states]&lt;/rosparam&gt;
+  &lt;/node&gt;
+
+  &lt;node
+    name=&quot;robot_state_publisher&quot;
+    pkg=&quot;robot_state_publisher&quot;
+    type=&quot;state_publisher&quot;
+  /&gt;
+
+  &lt;include file=&quot;$(find ur5_moveit_path_planner)/launch/moveit_rviz.launch&quot;/&gt;
+
+  &lt;!-- Run the main MoveIt! executable without trajectory execution (we do not have controllers configured by default) --&gt;
+  &lt;include file=&quot;$(find ur5_moveit_path_planner)/launch/move_group.launch&quot;&gt;
+    &lt;arg name=&quot;allow_trajectory_execution&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;fake_execution&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;info&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;debug&quot; value=&quot;false&quot;/&gt;
+  &lt;/include&gt;
+
+  &lt;!--
+        including our own motion planning node 
+  --&gt;
+  &lt;arg
+    name=&quot;option&quot;
+    default=&quot;1&quot;
+  /&gt;
+  &lt;node
+    name=&quot;ur5&quot;
+    pkg=&quot;ur5_moveit_path_planner&quot;
+    type=&quot;ur5&quot;
+    respawn=&quot;false&quot;
+    output=&quot;screen&quot;
+    args=&quot;$(arg option)&quot;
+  /&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p></launch></p>
+
+<p><strong><em>What happened</em></strong>
+<code>rviz</code> starts but there appears to be several things out of place</p>
+
+<ul>
+<li><p>the arm shows several movements that
+do not correspond to the original
+trajectory.</p></li>
+<li><p>I read on terminal, &quot;Attempting to follow 33 waypoints for link &#39;ee_link&#39; using a step of 0.010000 m and jump threshold 0.000000 (in global reference frame)
+[ INFO] [1614784138.321026214]: Computed Cartesian path with 202 points (followed 85.858586% of requested trajectory)&quot;.</p></li>
+<li><p>The original trajectory that I saved,
+I can as well assign this to
+<code>my_plan.trajectory</code> when I am
+loading it from the file instead of
+computing <code>FK</code> and <code>waypoints</code>. But,
+I have only two attributes available,
+one is <code>joint_names</code>, and the other is
+<code>points</code>. I do not have header. As for
+the points, I saved only the
+positions. I need to save also the
+rest of the information ?</p></li>
+</ul>
+
+<p>trajectory<em>msgs/JointTrajectory has
+Header header
+string[] joint</em>names
+JointTrajectoryPoint[] points</p>
+
+<p>float64[] positions
+float64[] velocities
+float64[] accelerations
+float64[] effort
+duration time<em>from</em>start</p>
+
+<ul>
+<li>My original launch file is still in
+place, i.e. <code>joint_state_publisher</code> and
+<code>robot_state_publisher</code> among other
+nodes. What kind of nodes I need to
+include in the launch file if I am
+reading trajectory from a file.</li>
+</ul>
+
+<p>Please, share your comments. Does this make sense to load trajectories in this way. For current work, we have fixed scenarios, i.e., scene does not changes and obstacles are also static. </p>
+
+<p>thanks, </p>
+
+<p>zahid</p>
+
+        <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-02-26 12:01:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I can&#39;t make a connection between the title &quot;How to save/read/load a trajectory&quot; and the question at the end of the post &quot;Is there a direct way to convert Eigen::Affine3d to geometry_msgs::Pose&quot;. Please limit your posts to one question as much as possible and provide background for that question. Otherwise users will not be able to find your question if they have the same problem.</p>
+
+<p>In the meantime, conversions between Eigen and geometry_msgs are defined <a href="http://docs.ros.org/en/api/eigen_conversions/html/eigen__msg_8h.html">here</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8631">fvd</a> on 2021-03-01 10:28:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>thank you @fvd for the pointer. I will check it indeed. Actually, I wanted to know if my process concerning saving and loading the trajectory (i.e., different representations on save and loading), was correct, besides other question in the end.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-03-01 12:28:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Your code using the Kinematics API to calculate the end effector position will work, and you can convert between the Eigen and geometry_msg types using <a href="http://docs.ros.org/en/api/eigen_conversions/html/eigen__msg_8h.html">these convenience functions</a>, but you asked if your process is &quot;correct&quot;, and I can&#39;t answer that, since we don&#39;t know what exactly you are aiming to do. As mentioned in your previous post, this site works better if you try to keep questions focused.</p>
+
+<p>Note that while your way of calculating the end-effector position (via forward kinematics) is valid, the move_group also advertises a <a href="https://github.com/ros-planning/moveit/blob/master/moveit_ros/move_group/src/default_capabilities/kinematics_service_capability.cpp#L51"><code>compute_fk</code> service</a> you can use. There is also <a href="https://answers.ros.org/question/11289/read-or-write-message-fromto-file/">this question</a> regarding saving/writing message to/from a file in C++. In Python, you can easily save messages using YAML input/output.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/8631">fvd</a> on 2021-03-01 23:16:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>thanks @fvd, I will look into these ... my purpose was to capture a trajectory in one run of the program,  and try to load the same trajectory the next time. So, actually skipping the <code>move_group.setJointValueTarget(jointVals);</code> or <code>move_group.setPoseTarget(sample_pose);</code>  on next execution and trying to read the trajectory points, then compute FK, get a set of way points and plan a cartesian path through these.  </p>
+
+<pre><code> fraction = move_group.computeCartesianPath(this-&gt;waypoints,
+                                                0.01,  // eef_step
+                                                0.0,   // jump_threshold
+                                               trajectory);
+  my_plan.trajectory_ = trajectory;
+  move_group.execute(my_plan); 
+</code></pre>
+
+<p>It did not work ...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-03-02 09:41:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You don&#39;t say why or how it did not work, but you shouldn&#39;t have to calculate a cartesian path through the trajectory – the points are already close enough for the robot to execute the trajectory. Just make sure (!) that the robot starts in the same joint configuration as the trajectory, or your robot will attempt to move there at max speed and be dangerous.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8631">fvd</a> on 2021-03-02 19:49:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thanks @fvd
+I will make an edit to the question and elaborate.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-03-03 06:31:26 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>As an alternaive;
+you don&#39;t need &quot;ros&quot; after taking and saving angles,
+just send angles to the motors with &quot;time&quot;</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/45833">omeranar1</a> on 2021-03-02 00:22:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

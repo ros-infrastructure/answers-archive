@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>translate between tf within a single robot, odometry on moving part. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/369153">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>translate between tf within a single robot, odometry on moving part.</h2>
+      <div class="question">
+        <p>Hi there everyone, I hope my question is understandable and answerable.</p>
+
+<p>Before I get to my question, I&#39;ll  attempt to give some background to help frame it. I have built an articulated four wheel robot. I have designed an accurate 3D model and created a URDF for it. I have two quadrature encoders (one on each <strong>non</strong> driven front wheels), its rear wheel drive via differental. My plan is to use these encoders to calculate odometry for the base<em>link. The base</em>link is the center pin which the machine articulates around.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16102296119871275.png" alt="image description"></p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16102296238181039.png" alt="image description"></p>
+
+<p>Now my problem is, when you articulate, all four wheel move in different directions. If your articulating to the left for example (as shown in images), the right hand front wheel rolls forward and the left hand front wheel rolls backwards and the opposite for the rear section. The center pin moves outwards a bit because the robot is bending in half.</p>
+
+<p>So here&#39;s the question, since I have the URDF and a joint<em>state</em>publisher running which is being updated from the appropriate joint angles of the robot from various nodes, is it possible to translate these encoders position/distance (from front wheels) back to base_link (center) to build odometry?</p>
+
+<p>I have this odometry file which I manually calculated the odom, based on center pin angle and encoder distance traveled, which works ok, but only for one encoder and not as accurate as my new URDF model would be and if i used robot<em>localization i could generate two odoms and combine. Also if one wheel gets stuck and cant turn freely, the position of robot will be wrong, but with two encoders the other wheel&#39;s odometry would still be tracking and correctly positioning the base</em>link center pin.</p>
+
+<p><strong>odometry.py</strong></p>
+
+<pre><code># file not complete, only the calculation part shown for clarity
+   while not rospy.is_shutdown():
+     last_time = current_time
+     rospy.sleep(0.05)
+     current_time = rospy.Time.now()
+
+     # read current articulation angle for center pin
+     angle_new, success, raw = drive.getAngle()
+     if angle_new &gt;= -0.5:
+       angle = angle_new
+     else:
+       rospy.loginfo(&quot;angleGet failed: %s raw %s&quot;, angle_new, raw)
+
+     # read current distance travelled from front right encoder
+     #  note: each time the distance is read its automatically reset to zero by &#39;simple_drive&#39; node
+     dist = drive.readDistance(True)
+
+     # Create all variables for odometry
+     # first theta angle from simple_drive
+     phi = angle
+     dt = (current_time - last_time).to_sec()
+     vel = dist / dt
+
+     # update our robot model
+     model_joints.header.stamp = current_time
+     artic_angle = -1 * phi
+
+     # joint state publisher updates model joints positions
+     model_joints.position = [-artic_angle,0.0,vel,vel,artic_angle,vel,vel]
+     pub.publish(model_joints)
+
+     # if the articulation angle approaches zero, turning radius approaches infinity
+     if phi &lt; 0.01 and phi &gt; -0.01:
+       delta_x = dist * cos(th)
+       delta_y = dist * sin(th)
+       delta_th = 0
+     else:
+       # turn_radius &#39;ra&#39;
+       turn_radius = (centre_to_front + (centre_to_rear / cos(phi))) / tan(phi)
+       # thetaA angle
+       phiA = atan((centre_to_front/turn_radius))
+       # then velocity or omega &#39;w&#39;
+       vth = vel / (turn_radius + front_centre_to_wheel)
+
+       # compute odometry in a typical way given the velocities of the robot
+       delta_x = -vth * centre_to_front * cos(th + phiA) * dt + vth * turn_radius * sin(th + phiA) * dt
+       delta_y = vth * centre_to_front * sin(th + phiA) * dt + vth * turn_radius * cos(th + phiA) * dt
+       delta_th = vth * dt
+
+     x += delta_y
+     y += delta_x
+     th -= delta_th
+
+     # since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+     odom_quat = tf.transformations.quaternion_from_euler(0, 0, th)
+
+     # first, we&#39;ll publish the transform over tf
+     odom_broadcaster.sendTransform((x, y, 0.0),odom_quat,current_time,&quot;base_link&quot;,&quot;odom&quot;)
+
+     # next, we&#39;ll publish the odometry message over ROS
+     odom = Odometry()
+     odom.header.stamp = current_time
+     odom.header.frame_id = &quot;odom&quot;
+
+     # set the position
+     odom.pose.pose = Pose(Point(x, y, 0.0), Quaternion(*odom_quat))
+
+     # set the velocity
+     odom.child_frame_id = &quot;base_link&quot;
+     odom.twist.twist.linear.x = vx
+     odom.twist.twist.linear.y = vy
+     odom.twist.twist.angular.z = vth
+
+     # publish the message
+     odom_pub.publish(odom)
+</code></pre>
+
+<p>I looked into using &quot;<a href="http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20listener%20%28Python%29">Writing a tf listener (Python)</a>&quot; to see if I could translate from front wheel encoder back to base_link center pin, but I kind of got lost with what to do with the returned items and how these should be added/subtracted to build odom. I would have thought that because I have TF frames for all the parts it should simple be a matter of adding or subtracting them to translate a distance traveled at the front wheel back to a distance traveled a the center pin, hopefully :)</p>
+
+<p>Any help would be much appreciated, thanks in advance.
+P.S I&#39;m running ROS Kinetic on Ubunut on a Raspberry Pi3 using UbiquityRobotics pi image.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/52334">Zonared</a> on 2021-01-09 08:37:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please attach your images to the post itself, instead of linking to a Google drive share.</p>
+
+<p>If (or <em>when</em>) your share disappears, this question (and any potential answers) will be much more difficult to understand.</p>
+
+<p>I&#39;ve given you sufficient karma.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-01-09 11:58:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I appreciate that linking to Google drive is not a preferred option but at the time I didn&#39;t have enough karma points. Thanks for allowing me to upload images.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52334">Zonared</a> on 2021-01-09 17:02:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi everyone, I was just wondering if anybody had had any suggestions for this question? Thanks again.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52334">Zonared</a> on 2021-01-13 05:56:16 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

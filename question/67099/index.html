@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>pcl detecting planes in the map - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/67099">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>pcl detecting planes in the map</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/52693/pcl-detecting-planes-in-the-map">https://robotics.stackexchange.com/questions/52693/pcl-detecting-planes-in-the-map</a>.</p>
+        <p>I am new to pcl, i would like to detect/segment all the planar surfaces ex: tables.
+I tried the tutorial :<a href="http://pointclouds.org/documentation/tutorials/extract_indices.php#extract-indices">http://pointclouds.org/documentation/tutorials/extract_indices.php#extract-indices</a> </p>
+
+<p>and used the extracted points to visualize  in rviz but i don not see the planar surfaces clearly. I guess i am displaying wrong points ..</p>
+
+<p>Could someone explain that tutorial or tell how can i detect planar surfaces in pcl2 format and further use those pcl2 ??</p>
+
+<p>Update:
+I have attached the code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+// PCL specific includes
+#include &lt;pcl/ros/conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;iostream&gt;
+#include &lt;pcl/ModelCoefficients.h&gt;
+#include &lt;pcl/io/pcd_io.h&gt;
+#include &lt;pcl/sample_consensus/method_types.h&gt;
+#include &lt;pcl/sample_consensus/model_types.h&gt;
+#include &lt;pcl/segmentation/sac_segmentation.h&gt;
+#include &lt;pcl/filters/voxel_grid.h&gt;
+#include &lt;pcl/filters/extract_indices.h&gt;
+ros::Publisher pub;
+
+void process_cloud (const sensor_msgs::PointCloud2ConstPtr&amp; input)
+{
+  // ... do data processing
+
+sensor_msgs::PointCloud2::Ptr cloud_blob (new sensor_msgs::PointCloud2), cloud_filtered_blob (new sensor_msgs::PointCloud2);
+pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud_filtered (new pcl::PointCloud&lt;pcl::PointXYZ&gt;), cloud_p (new pcl::PointCloud&lt;pcl::PointXYZ&gt;), cloud_f (new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+sensor_msgs::PointCloud2::Ptr final_cloud (new sensor_msgs::PointCloud2);
+
+
+  // Create the filtering object: downsample the dataset using a leaf size of 1cm
+  pcl::VoxelGrid&lt;sensor_msgs::PointCloud2&gt; sor;
+
+  sor.setInputCloud (input); // input is the pcl2 received from /depthcam.
+  sor.setLeafSize (0.01f, 0.01f, 0.01f);
+  sor.filter (*cloud_filtered_blob);
+
+  // Convert to the templated PointCloud
+  pcl::fromROSMsg (*cloud_filtered_blob, *cloud_filtered);
+
+  std::cerr &lt;&lt; &quot;PointCloud after filtering: &quot; &lt;&lt; cloud_filtered-&gt;width * cloud_filtered-&gt;height &lt;&lt; &quot; data points.&quot; &lt;&lt; std::endl;
+
+  // Write the downsampled version to disk
+  pcl::PCDWriter writer;
+  writer.write&lt;pcl::PointXYZ&gt; (&quot;downsampled.pcd&quot;, *cloud_filtered, false);
+
+  pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients ());
+  pcl::PointIndices::Ptr inliers (new pcl::PointIndices ());
+
+  // Create the segmentation object
+  pcl::SACSegmentation&lt;pcl::PointXYZ&gt; seg;
+
+  // Optional
+  seg.setOptimizeCoefficients (true);
+
+  // Mandatory
+  seg.setModelType (pcl::SACMODEL_PLANE);
+  seg.setMethodType (pcl::SAC_RANSAC);
+  seg.setMaxIterations (1000);
+  seg.setDistanceThreshold (0.01);
+
+  // Create the filtering object
+  pcl::ExtractIndices&lt;pcl::PointXYZ&gt; extract;
+
+  int i = 0, nr_points = (int) cloud_filtered-&gt;points.size ();
+  // While 30% of the original cloud is still there
+  while (cloud_filtered-&gt;points.size () &gt; 0.3 * nr_points)
+  {
+    // Segment the largest planar component from the remaining cloud
+    seg.setInputCloud (cloud_filtered);
+    seg.segment (*inliers, *coefficients);
+    if (inliers-&gt;indices.size () == 0)
+    {
+      std::cerr &lt;&lt; &quot;Could not estimate a planar model for the given dataset.&quot; &lt;&lt; std::endl;
+      break;
+    }
+
+    // Extract the inliers
+    extract.setInputCloud (cloud_filtered);
+    extract.setIndices (inliers);
+    extract.setNegative (false);
+    extract.filter (*cloud_p);
+    std::cerr &lt;&lt; &quot;PointCloud representing the planar component: &quot; &lt;&lt; cloud_p-&gt;width * cloud_p-&gt;height &lt;&lt; &quot; data points.&quot; &lt;&lt; std::endl;
+
+    std::stringstream ss;
+    ss &lt;&lt; &quot;new_pcl&quot; &lt;&lt; i &lt;&lt; &quot;.pcd&quot;;
+    writer.write&lt;pcl::PointXYZ&gt; (ss.str (), *cloud_p, false);
+
+    // Create the filtering object
+    extract.setNegative (true);
+    extract.filter (*cloud_f);
+    cloud_filtered.swap (cloud_f);
+    i++;
+  }
+
+
+  // conbert to sensormsg type
+  pcl::toROSMsg (*cloud_p, *final_cloud);
+
+//sensor_msgs::PointCloud2 output;
+  // Publish the data
+ pub.publish (final_cloud); // publish the new pcl
+}
+
+int
+main (int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init (argc, argv, &quot;pcl_tabletop&quot;);
+  ros::NodeHandle nh;
+
+  // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe (&quot;depthcam&quot;, 1, process_cloud); // depthcam is the pcl2 received from kinect(actuallt from morse simulator)
+
+  // Create a ROS publisher for the output point cloud
+  pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt; (&quot;new_pcl&quot;, 1); // new pcl having only planar points
+
+  // Spin
+  ros::spin ();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-11 06:01:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I guess this question would be more suited to the <a href="http://pointclouds.org/mailman/listinfo/pcl-users">pcl user mailinglist</a> as it is not really related to ROS.</p>
+
+<p>Did you have a look at the <a href="http://www.pointclouds.org/documentation/tutorials/planar_segmentation.php">plane segmentation tutorial</a> of PCL?</p>
+
+<hr>
+
+<p>Based on the information so far, it could be lots of reasons (wrong computation, error in publishing the result, ...). Can you be a little more specific about what doesn&#39;t work? What exactly do you see in RViz (no points / wrong points / &quot;almost right points&quot;)? Can you verify that PCL segments the correct points, e.g. by displaying the result in PCL visualizer? Adding the code for publishing to your question might also help.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4292">Philip</a> on 2013-07-11 10:03:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi, thank you for the reply. Even though its about pcl i am not able to visualise in rviz. The tutorial is working fine but i have modified to read pcl from a ros topic and and further publish the extracted points as a ros topic. When i visualize in rviz i do not see proper planes detected</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-12 03:35:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i updated the question with code. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-12 09:50:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I reformatted your code for easier readability. Can you give information about what doesn&#39;t work (see my question)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4292">Philip</a> on 2013-07-12 12:08:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks, just now i tried similar example using ransac and visulaized in pcl visualizer as you said.I will update the question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-12 12:11:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am unable to upload snapshots saying insufficient badges can i send it by email ?? please give ur id
+thanks </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-12 12:19:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Please use an image/file sharing service to do this until you earn more karma. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2013-07-12 13:14:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks , here is the drop box link : <a href="http://db.tt/lPzmAU1f">http://db.tt/lPzmAU1f</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-12 13:45:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Strange! I fear that I have no immediate idea... can you verify that the final_cloud which you send to RViz is created correctly? E.g. display the number of points by something like printf(final_cloud.fields.count)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4292">Philip</a> on 2013-07-12 22:52:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I saw sometimes i could see some pcl shown in rviz but not always... i guess something wrong when converting to ros msg(correct when displayed in pcl visualiser but not in rviz).. or something with publishing rate... since pcl is continuousy received and published..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-13 09:28:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i think problem is with publishing, nothing is published... see the attached snapshots <a href="http://db.tt/OwnmhQG4">http://db.tt/OwnmhQG4</a>
+Now i created harcoded pcl then extracted plane.. was able to see it in pcl visualiser but not in rviz coz nothing is published.... any idea ??</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-13 10:17:06 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I think the problem is in publishing... when i tried to publish with buffer size 1000(earlier it was 1) .. i saw output put in rviz... but this did not happen always adding more confusion ;-p The pcl is not published continuously... whenever i close the pcl visualiser window(it restarts again) the pcl was published( rostopic echo showing the data in this situation and after this no message published ..again have to close pcl visualiser)... </p>
+
+<p>so the problem is <strong>pcl is not published continuously</strong> ... so any idea how to publish continuously (not to forget that i am already publishing inside the callback function of a subscriber making it continuous or am i wrong )... </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5289">kk</a> on 2013-07-13 12:26:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>If you use the code you posted on dropbox, this is the correct behaviour. What happens is the following: You enter the callback, pcl visualizer spins until the viewer is closed. Afterwards, the publisher is invoked. Replace &#39;while (!viewer-&gt;wasStopped ()) {...}&#39; by a simple &#39;viewer-&gt;spinOnce (100)&#39;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4292">Philip</a> on 2013-07-14 06:04:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi, Yeah you are right, i did not notice that pcl visualiser is running continuously ;-p Further i don not use it so removed :) And major issue was with the buffer size of the publisher... Now its all working fine thanks a ton :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-17 07:22:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>any idea on this : <a href="http://answers.ros.org/question/67492/marker-array-not-visible-in-rviz-but-is-getting-published/">http://answers.ros.org/question/67492/marker-array-not-visible-in-rviz-but-is-getting-published/</a>  ??</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5289">kk</a> on 2013-07-17 07:22:40 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

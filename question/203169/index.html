@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>TF updating very slowly - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/203169">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>TF updating very slowly</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/65839/tf-updating-very-slowly">https://robotics.stackexchange.com/questions/65839/tf-updating-very-slowly</a>.</p>
+        <p>Hey everyone,</p>
+
+<p>I am trying to publish Pose messages based on distances I get from ar<em>track</em>alvar. I have static transforms which relate the markers to the map. These static transforms broadcast at 100Hz. I take the position and orientation data from the marker message and create a transform from it. I then broadcast that transform (I can&#39;t use the one supplied by ar<em>track</em>alvar so I create my own). I then listen for a transform from the map to my robot in order to get my position and orientation with respect to the map, and then publish that as a pose message. This works fine, but the problem is that the poses are published with an intolerable delay. After moving my robot, it can take up to a minute for the pose to update. To be clear, poses continue to be published, but they reflect the old position of the data. I used <code>rosrun tf tf_echo</code>to track the tfs, and I found that the tf is reflecting old data also.</p>
+
+<p>Additionally, I see a lot of errors saying: </p>
+
+<blockquote>
+<p>Lookup would require extrapolation
+into the past. Requested time XXXXXX
+but the earliest data is at time
+YYYYYYY, when looking up transform
+from frame [thor] to frame [map].</p>
+</blockquote>
+
+<p>Despite my constant broadcasting and the static transforms.</p>
+
+<p>Things I have tried:</p>
+
+<p>I have gotten rid of the waitForTransform call in case that was adding some latency.
+I have reduced the tag subscribers buffer to 1 to ensure processing of only the most recent message.
+I have added extra AsyncSpinners.</p>
+
+<p>These had no effects. Does anyone have any idea why it is taking the tfs so long to broadcast?</p>
+
+<p>Relevant code:</p>
+
+<pre><code>//Figure out which tag we are looking at.
+    int tagID = msg-&gt;markers[0].id;
+    std::stringstream ss;
+    ss &lt;&lt; &quot;hsmrs/marker_&quot; &lt;&lt; tagID;
+    std::string markerFrameID = ss.str();
+
+    //Manually create transform from robot to tag
+    tf::Transform transform;
+
+    double x, y;
+    x = msg-&gt;markers[0].pose.pose.position.x;
+    y = msg-&gt;markers[0].pose.pose.position.y;
+
+    tf::Quaternion q;
+    tf::quaternionMsgToTF(msg-&gt;markers[0].pose.pose.orientation, q);
+
+    transform.setOrigin( tf::Vector3(x, y, 0.0) );
+    transform.setRotation(q);
+
+    //Broadcast transform
+    ROS_INFO(&quot;Broadcasting transform!&quot;);
+    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), markerFrameID, &quot;thor&quot;));
+    ROS_INFO(&quot;Transform broadcasted!&quot;);
+
+    //Listen for transform from map to robot
+    ROS_INFO(&quot;Listening for transform!&quot;);
+    tf::StampedTransform mapTransform;
+    try{
+                listener.waitForTransform(&quot;map&quot;, &quot;thor&quot;, ros::Time(0) ros::Duration(0.1));
+        listener.lookupTransform(&quot;map&quot;, &quot;thor&quot;,
+            ros::Time(0), mapTransform);
+        ROS_INFO(&quot;Transform heard&quot;);    
+    }
+    catch (tf::TransformException &amp;ex) {
+        ROS_ERROR(&quot;%s&quot;,ex.what());
+        return;
+    }
+
+    //Unpack position and orientation
+    double map_x, map_y;
+    map_x = mapTransform.getOrigin().x();
+    map_y = mapTransform.getOrigin().y();
+
+    geometry_msgs::Quaternion quat;
+    tf::quaternionTFToMsg(mapTransform.getRotation(), quat);
+
+    //Publish pose as geometry message
+    geometry_msgs::Pose pose;
+    pose.position.x = map_x;
+    pose.position.y = map_y;
+    pose.orientation = quat;
+
+    pose_pub.publish(pose);
+</code></pre>
+
+<p>EDIT:</p>
+
+<p>The static publisher was running on a separate computer. By running it on the robot this problem disappeared. But I need it to work on the workstation computer. How can I make it work?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/5183">Robocop87</a> on 2015-02-16 02:28:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>EDIT:</p>
+
+<p>The static publisher was running on a separate computer. By running it on the robot this problem disappeared. But I need it to work on the workstation computer. How can I make it work?</p>
+</blockquote>
+
+<p>Have you checked the clocks on both computers? TF has a temporal aspect to it, and if the clocks are not in sync, things start to go wrong.</p>
+
+<p>From <a href="http://wiki.ros.org/Clock#Introduction">wiki.ros.org/Clock - Introduction</a>:</p>
+
+<blockquote>
+<p>When using wall-clock time on multiple machines, it is important that you synchronize time between them. ROS does not provide this functionality as there are already well-established methods (e.g. <a href="http://www.ntp.org/">ntp</a>) for doing this. If you do not synchronize the wall-clocks of multiple machines, they will not agree on temporal calculations like those used in <a href="http://wiki.ros.org/tf">tf</a>.</p>
+</blockquote>
+
+<p>See also <a href="http://wiki.ros.org/ROS/NetworkSetup#Timing_issues.2C_TF_complaining_about_extrapolation_into_the_future.3F">wiki.ros.org/ROS/NetworkSetup - Timing issues, TF complaining about extrapolation into the future?</a>, and <a href="http://answers.ros.org/question/30652/why-robot-needs-to-set-ntp/">Why robot needs to set NTP?</a> fi.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2015-02-16 04:10:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;ll look into this, that may very well be the problem!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5183">Robocop87</a> on 2015-02-16 11:25:42 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>how are you setting up your ROS_IP and ROS_HOSTNAME? Are you using an IP or a name to be resolved? In my experience, I had better results using directly the IPs numbers, you can give it a try.
+you can always review your <a href="http://wiki.ros.org/ROS/NetworkSetup">network setup</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1112">Procópio</a> on 2015-02-16 05:00:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I am using direct IP addresses, no names.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5183">Robocop87</a> on 2015-02-16 11:26:04 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

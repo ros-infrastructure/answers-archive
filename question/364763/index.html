@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Does move_base_flex global replanning constantly require GetPathAction state calls? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/364763">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Does move_base_flex global replanning constantly require GetPathAction state calls?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97488/does-move-base-flex-global-replanning-constantly-require-getpathaction-state-cal">https://robotics.stackexchange.com/questions/97488/does-move-base-flex-global-replanning-constantly-require-getpathaction-state-cal</a>.</p>
+        <p>Hi,
+I am using Ros Melodic on Ubuntu 18.04.</p>
+
+<p>Am I correct in my understanding that for global planners to re-plan with a given frequency, a concurrent GetPathAction state is required to be existing even alongside the ExePathAction? Meaning, is there no intrinsic calling of GetPathAction repeatedly by simply setting a planner frequency? And that my state machine should explicitly be modeled to re-plan (when required) by calling GetPathAction repeatedly?</p>
+
+<p>Thank you for the clarifications in advance!!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/32094">harshal</a> on 2020-11-04 07:52:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Found the following <a href="https://github.com/magazino/move_base_flex/issues/145">issue #145</a> which pretty much answers my own question. Any further details/insight in this is still appreciated!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32094">harshal</a> on 2020-11-05 07:33:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Also refer to issues <a href="https://github.com/magazino/move_base_flex/issues/70">#70</a> and <a href="https://github.com/magazino/move_base_flex/issues/64">#64</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32094">harshal</a> on 2020-11-05 07:34:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Tider&#39;s method uses the node reuse approach(very ROSy?!) to run GetPath and ExePath simultaneously. Plus, as he points out the code segments only stop the Controller when cancelling goal, not when updating the Goal as discussed in issues #64, #70 and #145.</p>
+
+<p>TO SUMMARIZE: Another state needs to be running in parallel that Gets an updated path while the ExePath is working for the path to be updated. This doesn&#39;t need calling ExePath again as long as the same controller and concurrency slot is used.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32094">harshal</a> on 2020-11-06 07:00:49 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This method works.  Run the tutorial smacc  program twice, so there will be two seperate statemachine node. And whenever you publish a new goal, one of them will work to reach the goal and the other one will be preempted!
+I reviesed the program slightly as below:</p>
+
+<pre><code>  #!/usr/bin/env python3
+import rospy
+import smach
+import smach_ros
+
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
+
+from mbf_msgs.msg import ExePathAction
+from mbf_msgs.msg import GetPathAction
+from mbf_msgs.msg import RecoveryAction
+
+import threading
+
+def main():
+    rospy.init_node(&#39;mbf_state_machine&#39;,anonymous=True)
+
+    # Create SMACH state machine
+    sm = smach.StateMachine(outcomes=[&#39;succeeded&#39;, &#39;aborted&#39;, &#39;preempted&#39;])
+
+    # Define userdata
+    sm.userdata.goal = None
+    sm.userdata.path = None
+    sm.userdata.error = None
+    sm.userdata.clear_costmap_flag = False
+    sm.userdata.error_status = None
+
+    with sm:
+        # Goal callback for state WAIT_FOR_GOAL
+        def goal_cb(userdata, msg):
+            userdata.goal = msg
+            return False
+
+        # Monitor topic to get MeshGoal from RViz plugin
+        smach.StateMachine.add(
+            &#39;WAIT_FOR_GOAL&#39;,
+            smach_ros.MonitorState(
+                &#39;/move_base_simple/goal&#39;,
+                PoseStamped,
+                goal_cb,
+                output_keys=[&#39;goal&#39;]
+            ),
+            transitions={
+                &#39;invalid&#39;: &#39;GET_PATH&#39;,
+                &#39;valid&#39;: &#39;WAIT_FOR_GOAL&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;
+            }
+        )
+
+        # Get path
+        smach.StateMachine.add(
+            &#39;GET_PATH&#39;,
+            smach_ros.SimpleActionState(
+                &#39;/move_base/get_path&#39;,
+                GetPathAction,
+                goal_slots=[&#39;target_pose&#39;],
+                result_slots=[&#39;path&#39;]
+            ),
+            transitions={
+                &#39;succeeded&#39;: &#39;EXE_PATH&#39;,
+                &#39;aborted&#39;: &#39;WAIT_FOR_GOAL&#39;,
+                &#39;preempted&#39;: &#39;preempted&#39;
+            },
+            remapping={
+                &#39;target_pose&#39;: &#39;goal&#39;
+            }
+        )
+
+        # Execute path
+        smach.StateMachine.add(
+            &#39;EXE_PATH&#39;,
+            smach_ros.SimpleActionState(
+                &#39;/move_base/exe_path&#39;,
+                ExePathAction,
+                goal_slots=[&#39;path&#39;]
+            ),
+            transitions={
+                &#39;succeeded&#39;: &#39;WAIT_FOR_GOAL&#39;,
+                &#39;aborted&#39;: &#39;RECOVERY&#39;,
+                #&#39;preempted&#39;: &#39;preempted&#39;
+                &#39;preempted&#39;: &#39;WAIT_FOR_GOAL&#39;
+            }
+        )
+
+        # Goal callback for state RECOVERY
+        def recovery_path_goal_cb(userdata, goal):
+            if userdata.clear_costmap_flag == False:
+                goal.behavior = &#39;clear_costmap&#39;
+                userdata.clear_costmap_flag = True
+            else:
+                goal.behavior = &#39;straf_recovery&#39;
+                userdata.clear_costmap_flag = False
+
+        # Recovery
+        smach.StateMachine.add(
+            &#39;RECOVERY&#39;,
+             smach_ros.SimpleActionState(
+                &#39;move_base/recovery&#39;,
+                RecoveryAction,
+                goal_cb=recovery_path_goal_cb,
+                input_keys=[&quot;error&quot;, &quot;clear_costmap_flag&quot;],
+                output_keys = [&quot;error_status&quot;, &#39;clear_costmap_flag&#39;]
+            ),
+            transitions={
+                #&#39;succeeded&#39;: &#39;GET_PATH&#39;,
+                &#39;succeeded&#39;: &#39;WAIT_FOR_GOAL&#39;,
+                #&#39;aborted&#39;: &#39;aborted&#39;,
+                &#39;aborted&#39;: &#39;WAIT_FOR_GOAL&#39;,
+                #&#39;preempted&#39;: &#39;preempted&#39;
+                &#39;preempted&#39;: &#39;WAIT_FOR_GOAL&#39;
+            }
+        )
+
+    # Create and start introspection server
+    sis = smach_ros.IntrospectionServer(&#39;smach_server&#39;, sm, &#39;/SM_ROOT&#39;)
+    sis.start()
+
+    # Execute SMACH plan
+    sm_t = threading.Thread(target=sm.execute)
+    sm_t.start()
+    # sm.execute()
+    # Wait for interrupt and stop introspection server
+    rospy.spin()
+    sis.stop()
+    sm.preempt_requested()
+    rospy.loginfo(&quot;wait sm exit!&quot;)
+    sm.request_preempt()
+    sm_t.join()
+
+if __name__==&quot;__main__&quot;:
+    main()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/33025">Tider</a> on 2020-11-04 20:30:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks! But with a new goal and path, does the preempted path execution not stop the robot for an instant(i.e., zero vel msg for the local planner)? </p>
+
+<p>Also, my question is more concerned about replanning related to the same goal (G1, that is not published again). Sorry for any confusion caused!!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32094">harshal</a> on 2020-11-05 06:45:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>During path executinon runtime,setting a new plan would not publish zero velocity (related code: abstract_controller_execution.cpp line 306 &amp; line 326). And whether or not goal is the same, you need to call the planning action with source and dest to get the new plan.  For example, using the script above, you can publish the topic  &#39;/move_base_simple/goal&#39; whenever you want to replan.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33025">Tider</a> on 2020-11-05 19:39:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I see the code part here! Thanks! Also, basically, the stopping behavior I see is a by-product of my implementation, but doesn&#39;t trigger zero velocity when I give a new plan/update plan in the way you describe in the state-machine! Thanks for your help and patience!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32094">harshal</a> on 2020-11-06 06:53:19 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

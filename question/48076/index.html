@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unexplainable Segfault (double free) in templated Subscriber (polling) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/48076">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Unexplainable Segfault (double free) in templated Subscriber (polling)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/45693/unexplainable-segfault-double-free-in-templated-subscriber-polling">https://robotics.stackexchange.com/questions/45693/unexplainable-segfault-double-free-in-templated-subscriber-polling</a>.</p>
+        <p>Hey ROS-Community,</p>
+
+<p>I have a very weird error in the attached templated subscriber class, that happens very(!) seldom but is quite frustrating.</p>
+
+<p>Class:</p>
+
+<pre><code>/*
+ * GenericSubscriber.hpp
+ *
+ *  Created on: Feb 29, 2012
+ *      Author: mriedel
+ */
+
+#ifndef GENERICSUBSCRIBER_HPP_
+#define GENERICSUBSCRIBER_HPP_
+
+#include &lt;telekyb_defines/telekyb_defines.hpp&gt;
+#include &lt;boost/thread/mutex.hpp&gt;
+
+#include &lt;ros/node_handle.h&gt;
+
+namespace TELEKYB_NAMESPACE
+{
+
+template &lt;class T_&gt;
+class GenericSubscriber {
+protected:
+    T_ lastMsg;
+    boost::mutex lastMsgLock;
+
+    // Subscriber
+    ros::Subscriber sub;
+
+    void msgCallback(boost::shared_ptr&lt;T_ const&gt; msg) {
+        boost::mutex::scoped_lock(lastMsgLock);
+        lastMsg = *msg; // copy
+    }
+
+public:
+    GenericSubscriber(ros::NodeHandle handle, const std::string&amp; topicName, int queue_size) {
+        sub = handle.subscribe(topicName, queue_size, &amp;GenericSubscriber&lt;T_&gt;::msgCallback, this);
+    }
+
+    virtual ~GenericSubscriber() {};
+
+    T_ getLastMsg() const {
+        boost::mutex::scoped_lock(lastMsgLock);
+        return lastMsg; // implicit copy. Maybe we can do this more efficient?
+    }
+};
+
+}
+
+#endif /* GENERICSUBSCRIBER_HPP_ */
+</code></pre>
+
+<p>This class enables me to receive generic messages and save the last message in a variable and collect the message with getLastMsg() when needed. Very simple.</p>
+
+<p>Of course it&#39;s not the most efficient way to do this (copying the message twice), but it&#39;s working for our application. However, every once in a while (seldom) my program crashes when calling getLastMsg() (double free). I don&#39;t see where the problem could be located (if in my code or the C++ copy constructor of ROS msgs). Any tips and comments are greatly appreciated.</p>
+
+<p>Thanks!
+Martin</p>
+
+        <div class="owner"><p>Asked by <a href="/users/708">rado0x54</a> on 2012-11-12 04:39:59 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Maybe a multi-threading problem because your lock does nothing. It should be</p>
+
+<pre><code>boost::mutex::scoped_lock lock(lastMsgLock);
+</code></pre>
+
+<p>You need to bind it to a variable, otherwise a temporary object is generated that immediately goes out of scope.</p>
+
+<p>Also, why aren&#39;t you just storing the shared pointer instead of copying the complete message? It is guaranteed that it will never change. I would also let the getLastMsg method return a const reference, not a copy of the message. The updated class would look like this:</p>
+
+<pre><code>template &lt;class T_&gt;
+class GenericSubscriber {
+protected:
+    boost::shared_ptr&lt;const T_&gt; lastMsg;
+    boost::mutex lastMsgLock;
+
+    // Subscriber
+    ros::Subscriber sub;
+
+    void msgCallback(boost::shared_ptr&lt;T_ const&gt; msg) {
+        boost::mutex::scoped_lock lock(lastMsgLock);
+        lastMsg = msg;
+    }
+
+public:
+    GenericSubscriber(ros::NodeHandle handle, const std::string&amp; topicName, int queue_size) {
+        sub = handle.subscribe(topicName, queue_size, &amp;GenericSubscriber&lt;T_&gt;::msgCallback, this);
+    }
+
+    virtual ~GenericSubscriber() {};
+
+    const T_ &amp;getLastMsg() const {
+        boost::mutex::scoped_lock lock(lastMsgLock);
+        return *lastMsg;
+    }
+};
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21">Lorenz</a> on 2012-11-12 05:48:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Oh man, I&#39;m so stupid. I actually use a lot of scoped_locks. No idea how I could forget it here and not even see it. Thanks a million.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/708">rado0x54</a> on 2012-11-12 06:01:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Also thanks for the other suggestions. I&#39;ll implement this right now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/708">rado0x54</a> on 2012-11-12 06:04:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>One more question. Could the const T_&amp; not go out of scope (e.g. a new message overwrite the shared_pointer and it frees the space) while an external thread is trying to access it? Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/708">rado0x54</a> on 2012-11-12 06:25:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Right. I missed that. Then you better either return a shared pointer or make a shallow copy of the object.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21">Lorenz</a> on 2012-11-12 06:27:40 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

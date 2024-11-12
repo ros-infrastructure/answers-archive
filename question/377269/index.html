@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>A less-asyncronous way of using ROS2 action clients? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377269">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>A less-asyncronous way of using ROS2 action clients?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98946/a-less-asyncronous-way-of-using-ros2-action-clients">https://robotics.stackexchange.com/questions/98946/a-less-asyncronous-way-of-using-ros2-action-clients</a>.</p>
+        <p>Hello, I am a little while into developing my first ROS2 project as someone totally new to ROS. My last couple of posts may provide some useful context of how I arrived at this issue but essentially my &#39;robot&#39; has a set of actions and services for reading sensors or operating actuators, and then I use nodes without a real defined ROS type (such as client) which I have been calling &#39;drivers&#39; to then put all the needed clients and subscribers needed to perform an operation into. I like this design because by just using some additional protocol within the server to identify the clients it is fairly easy to control access so that multiple drivers(clients) can use the same service or action in a coordinated manner as not to conflict. I am not sure if there&#39;s any issues with this approach, I would be happy to hear them, but it just seemed like the best approach I could come up with on my own.</p>
+
+<p>This is working just fine when it comes to service clients in the &#39;drivers&#39; but I am looking for a &#39;less-asynchronous&#39; way of using the action clients than what the tutorial demonstrates, using something like the spin<em>until</em>future_complete method but I have not been successful in getting the response back.</p>
+
+<p>The operation would look something like this:</p>
+
+<p>1) move to position 1 (action)</p>
+
+<p>2) read a set of 3 sensors and post to topics (services)</p>
+
+<p>3) move to position 2 (action)</p>
+
+<p>4) read sensors again, etc...</p>
+
+<p><strong>so I do not need to do anything in this node while the action is happening, just wait for it to finish.</strong> Using service clients it looks something like this:</p>
+
+<pre><code>    # set light level
+def set_light(self, light_number, power_level):
+    # create service request
+    request = LightSet.Request()
+    request.light_number = light_number
+    request.power_level = power_level
+    request.driver_status = self.driver_status
+
+    # send request
+    future = self.set_light_client.call_async(request)
+    # recieve response
+    rclpy.spin_until_future_complete(self.set_light_node, future)
+    # processing
+    if(future.result() is not None):
+        result: LightSet.Response = future.result()
+        if(result.success):
+            self.get_logger().info(&#39;light {} set to {}&#39;.format(light_number, result.confirm_level))
+        else:
+            self.get_logger().error(&#39;light setting failed&#39;)
+    else:
+        self.get_logger().error(&#39;light service call failed: {}&#39;.format(future.exception()))
+</code></pre>
+
+<p>and my interpretation of using action clients in this manner has looked something like this but it does not work as I can only seem get ClientGoalHandle objects back and not the actual response</p>
+
+<pre><code>    # move to target
+def move_to_target(self, target):
+    # send goal to move x action server
+    # create goal
+    goal_msg = AxisControl.Goal()
+    goal_msg.driver_status = self.driver_status
+    goal_msg.target = target
+    # wait
+    self.move_x_client.wait_for_server()
+    # send request
+    future = self.move_x_client.send_goal_async(goal_msg)
+    # recieve response
+    rclpy.spin_until_future_complete(self.move_x_node, future)
+    # process response
+    if future.result() is not None:
+        # self.get_logger().info(future.result)
+        result: AxisControl.Result() = future.result().result
+        if(result.complete):
+            self.get_logger().info(&#39;move finished&#39;)
+            return True
+        else:
+            self.get_logger().info(&#39;move failed&#39;)
+            return False
+</code></pre>
+
+<p>Using the callback based approach everything seems to work OK but I am just finding it to be much more of a pain to program a simple synchronous operation like this than it seems like it should be, perhaps I am just over thinking it. Is it possible to use action clients in this synchronous manner or do I need to use the callback approach? If it has to be callback could you maybe show/link an example of what a simple, multi step operation looks like with that? </p>
+
+<p>Additionally, I attempted using the &#39;send_goal&#39; method but all documentation suggests I should not be using these synchronous clients (why are they there?) but regardless, it did not get me the action response either. </p>
+
+        <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-04-28 17:36:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I feel your pain, the fact that there isn&#39;t a simpler wrapper for actions and services for &quot;synchronous&quot; use-cases I think will be a challenge for many users. Luckily, in Nav2 we&#39;ve been working on some simple wrappers for our own internal use that can be leveraged in other packages.</p>
+
+<p><a href="https://github.com/ros-planning/navigation2/blob/main/nav2_util/include/nav2_util/service_client.hpp">https://github.com/ros-planning/navigation2/blob/main/nav2_util/include/nav2_util/service_client.hpp</a></p>
+
+<p>This gives you a much more Simple Service Client interface (rather than dealing with nasty futures and such). Just create the object and call <code>invoke</code> with your request and returns the response. There&#39;s also a <code>wait</code> function to make sure its online, but otherwise handles the rest for you.  </p>
+
+<p>We unfortunately don&#39;t have a Simple Action Client at the moment, but I&#39;d be more than happy to merge in one in the nav2_utils package that could be used by yourself and others in the future to help fill that niche. One way to get a &quot;simpler&quot; call though rather than spinning is to leverage the <code>SendGoalOptions</code> class:</p>
+
+<pre><code>  auto send_goal_options = rclcpp_action::Client&lt;ClientT&gt;::SendGoalOptions();
+  send_goal_options.result_callback =
+    std::bind(&amp;WaypointFollower::resultCallback, this, std::placeholders::_1);
+  send_goal_options.goal_response_callback =
+    std::bind(&amp;WaypointFollower::goalResponseCallback, this, std::placeholders::_1);
+  future_goal_handle_ =
+    nav_to_pose_client_-&gt;async_send_goal(client_goal, send_goal_options);
+</code></pre>
+
+<p>Whereas you can set callbacks for completion / goal acceptance / feedback rather than spinning until future complete. If the node you used to create the action client is just free spinning (or <code>spin_some</code> in some loop), then you don&#39;t need to worry too much about the async-ness, just wait for a callback result. Its still not as ideal as &quot;send goal -&gt; wait -&gt; get result&quot; blocking in the code, but its also probably not the best way to structure your software for an action (though I won&#39;t pretend I haven&#39;t done that myself).</p>
+
+<p>Down the line, if there&#39;s interest, I&#39;d be more than happy to move the Simple clients over to ROS2 client libraries directly. They really only live in Nav2 because we needed them so we built them.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25940"></a> on 2021-04-29 13:45:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks so much for your thoughtful answer, I would most definitely be interested in a simpler action wrapper if it were released. Just for clarification when you say &#39;free spinning&#39; does this mean just constantly spinning from main rather than the start/stop method shown in my code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-05-03 22:33:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, that’s what I mean</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2021-05-04 12:28:16 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I found the following way using asynchronous callbacks modified from <a href="https://docs.ros.org/en/foxy/Tutorials/Actions/Writing-a-Py-Action-Server-Client.html">the docs</a>:</p>
+
+<pre><code>import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+
+from action_msgs.msg import GoalStatus
+from action_tutorials_interfaces.action import Fibonacci
+
+
+class FibonacciActionClient(Node):
+
+    def __init__(self):
+        super().__init__(&#39;fibonacci_action_client&#39;)
+        self._action_client = ActionClient(self, Fibonacci, &#39;fibonacci&#39;)
+        self.status = GoalStatus.STATUS_EXECUTING
+
+    def send_goal(self, order):
+        self.status = GoalStatus.STATUS_EXECUTING
+        goal_msg = Fibonacci.Goal()
+        goal_msg.order = order
+
+        self._action_client.wait_for_server()
+
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info(&#39;Goal rejected :(&#39;)
+            return
+
+        self.get_logger().info(&#39;Goal accepted :)&#39;)
+
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        self.get_logger().info(&#39;Result: {0}&#39;.format(result.sequence))
+        self.status = GoalStatus.STATUS_SUCCEEDED
+
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        self.get_logger().info(&#39;Received feedback: {0}&#39;.format(feedback.partial_sequence))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    action_client = FibonacciActionClient()
+    action_client.send_goal(10)
+
+    while action_client.status != GoalStatus.STATUS_SUCCEEDED:
+        rclpy.spin_once(action_client)
+
+    action_client.get_logger().info(&#39;All done!&#39;)
+    action_client.destroy_node()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>You can also use this method to make successive calls to <code>action_client.send_goal()</code> and it will wait until each goal is done before the next goal is called.  You just have to have the <code>while</code> loop inside the <code>for</code> loop, i.e:</p>
+
+<pre><code>def main(args=None):
+    rclpy.init(args=args)
+    action_client = FibonacciActionClient()
+
+    goals = [10, 11, 12, 13, 14, 15]
+
+    for goal in goals:
+
+        action_client.send_goal(goal)
+
+        while action_client.status != GoalStatus.STATUS_SUCCEEDED:
+            rclpy.spin_once(action_client)
+
+    action_client.get_logger().info(&#39;All done!&#39;)
+    action_client.destroy_node()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/74053">synaptic</a> on 2021-05-03 13:42:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>thanks a lot for your answer! I think this is exactly what I am looking for, I will work on integrating it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61140">masynthetic</a> on 2021-05-03 22:30:00 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

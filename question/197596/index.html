@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>A problem in transfering neagtive values to Arduino via std_msgs/Float64 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/197596">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>A problem in transfering neagtive values to Arduino via std_msgs/Float64</h2>
+      <div class="question">
+        <p>Hi all!
+I&#39;ve got a problem in Indigo during transferring negative values to Arduino using &quot;geometry<em>msgs/Twist&quot;.
+A project with the simple functionality - a PS3 joystick is sending  data via &quot;joy&quot; topic to my node (based on turtlebot</em>teleop) using &quot;sensor<em>msgs/Joy&quot;. In case of LB1 pressed, my node is sending data from the left joystick to an Arduino controller using &quot;geometry</em>msgs/Twist&quot;. For example, in case joystick is moved to maximum left - it&#39;s angular.z=1.5 in case joystick is moved to maximum right - it&#39;s angular.z=-1.5. After receiving message, arduino is moving servo - in case of positive angular.z  clockwise, in case of negative  angular.z  anti clockwise. Arduino code: baseServoAngle += SERVO<em>STEP*inputMsg.angular.z;
+When I do &quot;rostopic echo&quot; for the topic with Twist messages both negative and positive values in the vectors are correct. But, when I&#39;m reading it in Arduino and sending it back via &quot;arduino&quot; topic with std</em>msgs/Float64 to check, I see same correct numbers for the positive values and something like -1.23423546574e-308 for the negative values (instead of -1.5).
+Farther testing demonstrated that the problem is with the std<em>msgs/Float64  (because of this is the type for x,y,z in vectors in twist message). After that, I&#39;ve tested std</em>msgs/Byte and std_msgs/Float32 and it  worked correct both for positive and negative numbers. But because of  Twist messages using is more convinient for me, I&#39;d like to fix the problem.
+I will be grateful for any help.</p>
+
+<p>Node code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;sensor_msgs/Joy.h&gt;
+#include &lt;std_msgs/Float64.h&gt;
+#include &lt;std_msgs/Byte.h&gt;
+#include &quot;boost/thread/mutex.hpp&quot;
+#include &quot;boost/thread/thread.hpp&quot;
+#include &quot;ros/console.h&quot;
+
+class EmilsHandTeleop
+{
+public:
+  EmilsHandTeleop();
+
+private:
+  void joyCallback(const sensor_msgs::Joy::ConstPtr&amp; joy);
+  void publish();
+
+  ros::NodeHandle ph_, nh_;
+
+  int linear_, angular_, deadman_axis_;
+  double l_scale_, a_scale_;
+  ros::Publisher vel_pub_, servo_pub_;
+  ros::Subscriber joy_sub_;
+
+  geometry_msgs::Twist last_published_;
+    std_msgs::Byte servoMsg;
+
+  boost::mutex publish_mutex_;
+  bool deadman_pressed_;
+  bool zero_twist_published_;
+  ros::Timer timer_;
+
+};
+
+EmilsHandTeleop::EmilsHandTeleop():
+  ph_(&quot;~&quot;),
+  linear_(1),
+  angular_(0),
+  deadman_axis_(4),
+  l_scale_(0.3),
+  a_scale_(0.9)
+{
+  ph_.param(&quot;axis_linear&quot;, linear_, linear_);
+  ph_.param(&quot;axis_angular&quot;, angular_, angular_);
+  ph_.param(&quot;axis_deadman&quot;, deadman_axis_, deadman_axis_);
+  ph_.param(&quot;scale_angular&quot;, a_scale_, a_scale_);
+  ph_.param(&quot;scale_linear&quot;, l_scale_, l_scale_);
+
+  deadman_pressed_ = false;
+  zero_twist_published_ = false;
+
+  vel_pub_ = ph_.advertise&lt;geometry_msgs::Twist&gt;(&quot;cmd_vel&quot;, 1, true);
+  servo_pub_ = ph_.advertise&lt;std_msgs::Byte&gt;(&quot;servo_test&quot;, 1, true);
+  joy_sub_ = nh_.subscribe&lt;sensor_msgs::Joy&gt;(&quot;joy&quot;, 10, &amp;EmilsHandTeleop::joyCallback, this);
+
+  timer_ = nh_.createTimer(ros::Duration(0.1), boost::bind(&amp;EmilsHandTeleop::publish, this));
+}
+
+void EmilsHandTeleop::joyCallback(const sensor_msgs::Joy::ConstPtr&amp; joy)
+{ 
+  geometry_msgs::Twist vel;
+
+
+  vel.angular.z = a_scale_*joy-&gt;axes[angular_];
+
+    servoMsg.data = a_scale_*joy-&gt;axes[angular_];
+
+  vel.linear.x = l_scale_*joy-&gt;axes[linear_];
+  last_published_ = vel;
+  deadman_pressed_ = joy-&gt;buttons[deadman_axis_];
+}
+
+void EmilsHandTeleop::publish()
+{
+  boost::mutex::scoped_lock lock(publish_mutex_);
+
+  if (deadman_pressed_)
+  {
+    vel_pub_.publish(last_published_);
+        servo_pub_.publish(servoMsg);
+    zero_twist_published_=false;
+  }
+  else if(!deadman_pressed_ &amp;&amp; !zero_twist_published_)
+  {
+    vel_pub_.publish(*new geometry_msgs::Twist());
+    zero_twist_published_=true;
+  }
+}
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;emils_hand_teleop&quot;);
+  EmilsHandTeleop emils_hand_teleop;
+
+  ros::spin();
+}
+</code></pre>
+
+<p>Arduino code:</p>
+
+<pre><code>#if (ARDUINO &gt;= 100)
+ #include &lt;Arduino.h&gt;
+#else
+ #include &lt;WProgram.h&gt;
+#endif
+
+
+#include &lt;Servo.h&gt; 
+#include &lt;ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;std_msgs/Float64.h&gt;
+#include &lt;std_msgs/Byte.h&gt;
+#include &lt;sensor_msgs/Joy.h&gt;
+
+#define BASE_SERVO_PIN 2
+
+#define SERVO_STEP 1
+
+ros::NodeHandle  nh;
+std_msgs::Float64 recivedMsg;
+ros::Publisher pub(&quot;arduino&quot;, &amp;recivedMsg);
+
+byte baseServoAngle = 90;
+
+Servo baseServo;
+
+void servo_cb( const geometry_msgs::Twist&amp; inputMsg){
+  recivedMsg.data = inputMsg.angular.z;
+  pub.publish(&amp;recivedMsg);
+  recivedMsg.data = SERVO_STEP*inputMsg.angular.z;
+  pub.publish(&amp;recivedMsg);
+
+  baseServoAngle += SERVO_STEP*inputMsg.angular.z;
+
+  if (baseServoAngle &lt; 0) baseServoAngle = 0;
+  else if (baseServoAngle &gt; 180) baseServoAngle = 180;
+
+  baseServo.write(baseServoAngle); //set servo angle, should be from 0-180  
+  digitalWrite(13, HIGH-digitalRead(13));  //toggle led  
+}
+
+
+ros::Subscriber&lt;geometry_msgs::Twist&gt; sub(&quot;/emils_hand_joystick/cmd_vel&quot;, servo_cb);
+
+void setup(){
+  pinMode(13, OUTPUT);
+
+  nh.initNode();
+  nh.subscribe(sub);
+  nh.advertise(pub);
+
+  baseServo.attach(BASE_SERVO_PIN);
+  baseServo.write(baseServoAngle);
+
+}
+
+void loop(){
+  nh.spinOnce();
+  delay(1);
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/20840">Alexander Gershkovich</a> on 2014-11-17 08:33:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you still demonstrate the problem with a <a href="http://en.wikipedia.org/wiki/Minimal_Working_Example">MWE</a>? If so, please report it to the <code>rosserial</code> issue <a href="https://github.com/ros-drivers/rosserial/issues">tracker</a>. All the teleop and servo code is unnecessary if the issue is with <code>Float64</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2014-11-22 04:19:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes, you are right.
+It became  obvious, that the problem is with the &quot;deserialize&quot; method in &quot;Float64&quot; class, defined in sketchbook/libraries/ros_lib/std_msgs/
+Because of I was too lazy to investigate what is wrong with it and, I&#39;ve changed it to the same method from Float32.h and  it&#39;s working.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20840">Alexander Gershkovich</a> on 2014-11-22 06:17:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Right. It think it would be a good idea if you reported this on the issue tracker. If what you say is true, this sounds like a bug.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2014-11-22 13:54:19 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The bug is already fixed. The problem was solved after updating of sources.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20840">Alexander Gershkovich</a> on 2014-11-22 18:11:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>See <a href="https://github.com/ros-drivers/rosserial/issues/150">rosserial/issues/150</a> for the issue, and <a href="https://github.com/ros-drivers/rosserial/pull/144">rosserial/pull/144</a> for the PR which already contained a fix for it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2014-11-23 05:43:26 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

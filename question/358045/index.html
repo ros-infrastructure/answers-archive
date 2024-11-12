@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ament Cmake: Attempting to export new message generator library corrupts other generator builds - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/358045">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ament Cmake: Attempting to export new message generator library corrupts other generator builds</h2>
+      <div class="question">
+        <p>Apologies in advance for posting yet a 3rd question this week related to a Swift client library, but please bear with me as I&#39;m in the home stretch. I finally setup everything correctly for a Swift message generator, but I&#39;m running into a really weird error where a swift library is interfering with the python generator&#39;s build.</p>
+
+<p>I have a common package that contains code common between the message generator and client library. Here I have the CMakelists of the common package:</p>
+
+<pre><code>cmake_minimum_required(VERSION 3.15.1)
+
+project(rclswift_common Swift)
+
+find_package(ament_cmake REQUIRED)
+
+add_library(${PROJECT_NAME}
+  &quot;swift/Interfaces.swift&quot;
+)
+
+set_target_properties(${PROJECT_NAME} PROPERTIES Swift_MODULE_DIRECTORY modules)
+set_target_properties(${PROJECT_NAME} PROPERTIES Swift_MODULE_NAME RclSwiftCommon)
+
+target_include_directories(${PROJECT_NAME} PUBLIC  
+$&lt;BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/modules&gt;  
+$&lt;INSTALL_INTERFACE:modules&gt; )
+
+install(
+  TARGETS ${PROJECT_NAME}
+  EXPORT ${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(
+  DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/modules/
+  DESTINATION modules
+)
+
+ament_export_targets(${PROJECT_NAME} HAS_LIBRARY_TARGET)
+
+ament_package()
+</code></pre>
+
+<p>Nothing too crazy going on here, the only real difference from a C++ library is the setup for swift modules, a version of headers generated at compile time. I then include this library for the Swift lib in my message generation file:</p>
+
+<pre><code>  add_library(${PROJECT_NAME}_swift SHARED ${_generated_swift_files} ${_generated_modulemap_files})
+  set(EMPTY_COMPILE_FLAGS &quot;&quot;)
+  set_target_properties(${PROJECT_NAME}_swift PROPERTIES COMPILE_OPTIONS &quot;${EMPTY_COMPILE_FLAGS}&quot;)
+
+  ament_target_dependencies(${PROJECT_NAME}_swift rclswift_common)
+
+  if(NOT rosidl_generate_interfaces_SKIP_INSTALL)
+    install(TARGETS ${PROJECT_NAME}_swift
+      EXPORT ${PROJECT_NAME}_swift
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib
+      RUNTIME DESTINATION bin
+    )
+
+    install(
+      DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/modules/
+      DESTINATION modules
+    )
+
+    ament_export_targets(${PROJECT_NAME}_swift)
+
+  endif()
+</code></pre>
+
+<p>Note that this is a stripped down version, ordinarily I would be linking against a C core library and other generated messages in the case of nested types, but for this example I have stripped back everything to the absolute minimum in hope of isolating the issue. Running this, I encounter the following error from Ninja:</p>
+
+<pre><code>ninja: error: build.ninja:84: multiple rules generate CMakeFiles/std_msgs__rosidl_typesupport_c__pyext.dir/rosidl_generator_py/std_msgs/_std_msgs_s.ep.rosidl_typesupport_c.c.o [-w dupbuild=err]
+</code></pre>
+
+<p>Note that this is the PYTHON generator... which I interact with nowhere in my Swift client library. Digging down into the actual ninja build at the offending line, I find this:</p>
+
+<pre><code>build rosidl_generator_py/std_msgs/std_msgs_s__rosidl_typesupport_c.cpython-38-x86_64-linux-gnu.so CMakeFiles/std_msgs__rosidl_typesupport_c__pyext.dir/rosidl_generator_py/std_msgs/_std_msgs_s.ep.rosidl_typesupport_c.c.o std_msgs__rosidl_typesupport_c__pyext.swiftmodule: Swift_SHARED_LIBRARY_LINKER__std_msgs__rosidl_typesupport_c__pyext rosidl_generator_py/std_msgs/_std_msgs_s.ep.rosidl_typesupport_c.c | rosidl_generator_py/std_msgs/libstd_msgs__python.so /usr/lib/x86_64-linux-gnu/libpython3.8.so libstd_msgs__rosidl_typesupport_c.so /opt/ros/foxy/lib/librmw.so /home/alex/ros2/install/rosidl_runtime_c/lib/librosidl_runtime_c.so libstd_msgs__rosidl_generator_c.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_introspection_c.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_generator_c.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_introspection_cpp.so /home/alex/ros2/install/rosidl_typesupport_introspection_cpp/lib/librosidl_typesupport_introspection_cpp.so /home/alex/ros2/install/rosidl_typesupport_introspection_c/lib/librosidl_typesupport_introspection_c.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_cpp.so /opt/ros/foxy/lib/librosidl_typesupport_cpp.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__swiftext.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_c.so /opt/ros/foxy/lib/librosidl_typesupport_c.so /home/alex/ros2/install/rosidl_runtime_c/lib/librosidl_runtime_c.so /opt/ros/foxy/lib/librcpputils.so /opt/ros/foxy/lib/librcutils.so /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces_swift.so /home/alex/ros2/install/rclswift_common/lib/librclswift_common.a /home/alex/ros2/install/builtin_interfaces/share/builtin_interfaces/cmake/../../../lib/libbuiltin_interfaces__python.so /home/alex/ros2/install/rosidl_runtime_c/lib/librosidl_runtime_c.so || libstd_msgs__rosidl_generator_c.so libstd_msgs__rosidl_typesupport_c.so rosidl_generator_py/std_msgs/libstd_msgs__python.so std_msgs std_msgs__py/std_msgs__py
+  DEFINES = -DROS_PACKAGE_NAME=\&quot;std_msgs\&quot; -Dstd_msgs__rosidl_typesupport_c__pyext_EXPORTS
+  FLAGS = -Wall -Wextra
+  INCLUDES = -I rosidl_generator_c -I rosidl_generator_py -I /usr/include/python3.8 -I rosidl_typesupport_c -I /home/alex/ros2/install/rosidl_runtime_c/include -I /home/alex/ros2/install/rosidl_typesupport_interface/include -I /opt/ros/foxy/include -I /home/alex/ros2/install/builtin_interfaces/include -I /home/alex/ros2/install/rosidl_typesupport_introspection_c/include -I /home/alex/ros2/install/rosidl_runtime_cpp/include -I /home/alex/ros2/install/rosidl_typesupport_introspection_cpp/include
+  LINK_LIBRARIES = -Xlinker -rpath -Xlinker /home/alex/ros2/build/std_msgs/rosidl_generator_py/std_msgs:/home/alex/ros2/build/std_msgs:/home/alex/ros2/install/rosidl_runtime_c/lib:/home/alex/ros2/install/builtin_interfaces/lib:/home/alex/ros2/install/rosidl_typesupport_introspection_cpp/lib:/home/alex/ros2/install/rosidl_typesupport_introspection_c/lib:/home/alex/ros2/install/builtin_interfaces/share/builtin_interfaces/cmake/../../../lib:/opt/ros/foxy/lib:  rosidl_generator_py/std_msgs/libstd_msgs__python.so  /usr/lib/x86_64-linux-gnu/libpython3.8.so  libstd_msgs__rosidl_typesupport_c.so  /opt/ros/foxy/lib/librmw.so  /home/alex/ros2/install/rosidl_runtime_c/lib/librosidl_runtime_c.so  libstd_msgs__rosidl_generator_c.so  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_introspection_c.so  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_generator_c.so  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_introspection_cpp.so  /home/alex/ros2/install/rosidl_typesupport_introspection_cpp/lib/librosidl_typesupport_introspection_cpp.so  /home/alex/ros2/install/rosidl_typesupport_introspection_c/lib/librosidl_typesupport_introspection_c.so  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_cpp.so  /opt/ros/foxy/lib/librosidl_typesupport_cpp.so  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__swiftext.so  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces__rosidl_typesupport_c.so  /opt/ros/foxy/lib/librosidl_typesupport_c.so  /home/alex/ros2/install/rosidl_runtime_c/lib/librosidl_runtime_c.so  /opt/ros/foxy/lib/librcpputils.so  /opt/ros/foxy/lib/librcutils.so  -ldl  /home/alex/ros2/install/builtin_interfaces/lib/libbuiltin_interfaces_swift.so  /home/alex/ros2/install/rclswift_common/lib/librclswift_common.a  /home/alex/ros2/install/builtin_interfaces/share/builtin_interfaces/cmake/../../../lib/libbuiltin_interfaces__python.so  /home/alex/ros2/install/rosidl_runtime_c/lib/librosidl_runtime_c.so  -lgcc  -lgcc_s  -lc  -lgcc  -lgcc_s
+  LINK_PATH = -L /home/alex/ros2/build/std_msgs/rosidl_generator_py/std_msgs  -L /home/alex/ros2/build/std_msgs  -L /home/alex/ros2/build/std_msgs  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /home/alex/ros2/install/rosidl_typesupport_introspection_cpp/lib  -L /home/alex/ros2/install/rosidl_typesupport_introspection_c/lib  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /opt/ros/foxy/lib  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /opt/ros/foxy/lib  -L /home/alex/ros2/install/rosidl_runtime_c/lib  -L /opt/ros/foxy/lib  -L /opt/ros/foxy/lib  -L /home/alex/ros2/install/builtin_interfaces/lib  -L /home/alex/ros2/install/rclswift_common/lib   -L /usr/lib/gcc/x86_64-linux-gnu/9
+  OBJECT_DIR = CMakeFiles/std_msgs__rosidl_typesupport_c__pyext.dir
+  POST_BUILD = :
+  PRE_LINK = :
+  SONAME = std_msgs_s__rosidl_typesupport_c.cpython-38-x86_64-linux-gnu.so
+  SONAME_FLAG = -Xlinker -soname -Xlinker
+  SWIFT_LIBRARY_NAME = std_msgs_s__rosidl_typesupport_c.cpython-38-x86_64-linux-gnu
+  SWIFT_MODULE = std_msgs__rosidl_typesupport_c__pyext.swiftmodule
+  SWIFT_MODULE_NAME = std_msgs__rosidl_typesupport_c__pyext
+  SWIFT_OUTPUT_FILE_MAP = CMakeFiles/std_msgs__rosidl_typesupport_c__pyext.dir/output-file-map.json
+  SWIFT_SOURCES = rosidl_generator_py/std_msgs/_std_msgs_s.ep.rosidl_typesupport_c.c
+  TARGET_COMPILE_PDB = CMakeFiles/std_msgs__rosidl_typesupport_c__pyext.dir/
+  TARGET_FILE = rosidl_generator_py/std_msgs/std_msgs_s__rosidl_typesupport_c.cpython-38-x86_64-linux-gnu.so
+  TARGET_PDB = rosidl_generator_py/std_msgs/std_msgs_s__rosidl_typesupport_c.cpython-38-x86_64-linux-gnu.pdb
+</code></pre>
+
+<p>Note that the swift compiler is now getting involved in the python generation... how?
+I have narrowed the issue down to two particular lines of the CMakelists: </p>
+
+<pre><code>ament_target_dependencies(${PROJECT_NAME}_swift rclswift_common)
+</code></pre>
+
+<p>and</p>
+
+<pre><code>ament_export_targets(${PROJECT_NAME}_swift)
+</code></pre>
+
+<p>If I comment out the rclswift_common dependency, the error does not occur. If I remove the export, the error also does not occur. But somehow this combination is breaking the python generator. Can anyone pinpoint how this is &quot;leaking out&quot;?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36216">atyshka</a> on 2020-07-26 21:13:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@esteve @dirk thomas, as core contributors to the message generation system, do you have any advice here?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36216">atyshka</a> on 2020-07-28 18:36:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Repo with build instructions available at <a href="https://github.com/atyshka/rclswift">https://github.com/atyshka/rclswift</a> if anyone has a few minutes to try and reproduce</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36216">atyshka</a> on 2020-07-28 19:00:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

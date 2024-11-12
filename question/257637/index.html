@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>hector slam launch with odom and hokuyo - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/257637">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>hector slam launch with odom and hokuyo</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/79753/hector-slam-launch-with-odom-and-hokuyo">https://robotics.stackexchange.com/questions/79753/hector-slam-launch-with-odom-and-hokuyo</a>.</p>
+        <p>Hi, </p>
+
+<p>I&#39;m trying to use hector mapping on my custom robot to produce a map, this works fine without any odometry information from my odom node. </p>
+
+<p>here&#39;s the launch file (i didn&#39;t write it, but it works pretty well). </p>
+
+<pre><code>&lt;node pkg=&quot;hector_mapping&quot; type=&quot;hector_mapping&quot; name=&quot;hector_mapping&quot;    output=&quot;screen&quot;&gt;
+
+&lt;param name=&quot;pub_map_odom_transform&quot; value=&quot;true&quot;/&gt;
+&lt;param name=&quot;map_frame&quot; value=&quot;map&quot; /&gt;
+&lt;param name=&quot;base_frame&quot; value=&quot;base_link&quot; /&gt;
+&lt;param name=&quot;odom_frame&quot; value=&quot;base_link&quot; /&gt;
+&lt;!-- Map size / start point --&gt;
+&lt;param name=&quot;map_resolution&quot; value=&quot;0.025&quot;/&gt;
+&lt;param name=&quot;map_size&quot; value=&quot;2048&quot;/&gt;
+&lt;param name=&quot;map_start_x&quot; value=&quot;0.5&quot;/&gt;
+&lt;param name=&quot;map_start_y&quot; value=&quot;0.5&quot; /&gt;
+&lt;param name=&quot;laser_z_min_value&quot; value=&quot;-2.5&quot; /&gt;
+&lt;param name=&quot;laser_z_max_value&quot; value=&quot;7.5&quot; /&gt;
+
+&lt;!-- Map update parameters --&gt;
+&lt;param name=&quot;update_factor_free&quot; value=&quot;0.4&quot;/&gt;
+&lt;param name=&quot;update_factor_occupied&quot; value=&quot;0.7&quot; /&gt;    
+&lt;param name=&quot;map_update_distance_thresh&quot; value=&quot;0.2&quot;/&gt;
+&lt;param name=&quot;map_update_angle_thresh&quot; value=&quot;0.06&quot; /&gt;
+&lt;/node&gt;
+
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_to_laser_broadcaster&quot;      args=&quot;0 0 0 0 0 0 /base_link /laser 100&quot; /&gt;  
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>The problem is when i try and use it with my odometry information, published from my odom node (which has the same framework as the one from the odom tutorial, but is customised to take my encoder data and use my equations)  - </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;std_msgs/Float32.h&gt; 
+#include &lt;math.h&gt;
+
+#define RovWid 0.25
+#define Pi 3.141592865358979
+#define TicksPerRev 600
+#define WheelDia 0.13
+
+float left,right; //declare global variables to hold incoming data
+
+void CallbackLeft(const std_msgs::Float32::ConstPtr&amp; msg)
+{
+  //ROS_INFO(&quot;Left ticks [%f]&quot;, msg-&gt;data);
+  left = msg-&gt;data;
+}
+
+void CallbackRight(const std_msgs::Float32::ConstPtr&amp; msg)
+{
+  //ROS_INFO(&quot;Right ticks [%f]&quot;, msg-&gt;data);
+  right = msg-&gt;data;
+}
+
+int main(int argc, char** argv){
+    ros::init(argc, argv, &quot;odometry_publisher&quot;);
+
+    ros::NodeHandle n;
+    ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 50);
+    ros::Subscriber sub1 = n.subscribe(&quot;ticks_left&quot;, 100, CallbackLeft);
+    ros::Subscriber sub2 = n.subscribe(&quot;ticks_right&quot;, 100, CallbackRight);
+    tf::TransformBroadcaster odom_broadcaster;
+
+    double vx = 0.0;
+    double vy = 0.0;
+    double vth = 0.0;
+
+    float DeltaLeft = 0;
+    float DeltaRight = 0;
+    float PreviousRight = 0;
+    float PreviousLeft = 0;
+
+    float Theta = 0;
+    float X = 0;
+    float Y = 0;
+
+    float Circum, DisPerTick, expr1,right_minus_left;
+
+    ros::Time current_time, last_time;
+    current_time = ros::Time::now();
+    last_time = ros::Time::now();
+
+    ros::Rate r(5);
+    ROS_INFO(&quot;Node started&quot;);
+    Circum = Pi * WheelDia;
+    DisPerTick = Circum / TicksPerRev;
+
+    while(n.ok()){
+
+          ros::spinOnce();               // check for incoming messages
+          current_time = ros::Time::now();
+
+          DeltaRight = (right - PreviousRight) * DisPerTick;
+          DeltaLeft = (left - PreviousLeft) * DisPerTick;
+          PreviousRight = right;
+          PreviousLeft = left;
+
+
+          if (DeltaLeft == DeltaRight){
+                X += DeltaLeft * cos(Theta);
+                Y += DeltaLeft * sin(Theta);
+          }
+          else{
+                 expr1 = RovWid * 2 * (DeltaRight + DeltaLeft)/ 2.0 / (DeltaRight - DeltaLeft);
+                 right_minus_left = DeltaRight - DeltaLeft;
+                 X += expr1 * (sin(right_minus_left / (RovWid *2) + Theta) - sin(Theta));
+                 Y -= expr1 * (cos(right_minus_left / (RovWid *2) + Theta) - cos(Theta));
+                 Theta += right_minus_left / (RovWid *2);
+                 Theta = Theta - ((2 * Pi) * floor( Theta / (2 * Pi)));
+          }
+
+          ROS_INFO(&quot;X [%f]&quot;, X);
+          ROS_INFO(&quot;Y [%f]&quot;, Y);
+          ROS_INFO(&quot;Theta [%f]&quot;, Theta);
+          ROS_INFO(&quot;\n&quot;);
+
+          geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(Theta);
+
+          geometry_msgs::TransformStamped odom_trans;
+          odom_trans.header.stamp = current_time;
+          odom_trans.header.frame_id = &quot;odom&quot;;
+          odom_trans.child_frame_id = &quot;base_link&quot;;
+
+          odom_trans.transform.translation.x = X;
+          odom_trans.transform.translation.y = Y;
+          odom_trans.transform.translation.z = 0.0;
+          odom_trans.transform.rotation = odom_quat;
+
+          odom_broadcaster.sendTransform(odom_trans);
+
+          nav_msgs::Odometry odom;
+          odom.header.stamp = current_time;
+          odom.header.frame_id = &quot;odom&quot;;
+
+          odom.pose.pose.position.x = X;
+          odom.pose.pose.position.y = Y;
+          odom.pose.pose.position.z = 0.0;
+          odom.pose.pose.orientation = odom_quat;
+
+          odom.child_frame_id = &quot;base_link&quot;;
+          odom.twist.twist.linear.x = 0;
+          odom.twist.twist.linear.y = 0;
+          odom.twist.twist.angular.z = 0;
+
+          odom_pub.publish(odom);
+
+          last_time = current_time;
+          r.sleep();
+         }
+</code></pre>
+
+<p>}</p>
+
+<p>This published odometry information just fine. The problem is when i try and incorporate the two. </p>
+
+<p>Following the hector slam robot setup, i change the base frame and odom frame too:</p>
+
+<pre><code>&lt;param name=&quot;base_frame&quot; value=&quot;base_frame&quot; /&gt;
+&lt;param name=&quot;odom_frame&quot; value=&quot;odom&quot; /&gt;
+</code></pre>
+
+<p>but i get the following timeout:</p>
+
+<pre><code>[ INFO] [1490208346.381940938]: lookupTransform base_frame to laser timed out. Could not transform laser scan into base_frame.
+</code></pre>
+
+<p>This stops the slam node from creating anything</p>
+
+<p>When i change the base frame to base_link as it was in the original, i get the following error:</p>
+
+<pre><code>[ERROR] [1490208025.858563554]: Transform failed during publishing of map_odom transform: Lookup would require extrapolation at time 1490208024.946150226, but only time 1490208024.845273926 is in the buffer, when looking up transform from frame [base_link] to frame [odom]
+</code></pre>
+
+<p>This error still allows for mapping, but makes no use of my odometry info. </p>
+
+<p>No doubt the problem is me not setting up the required transfrom, but im genuinely at a loss with what to do about it. Help would be greatly appreciated. At the very least i hope someone finds my code useful. </p>
+
+        <div class="owner"><p>Asked by <a href="/users/21811">Ben12345</a> on 2017-03-22 13:49:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I think the problem is this. In your launch file you write:</p>
+
+<pre><code>&lt;param name=&quot;odom_frame&quot; value=&quot;base_link&quot; /&gt;
+</code></pre>
+
+<p>But in your node you write the following:</p>
+
+<pre><code>ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 50);
+</code></pre>
+
+<p>So, i think, you may change code line into next view in your launch file:</p>
+
+<pre><code> &lt;param name=&quot;odom_frame&quot; value=&quot;odom&quot; /&gt;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29319">Edward</a> on 2017-08-01 01:58:09 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

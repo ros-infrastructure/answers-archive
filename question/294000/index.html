@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Does an finished odometry node exists? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/294000">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Does an finished odometry node exists?</h2>
+      <div class="question">
+        <p>Hello everybody.</p>
+
+<p>I&#39;m new to ROS. I finished some of the beginner tutorials and than started to work on my robot platform from the university. Its a pretty easy setup with two powered wheels and one passive wheel for stabilization.</p>
+
+<p>I was surprised that some of the nodes existed already. Like the joy_node for publishing all the data from the wireless joystick i have. And also the SICK-Node to read out the data from the laser scanner.</p>
+
+<p>After writing my own node for the elmo controllers i thought about starting with the odometry. But well, to be honest, each time i look at the code of someone knowing what he/she is doing, my own code looks like building something with Lego bricks instead of using the 3D printer. That&#39;s also the problem with the code spinets i found so far. I always couldn&#39;t understand parts of them.</p>
+
+<p>So, the question is, is there a finished node for this pretty standard kinematic? Just like the node for the joystick, which publishes the data on a topic. Here it would be publishing the estimated position just by feeding in the geometric dimensions (wheel diameter, wheel distance, counts per turn) and the encoder values. I&#39;m pretty sure i&#39;m not the first one needing something like this. But so far i couldn&#39;t find something finished as a standalone node.</p>
+
+<p>Thanks for the time of everybody reading till here :D</p>
+
+<p>Best regards,
+Lukas</p>
+
+<p>Using: Linux 64, ROS Indigo</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35853">-LD-</a> on 2018-06-13 04:29:51 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You might want to take a look at <a href="http://wiki.ros.org/diff_drive_controller">diff_drive_controller</a> or <a href="http://wiki.ros.org/differential_drive">the differential_drive package</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21851">Humpelstilzchen</a> on 2018-06-15 01:34:59 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>There are many.  But you want one that works and is simple.   Just last night I was browsing code in the ROS Serial package.  There is example code there and one is an odometer node.   This example generates its own fake X, Y and Theta values but you can get your own from wheel encoders.</p>
+
+<p>The trick:  Given the rotation done in the last time period (Call it delta-Theta) the rest is easy.  But how to calc. rotation?  The key is that rotation is the difference in wheel speed.  Subtract min(left, right) from both left and right and one speed will be zero.   I assume you can calc rotation in the special case where one wheel is locked.   So convert all cases to the spacial case you can solve by assuming one wheel is moving at the difference in speed and the other is locked.  then assume the center of your robot tracks the average wheel speed in X and Y using the average heading over the time period.   </p>
+
+<p>Every Delta-T you find deltaTheta, dX and dY and add those to T,X, Y and report those in the message.   </p>
+
+<p>I think the trick really is to talk the entire process out loud BEFORE you write even a line of code</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21344">chrisalbertson</a> on 2018-06-14 20:57:18 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@chrisalbertson Are you referring to this <a href="https://github.com/ros-drivers/rosserial/blob/jade-devel/rosserial_arduino/src/ros_lib/examples/Odom/Odom.pde">example</a>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26450">jayess</a> on 2018-06-16 17:45:43 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Hello,</p>
+
+<p>i ended up doing it by myself. And since maybe someone is interested in (or what to make suggestions). Anything i could/should change ?</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;                                    
+#include &quot;std_msgs/Int64MultiArray.h&quot;   
+#include &quot;geometry_msgs/Vector3.h&quot;      
+#include &quot;math.h&quot;               
+
+// -------------------------------------------------------------
+
+// prototype + global Var
+void encoderCallback(std_msgs::Int64MultiArray array);
+#define TIME        0
+#define E_L         1
+#define E_R         2
+
+bool new_data;
+
+geometry_msgs::Vector3 encoder;     // time, left, right
+#define ENC_T               encoder.x
+#define ENC_L               encoder.y
+#define ENC_R               encoder.z
+
+geometry_msgs::Vector3 encoder_new;// time, left, right
+#define ENC_T_NEW       encoder_new.x
+#define ENC_L_NEW       encoder_new.y
+#define ENC_R_NEW       encoder_new.z
+
+geometry_msgs::Vector3 position;        // x, y, theta
+#define POS_X               position.x
+#define POS_Y               position.y
+#define POS_THETA           position.z
+
+#define R   75      // [mm] wheel radius
+#define D   530     // [mm] distance between wheels
+#define C   148000  // [] counts per turn, ecperimental value 
+
+// -------------------------------------------------------------
+
+int main(int argc, char **argv)
+{
+
+    // init node
+    ros::init(argc, argv, &quot;OdometryNode&quot;);      
+    ros::NodeHandle n;                  
+    ros::Rate loop_rate(10);    
+
+    // init topics
+    ros::Publisher  Position  = n.advertise&lt;geometry_msgs::Vector3&gt;(&quot;Odometry_Pos&quot;, 1);
+    ros::Subscriber Encoders  = n.subscribe&lt;std_msgs::Int64MultiArray&gt;(&quot;MotorDrive_encoder&quot;, 1, encoderCallback);
+
+    // init global vars
+    POS_X       = 0;
+    POS_Y       = 0;
+    POS_THETA   = 0;
+    new_data    = false;
+
+    // wait for first encoder values arrive
+    while (new_data == false &amp;&amp; ros::ok()){
+        ros::spinOnce();
+        loop_rate.sleep();}
+    ENC_T = ENC_T_NEW;
+    ENC_L = ENC_L_NEW;
+    ENC_R = ENC_R_NEW;
+    new_data = false;
+
+    // values independent from encoders
+    float M_PI_2 = 2.0*M_PI;
+    float d_2 = D/2;
+    float r_PI_c = R*2*M_PI/C;          // orientation in: rad (=2*PI) or deg (=360)
+    float r_PI_d_c = R*2*M_PI/(D*C);    // constant for the angle
+
+    while (ros::ok())
+    {
+        // just when needed
+        if(new_data == true)
+        {
+            // get driven distance in counts
+            long e_l = ENC_L_NEW - ENC_L;
+            long e_r = ENC_R_NEW - ENC_R;
+            ROS_INFO(&quot;e_l %li, e_r %li&quot;, e_l, e_r);
+
+            // save new data as current ones
+            ENC_T = ENC_T_NEW;
+            ENC_L = ENC_L_NEW;
+            ENC_R = ENC_R_NEW;
+
+            // rotation + maybe transation
+            float dx, dy, alpha;
+            if((e_l - e_r) &gt; 10 || (e_l - e_r) &lt; -10)
+            {
+                // radius + angle of the movement   
+                float e_temp = (e_l + e_r) / (e_l - e_r);
+                float r = d_2 * e_temp;
+                alpha = (e_l - e_r) * r_PI_d_c;
+
+                // move in robot frame
+                dx = r * sin(alpha);
+                dy = r * (1-cos(alpha));
+
+            }
+            else    // just translation
+            {
+                dx = e_l * r_PI_c;
+                dy = 0.00;
+                alpha = 0.00;
+            }
+
+            // prepare transformation
+            float temp_cos = cos(POS_THETA);
+            float temp_sin = sin(POS_THETA);
+
+            // transform to global frame (rotation matrix)
+            POS_X       += dx*temp_cos - dy*temp_sin;
+            POS_Y       += dx*temp_sin + dy*temp_cos;
+            POS_THETA    += alpha;
+            POS_THETA   %= M_PI_2;
+
+            // publish new estimate of position
+            Position.publish(position);
+            new_data = false;
+        }
+
+        // tell ROS to repeat
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
+
+    return 0;
+}
+
+// -------------------------------------------------------------
+
+void encoderCallback(std_msgs::Int64MultiArray data_new)
+{
+    // just save the data, rest is in main loop
+    ENC_T_NEW = data_new.data[TIME];
+    ENC_L_NEW = data_new.data[E_L];
+    ENC_R_NEW = data_new.data[E_R];
+
+    // flag to process new data
+    new_data = true;
+    return;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35853">-LD-</a> on 2018-06-15 09:50:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

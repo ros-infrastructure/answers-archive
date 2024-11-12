@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Running openni_tracker with multiple kinects - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/48060">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Running openni_tracker with multiple kinects</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/45687/running-openni-tracker-with-multiple-kinects">https://robotics.stackexchange.com/questions/45687/running-openni-tracker-with-multiple-kinects</a>.</p>
+        <p>Hi everyone,</p>
+
+<p>I am using two kinects on the same computer, and I would like to run some skeleton tracking for each of the kinects.</p>
+
+<p>In order to do that, multiple solutions occured to my mind :</p>
+
+<p>1) run openni<em>tracker for each kinect : this does not work, as openni</em>tracker runs on the first device it finds, without letting me selecting the device I want to use (if anyone knows how to modify it, I would be glad)</p>
+
+<p>2) save the data with rosbag, then replay only one kinect, while puting an invalid device id (as said here : <a href="http://www.ros.org/wiki/openni_launch/Tutorials/BagRecordingPlayback">Tutorial Bag Recording</a>). However, this solution does not work, and some other people had the same problem as shown in ros answers <a href="http://answers.ros.org/question/33764/running-ros-openni-tracker-from-bag-files/">here</a>.</p>
+
+<p>I tried to go into openni code, but without success, I don&#39;t have any idea how to modify it. </p>
+
+<p>My config : ROS Eletric, under Ubuntu 10.04 </p>
+
+<p>Any help or idea would be appreciated,</p>
+
+<p>Thank you in advance,</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2012-11-12 01:25:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hey everybody ! </p>
+
+<p>I finally managed to do it :-)</p>
+
+<p>In order to have two different trackers you can create two files (named tracker_1 and tracker_2 for example), with a modified version of the openni_tracker given below. I hope it will help many people ;-)
+Some lines in my code may not be usefull, and are the result of my many tests...</p>
+
+<p>In the second tracker, Don&#39;t forget to change lines :</p>
+
+<ul>
+<li><p>108 to 126 : in the second file, change all the names (head become head2, etc), otherwise if 1 personn is detected in each kinect, the frames will be jumping from one to the other</p></li>
+<li><p>line 138 .     ros::init(argc, argv, &quot;tracker_1&quot;);</p></li>
+<li><p>line 141.  string configFilename = ros::package::getPath(&quot;multiple_kinect&quot;) + &quot;/tracker.xml&quot;;</p></li>
+<li><p>line 328.  string frame_id(&quot;/kinect1_depth_frame&quot;);</p></li>
+</ul>
+
+<p>Here is the code :</p>
+
+<pre><code>// openni_tracker_modified.cpp
+
+#include &lt;ros/ros.h&gt;
+#include &lt;ros/package.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;kdl/frames.hpp&gt;
+
+#include &lt;XnOpenNI.h&gt;
+#include &lt;XnCodecIDs.h&gt;
+#include &lt;XnCppWrapper.h&gt;
+
+using std::string;
+
+xn::Context        g_Context;
+xn::DepthGenerator g_DepthGenerator;
+xn::UserGenerator  g_UserGenerator;
+
+
+XnBool g_bNeedPose   = FALSE;
+XnChar g_strPose[20] = &quot;&quot;;
+
+void XN_CALLBACK_TYPE User_NewUser(xn::UserGenerator&amp; generator, XnUserID nId, void* pCookie) {
+    ROS_INFO(&quot;New User %d&quot;, nId);
+
+    if (g_bNeedPose)
+        g_UserGenerator.GetPoseDetectionCap().StartPoseDetection(g_strPose, nId);
+    else
+        g_UserGenerator.GetSkeletonCap().RequestCalibration(nId, TRUE);
+}
+
+void XN_CALLBACK_TYPE User_LostUser(xn::UserGenerator&amp; generator, XnUserID nId, void* pCookie) {
+    ROS_INFO(&quot;Lost user %d&quot;, nId);
+}
+
+void XN_CALLBACK_TYPE UserCalibration_CalibrationStart(xn::SkeletonCapability&amp; capability, XnUserID nId, void* pCookie) {
+    ROS_INFO(&quot;Calibration started for user %d&quot;, nId);
+}
+
+void XN_CALLBACK_TYPE UserCalibration_CalibrationEnd(xn::SkeletonCapability&amp; capability, XnUserID nId, XnBool bSuccess, void* pCookie) {
+    if (bSuccess) {
+        ROS_INFO(&quot;Calibration complete, start tracking user %d&quot;, nId);
+        g_UserGenerator.GetSkeletonCap().StartTracking(nId);
+    }
+    else {
+        ROS_INFO(&quot;Calibration failed for user %d&quot;, nId);
+        if (g_bNeedPose)
+            g_UserGenerator.GetPoseDetectionCap().StartPoseDetection(g_strPose, nId);
+        else
+            g_UserGenerator.GetSkeletonCap().RequestCalibration(nId, TRUE);
+    }
+}
+
+void XN_CALLBACK_TYPE UserPose_PoseDetected(xn::PoseDetectionCapability&amp; capability, XnChar const* strPose, XnUserID nId, void* pCookie) {
+    ROS_INFO(&quot;Pose %s detected for user %d&quot;, strPose, nId);
+    g_UserGenerator.GetPoseDetectionCap().StopPoseDetection(nId);
+    g_UserGenerator.GetSkeletonCap().RequestCalibration(nId, TRUE);
+}
+
+void publishTransform(XnUserID const&amp; user, XnSkeletonJoint const&amp; joint, string const&amp; frame_id, string const&amp; child_frame_id) {
+    static tf::TransformBroadcaster br;
+
+    XnSkeletonJointPosition joint_position;
+    g_UserGenerator.GetSkeletonCap().GetSkeletonJointPosition(user, joint, joint_position);
+    double x = -joint_position.position.X / 1000.0;
+    double y = joint_position.position.Y / 1000.0;
+    double z = joint_position.position.Z / 1000.0;
+
+    XnSkeletonJointOrientation joint_orientation;
+    g_UserGenerator.GetSkeletonCap().GetSkeletonJointOrientation(user, joint, joint_orientation);
+
+    XnFloat* m = joint_orientation.orientation.elements;
+    KDL::Rotation rotation(m[0], m[1], m[2],
+                           m[3], m[4], m[5],
+                           m[6], m[7], m[8]);
+    double qx, qy, qz, qw;
+    rotation.GetQuaternion(qx, qy, qz, qw);
+
+    char child_frame_no[128];
+    snprintf(child_frame_no, sizeof(child_frame_no), &quot;%s_%d&quot;, child_frame_id.c_str(), user);
+
+    tf::Transform transform;
+    transform.setOrigin(tf::Vector3(x, y, z));
+    transform.setRotation(tf::Quaternion(qx, -qy, -qz, qw));
+
+    // #4994
+    tf::Transform change_frame;
+    change_frame.setOrigin(tf::Vector3(0, 0, 0));//g_Device
+    tf::Quaternion frame_rotation;
+    frame_rotation.setEulerZYX(1.5708, 0, 1.5708);
+    change_frame.setRotation(frame_rotation);
+
+    transform = change_frame * transform;
+
+    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), frame_id, child_frame_no));
+}
+
+void publishTransforms(const std::string&amp; frame_id) {
+    XnUserID users[15];
+    XnUInt16 users_count = 15;
+    g_UserGenerator.GetUsers(users, users_count);
+
+    for (int i = 0; i &lt; users_count; ++i) {
+        XnUserID user = users[i];
+        if (!g_UserGenerator.GetSkeletonCap().IsTracking(user))
+            continue;
+
+
+        publishTransform(user, XN_SKEL_HEAD,           frame_id, &quot;head&quot;);
+        publishTransform(user, XN_SKEL_NECK,           frame_id, &quot;neck&quot;);
+        publishTransform(user, XN_SKEL_TORSO,          frame_id, &quot;torso&quot;);
+
+        publishTransform(user, XN_SKEL_LEFT_SHOULDER,  frame_id, &quot;left_shoulder&quot;);
+        publishTransform(user, XN_SKEL_LEFT_ELBOW,     frame_id, &quot;left_elbow&quot;);
+        publishTransform(user, XN_SKEL_LEFT_HAND,      frame_id, &quot;left_hand&quot;);
+
+        publishTransform(user, XN_SKEL_RIGHT_SHOULDER, frame_id, &quot;right_shoulder&quot;);
+        publishTransform(user, XN_SKEL_RIGHT_ELBOW,    frame_id, &quot;right_elbow&quot;);
+        publishTransform(user, XN_SKEL_RIGHT_HAND,     frame_id, &quot;right_hand&quot;);
+
+        publishTransform(user, XN_SKEL_LEFT_HIP,       frame_id, &quot;left_hip&quot;);
+        publishTransform(user, XN_SKEL_LEFT_KNEE,      frame_id, &quot;left_knee&quot;);
+        publishTransform(user, XN_SKEL_LEFT_FOOT,      frame_id, &quot;left_foot&quot;);
+
+        publishTransform(user, XN_SKEL_RIGHT_HIP,      frame_id, &quot;right_hip&quot;);
+        publishTransform(user, XN_SKEL_RIGHT_KNEE,     frame_id, &quot;right_knee&quot;);
+        publishTransform(user, XN_SKEL_RIGHT_FOOT,     frame_id, &quot;right_foot&quot;);
+    }
+}
+
+#define CHECK_RC(nRetVal, what)                                     \
+    if (nRetVal != XN_STATUS_OK)                                    \
+    {                                                               \
+        ROS_ERROR(&quot;%s failed: %s&quot;, what, xnGetStatusString(nRetVal));\
+        return nRetVal;                                             \
+    }
+
+int main(int argc, char **argv) {
+    ros::init(argc, argv, &quot;tracker_1&quot;);
+    ros::NodeHandle nh;
+
+    string configFilename = ros::package::getPath(&quot;multiple_kinect&quot;) + &quot;/tracker.xml&quot;;
+    XnStatus nRetVal = g_Context.InitFromXmlFile(configFilename.c_str());
+    CHECK_RC(nRetVal, &quot;InitFromXml&quot;);
+
+    XnStatus nRetVal = XN_STATUS_OK;
+
+    //xnLogInitFromXmlFile(csXmlFile);
+
+    nRetVal = g_Context.Init();
+    XN_IS_STATUS_OK(nRetVal);
+
+
+   // SELECTION OF THE DEVICE
+    xn::EnumerationErrors errors;
+    xn::Device g_Device;
+        // find devices
+    xn::NodeInfoList list;
+    xn::NodeInfoList list_depth;
+        nRetVal = g_Context.EnumerateProductionTrees(XN_NODE_TYPE_DEVICE, NULL, list, &amp;errors);
+    XN_IS_STATUS_OK(nRetVal);
+
+    printf(&quot;The following devices were found:\n&quot;);
+        int i = 1;
+        for (xn::NodeInfoList::Iterator it = list.Begin(); it != list.End(); ++it, ++i)
+        {
+            xn::NodeInfo deviceNodeInfo = *it;
+
+            xn::Device deviceNode;
+            deviceNodeInfo.GetInstance(deviceNode);
+            XnBool bExists = deviceNode.IsValid();
+            if (!bExists)
+            {
+                g_Context.CreateProductionTree(deviceNodeInfo, deviceNode);
+                // this might fail.
+            }
+
+            if (deviceNode.IsValid() &amp;&amp; deviceNode.IsCapabilitySupported(XN_CAPABILITY_DEVICE_IDENTIFICATION))
+            {
+                const XnUInt32 nStringBufferSize = 200;
+                XnChar strDeviceName[nStringBufferSize];
+                XnChar strSerialNumber[nStringBufferSize];
+
+                XnUInt32 nLength = nStringBufferSize;
+                deviceNode.GetIdentificationCap().GetDeviceName(strDeviceName, nLength);
+                nLength = nStringBufferSize;
+                deviceNode.GetIdentificationCap().GetSerialNumber(strSerialNumber, nLength);
+                printf(&quot;[%d] %s (%s)\n&quot;, i, strDeviceName, strSerialNumber);
+            }
+            else
+            {
+                printf(&quot;[%d] %s\n&quot;, i, deviceNodeInfo.GetCreationInfo());
+            }
+
+            // release the device if we created it
+            if (!bExists &amp;&amp; deviceNode.IsValid())
+            {
+                deviceNode.Release();
+            }
+        }
+        printf(&quot;\n&quot;);
+        printf(&quot;Choose device to open (1): &quot;);
+
+        int chosen = 1;
+        int nRetval = scanf(&quot;%d&quot;, &amp;chosen);
+
+        // create it
+        xn::NodeInfoList::Iterator it = list.Begin();
+        for (i = 1; i &lt; chosen; ++i)
+        {
+            it++;
+        }
+
+        xn::NodeInfo deviceNode = *it;
+        nRetVal = g_Context.CreateProductionTree(deviceNode, g_Device);
+        printf(&quot;Production tree of the device created.\n&quot;);
+
+    // SELECTION OF THE DEPTH GENERATOR
+        nRetVal = g_Context.EnumerateProductionTrees(XN_NODE_TYPE_DEPTH, NULL, list_depth, &amp;errors);
+        XN_IS_STATUS_OK(nRetVal);
+
+        printf(&quot;The following devices were found:\n&quot;);
+            int i_depth = 1;
+            for (xn::NodeInfoList::Iterator it_depth = list_depth.Begin(); it_depth != list_depth.End(); ++it_depth, ++i_depth)
+            {
+                xn::NodeInfo depthNodeInfo = *it_depth;
+
+                xn::Device depthNode;
+                depthNodeInfo.GetInstance(depthNode);
+                XnBool bExists_depth = depthNode.IsValid();
+                if (!bExists_depth)
+                {
+                    g_Context.CreateProductionTree(depthNodeInfo, depthNode);
+                    // this might fail.
+                }
+
+                if (depthNode.IsValid() &amp;&amp; depthNode.IsCapabilitySupported(XN_CAPABILITY_DEVICE_IDENTIFICATION))
+                {
+                    const XnUInt32 nStringBufferSize = 200;
+                    XnChar strDeviceName[nStringBufferSize];
+                    XnChar strSerialNumber[nStringBufferSize];
+
+                    XnUInt32 nLength = nStringBufferSize;
+                    depthNode.GetIdentificationCap().GetDeviceName(strDeviceName, nLength);
+                    nLength = nStringBufferSize;
+                    depthNode.GetIdentificationCap().GetSerialNumber(strSerialNumber, nLength);
+                    printf(&quot;[%d] %s (%s)\n&quot;, i, strDeviceName, strSerialNumber);
+                }
+                else
+                {
+                    printf(&quot;[%d] %s\n&quot;, i, depthNodeInfo.GetCreationInfo());
+                }
+
+                // release the device if we created it
+                if (!bExists_depth &amp;&amp; depthNode.IsValid())
+                {
+                    depthNode.Release();
+                }
+            }
+            printf(&quot;\n&quot;);
+        printf(&quot;Choose device to open (1): &quot;);
+
+        int chosen_depth = 1;
+        int nRetval_depth = scanf(&quot;%d&quot;, &amp;chosen);
+
+        // create it
+        xn::NodeInfoList::Iterator it_depth = list_depth.Begin();
+        for (i = 1; i &lt; chosen_depth; ++i)
+        {
+            it_depth++;
+        }
+
+        xn::NodeInfo depthNode = *it_depth;
+        nRetVal = g_Context.CreateProductionTree(depthNode, g_DepthGenerator);
+        printf(&quot;Production tree of the DepthGenerator created.\n&quot;);
+
+        nRetVal = g_Context.FindExistingNode(XN_NODE_TYPE_DEPTH, g_DepthGenerator);
+        printf(&quot;Production tree of the depth generator created.\n&quot;);
+        XN_IS_STATUS_OK(nRetVal);
+        printf(&quot;XN_IS_STATUS_OK(nRetVal).\n&quot;);
+
+
+
+    CHECK_RC(nRetVal, &quot;Find depth generator&quot;);
+     printf(&quot;CHECK_RC(nRetVal, Find depth generator);\n&quot;);
+
+    nRetVal = g_Context.FindExistingNode(XN_NODE_TYPE_USER, g_UserGenerator);
+    printf(&quot;User generator found.\n&quot;);
+    if (nRetVal != XN_STATUS_OK) {
+        nRetVal = g_UserGenerator.Create(g_Context);
+        printf(&quot;User generator created.\n&quot;);
+        CHECK_RC(nRetVal, &quot;Find user generator&quot;);
+    }
+
+    if (!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_SKELETON)) {
+        printf(&quot;Supplied user generator doesn&#39;t support skeleton.\n&quot;);
+        ROS_INFO(&quot;Supplied user generator doesn&#39;t support skeleton&quot;);
+        return 1;
+    }
+
+    XnCallbackHandle hUserCallbacks;
+    g_UserGenerator.RegisterUserCallbacks(User_NewUser, User_LostUser, NULL, hUserCallbacks);
+
+    XnCallbackHandle hCalibrationCallbacks;
+    g_UserGenerator.GetSkeletonCap().RegisterCalibrationCallbacks(UserCalibration_CalibrationStart, UserCalibration_CalibrationEnd, NULL, hCalibrationCallbacks);
+
+    if (g_UserGenerator.GetSkeletonCap().NeedPoseForCalibration()) {
+        g_bNeedPose = TRUE;
+        if (!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_POSE_DETECTION)) {
+            ROS_INFO(&quot;Pose required, but not supported&quot;);
+            return 1;
+        }
+
+        XnCallbackHandle hPoseCallbacks;
+        g_UserGenerator.GetPoseDetectionCap().RegisterToPoseCallbacks(UserPose_PoseDetected, NULL, NULL, hPoseCallbacks);
+
+        g_UserGenerator.GetSkeletonCap().GetCalibrationPose(g_strPose);
+    }
+
+    g_UserGenerator.GetSkeletonCap().SetSkeletonProfile(XN_SKEL_PROFILE_ALL);
+
+    nRetVal = g_Context.StartGeneratingAll();
+    CHECK_RC(nRetVal, &quot;StartGenerating&quot;);
+
+    ros::Rate r(30);
+
+
+        ros::NodeHandle pnh(&quot;~&quot;);
+        string frame_id(&quot;/kinect1_depth_frame&quot;);
+        pnh.getParam(&quot;camera_frame_id&quot;, frame_id);
+
+    while (ros::ok()) {
+        g_Context.WaitAndUpdateAll();
+        publishTransforms(frame_id);
+        r.sleep();
+    }
+
+    g_Context.Shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>EDIT : Answer to the comment. In the last version I modified, here are the lines :</p>
+
+<pre><code>int chosen=0;
+if (argc != 2)
+{
+    printf(&quot;Choose device to open (1): &quot;);
+    int nRetval = scanf(&quot;%d&quot;, &amp;chosen);
+}
+else
+{
+chosen = atoi(argv[1]);
+}
+
+    // create it
+    xn::NodeInfoList::Iterator it = list.Begin();
+    for (i = 1; i &lt; chosen; ++i)
+    {
+        it++;
+    }
+</code></pre>
+
+<p>and </p>
+
+<pre><code>int chosen_depth = 1;
+/*if (argc != 2)
+{
+    printf(&quot;Choose device to open (1): &quot;);
+    int nRetval_depth = scanf(&quot;%d&quot;, &amp;chosen_depth);
+}
+else
+{
+chosen_depth = atoi(argv[1]);
+}*/
+
+
+    // create it
+    xn::NodeInfoList::Iterator it_depth = list_depth.Begin();
+    for (i = 1; i &lt; chosen_depth; ++i)
+    {
+        it_depth++;
+    }
+</code></pre>
+
+<p>Indeed, it seems that the second choice doesn&#39;t change anything. So you have to let it to 1.
+The modification of the first choice code permits to pass the kinect we want to chose as an argument of the node, as following in a launch file :</p>
+
+<pre><code>&lt;!-- Launching first tracker--&gt;
+&lt;node pkg=&quot;multiple_kinect&quot; type=&quot;tracker_skeleton_1&quot; name=&quot;tracker_1&quot; args=&quot;1&quot;/&gt;
+
+&lt;!-- Launching second tracker--&gt;
+&lt;node pkg=&quot;multiple_kinect&quot; type=&quot;tracker_skeleton_2&quot; name=&quot;tracker_2&quot; args=&quot;2&quot;/&gt;
+</code></pre>
+
+<p>NEW EDIT : answer to one comment, content of the tracker.xml file :</p>
+
+<pre><code>&lt;OpenNI&gt;
+    &lt;Licenses&gt;
+    &lt;/Licenses&gt;
+    &lt;Log writeToConsole=&quot;false&quot; writeToFile=&quot;false&quot;&gt;
+        &lt;!-- 0 - Verbose, 1 - Info, 2 - Warning, 3 - Error (default) --&gt;
+        &lt;LogLevel value=&quot;3&quot;/&gt;
+        &lt;Masks&gt;
+            &lt;Mask name=&quot;ALL&quot; on=&quot;true&quot;/&gt;
+        &lt;/Masks&gt;
+        &lt;Dumps&gt;
+        &lt;/Dumps&gt;
+    &lt;/Log&gt;
+    &lt;ProductionNodes&gt;
+        &lt;Node type=&quot;Depth&quot; name=&quot;Depth1&quot;&gt;
+            &lt;Configuration&gt;
+                &lt;MapOutputMode xRes=&quot;640&quot; yRes=&quot;480&quot; FPS=&quot;30&quot;/&gt;
+                &lt;Mirror on=&quot;false&quot;/&gt;
+            &lt;/Configuration&gt;
+        &lt;/Node&gt;
+    &lt;/ProductionNodes&gt;
+&lt;/OpenNI&gt;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3548">Stephane.M</a> on 2012-11-25 21:12:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This answer works also on ROS Groovy and Ubuntu 12.10 :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2013-02-07 01:36:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi there!</p>
+
+<p>I&#39;m using your code Stephane.M, but unfortunately, when I try it out, it doesn&#39;t work in 100%, namely:  at the begining I had problem with core dump (now it doesn&#39;t happen), but now I noticed, that it doesn&#39;t matter if I chose device 1 or 2, it always connects to the same Kinect. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4159">da-na</a> on 2013-04-22 05:15:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi, sorry for late response. If you want to connect to kinect 1, put both variables to 1. If you want to connect to kinect 2, put first 2 then 1. It should work then. (Personnally, I put it in my launch file). See my edit in my answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2013-04-22 20:43:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you Stephane!! :) </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4159">da-na</a> on 2013-04-23 02:13:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi there!
+where can i find the multiple_kinect/tracker.xml file ? 
+pls tell so i would be able to use your code...</p>
+
+<p>Thanks :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19952">CryptoKnight</a> on 2014-08-07 07:39:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This is an openni File... I edit my answer to show you the content, but you should have found it by yourself :-S
+Good luck anyway ^^</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3548">Stephane.M</a> on 2014-08-07 11:10:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Stephane, thanks for all your work! I&#39;m having trouble duplicating all you changes. Do you have the working code available in a repository that I could clone?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21732">dinosaur</a> on 2015-08-18 12:47:13 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Hey Stephane,</p>
+
+<p>Me again :) I am now stuck with tracking multiple person with single kinect, somewhat similar to this one. I&#39;ve already posted a question (<a href="http://answers.ros.org/question/59917/multiple-user-tracking-using-pi_tracker/">http://answers.ros.org/question/59917/multiple-user-tracking-using-pi_tracker/</a>). Your help will be highly appreciated.</p>
+
+<p>Thanks.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4429">Tariq</a> on 2013-04-03 16:14:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I am getting error: <code>[ERROR] [1392819332.186358415]: Find user generator failed: Can&#39;t create any node of the requested type!</code>. I have searched a lot but no success. I have ros fuerte on ubuntu 12.04. <code>openni.launch</code> is working fine and i can see images on rviz. <code>rosrun openni_tracker openni_tracker</code> is generating above error.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4454">Latif Anjum</a> on 2014-02-19 03:32:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>You should try switching NITE versions.  That has usually fixed your error for me. See answer from @isura here: <a href="http://answers.ros.org/question/42654/openninite-incompatible-in-fuertegroovy-on-precise/?answer=52137">http://answers.ros.org/question/42654/openninite-incompatible-in-fuertegroovy-on-precise/?answer=52137</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1272">jarvisschultz</a> on 2014-02-19 03:48:02 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Building on Stephane&#39;s work, I made some changes so that you can select the device automatically based on a serial number input as a ros parameter. </p>
+
+<p>Usage looks like this:</p>
+
+<p><code>rosrun openni_tracker openni_tracker _desired_serial:=B00312327745048B</code></p>
+
+<p>Notable additions to the code include:</p>
+
+<ol>
+<li><p>Getting the USB port number by calling <code>deviceNodeInfo.GetCreationInfo()</code> and parsing out the value after the last <code>/</code>.</p></li>
+<li><p>Calling <code>lsusb</code> via <code>popen</code> (<code>fp = popen(&quot;lsusb -v -d 045e:02ae&quot;, &quot;r&quot;);</code>) and parsing the output to match usb port to serial number. This depends on the system&#39;s implementation and formatting of <code>lsusb</code> so it&#39;s probably the most fragile part.</p></li>
+<li><p>Calling <code>ros::param::get(&quot;~desired_serial&quot;, desiredSerial)</code> to get the user&#39;s desired serial number from the ros parameter server.</p></li>
+</ol>
+
+<p>Code is online here: <a href="https://github.com/lrperlmu/openni_tracker/tree/leah-dev">https://github.com/lrperlmu/openni_tracker/tree/leah-dev</a> . More details can be found in the readme.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21732">dinosaur</a> on 2015-08-18 21:31:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

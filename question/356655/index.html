@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Advice on nav2 controller plugin - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/356655">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Advice on nav2 controller plugin</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/96466/advice-on-nav2-controller-plugin">https://robotics.stackexchange.com/questions/96466/advice-on-nav2-controller-plugin</a>.</p>
+        <p>I&#39;d like to write a controller plugin for nav2 using a reinforcement learing based AI model. </p>
+
+<p>We are currently training a model in python, so it would be natural to write a python controller node. However, I&#39;m note sure how easy that is. All the examples in the tutorials in nav2 (eg <a href="https://navigation.ros.org/tutorials/docs/writing_new_nav2planner_plugin.html">https://navigation.ros.org/tutorials/docs/writing_new_nav2planner_plugin.html</a>) are in C++, and include or inherit base classes from nav2<em>core or nav2</em>util which I am not sure are available in Python.</p>
+
+<p>Is it easy to write a python node that has all the required interfaces to be loaded by the controller server? If not, I will have to consider loading the model in C++ and/or writing wrappers to python code. I am sure that is doable, I&#39;m just far less familiar with C++.</p>
+
+<p>Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/56482">SmallJoeMan</a> on 2020-07-08 07:15:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>To answer my own question... It seems plugins need to be written in C++ as nav2 uses pluginlib where classes are dynamically loaded. You have to inherit from e.g. nav2_core Controller base class, and override all the methods such as <code>activate</code>etc.</p>
+
+<p>However, there is no reason why the C++ plugin can&#39;t be a thin wrapper that calls embedded Python, or even delegates to a separate Python node via a ROS service/action interface.  </p>
+
+<hr>
+
+<p>As requested, here is some code that used to work in Eloquent, but no longer works with Foxy. When I get chance I&#39;ll get it working in Foxy and publish the code properly in a git repo.</p>
+
+<p>This is a Python node that will provide a service to compute the cmdvel:</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped
+from &lt;your_package&gt;.srv import CalcCmdVel
+from my_ros_utils_py.utils import (
+    pose2d_to_posestamped,
+    signed_angle_difference,
+    distance_squared,
+    distance,
+    bearing_from
+)
+
+DEFAULT_NODE_NAME = &#39;PCS&#39;
+CMDVEL_SERVICE_NAME = &quot;CalcCmdVel&quot;
+TARGET_POSE_TOPIC = &quot;target_pose&quot;
+LINEAR_PROPORTIONAL_GAIN_PARAM = &quot;linear_velocity_proportional_gain&quot;
+ANGULAR_PROPORTIONAL_GAIN_PARAM = &quot;angular_velocity_proportional_gain&quot;  
+DEFAULT_LINEAR_PROPORTIONAL_GAIN = 1.0
+DEFAULT_ANGULAR_PROPORTIONAL_GAIN = 0.5
+LINEAR_MAX_ERROR_PARAM = &quot;linear_max_error&quot;
+ANGULAR_MAX_ERROR_PARAM = &quot;angular_max_error&quot;
+DEFAULT_LINEAR_MAX_ERROR = 1.0
+DEFAULT_ANGULAR_MAX_ERROR = 3.14
+LINEAR_DEAD_BAND_PARAM = &quot;linear_dead_band&quot;
+ANGULAR_DEAD_BAND_PARAM = &quot;angular_dead_band&quot;
+DEFAULT_LINEAR_DEAD_BAND = 0.0
+DEFAULT_ANGULAR_DEAD_BAND = 0.0
+SPOT_TURN_THRESHOLD_PARAM = &quot;spot_turn_threshold&quot;
+DEFAULT_SPOT_TURN_THESHOLD = 1.0
+LOOKAHEAD_PARAM = &quot;lookahead&quot;
+DEFAULT_LOOKAHEAD = 0.2
+
+
+class PCS(Node):
+    &quot;&quot;&quot;Proportional Controller Service.
+
+    Provide cmd_vel computation service.
+    &quot;&quot;&quot;
+
+    def __init__(self) -&gt; None:
+        super().__init__(DEFAULT_NODE_NAME)
+        self._logger = self.get_logger()
+
+        self.declare_parameters(
+            namespace=&#39;&#39;,
+            parameters=[
+                (LINEAR_PROPORTIONAL_GAIN_PARAM, DEFAULT_LINEAR_PROPORTIONAL_GAIN),
+                (ANGULAR_PROPORTIONAL_GAIN_PARAM, DEFAULT_ANGULAR_PROPORTIONAL_GAIN),
+                (LINEAR_MAX_ERROR_PARAM, DEFAULT_LINEAR_MAX_ERROR),
+                (ANGULAR_MAX_ERROR_PARAM, DEFAULT_ANGULAR_MAX_ERROR),
+                (LINEAR_DEAD_BAND_PARAM, DEFAULT_LINEAR_DEAD_BAND),
+                (ANGULAR_DEAD_BAND_PARAM, DEFAULT_ANGULAR_DEAD_BAND),
+                (SPOT_TURN_THRESHOLD_PARAM, DEFAULT_SPOT_TURN_THESHOLD),
+                (LOOKAHEAD_PARAM, DEFAULT_LOOKAHEAD)
+            ]
+        )
+        self._linear_gain = self.get_parameter(
+            LINEAR_PROPORTIONAL_GAIN_PARAM
+        ).get_parameter_value().double_value
+        self._angular_gain = self.get_parameter(
+            ANGULAR_PROPORTIONAL_GAIN_PARAM
+        ).get_parameter_value().double_value
+        self._linear_max_error = self.get_parameter(
+            LINEAR_MAX_ERROR_PARAM
+        ).get_parameter_value().double_value
+        self._angular_max_error = self.get_parameter(
+            ANGULAR_MAX_ERROR_PARAM
+        ).get_parameter_value().double_value
+        self._linear_dead_band = self.get_parameter(
+            LINEAR_DEAD_BAND_PARAM
+        ).get_parameter_value().double_value
+        self._angular_dead_band = self.get_parameter(
+            ANGULAR_DEAD_BAND_PARAM
+        ).get_parameter_value().double_value
+        self._spot_turn_threshold = self.get_parameter(
+            SPOT_TURN_THRESHOLD_PARAM
+        ).get_parameter_value().double_value
+        self._lookahead = self.get_parameter(
+            LOOKAHEAD_PARAM
+        ).get_parameter_value().double_value
+
+        self._cmd_vel_srv = self.create_service(
+            CalcCmdVel,
+            CMDVEL_SERVICE_NAME,
+            self.calc_cmd_vel
+        )
+
+        self._target_pub = self.create_publisher(
+            PoseStamped,
+            TARGET_POSE_TOPIC,
+            1
+        )
+
+        self._logger.info(
+            &quot;Proportional controller service initialised.&quot;
+        )
+
+    def calc_cmd_vel(self, request, response):
+        &quot;&quot;&quot;Compute the velocity command.
+
+        Args:
+            request: see cc_interface/srv/CalcCmdVel
+
+        Returns:
+            response: see cc_interface/srv/CalcCmdVel
+        &quot;&quot;&quot;
+        path = request.path
+        pose = request.pose
+
+        response.cmd_vel.header.stamp = self.get_clock().now().to_msg()
+
+        # Ensure path and pose are in same reference frame
+        if path.header.frame_id != pose.header.frame_id:
+            self._logger.error(
+                &quot;Path frame (\&quot;%s\&quot;) not equal to pose (\&quot;%s\&quot;)&quot;,
+                path.header.frame_id,
+                pose.header.frame_id
+            )
+            response.cmd_vel.velocity.x = 0.0
+            response.cmd_vel.velocity.y = 0.0
+            response.cmd_vel.velocity.theta = 0.0
+            return response
+
+        target_pose = self.get_target_pose(path)
+
+        # Angular speed control
+        target_theta = bearing_from(pose.pose, target_pose)
+        ctrl_w, err_w = self.calc_ctrl(
+            pose.pose.theta,
+            target_theta,
+            self.angular_error,
+            self._angular_gain,
+            self._angular_dead_band,
+            self._angular_max_error
+        )
+
+        # Linear speed control
+        dist = 0.0
+        target_dist = 0.0
+        if abs(err_w) &lt; self._spot_turn_threshold:
+            dist = distance(pose.pose, target_pose)
+        ctrl_v, err_v = self.calc_ctrl(
+            dist,
+            target_dist,
+            self.linear_error,
+            self._linear_gain,
+            self._linear_dead_band,
+            self._linear_max_error
+        )
+
+        # Publish target
+        target_pose.theta = target_theta
+        self._target_pub.publish(
+            pose2d_to_posestamped(
+                target_pose,
+                pose.header
+            )
+        )
+
+        # Controller is feeding back on *distance* so will output a negative
+        # control value to reduce +ve dist to target_dist (0).
+        # We are controlling velocity, so will want to increase speed
+        # to decrease distance hence negative sign on ctrl_v
+        response.cmd_vel.velocity.x = -ctrl_v  # Forward is along x
+        response.cmd_vel.velocity.y = 0.0
+        response.cmd_vel.velocity.theta = ctrl_w
+
+        return response
+
+    def get_target_pose(self, path):
+        &quot;&quot;&quot;Get target pose to head for on path.
+
+        Args:
+            path: nav_2d_msgs/Path2D
+
+        Returns:
+            target: geometry_msgs/Pose2D
+        &quot;&quot;&quot;
+        start_pose = path.poses[0]
+        target = next(
+            (pose for pose in path.poses if distance_squared(pose, start_pose) &gt; self._lookahead),
+            start_pose
+        )
+        return target
+
+    def calc_error(
+        self,
+        value,
+        set_point,
+        error_function,
+        dead_band=0.0,
+        max_error=float(&#39;inf&#39;)
+    ):
+        &quot;&quot;&quot;Calculate error using error function pointer,
+        applying clipping and dead_band filtering to result
+
+        Args:
+            value: float
+            set_point: float
+            error_function: function pointer
+            dead_band: float
+            max_error: float
+
+        Returns:
+            error: float
+        &quot;&quot;&quot;
+        error = error_function(value, set_point)
+        abs_err = abs(error)
+        max_error = abs(max_error)
+
+        if abs_err &lt;= dead_band:
+            return 0.0
+        elif abs_err &gt;= max_error:
+            if error &gt; 0:
+                return max_error
+            else:
+                return -max_error
+        else:
+            return error
+
+    def linear_error(self, value, set_point):
+        &quot;&quot;&quot;Compute lienar difference between value and setpoint
+
+        Args:
+            value: float
+            set_point: float
+
+        Returns:
+            diff: float
+        &quot;&quot;&quot;
+        return set_point - value
+
+    def angular_error(self, value, set_point):
+        &quot;&quot;&quot;Difference in angle, limited to range [-pi, pi]
+
+        Args:
+            value: float
+            set_point: float
+
+        Returns:
+            diff: float
+        &quot;&quot;&quot;
+        return signed_angle_difference(value, set_point)
+
+    def calc_ctrl(
+        self,
+        value,
+        set_point,
+        error_function,
+        gain,
+        dead_band=0.0,
+        max_error=float(&#39;inf&#39;)
+    ):
+        &quot;&quot;&quot;Calculate the control value using propotional gain
+
+        Args:
+            value: float
+            set_point: float
+            error_function: function pointer
+            gain: float
+            dead_band: float
+            max_error: float
+
+        Returns:
+            ctrl: float
+            error: float
+        &quot;&quot;&quot;
+        error = self.calc_error(
+            value,
+            set_point,
+            error_function,
+            dead_band,
+            max_error
+        )
+
+        return gain * error, error
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PCS()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>Here&#39;s the service definition:</p>
+
+<pre><code>nav_2d_msgs/Pose2DStamped pose
+nav_2d_msgs/Twist2D velocity
+nav_2d_msgs/Path2D path
+---
+nav_2d_msgs/Twist2DStamped cmd_vel
+</code></pre>
+
+<p>And here&#39;s a snippet from my RPC controller:</p>
+
+<pre><code>     /**
+     * @brief Controller computeVelocityCommands - calculates the best command given the current pose and velocity
+     *
+     * It is presumed that the global plan is already set.
+     *
+     * This is mostly a wrapper for the protected computeVelocityCommands
+     * function which has additional debugging info.
+     *
+     * @param pose Current robot pose (usually in odom frame)
+     * @param velocity Current robot velocity
+     * @return The best command for the robot to drive
+     */
+     geometry_msgs::msg::TwistStamped RPCController::computeVelocityCommands(
+         const geometry_msgs::msg::PoseStamped &amp; pose,
+        const geometry_msgs::msg::Twist &amp; velocity
+     )
+     {
+        geometry_msgs::msg::TwistStamped cmd_vel;
+        cmd_vel.header.stamp = node_-&gt;now();
+
+        if (!cmdVelClient_-&gt;wait_for_service(1s))
+        {
+            RCLCPP_WARN(
+                node_-&gt;get_logger(), 
+                &quot;%s service not available&quot;,
+                cmd_vel_srv_name_.c_str()
+            );
+            return cmd_vel;
+        }
+
+        auto request = std::make_shared&lt;cc_interface::srv::CalcCmdVel::Request&gt;();
+        auto pose_2d = nav_2d_utils::poseStampedToPose2D(pose);
+        auto velocity_2d = nav_2d_utils::twist3Dto2D(velocity);
+        auto transformed_plan = transformPlan(
+            tf_,
+            global_plan_, 
+            pose_2d,
+            transform_tolerance_,
+            costmap_,
+            prune_plan_,
+            prune_distance_
+        );
+
+        request-&gt;pose = pose_2d;
+        request-&gt;velocity = velocity_2d;
+        request-&gt;path = transformed_plan;
+
+        auto result_future = cmdVelClient_-&gt;async_send_request(request);
+
+        nav_2d_msgs::msg::Twist2DStamped cmd_vel_2d;
+
+        auto status = result_future.wait_for(1s);
+
+        if (status == std::future_status::ready)
+        {
+            auto result = result_future.get();
+            cmd_vel_2d = result-&gt;cmd_vel; 
+            cmd_vel.header = cmd_vel_2d.header;
+            cmd_vel.twist = nav_2d_utils::twist2Dto3D(
+                cmd_vel_2d.velocity
+            );
+        } else {
+            RCLCPP_ERROR(
+                node_-&gt;get_logger(), 
+                &quot;Failed get cmd_vel&quot;
+            );   
+        }
+
+        return cmd_vel;
+    }
+}  // namespace cc_nav2_ext
+
+PLUGINLIB_EXPORT_CLASS(cc_nav2_ext::RPCController, nav2_core::Controller)
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/56482">SmallJoeMan</a> on 2020-07-10 02:57:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Can you please pose a sample if you have made some progress on this? I believe opening the controller framework to Python3 will open a world of possibilities.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38621">Mohit Arvind Khakharia</a> on 2020-12-15 15:48:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ll post my package on a public github project</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56482">SmallJoeMan</a> on 2020-12-26 15:20:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi, have you managed to finish your integration? Can you share it? Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61748">soldierofhell</a> on 2021-05-13 07:26:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sorry, when I last tried my code it wasn&#39;t compatible with foxy. I&#39;ll need to go through and update it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56482">SmallJoeMan</a> on 2021-05-13 07:37:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ok, definitely it doesn&#39;t have to be a working example, just a snippet with invoking python code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61748">soldierofhell</a> on 2021-05-13 07:45:36 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

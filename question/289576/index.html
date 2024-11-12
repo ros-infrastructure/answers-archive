@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Understanding the bytes in a pcl2 message - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/289576">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Understanding the bytes in a pcl2 message</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/86750/understanding-the-bytes-in-a-pcl2-message">https://robotics.stackexchange.com/questions/86750/understanding-the-bytes-in-a-pcl2-message</a>.</p>
+        <p>I am using python in order to publish pointclouds. Prior to this I&#39;d like to run some segmentation using <a href="https://github.com/strawlab/python-pcl">python-pcl</a> and colorize each cluster. Unfortunately, the only function that creates a pcl message from a numpy array does so without considering color (only x, y, z).</p>
+
+<pre><code>pcl2.create_cloud_xyz32(header, nx3_numpy_array)
+</code></pre>
+
+<p>Therefore, I want to create a ros message then tweak it manually to change the color of each point. Here is an example message:</p>
+
+<pre><code>header: 
+  seq: 1535
+  stamp: 
+    secs: 1524593497
+    nsecs: 322609179
+  frame_id: &quot;gripper_depth_camera_rgb_optical_frame&quot;
+height: 480
+width: 640
+fields: 
+  - 
+    name: &quot;x&quot;
+    offset: 0
+    datatype: 7
+    count: 1
+  - 
+    name: &quot;y&quot;
+    offset: 4
+    datatype: 7
+    count: 1
+  - 
+    name: &quot;z&quot;
+    offset: 8
+    datatype: 7
+    count: 1
+  - 
+    name: &quot;rgb&quot;
+    offset: 16
+    datatype: 7
+    count: 1
+is_bigendian: False
+point_step: 32
+row_step: 20480
+data: [0, 0, 192, 127, 0, 0, 192, 127, 0, 0, 192, 127, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+</code></pre>
+
+<p>It is easy to understand why x, y and z require 4 bytes each (float 32)</p>
+
+<p>But why does rgb come at 16 and not 12? following the logic, z also needs 4 bytes, and the next free spot is at an offset of 12 and not 16.</p>
+
+<p>Also why does rgb need 16 bytes? (point_step is 32 so one point requires 32 bytes from which 16 are for rgb). The color values themselves need only one byte each so this is confusing. Also, if we say the are float32 values, 16 bytes means 4 values, is the fourth value the transparency (RGBA?)</p>
+
+<p>Here is an example from an XYZ only pointcloud where my understanding fits:</p>
+
+<pre><code>header: 
+  seq: 5
+  stamp: 
+    secs: 1524583199
+    nsecs: 372246980
+  frame_id: &quot;gripper_depth_camera_rgb_optical_frame&quot;
+height: 1
+width: 231
+fields: 
+  - 
+    name: &quot;x&quot;
+    offset: 0
+    datatype: 7
+    count: 1
+  - 
+    name: &quot;y&quot;
+    offset: 4
+    datatype: 7
+    count: 1
+  - 
+    name: &quot;z&quot;
+    offset: 8
+    datatype: 7
+    count: 1
+is_bigendian: False
+point_step: 12
+row_step: 2772
+data: [125, 207, 94, 190, 220, 24, 98, 190, 254, 67, 60, 63, 69, 231, 92, 190, 6
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/13601">Mehdi.</a> on 2018-04-24 13:15:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Your datatype for rgb is wrong, it should be like this- the 7 is a 32 bit floating point type, this 6 is a 32 bit unsigned int:</p>
+
+<pre><code>  ...
+  - 
+    name: &quot;rgb&quot;
+    offset: 12
+    datatype: 6
+    count: 1
+is_bigendian: False
+point_step: 16
+...
+</code></pre>
+
+<p>You don&#39;t need to do it manually though, sensor_msgs.point_cloud2 create_cloud will help out (though the packing of the rgb bytes maybe could be better?):</p>
+
+<pre><code>#!/usr/bin/env python
+# PointCloud2 color cube
+import rospy
+import struct
+
+from sensor_msgs import point_cloud2
+from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import Header
+
+
+rospy.init_node(&quot;create_cloud_xyzrgb&quot;)
+pub = rospy.Publisher(&quot;point_cloud2&quot;, PointCloud2, queue_size=2)
+
+points = []
+lim = 8
+for i in range(lim):
+    for j in range(lim):
+        for k in range(lim):
+            x = float(i) / lim
+            y = float(j) / lim
+            z = float(k) / lim
+            pt = [x, y, z, 0]
+            r = int(x * 255.0)
+            g = int(y * 255.0)
+            b = int(z * 255.0)
+            a = 255
+            print r, g, b, a
+            rgb = struct.unpack(&#39;I&#39;, struct.pack(&#39;BBBB&#39;, b, g, r, a))[0]
+            print hex(rgb)
+            pt[3] = rgb
+            points.append(pt)
+
+fields = [PointField(&#39;x&#39;, 0, PointField.FLOAT32, 1),
+          PointField(&#39;y&#39;, 4, PointField.FLOAT32, 1),
+          PointField(&#39;z&#39;, 8, PointField.FLOAT32, 1),
+          PointField(&#39;rgb&#39;, 12, PointField.UINT32, 1),
+          # PointField(&#39;rgba&#39;, 12, PointField.UINT32, 1),
+          ]
+
+header = Header()
+header.stamp = rospy.Time.now()
+header.frame_id = &quot;map&quot;
+pc2 = point_cloud2.create_cloud(header, fields, points)
+while not rospy.is_shutdown():
+    pc2.header.stamp = rospy.Time.now()
+    pub.publish(pc2)
+    rospy.sleep(1.0)
+</code></pre>
+
+<p>The alpha value goes along for the ride for free above, unless rgba is used, and then rviz will pay attention to it and render the transparency.</p>
+
+<p>All the valid fields and types are here: <a href="http://wiki.ros.org/pcl/Overview">http://wiki.ros.org/pcl/Overview</a>
+The above could be added to point_cloud2.py, but you can see from the numerous fields that the number of convenience functions that anyone might want is very large.  It would be useful to have a few more examples available.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2018-04-24 17:38:07 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks !! that is exactly what I needed. The first message example is from a &quot;depth_registered&quot; topic from the openni driver so maybe there is more to it than just simple rgb.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/13601">Mehdi.</a> on 2018-04-25 03:40:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Does rviz show the colors in that <code>depth_registered</code> topic properly?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-04-25 12:58:52 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

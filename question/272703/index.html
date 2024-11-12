@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Bug in ros::NodeHandle::searchParam()? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/272703">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Bug in ros::NodeHandle::searchParam()?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/83239/bug-in-rosnodehandlesearchparam">https://robotics.stackexchange.com/questions/83239/bug-in-rosnodehandlesearchparam</a>.</p>
+        <p>Hi all,</p>
+
+<p>according to my understanding of <a href="http://docs.ros.org/kinetic/api/roscpp/html/classros_1_1NodeHandle.html#a03010d21f107c80425f346a3508eafb6">searchParam()</a>, the second <code>if</code> condition in the following code snippet should never be <code>true</code> (probably except for some rare race condition cases which shouldn&#39;t happen in my case):</p>
+
+<pre><code>  std::string full_param_name, param_name = &quot;a/b&quot;;
+  if (nh.searchParam(param_name, full_param_name)) {
+    if (!nh.getParam(full_param_name, result)) {
+      // this should never be reached (but it is reached) ... ?!
+    }
+  }
+</code></pre>
+
+<p>In particular, see also this <a href="http://wiki.ros.org/roscpp/Overview/Parameter%20Server#Searching_for_Parameter_Keys">ROS tutorial (wiki)</a>.</p>
+
+<p>However, in my case I have <code>/a/b</code> on the parameter server (note the leading <code>/</code> -&gt; global) and <code>param_name</code> is <code>a/b</code> (note the <code>/</code> in between: is this allowed?). <code>searchParam()</code> returns <code>true</code> in that case but <code>getParam()</code> returns <code>false</code>. The <code>ros::NodeHandle nh</code>is initialized with <code>~</code> (and, thus, points the node&#39;s private namespace). Interesstingly, <code>full_param_name</code> is (erroneously) set to <code>$fully_qualified_namespace_of_my_node/a/b</code> (which doesn&#39;t exist).</p>
+
+<p>Is this a bug or am I doing something wrong? Even if &quot;nested keys&quot; (=  the <code>/</code> in between <code>a</code> and <code>b</code>) are not allowed (are they?), I would assume that <code>searchParam()</code> returns <code>false</code> ... ?</p>
+
+<p>Thanks!</p>
+
+<p>EDIT: here is a minimum working example that demonstrates the issue:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;test_node&quot;);
+  std::string full_param_name, param_name = &quot;a/b&quot;, result;
+  ros::NodeHandle nh(&quot;~&quot;);
+  ros::spinOnce(); // (probably not needed)
+  if (nh.searchParam(param_name, full_param_name)) {
+    if (!nh.getParam(full_param_name, result)) {
+      ROS_FATAL(&quot;THIS SHOULD NEVER BE PRINTED ... ?! (%s)&quot;, full_param_name.c_str());
+    } else {
+      ROS_INFO(&quot;Okay, parameter found: &#39;%s&#39; = &#39;%s&#39;.&quot;, param_name.c_str(), result.c_str());
+    }
+  } else {
+    ROS_INFO(&quot;Okay, parameter &#39;%s&#39; not found on the ROS parameter server.&quot;, param_name.c_str());
+  }
+  ros::shutdown(); // (probably not needed)
+  return 0;
+}
+</code></pre>
+
+<p>Output:</p>
+
+<blockquote>
+<p>[FATAL] [1507900407.659972647] [/my<em>namespace/my</em>node | 7f61d64c4780]: THIS SHOULD NEVER BE PRINTED ... ?! (/my<em>namespace/my</em>node/a/b)</p>
+</blockquote>
+
+<p>Note that <code>rosparam list | grep &quot;a/b&quot;</code> returns <code>/a/b</code>.</p>
+
+<p>EDIT2: since I am successfully using &quot;nested keys&quot; in my code (at other locations/contexts), I assume that they are allowed.</p>
+
+<p>EDIT3 (@Dirk Thomas): thanks for your assistance / thoughts! I think that I&#39;ve tracked down the problem correctly now. Your <a href="https://github.com/ros/ros_comm/blob/38799662b45a42e118762865fac854317b0924a0/tools/rosmaster/src/rosmaster/paramserver.py#L82-L103">link</a> was somewhat helpful. For instance, assume the following is stored on the parameter server</p>
+
+<pre><code>/a/b: 42
+/a/c: &#39;cannot be found with searchParam using private ns&#39;
+/node_namespace/node_name/a/b: 41
+</code></pre>
+
+<p>and I ask for <code>searchParam(nh_private, &quot;a/b&quot;, x)</code> then <code>x=/node_namespace/node_name/a/b</code> (with value 41) and <code>true</code> is returned (all fine). However, if I ask for <code>searchParam(nh_private, &quot;a/c&quot;, x)</code> then <code>x=/node_namespace/node_name/a/c</code> and <code>true</code> (sic!) is returned but that parameter does not exist (and I don&#39;t understand why the docblock states &quot;<a href="yet">...</a>&quot;). <strong>IMHO, this behavior of <code>searchParam()</code> makes absolutely no sense and I would consider this to be a bug.</strong></p>
+
+<p>More specifically, my concerns are:</p>
+
+<ul>
+<li>searchParam() returns true although nothing was found (<code>/node_namespace/node_name/a/c</code>).</li>
+<li>searchParam() is said <a href="http://docs.ros.org/kinetic/api/roscpp/html/classros_1_1NodeHandle.html#a03010d21f107c80425f346a3508eafb6">&quot;to search up the tree for a parameter&quot;</a> but it returns an invalid key <em>although</em> there is a (here: global) parameter (<code>/a/c</code>) matching the given partial key (<code>a/c</code>).</li>
+</ul>
+
+<p>What do you think? ;-)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-10 09:06:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>If you feel this is a bug (and you already have a MWE), then I believe it would be better to report this over at <a href="https://github.com/ros/ros_comm/issues">ros/ros_comm/issues</a>.</p>
+
+<p>Edit: ah. I see you already did that: <a href="https://github.com/ros/ros_comm/issues/1187">ros/ros_comm/issues/1187</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-10-13 08:40:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes. ;-) Thanks for referencing the issue, forgot that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-13 08:41:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Well, the actual behavior seems to match what is written in the docblock (<a href="https://github.com/ros/ros_comm/blob/38799662b45a42e118762865fac854317b0924a0/tools/rosmaster/src/rosmaster/paramserver.py#L82-L103">https://github.com/ros/ros_comm/blob/38799662b45a42e118762865fac854317b0924a0/tools/rosmaster/src/rosmaster/paramserver.py#L82-L103</a>). So I assume the behavior is intentionally this way and I don&#39;t think this is a bug.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2017-10-17 11:19:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hm, I disagree since you are referring to the Python docs but I am using roscpp where it is stated that it &quot;returns true if the parameter was found, false otherwise&quot;. Clearly, this isn&#39;t true. Anyway, I&#39;ll write my own version of <code>searchParam()</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-18 08:38:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If you think the implementation in both languages is different from each other then please consider to provide a PR which makes them consistent rather than &quot;writing your own&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2017-10-18 10:02:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>At least the docs are not consistent, don&#39;t you think so?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-18 10:04:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would interpret it that the Python doc is just more precise where the C++ doc is not clear about the (partial) match.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2017-10-18 10:07:55 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just noting that I&#39;ve recently come across the same problem: <code>ros::param::search</code> returns true and gives a <code>result</code> path to a parameter that doesn&#39;t exist. For example, if I have a param at <code>/a/b/c/d</code>, and I call <code>ros::param::search(&quot;a&quot;,&quot;c/d&quot;, res)</code>, the return value is <code>true</code> and <code>res</code> is <code>a/c/d</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3362">nckswt</a> on 2018-03-06 20:04:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>From what I can tell, this isn&#39;t an issue with either RosCpp or RosPy client library, but a problem with the payload returned from the XmlRpc call to the parameter server. I haven&#39;t been able to find the <code>&quot;searchParam&quot;</code> remote API method implementation from the parameter server, though.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3362">nckswt</a> on 2018-03-06 20:08:12 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You might want to print the value of <code>full_param_name</code> after getting it with <code>searchParam</code> before calling <code>getParam</code>.</p>
+
+<p>The API docs describe the second argument of <code>searchParam</code> with:</p>
+
+<blockquote>
+<p>[out] result  the found value (if any)</p>
+</blockquote>
+
+<p><strong>Update:</strong></p>
+
+<p>The docblock is kind of misleading. The <code>result</code> is actually a parameter key and not a value.</p>
+
+<hr>
+
+<p>When I run your code snippet as-is I get:</p>
+
+<ul>
+<li>no parameter set: <code>Okay, parameter &#39;a/b&#39; not found on the ROS parameter server.</code></li>
+<li>after <code>rosparam set /a/b global_value</code>: <code>Okay, parameter found: &#39;a/b&#39; = &#39;global_value&#39;.</code></li>
+<li>after <code>rosparam set /test_node/a/b node_value</code>: <code>Okay, parameter found: &#39;a/b&#39; = &#39;node_value&#39;.</code></li>
+</ul>
+
+<p>After calling <code>rosparam delete /test_node/a/b</code> I do get <code>THIS SHOULD NEVER BE PRINTED ... ?! (/test_node/a/b)</code>.</p>
+
+<p>Maybe you can post the exact steps you are performing when running into the problem.</p>
+
+<p>May this docblock clarifies the behavior of <code>searchParam</code> which seems to be the rational for the case above: <a href="https://github.com/ros/ros_comm/blob/38799662b45a42e118762865fac854317b0924a0/tools/rosmaster/src/rosmaster/paramserver.py#L82-L103">https://github.com/ros/ros_comm/blob/38799662b45a42e118762865fac854317b0924a0/tools/rosmaster/src/rosmaster/paramserver.py#L82-L103</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2575">Dirk Thomas</a> on 2017-10-13 12:26:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you very much! That did the trick, sorry for the noise!</p>
+
+<p>Minor follow-up question: it is possible to use <code>searchParam()</code> with types other than <code>std::string</code>? There just seems to be a string version of that method.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-14 17:34:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Dirk Thomas: For some reason, I am unable to reproduce this on my primary dev machine: if I print the value of <code>full_param_name</code>, I get <code>&#39;a/b&#39; = &#39;/a/b&#39;</code> (the value is &#39;test_value&#39;). Also, the ROS wiki exactly states that <code>searchParam()</code> + <code>getParam()</code> is the way to go. Is that an error in the wiki?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-16 06:27:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>With what other parameter type do you want to call <code>searchParam()</code>? <code>char*</code> should work too using implicit conversion.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2017-10-16 12:56:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>To your last comment: before you edited your answer, you&#39;ve written that <code>searchParam()</code> returns the actual ROS parameter server value in its (last) parameter <code>result</code> which obviously isn&#39;t the case (see also wiki link in my initial post). My comment just referred to that statement and ...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-17 05:00:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>... doesn&#39;t make any sense after your edit/update. With respect to your edit, I&#39;ve updated my initial post.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2017-10-17 05:00:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

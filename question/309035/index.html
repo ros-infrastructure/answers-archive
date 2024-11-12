@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>turtlebot continues driving after Ctrl + C - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/309035">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>turtlebot continues driving after Ctrl + C</h2>
+      <div class="question">
+        <p>Hey Everybody,</p>
+
+<p>I have a Turtlebot3 Waffle Pi, everything is setup as told in the <a href="http://emanual.robotis.com/docs/en/platform/turtlebot3/getting_started/#getting-started">official Tutorial</a>. My Remote PC is a Ubuntu 16.04. VM, ROS Kinetic installed on the turtlebot. Currently I am working on a Lane Following Script in Python which is working quite well so far. The only thing I do have trouble with, is that the turtlebot continues driving, even after I shut down the Script with Ctrl + c. I checked via <code>rostopic echo /cmd_vel</code> if their are somehow still messages sent, but traffic immediately stops after the script is shutdown. My suggestion is that somehow the turtlebot buffers the last received message. 
+I am using callback functions and <code>rospy.spin()</code> as mentioned in the <a href="http://wiki.ros.org/rospy/Overview/Initialization%20and%20Shutdown">rospy shutdown tutorial</a> but somehow my turtlebot still keeps on moving after exiting the program. </p>
+
+<p>Code is as follows:</p>
+
+<pre><code>import rospy, cv2, numpy as np, cv_bridge, time, sys
+from sensor_msgs.msg import Image, CompressedImage 
+from geometry_msgs.msg import Twist
+
+twist_publisher = rospy.Publisher(&#39;cmd_vel&#39;, Twist, queue_size = 5)
+image_sub = rospy.Subscriber(&quot;/raspicam_node/image/compressed&quot;, CompressedImage, onNewImage)
+err = 0.0
+pastError = 0
+totalError = 0
+
+def speedControl(errlow):
+    global pastError
+    global totalError
+
+    kp = 0.8
+    kd = 0.0
+
+    if errlow &gt; -50 and errlow &lt;  50:
+        twist_value = 0.25
+    elif errlow &gt; -100 and errlow &lt; 100:
+        twist_value = 0.2
+    elif errlow &gt;  -150 and errlow &lt; 150:
+        twist_value = 0.15
+
+    return (twist_value)
+
+def steeringControl(errlow):
+    global pastError
+    global totalError
+
+    kp = 0.8
+    kd = 0.0 
+
+    value = kp * errlow + kd * pastError
+    pastError = errlow
+    totalError = (errlow - pastError)
+
+    return (-float(value) / 500)
+
+def onNewImage(imagedata):
+    global twist_publisher
+    global err
+
+
+    bridge = cv_bridge.CvBridge()
+    twist = Twist()
+
+    image = bridge.compressed_imgmsg_to_cv2(imagedata ,desired_encoding=&#39;bgr8&#39;)
+
+    frame = cv2.GaussianBlur(image, (5, 5), 0)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    l_mask = cv2.inRange(gray, 190, 255)
+    view = cv2.inRange(gray, 190, 255)
+
+    h, w, d = image.shape
+
+    search_bot_high = 2*h/4
+    search_bot_low = 2*h/4 + 20
+
+    l_mask[0:search_bot_high, 0:w] = 0
+    l_mask[search_bot_low:h, 0:w] = 0
+
+    L = cv2.moments(l_mask)
+
+    if L[&#39;m00&#39;] &gt; 0:
+            cx = int(L[&#39;m10&#39;]/L[&#39;m00&#39;])
+            cy = int(L[&#39;m01&#39;]/L[&#39;m00&#39;])
+
+            last_dir = cv2.GaussianBlur(image, (5, 5), 0)
+            err = cx - w/2                
+
+            twist.angular.z = steeringControl(err)
+            #twist.linear.x = speedControl(err)
+            twist.linear.x = 0.1
+
+    twist_publisher.publish(twist)
+
+    print &quot;Twist x: &quot; + str(twist.linear.x)
+    print &quot;Twist z: &quot; + str(twist.angular.z)
+    print &quot; &quot;
+
+def initRos():
+    global twist_publisher
+
+    image_sub = rospy.Subscriber(&quot;/raspicam_node/image/compressed&quot;, CompressedImage, onNewImage)
+    twist_publisher = rospy.Publisher(&quot;/cmd_vel&quot;, Twist, queue_size = 5)
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;my_line_follower&#39;)
+    initRos()
+    rospy.spin()
+</code></pre>
+
+<p>Output of <code>rostopic list</code></p>
+
+<pre><code>/battery_state
+/cmd_vel 
+/cmd_vel_rc100
+/diagnostics
+/firmware_version
+/imu
+/joint_states 
+/magnetic_field
+/motor_power
+/odom
+/raspicam_node/camera_info
+/raspicam_node/image/compressed
+/raspicam_node/parameter_descriptions
+/raspicam_node/parameter_updates
+/reset
+/rosout
+/rosout_agg
+/rpms
+/scan
+/sensor_state
+/sound
+/steering_image
+/tf
+/version_info
+/view_image
+</code></pre>
+
+<p>Any help is much appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/38646">Karax31</a> on 2018-11-21 04:45:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I solved this by implementing my own signal handler which is sending a final twist message, setting everything to zero. However, I&#39;d be still interested why the standard ROS handler failed.</p>
+
+<p>Here&#39;s the code I added:</p>
+
+<pre><code>def exit_gracefully(sig, frame):
+    global twist_publisher
+    global image_sub
+
+    image_sub.unregister()
+
+    twist = Twist()
+    print(twist)
+    twist_publisher.publish(twist)
+
+    rospy.signal_shutdown(&quot;Stop&quot;)
+</code></pre>
+
+<p>and </p>
+
+<pre><code>if __name__ == &#39;__main__&#39;:
+     rospy.init_node(&#39;my_line_follower&#39;, disable_signals=True)
+
+     signal.signal(signal.SIGINT, exit_gracefully)
+     signal.signal(signal.SIGTERM, exit_gracefully)
+
+     initRos()
+     rospy.spin()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/38646">Karax31</a> on 2018-11-21 07:00:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Converting dynamic reconfigure to ros2 parameters - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/312409">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Converting dynamic reconfigure to ros2 parameters</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/90036/converting-dynamic-reconfigure-to-ros2-parameters">https://robotics.stackexchange.com/questions/90036/converting-dynamic-reconfigure-to-ros2-parameters</a>.</p>
+        <p>This isn&#39;t a very clear question, mostly just a dump of my current understanding of how to use ros2 parameters and hopefully any misconceptions can be addressed in comments or answers.</p>
+
+<p>I have many ros1 nodes that use dynamic reconfigure that I&#39;m converting to ros2, and it appears ros2 parameters can provide the same functionality with approximately the same resource costs and lines of code.</p>
+
+<p>The example code in <a href="https://github.com/ros2/demos">https://github.com/ros2/demos</a> is nice but the use of modern C++ isn&#39;t always helpful, it multiplies the cognitive load in the jump from ros1 to ros2 and the use of <code>auto</code> is less self-documenting except in the trivial cases where the type of the auto is on right side of the same line of code.  Adding older style examples that duplicate functionality of the existing examples would be good but then doubles the number of examples to be gone through by a new user.</p>
+
+<p><a href="https://github.com/lucasw/ros2_cpp_py">https://github.com/lucasw/ros2_cpp_py</a> has some of what I think is the right way for path of least resistance in updating ros1 code:</p>
+
+<ul>
+<li><code>set_parameter_if_not_set()</code> followed by <code>get_parameter_or()</code> for all parameters in the constructor/init. (or the other way around, the order doesn&#39;t matter).  This makes sure any other node can see all the parameters used internally by this node, that parameter yaml values are in use.</li>
+</ul>
+
+<p>Putting this into the class which inherits from rclcpp::Node is roughly the same as the dynamic reconfigure boiler plate:</p>
+
+<pre><code>rclcpp::AsyncParametersClient::SharedPtr parameters_client_;
+rclcpp::Subscription&lt;rcl_interfaces::msg::ParameterEvent&gt;::SharedPtr param_sub_;
+void onParameterEvent(const rcl_interfaces::msg::ParameterEvent::SharedPtr event);
+</code></pre>
+
+<p>Then at constructor/init time:</p>
+
+<pre><code>parameters_client_ = std::make_shared&lt;rclcpp::AsyncParametersClient&gt;(this);
+param_sub_ = parameters_client_-&gt;on_parameter_event(
+    std::bind(&amp;CppTest::onParameterEvent, this, std::placeholders::_1));
+</code></pre>
+
+<p>This is where parameter handling got confusing:</p>
+
+<pre><code>void CppTest::onParameterEvent(const rcl_interfaces::msg::ParameterEvent::SharedPtr event) {
+...
+}
+</code></pre>
+
+<p>It appears that onParameterEvent will get a message for every parameter event in the same namespace, so two nodes with parameter event handlers will get events meant for each other, which is especially bad if the multiple nodes use parameters with the same names.  Leaving the node name blank in AsyncParametersClient appears identical to the following, and doesn&#39;t help with filtering out unwanted events:</p>
+
+<pre><code>const std::string full_name = std::string(get_namespace()) + std::string(get_name());
+parameters_client_ = std::make_shared&lt;rclcpp::AsyncParametersClient&gt;(this, full_name);
+</code></pre>
+
+<p>(Is that behavior that might change post-crystal?)</p>
+
+<p>The parameter handling behind the scenes knows which node a parameter is meant for, but in the parameter event handler the event-&gt;node string can be used to filter out unwanted updates:</p>
+
+<pre><code>const std::string full_name = std::string(get_namespace()) + std::string(get_name());
+if (event-&gt;node != full_name) {
+  return;
+}
+</code></pre>
+
+<p>What to do inside onParameterEvent() is less clear.  In many of my nodes there is a timer update function getting called so many times a second which runs processing code only if parameters have changed (or new messages arrived on input topics), so I could simply set a flag in onParameterEvent and then get the current value of every parameter with get<em>parameter</em>or() in the timer update if the flag is set.  I think that is not too painful, but I assume I should cache the values first before using them inside a loop.</p>
+
+<p>Or is it a lot more efficient to use the parameter events to update copies of every parameter and avoid get<em>parameter</em>or()?</p>
+
+<p><a href="https://github.com/lucasw/image_manip/blob/2b188674a8eaeb7853f49b603957d5922f5c8036/image_manip/src/color.cpp#L103">https://github.com/lucasw/image_manip/blob/2b188674a8eaeb7853f49b603957d5922f5c8036/image_manip/src/color.cpp#L103</a> shows where I update the local class copy of every parameter if the dirty flag is set- at least for a small number of parameters this seems more expedient than trying to switch on parameter types etc. inside the parameter event handler.</p>
+
+<pre><code>void Color::pubImage()
+{
+  if (dirty_ || image_.empty()) {
+    get_parameter_or(&quot;red&quot;, red_, red_);
+    get_parameter_or(&quot;green&quot;, green_, green_);
+    get_parameter_or(&quot;blue&quot;, blue_, blue_);
+    get_parameter_or(&quot;width&quot;, width_, width_);
+    get_parameter_or(&quot;height&quot;, height_, height_);
+    ...
+    dirty_ = false;
+</code></pre>
+
+<p>I think the min and max values for former dynamic reconfigure parameters can be enforced through register<em>param</em>change_callback but I haven&#39;t explored that much.  The caller node won&#39;t be able to know what the restrictions are (if for example it wanted to set limits on a gui slider), but the trade off benefit is that the limits aren&#39;t fixed at compile time, don&#39;t have to exist at all or can change dynamically depending on other parameters or for any other reason.</p>
+
+<h2>Multiple parameter events callbacks in one node</h2>
+
+<p>It looks like it isn&#39;t possible to register on<em>parameter</em>event for two different remote nodes if they are in the same namespace (or at all regardless of namespace?  That would be bad)- probably because the AsyncParametersClient is trying to subscribe to the same parameter_events topic twice, so only the last one gets called.  The node needs the mechanism to determine that two remote nodes that the main node wants to get events for are in the same namespace and then only have one parameter event handler that they both share?</p>
+
+<h2>Setting parameters to the wrong type</h2>
+
+<p>Setting a bool to a float or even a float to an int causes a rclcpp::ParameterTypeException in the node that is trying to use get<em>parameter</em>or() on that parameter- sometimes the exception causes the whole launch to die with an &#39;invalid start byte&#39; message.  The solution is to wrap get<em>parameter</em>or with try catch.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/120"></a> on 2019-01-10 11:15:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I couldn&#39;t get on_parameter_event to work when the node was within a namespace, but the object is already a Node so doesn&#39;t need a parameters client for itself, that is redundant- so get rid parameters_client_ and param_sub_ and onParameterEvent above inside the class that is the receiving end of set parameters.</p>
+
+<p>Instead:</p>
+
+<pre><code>class CppTest : public rclcpp::Node {
+...
+
+  register_param_change_callback(
+        std::bind(&amp;CppTest::onParameterChange, this, _1));
+
+...
+rcl_interfaces::msg::SetParametersResult CppTest::onParameterChange(
+    std::vector&lt;rclcpp::Parameter&gt; parameters)
+{
+  // this doesn&#39;t do any checking, it just assumes the parameter
+  // changes are good
+  dirty_ = true;
+  auto result = rcl_interfaces::msg::SetParametersResult();
+  result.successful = true;
+  return result;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2019-01-15 08:33:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

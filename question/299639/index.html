@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>writing a service to publish only once in a latched topic - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/299639">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>writing a service to publish only once in a latched topic</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88347/writing-a-service-to-publish-only-once-in-a-latched-topic">https://robotics.stackexchange.com/questions/88347/writing-a-service-to-publish-only-once-in-a-latched-topic</a>.</p>
+        <p>Hello,</p>
+
+<p>I am writing a Service which should save a value from a topic to another latched topic so I can use that value later</p>
+
+<p>I am using the following code and my topic seems to be not connected to the publisher since I am getting 0 connections always from the get<em>num</em>connections()</p>
+
+<pre><code>    #!/usr/bin/env python
+
+import rospy
+from std_msgs.msg import Float64
+from std_srvs.srv import Empty, EmptyResponse
+
+
+class save_hdg(object):
+
+    def __init__(self):
+        self.init_hdg()
+        self.latch_publisher = rospy.Publisher(&#39;/autonomous/saved_heading&#39;,
+                                               Float64,queue_size=10,latch=False)
+        self.serv = rospy.Service(&#39;/autonomous/save_heading&#39;,Empty, self.publish_once_only)
+        self.hdg_subscriber = rospy.Subscriber(&#39;/mavros/global_position/compass_hdg&#39;, Float64,
+                                               self.subscriber_callback, queue_size=1)
+        self.rate = rospy.Rate (10)
+        rospy.loginfo(&quot;The save heading service is ready&quot;)
+        self.connections = self.latch_publisher.get_num_connections()
+
+
+
+    def init_hdg(self):
+        self._hdg = None
+        while self._hdg is None:
+            try:
+                self._hdg = rospy.wait_for_message(&quot;/mavros/global_position/compass_hdg&quot;,
+                                                   Float64, timeout=1)
+            except:
+                rospy.loginfo(&quot;/compass_hdg topic is not ready yet, retrying&quot;)
+
+        rospy.loginfo(&quot;/compass_hdg topic READY&quot;)
+
+    def publish_once_only(self,req):
+        rospy.loginfo(&quot;save heading service has been called&quot;)
+        self.hdg = self.current_heading
+        try:
+            while not rospy.is_shutdown():
+                rospy.loginfo(&quot;Connections: %d&quot;,self.connections)
+                rospy.loginfo(&quot;Current heading is %f&quot;,self.hdg)
+                if self.connections &gt; 0 :
+                    self.latch_publisher.publish(self.hdg)
+                    rospy.loginfo(&quot;Published&quot;)
+                    break
+                self.rate.sleep()
+        except rospy.ROSInterruptException:
+            raise e
+
+        return EmptyResponse()
+
+    def subscriber_callback(self,msg):
+        self.current_heading = msg.data
+
+if __name__ == &quot;__main__&quot;:
+    rospy.init_node(&quot;save_heading_ServiceServer&quot;)
+    save_heading_object = save_hdg()
+    rospy.spin()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/31455">ShehabAldeen</a> on 2018-08-05 02:06:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You always get self.connections == 0 because you don&#39;t update the value within your while loop. But this is not the main issue with your code. </p>
+
+<p>How I understand you question is that you want to have a node that subscribes to a topic and stores the current heading if a service is triggered and afterwards provides this selected heading to all nodes that subscribe to a second topic. In this case, your code could look like this:</p>
+
+<p>A latched publisher automatically sends its current message to any new subscriber. </p>
+
+<pre><code>class save_hdg(object):
+
+    def __init__(self):
+        self.latch_publisher = rospy.Publisher(&#39;/autonomous/saved_heading&#39;,
+                                               Float64, queue_size=10, latch=True) # TURNING ON LATCHING
+
+        self.serv = rospy.Service(&#39;/autonomous/save_heading&#39;, Empty, self.publish_once_only)
+
+        self.hdg_subscriber = rospy.Subscriber(&#39;/mavros/global_position/compass_hdg&#39;, Float64,
+                                               self.subscriber_callback, queue_size=1)
+
+        # initialize all member variables in init
+        self.heading_received = False
+        self.current_heading = self.hdg = None
+        rospy.loginfo(&quot;The save heading service is ready&quot;)
+
+    def publish_once_only(self, req):
+        rospy.loginfo(&quot;save heading service has been called&quot;)
+
+        if self.heading_received:
+            self.hdg = self.current_heading
+            self.latch_publisher.publish(self.hdg)
+        else:
+            rospy.logwarn(&quot;Did not receive heading yet, can&#39;t republish&quot;)
+
+        return EmptyResponse()
+
+    def subscriber_callback(self, msg):
+        self.heading_received = True
+        self.current_heading = msg.data
+
+if __name__ == &quot;__main__&quot;:
+    rospy.init_node(&quot;save_heading_ServiceServer&quot;)
+    save_heading_object = save_hdg()
+    rospy.spin()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/18581">NEngelhard</a> on 2018-08-05 03:07:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Actually, I don&#39;t know maybe I am using the get_num_connections wrong
+but at the end, I have erased it and just making the function simple like that now it&#39;s working 
+thank you, I appreciate your help</p>
+
+<pre><code>def publish_once_only(self,req):
+    rospy.loginfo(&quot;save heading service has been called&quot;)
+    self.hdg = self.current_heading
+    try:
+        self.latch_publisher.publish(self.hdg)
+        rospy.loginfo(&quot;Published&quot;)
+        self.rate.sleep()
+    except rospy.ROSInterruptException:
+        raise e
+
+    return EmptyResponse()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/31455">ShehabAldeen</a> on 2018-08-05 03:46:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

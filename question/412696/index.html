@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>why does my servo feedback take so long to register new position. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/412696">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>why does my servo feedback take so long to register new position.</h2>
+      <div class="question">
+        <p>Attached in code</p>
+
+<pre><code>#!/usr/bin/env python3
+</code></pre>
+
+<p>from interbotix<em>xs</em>modules.arm import InterbotixManipulatorXS
+import math</p>
+
+<p>bot = InterbotixManipulatorXS(robot<em>model=&quot;rx150&quot;)
+bot.dxl.robot</em>set<em>operating</em>modes(&quot;group&quot;, &quot;arm&quot;, &quot;current&quot;)</p>
+
+<p>import gym
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import time</p>
+
+<h1>Hyperparameters</h1>
+
+<p>lr<em>mu        = 0.0005
+lr</em>q         = 0.001
+gamma        = 0.99
+batch<em>size   = 32
+buffer</em>limit = 50000
+tau          = 0.005 # for target network soft update</p>
+
+<p>class ReplayBuffer():
+    def <strong>init</strong>(self):
+        self.buffer = collections.deque(maxlen=buffer_limit)</p>
+
+<pre><code>def put(self, transition):
+    self.buffer.append(transition)
+
+def sample(self, n):
+    mini_batch = random.sample(self.buffer, n)
+    s_lst, a_lst, r_lst, s_prime_lst, done_mask_lst = [], [], [], [], []
+
+    for transition in mini_batch:
+        s, a, r, s_prime, done = transition
+        s_lst.append(s)
+        a_lst.append([a])
+        r_lst.append([r])
+        s_prime_lst.append(s_prime)
+        done_mask = 0.0 if done else 1.0 
+        done_mask_lst.append([done_mask])
+
+    return torch.tensor(s_lst, dtype=torch.float), torch.tensor(a_lst, dtype=torch.float), \
+            torch.tensor(r_lst, dtype=torch.float), torch.tensor(s_prime_lst, dtype=torch.float), \
+            torch.tensor(done_mask_lst, dtype=torch.float)
+
+def size(self):
+    return len(self.buffer)
+</code></pre>
+
+<p>class MuNet(nn.Module):
+    def <strong>init</strong>(self):
+        super(MuNet, self).<strong>init</strong>()
+        self.fc1 = nn.Linear(3, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc_mu = nn.Linear(64, 1)</p>
+
+<pre><code>def forward(self, x):
+    x = F.relu(self.fc1(x))
+    x = F.relu(self.fc2(x))
+    mu = torch.tanh(self.fc_mu(x))*2 # Multipled by 2 because the action space of the Pendulum-v0 is [-2,2]
+    return mu
+</code></pre>
+
+<p>class QNet(nn.Module):
+    def <strong>init</strong>(self):
+        super(QNet, self).<strong>init</strong>()
+        self.fc<em>s = nn.Linear(3, 64)
+        self.fc</em>a = nn.Linear(1,64)
+        self.fc<em>q = nn.Linear(128, 32)
+        self.fc</em>out = nn.Linear(32,1)</p>
+
+<pre><code>def forward(self, x, a):
+    h1 = F.relu(self.fc_s(x))
+    h2 = F.relu(self.fc_a(a))
+    cat = torch.cat([h1,h2], dim=1)
+    q = F.relu(self.fc_q(cat))
+    q = self.fc_out(q)
+    return q
+</code></pre>
+
+<p>class OrnsteinUhlenbeckNoise:
+    def <strong>init</strong>(self, mu):
+        self.theta, self.dt, self.sigma = 0.1, 0.01, 0.1
+        self.mu = mu
+        self.x<em>prev = np.zeros</em>like(self.mu)</p>
+
+<pre><code>def __call__(self):
+    x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + \
+            self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
+    self.x_prev = x
+    return x
+</code></pre>
+
+<p>def train(mu, mu<em>target, q, q</em>target, memory, q<em>optimizer, mu</em>optimizer):
+    s,a,r,s<em>prime,done</em>mask  = memory.sample(batch_size)</p>
+
+<pre><code>target = r + gamma * q_target(s_prime, mu_target(s_prime)) * done_mask
+q_loss = F.smooth_l1_loss(q(s,a), target.detach())
+q_optimizer.zero_grad()
+q_loss.backward()
+q_optimizer.step()
+
+mu_loss = -q(s,mu(s)).mean() # That&#39;s all for the policy loss.
+mu_optimizer.zero_grad()
+mu_loss.backward()
+mu_optimizer.step()
+</code></pre>
+
+<p>def soft<em>update(net, net</em>target):
+    for param<em>target, param in zip(net</em>target.parameters(), net.parameters()):
+        param<em>target.data.copy</em>(param_target.data * (1.0 - tau) + param.data * tau)</p>
+
+<p>def main():
+    env = gym.make(&#39;Pendulum-v1&#39;)
+    memory = ReplayBuffer()</p>
+
+<pre><code>q, q_target = QNet(), QNet()
+q_target.load_state_dict(q.state_dict())
+mu, mu_target = MuNet(), MuNet()
+mu_target.load_state_dict(mu.state_dict())
+
+score = 0.0
+print_interval = 20
+
+mu_optimizer = optim.Adam(mu.parameters(), lr=lr_mu)
+q_optimizer  = optim.Adam(q.parameters(), lr=lr_q)
+ou_noise = OrnsteinUhlenbeckNoise(mu=np.zeros(1))
+
+for n_epi in range(50000):
+    x = bot.dxl.robot_get_joint_states()
+    s = [math.cos(x.position[2]), math.sin(x.position[2]), x.velocity[2]]
+    #s = env.reset()
+    #print(x.position[2])
+    done = False
+    i = 0
+
+    for i in range(200):
+        a = mu(torch.tensor(s).float()) 
+        a = a.item() + ou_noise()[0]
+        elbow_force = a*1000
+        print(&quot;elbow force is&quot;, elbow_force)
+        joint_currents = [0, 0, 0, 0, 0]
+        bot.dxl.robot_write_commands(&quot;arm&quot;, joint_currents)
+        s_prime = [math.cos(x.position[2]), math.sin(x.position[2]), x.velocity[2]]
+        r = -(500*x.position[1]**2+0.1*x.velocity[1]**2+0.001*elbow_force**2)
+        #s_prime, r, done, info = env.step([a])
+        print(&quot;reward and position is&quot;, r, x.position[2])
+        i += 1
+        if i == 200:
+            done = True
+        memory.put((s,a,r/100.0,s_prime,done))
+        score +=r
+        s = s_prime
+        time.sleep(0.1)
+
+    if memory.size()&gt;2000:
+        for i in range(10):
+            train(mu, mu_target, q, q_target, memory, q_optimizer, mu_optimizer)
+            soft_update(mu, mu_target)
+            soft_update(q,  q_target)
+
+    if n_epi%print_interval==0 and n_epi!=0:
+        print(&quot;                 # of episode :{}, avg score : {:.1f}&quot;.format(n_epi, score/print_interval))
+        score = 0.0
+
+env.close()
+</code></pre>
+
+<p>if <strong>name</strong> == &#39;<strong>main</strong>&#39;:
+    main()</p>
+
+        <div class="owner"><p>Asked by <a href="/users/60529">PGTKing</a> on 2023-02-20 23:48:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

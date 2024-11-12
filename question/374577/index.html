@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Copy sensor_msgs/Image data to Ogre Texture - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374577">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Copy sensor_msgs/Image data to Ogre Texture</h2>
+      <div class="question">
+        <p>Hello everyone. I have been trying to manually copy the contents of an image message to a dynamic Ogre Texture buffer. I want to display the images of a certain topic to a plane in the RViz viewport. </p>
+
+<p>I am aware of both the <a href="https://github.com/lucasw/rviz_textured_quads">rviz<em>textured</em>quads</a> solution by lucasw and the ROSImageTexture class. However they both have unsatisfactory performance. The first is just inefficient, the second has an extra conversion that I am hoping I can skip.</p>
+
+<p>I successfully managed to achieve what I wanted by first converting the Image message to a cv_bridge::CvImagePtr. However I was wondering whether or not I could pull the image data directly from the image message.</p>
+
+<p>Here is my definition of the Texture:</p>
+
+<pre><code>    image_texture_ = texture_manager.createManual(&quot;DynamicImageTexture&quot;,
+    resource_group_name, 
+    Ogre::TEX_TYPE_2D,
+    width_, height_, 0, 
+    Ogre::PF_BYTE_RGB, 
+    Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE);
+</code></pre>
+
+<p>And here is my update function:</p>
+
+<pre><code>    Ogre::HardwarePixelBufferSharedPtr buffer = image_texture_-&gt;getBuffer(0,0);
+    buffer-&gt;lock(Ogre::HardwareBuffer::HBL_DISCARD);
+    const Ogre::PixelBox &amp;pb = buffer-&gt;getCurrentLock();
+    // Obtain a pointer to the texture&#39;s buffer
+    uint8_t *data = static_cast&lt;uint8_t*&gt;(pb.data);
+    // Copy the data
+    memcpy(
+        (uint8_t*)pb.data,
+        &amp;image_ptr_-&gt;data[0],
+        sizeof(uint8_t)*image_ptr_-&gt;data.size()
+        );
+    buffer-&gt;unlock();
+</code></pre>
+
+<p>Is there something wrong I&#39;m doing in copying the data? For reference, here are the results. </p>
+
+<p>Copying the data from the CV Pointer:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/161659214252324.png" alt="CV Pointer"></p>
+
+<p>And the image buffer directly:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16165921665179361.png" alt="buffer"></p>
+
+        <div class="owner"><p>Asked by <a href="/users/70081">pietroro</a> on 2021-03-23 13:15:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please do not link to off-site image hosters. Images tend to disappear that way.</p>
+
+<p>Attach your screenshots to your question directly. I&#39;ve give you sufficient karma.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-03-24 07:53:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Updated, thanks a lot for the permissions.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70081">pietroro</a> on 2021-03-24 08:23:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>A <code>sensor_msgs/Image</code> object is not just a POD, and the <code>data</code> member does not just point to a flat array with pixel values necessarily.</p>
+
+<p>From the documentation (<a href="https://docs.ros.org/en/api/sensor_msgs/html/msg/Image.html">here</a>):</p>
+
+<pre><code>Header header
+
+uint32 height         # image height, that is, number of rows
+uint32 width          # image width, that is, number of columns
+
+# The legal values for encoding are in file src/image_encodings.cpp
+# If you want to standardize a new string format, join
+# ros-users@lists.sourceforge.net and send an email proposing a new encoding.
+
+string encoding       # Encoding of pixels -- channel meaning, ordering, size
+                      # taken from the list of strings in include/sensor_msgs/image_encodings.h
+
+uint8 is_bigendian    # is this data bigendian?
+uint32 step           # Full row length in bytes
+uint8[] data          # actual matrix data, size is (step * rows)
+</code></pre>
+
+<p>(I&#39;ve removed some of the comments)</p>
+
+<p>At the very least, you&#39;ll have to take the <code>encoding</code> into account. <code>step</code> and <code>is_bigendian</code> are also important sometimes.</p>
+
+<p>Much of the functionality in <code>cv_bridge</code> is actually around converting to-and-from <code>sensor_msgs/Image</code> and their equivalent OpenCV types. And in quite a few cases, what happens is format and sometimes colour space conversion. Encodings could specify floating point image formats fi, or anything from binary images to 32bit+alpha.</p>
+
+<p>So I&#39;m not sure you can avoid that, unless your textures happen to accept the <code>encoding</code> used by your <code>sensor_msgs/Image</code>s instances.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-03-24 07:52:57 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for your reply. I am aware of the fact that certain images are encoded in certain ways. However I still think that by being careful one could technically copy the contents of <code>data</code> directly.</p>
+
+<p>The way I see it there are three things one should be aware of:</p>
+
+<ul>
+<li>The encoding of each pixel (for example the <a href="https://www.ogre3d.org/docs/api/1.7/group___image.html#ga7267e8cb21c010de075e82ffbc6a572b">Ogre pixel format</a> <code>PF_R8G8B8</code>: three channels of one byte each, with corresponding <code>sensor_msgs::image_encodings::RGB8</code> ROS encoding counterpart)</li>
+<li>The endianness of the single bytes</li>
+<li>The size of the actual data (both the texture and the image data)</li>
+</ul>
+
+<p>If all three aspects corresponded, I don&#39;t see why the buffers should be indicating different data.</p>
+
+<p>I have tried using images that have the same encoding and endianness should not be a problem, as it should be clear if that were the problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70081">pietroro</a> on 2021-03-24 10:58:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Isn&#39;t that basically what <code>ROSImageTexture</code> does (<a href="https://github.com/ros-visualization/rviz/blob/ba536b2d5baae4be167f9741a3f5bcb05d129af6/src/rviz/image/ros_image_texture.cpp#L202-L280">here</a>).</p>
+
+<p>Perhaps you could clarify what&#39;s wrong with that approach in your opinion.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-03-24 11:02:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>As you can see in the picture I attached, whatever the image encodings are doing it looks as if the lower third of the image isn&#39;t even loading in. Any ideas on why that might be happening?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70081">pietroro</a> on 2021-03-24 11:09:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I believe <code>ROSImageTexture</code> performs an unnecessary step in converting the Image message into an Ogre image first, then assigning that ogre image to a texture.</p>
+
+<p>While it is a perfectly valid way to get to that same result, it has a redundant step and it doesn&#39;t leverage the nature of Ogre dynamic textures which use the <code>Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE</code> flag to speed things up internally. Last I measured it was <strong>9 times slower</strong> to use the <code>ROSImageTexture</code> as opposed to the OpenCV workaround.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70081">pietroro</a> on 2021-03-24 11:15:11 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>As you can see in the picture I attached, whatever the image encodings are doing it looks as if the lower third of the image isn&#39;t even loading in. Any ideas on why that might be happening?</p>
+</blockquote>
+
+<p>size of your texture compared to size of the image data? Stride? Encoding?</p>
+
+<p>I&#39;m not saying you need to copy what <code>ROSImageTexture</code> does, but there seems to be quite a bit of detection of encoding and byte-order and mapping that to Ogre equivalents. Whether or not an &quot;unnecessary step&quot; is performed I don&#39;t know right now, but what I was trying to get across is, that code is there for a reason.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-03-25 03:56:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Oh my oh my. I apparently bumped into something I shouldn&#39;t have. </p>
+
+<p>Turns out the issue is on the OGRE side of things. While Ogre asks you explicitly what kind of format the pixels should have, <strong>it completely disregards this information</strong> in favor of an internally defined &quot;standard&quot;. Encoding detection, which I was doing, won&#39;t matter if Ogre doesn&#39;t listen to me when I try to tell it how to read the data.</p>
+
+<p>In my code I ask for an <code>Ogre::PF_BYTE_RGB</code> (or whichever is closest to the <code>sensor_msgs::image_encoding</code> of the Image data) pixel format, but when I query the pixel buffer on its format it tells me it&#39;s <code>Ogre::PF_A8R8G8B8</code>, no matter what I specify. This behavior is confirmed <a href="https://forums.ogre3d.org/viewtopic.php?t=64315">here</a> and <a href="https://forums.ogre3d.org/viewtopic.php?t=91661">here</a>.</p>
+
+<p>I may have bitten off more than I can chew. I will drop a question on the OGRE forums to see if anyone can get back to me. In any case, thank you very much for your time and help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70081">pietroro</a> on 2021-03-25 05:09:33 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>I will drop a question on the OGRE forums to see if anyone can get back to me.</p>
+</blockquote>
+
+<p>if/when you do, please post a comment here with a link to your post on the Ogre forums. That way we keep things connected.</p>
+
+<blockquote>
+<p>In my code I ask for an <code>Ogre::PF_BYTE_RGB</code> (or whichever is closest to the <code>sensor_msgs::image_encoding</code> of the Image data) pixel format, but when I query the pixel buffer on its format it tells me it&#39;s <code>Ogre::PF_A8R8G8B8</code>, no matter what I specify. This behavior is confirmed <a href="https://forums.ogre3d.org/viewtopic.php?t=64315">here</a> and <a href="https://forums.ogre3d.org/viewtopic.php?t=91661">here</a>.</p>
+</blockquote>
+
+<p>could be the code in <code>ROSImageTexture</code> works around this in some way (either intentionally or by accident).</p>
+
+<p>Whatever the reason, you could perhaps post an issue on the RViz issue tracker. Not to report something broken, but to make sure your sleuthing doesn&#39;t go unnoticed by future readers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-03-25 05:24:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Isn&#39;t this the cause of what you&#39;re seeing:</p>
+
+<blockquote>
+<p>when creating an Ogre::Texture (HW based texture), you&#39;ll get the closest format the GPU supports that can satisfy what you asked for; thus you can&#39;t assume you will get exactly what you requested.</p>
+</blockquote>
+
+<p>that&#39;s from your second link.</p>
+
+<p>That would not really be &quot;Ogre&#39;s fault&quot;, it&#39;s just how rendering systems work.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-03-25 05:26:50 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

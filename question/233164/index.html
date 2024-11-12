@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Releasing private catkin packages with bloom in legacy codebase - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/233164">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Releasing private catkin packages with bloom in legacy codebase</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/73637/releasing-private-catkin-packages-with-bloom-in-legacy-codebase">https://robotics.stackexchange.com/questions/73637/releasing-private-catkin-packages-with-bloom-in-legacy-codebase</a>.</p>
+        <p>I have the following scenario. We have a legacy codebase, all in one git-repository, with different modules and a legacy build system (in fact there are 4 different build systems already, 2 of them in daily used, qmake on Linux and vs in Windows). I want to create catkin packages for the individual modules and release them into a private rosdistro.</p>
+
+<p>Because the code base will continue to be used with the legacy build system in non-ROS context, I have limited freedom to restructure and change things. I would like to be as unintrusive to the current layout and structure as possible, in order to not be faced with acceptance problems in parts of our team that are not using ROS (yet).</p>
+
+<p>I have gotten as far as creating the catkin packages, making sure they work with the install space (see also a <a href="http://answers.ros.org/question/232775/catkin-install-space-include-directories-for-legacy-code/">previous question</a>) and releasing them with bloom into a private rosdistro. Now I want to build debians for the released packages (first manually, later with buildbot-ros or eventually with a private buildfarm setup). I am confronted with some issue that I will describe in the following.</p>
+
+<p>The repository layout is as follows:</p>
+
+<pre><code>foo-project
+├── config.h
+├── external-libraries
+│   └── libbar
+│       └── bar.h
+├── module1
+│   ├── package.xml
+│   ├── CMakeLists.txt
+│   └── ...
+├── module2
+│   ├── package.xml
+│   ├── CMakeLists.txt
+│   ├── module2.h
+│   └── ...
+├── module3
+│   ├── package.xml
+│   ├── CMakeLists.txt
+│   └── ...
+├── ...
+...
+</code></pre>
+
+<h3>1. Header files outside the package directory</h3>
+
+<p>The first issue is that there is a header file <code>config.h</code> in the project root. It is included with <code>#include  &quot;../config&quot;</code> in the headers of <code>module1</code> (which are in turn included by other modules). I install the <code>config.h</code> together with the headers of <code>module1</code>, but I still need it to be in-reach at build-time of <code>module1</code>, which is not the case for the bloom-released branches, that contain only the <code>module</code> folder, not its parent. How could I inject this file into the bloom-released branch?</p>
+
+<h3>2. External library files at build time</h3>
+
+<p>In <code>module1</code>, the third party library <code>libbar</code> is included. It needs to be only there at build time, and not installed / exported. In the current module build-definition there is a <code>include_directories(../external-libraries/libbar)</code> and then in the source files of <code>module1</code> it is referenced simply as <code>#include &quot;bar.h&quot;</code>. Similar to the previous issue, I need to make these header files available at build time. But the difference is, that I don&#39;t need install them, and that they are not in the repository root, but in a parallel subfolder. This would make it possible to wrap them up in a <code>foo_external_libs-dev</code> catkin package.</p>
+
+<h3>3. Interdependencies between modules</h3>
+
+<p>Mostly the dependencies between the different modules can be mapped to a tree structure, with <code>module1</code> at the root. This is reflected in the dependencies as declared in the <code>package.xml</code> files. However, to build the individual modules, there are unfortunately cyclic interdependencies. E.g. to build <code>module1</code>, <code>module2.h</code> is needed. When building in a catkin workspace, this works because the <code>CMakeLists.txt</code> of <code>module1</code> has a <code>include_directories(../module2)</code>. It is also fine with the install space, since it is only valid use that part of <code>module1</code> in a third module, if you also depend on <code>module2</code> explicitly. Similar to the above issues, when building the debian release, the relative path <code>../module2</code> is not valid. Again, I would want to somehow inject the needed header files from <code>module2</code> into the release branch of <code>module1</code> when releasing with <code>bloom</code>.</p>
+
+<p>For issue 1, I could maybe achieve moving the <code>config.h</code> inside the <code>module1</code> folder, for issue 2 I could possibly introduce a new catkin package <code>foo_external_libs-dev</code>, but for issue 3 I am at a loss, on how to properly achieve this without duplicating files in the source repository.</p>
+
+<p>Any hints or ideas are much appreciated!</p>
+
+<p><strong>Edit:</strong> What would help me would be a way to tell bloom to execute a specific script in the full source repository before splitting it up into the separate packages. That way I could copy around the files to make sure each of the package directories contains all the files that are needed at build time.</p>
+
+<p><strong>Edit2:</strong> In response to @William&#39;s answer: I have already resorted to a preprocessing script, your statement &quot;that bloom can import from any vcs branch or tag and even take archive files directly&quot; is key here. My workflow now looks as follows:</p>
+
+<p>I have a separate <code>catkin-release</code> branch. It contains a script for preprocessing the repository to address issues 1, 2 and 3. For all of them that entails copying some files into the respective modules, and changing some <code>#include</code> and <code>include_directories</code> statements as well as tweaking install rules. A little <code>cp</code> and <code>sed</code> is enough for my needs. For a new release I perform these steps: </p>
+
+<ol>
+<li>merge the latest <code>release</code> branch into <code>catkin-release</code></li>
+<li>call the script to update the copied files if they have changed; commit</li>
+<li>do the standard steps for releases with bloom, where the upstream branch to be imported is now <code>catkin-release</code> --&gt; <code>catkin_prepare_release</code>, then <code>bloom-release</code></li>
+</ol>
+
+<p>As you say, one could imagine incorporating the custom &quot;prepare-release-script&quot; into the bloom import-upstream step quite easily. However, since I am not very familiar with bloom, I&#39;m not 100% sure how this would look like. In particular, what remains a mystery for me so far is which of the branches in the release repository are meant to be updated manually, and which are meant to be updated only by bloom? I would imagine that the branches with <code>patches</code> are meant to be changed manually to include the needed patches (is there documentation describing this? If so, I didn&#39;t find it yet.), so that seems to be a natural place where one might put custom scripts that would be called on top of applying the given patches. Does that make sense?</p>
+
+<p>As for your other suggestions addressing the individual issues, I&#39;m not sure how I could do what you describe in the upstream repository with the restrictions I mentioned (i.e. that I need to avoid changing the layout and the other build systems as much as possible).</p>
+
+<p>What you suggest for issue 1 could probably be done, but only by also changing the other build systems. Might be acceptable though, since it is a very minor change.</p>
+
+<p>I&#39;m not sure I understand how your suggestion for issue 2 would work. How can I install the header <code>external-libraries/libbar/bar.h</code> from <code>module1</code> if the file itself is not available in the imported release-repository-branch for <code>module1</code>? As mentioned in OP, I could place an additional catkin package in the <code>external-libraries</code> folder, which would then do this install step.</p>
+
+<p>Thanks for your suggestion on issue 3, breaking up the dependency cycle. That is enlightening, but I fail to see how I can achieve that without changing the folder layout of my upstream repository, since I cannot fit two catkin packages in the <code>module1</code> folder, or can I? With my current pre-processing script I simply copy the needed files from <code>module2</code> into the <code>module1</code> folder. I could of course also create this additional <code>module1-headers</code> package in the preprocessing script, but that seems overkill, since the current solution works well enough, even if it is not 100% clean (since certain headers of the <code>module1</code> debian will only work if one also explicitly has installed the <code>module2</code> debian, and there is no implicit dependency mechanism ensuring that).</p>
+
+<p>For now I am happy with the workflow described above, so I will accept your answer. Feel free to comment on the questions above about parts of your answer, or not. I will leave extending bloom for another day. I need to first get a buildbot or buildfarm setup going.</p>
+
+<p>Hopefully I can demonstrate to the team the benefits of catkin and in particular the tooling around it, such that in the future the acceptance to changing the code-layout is higher, which might allow me to address some of the issues without a custom &quot;prepare-release&quot; script.</p>
+
+<p>You have certainly addressed all my questions and as always in a very helpful way! Thanks William!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1370">demmeln</a> on 2016-04-28 07:51:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>For issue 1 (and possibly issue 2), I&#39;d say your best option is to preprocess the repository and copy the required files into the packages which need them, i.e. copy the top level <code>config.h</code> into each of the packages and change how the config file is referenced. For example, rather than headers doing <code>#include &quot;../config.h&quot;</code> do <code>#include &quot;config.h&quot;</code> and add the top level directory to the include paths for each module with <code>-I</code>.</p>
+
+<p>For issue 2, you can also install the file that would normally be referenced with <code>../other_module/header.h</code> either to a folder off the normal include path, e.g. <code>&lt;prefix&gt;/include/impl/other_module/header.h</code> and pass <code>-I&lt;prefix&gt;/include/impl</code> to modules which need it, and also change the include statement to be <code>#include &quot;other_module/header.h&quot;</code>.</p>
+
+<p>For issue 3, I think you have to break at least one of the packages into two packages so that you can break the cycle. For example, you could have <code>module1</code> install it&#39;s headers in a <code>module1_headers</code> package. Since that package would not need to build anything it doesn&#39;t need to build depend on <code>module2</code>, but only run depend (or technically <code>build_export_depend</code> on it. Then you can have <code>module2</code> depend on <code>module1_headers</code>, and <code>module1</code> depend on <code>module1_headers</code> and <code>module2</code>. </p>
+
+<p>There is currently no way to run a script on import with bloom, but that would be easy to implement and I&#39;d consider a pr that adds that functionality. Another option is that bloom can import from any vcs branch or tag and even take archive files directly. So you could write a script which preprocesses your original repository (moving and copying files, adding package.xml and CMakeLists.txt if needed, etc) and then creates an archive of the result. Then you could pass that to bloom without having to extend bloom at all.</p>
+
+<p>I think I attempted to address all of your questions, so hopefully there is something helpful in there. Let me know if you have more questions.</p>
+
+<p><em>EDIT:</em></p>
+
+<p>This is in response to @demmeln&#39;s edited question.</p>
+
+<blockquote>
+<p>As you say, one could imagine incorporating the custom &quot;prepare-release-script&quot; into the bloom import-upstream step quite easily. However, since I am not very familiar with bloom, I&#39;m not 100% sure how this would look like. In particular, what remains a mystery for me so far is which of the branches in the release repository are meant to be updated manually, and which are meant to be updated only by bloom? I would imagine that the branches with patches are meant to be changed manually to include the needed patches (is there documentation describing this? If so, I didn&#39;t find it yet.), so that seems to be a natural place where one might put custom scripts that would be called on top of applying the given patches. Does that make sense?</p>
+</blockquote>
+
+<p>So I think that adding a &quot;prepare-release-script&quot; into the release repository that bloom runs is ok, so long as that script doesn&#39;t bring in new dependencies. For example, it shouldn&#39;t use rospy or be written in OCaml or rely on something setup on the local computer like ssh keys. Otherwise not just anyone could run bloom at a later point. This somewhat applies to using linux specific tools or options on common tools, i.e. I run bloom on OS X and would be sad if I couldn&#39;t bloom something because the other guy wrote a script that only works on Linux. Not a big deal, but something to think about.</p>
+
+<p>My best guess as to what this would look like is a setting in the <code>tracks.yaml</code> and the script would live in the master branch.</p>
+
+<p>There isn&#39;t good documentation on the different branches in bloom. I can summarize quickly:</p>
+
+<ul>
+<li>bloom gets the source code and puts it in a tarball (or downloads a tarball directly)</li>
+<li>bloom extracts the tarball on the <code>upstream</code> branch</li>
+<li>bloom overlays any &quot;patch step files&quot; which live on the master branch and generally include package.xml for things that don&#39;t have one because the next step needs a package.xml to be there</li>
+<li>bloom extracts the version from the package.xml(s) (the version in all package.xml&#39;s have to match)</li>
+<li>bloom creates the <code>upstream/x.y.z</code> version tag based on the package.xml(s) version</li>
+<li>bloom creates a branch for each package as <code>release/&lt;rosdistro&gt;/&lt;package name&gt;</code> if it doesn&#39;t exist</li>
+<li>bloom removes any patches that were previously applied to the release branch (maybe none) and store then in the <code>patches/release/&lt;rosdistro&gt;/&lt;package name&gt;</code> branch as <code>.patch</code> files</li>
+<li>bloom copies the contents of the folder for each package into the corresponding release branch from the <code>upstream</code> branch</li>
+<li>bloom tries to reapply any patches from the release-patch branch on top of the new version&#39;s files</li>
+<li>if they don&#39;t apply, bloom drops into a shell and lets you try to sort it out</li>
+<li>bloom creates the <code>release/&lt;rosdistro&gt;/&lt;package name&gt;/x.y.z-i</code> version tag (this is what from source people get for the released version of a package); the <code>i</code> is the debian increment number, which increments each time you run bloom and the upstream version didn&#39;t change</li>
+<li>the rest of the steps are debian or fedora specific, but follow a similar pattern of copying forward; I&#39;ll do debian for example:</li>
+<li>bloom creates a debian branch called <code>debian/&lt;rosdistro&gt;/&lt;package name&gt;</code> if it doesn&#39;t exist yet</li>
+<li>bloom removes any patches that were applied last time to the debian-patch branch, <code>patches/debian/&lt;rosdistro&gt;/&lt;package name&gt;</code></li>
+<li>bloom copies the patched content of the release branch to the debian branch</li>
+<li>bloom places the <code>debian</code> folder (merging with one from upstream if it already exists) and leaves some files untemplated</li>
+<li>bloom reapplies patches from the debian-patches branch</li>
+<li>bloom creates a debian versioned branch called <code>debian/&lt;rosdistro&gt;/&lt;debian name&gt;/&lt;package name&gt;</code>, e.g. <code>debian/kinetic/xenial/rviz</code>, if it didn&#39;t already exist</li>
+<li>bloom removes patches that were applied previously (if any) to the branch with the same name but prefixed with <code>patches/</code></li>
+<li>bloom copies the patched content from the debian branch</li>
+<li>bloom reapplies the patches that were previously removed (if any), allowing you to try and fix them if they don&#39;t apply</li>
+<li>bloom replaces the template files with the actual, expanded files, e.g. <code>debian/rules.em</code> -&gt; <code>debian/rules</code></li>
+<li>bloom creates the final tag that the build farm uses, called <code>debian/&lt;debian package name&gt;_x.y.z-i_&lt;debian name&gt;</code>, e.g. <code>debian/ros-kinetic-rviz_1.12.1-0_xenial</code></li>
+</ul>
+
+<p>There are a few differences depending on how you run bloom, but that&#39;s the most probably set of events that a normal release goes through.</p>
+
+<p>Now you can directly commit changes to a few of the branches:</p>
+
+<ul>
+<li><code>release/&lt;rosdistro&gt;/&lt;package name&gt;</code>
+
+<ul>
+<li>patches here apply to the source tarballs that users download when using rosinstall and propagate down the bloom stream to debian and fedora</li>
+</ul></li>
+<li><code>debian/&lt;rosdistro&gt;/&lt;package name&gt;</code>
+
+<ul>
+<li>patches here affect all debian versions, e.g. for kinetic it would be <code>jessie</code>, <code>wily</code>, and <code>xenial</code>; also many of the debian files are still template files</li>
+</ul></li>
+<li><code>debian/&lt;rosdistro&gt;/&lt;debian name&gt;/&lt;package name&gt;</code>
+
+<ul>
+<li>patches here affect only the debian/ubuntu distribution in the name</li>
+</ul></li>
+</ul>
+
+<p>You probably shouldn&#39;t edit any of the other branches, including the <code>patches/*</code> branches. Those are managed by bloom.</p>
+
+<blockquote>
+<p>I&#39;m not sure I understand how your suggestion for issue 2 would work. How can I install the header external-libraries/libbar/bar.h from module1 if the file itself is not available in the imported release-repository-branch for module1? As mentioned in OP, I could place an additional catkin package in the external-libraries folder, which would then do this install step.</p>
+
+<p>Thanks for your suggestion on issue 3, breaking up the dependency cycle. That is enlightening, but I fail to see how I can achieve that without changing the folder layout of my upstream repository, since I cannot fit two catkin packages in the module1 folder, or can I? With my current pre-processing script I simply copy the needed files from module2 into the module1 folder. I could of course also create this additional module1-headers package in the preprocessing script, but that seems overkill, since the current solution works well enough, even if it is not 100% clean (since certain headers of the module1 debian will only work if one also explicitly has installed the module2 debian, and there is no implicit dependency mechanism ensuring that).</p>
+</blockquote>
+
+<p>For all of that, I was assuming that you have some ability to change the original layout, but in ways that don&#39;t interfere with how it worked before (only moving files and folder or changing include lines).</p>
+
+<p>Sorry it took so long for me to do a follow up. Hopefully it was in time to be useful if not educational to future readers.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/10"></a> on 2016-04-28 18:27:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;ve been looking for sometime for a detailed overview of what exactly bloom does and how, so this answer was really enlightening. Shouldn&#39;t an explanation like this be part of the bloom wiki?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23076">Arthur Queiroz</a> on 2017-01-24 11:25:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The same goes for the basic usage example (i.e. generating deb packing files for a single ros package) described on <a href="https://github.com/ros-infrastructure/bloom/issues/254#issuecomment-37210878">https://github.com/ros-infrastructure/bloom/issues/254#issuecomment-37210878</a>. This simple example would make bloom easier to understand upon the first contact with it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23076">Arthur Queiroz</a> on 2017-01-24 12:38:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah both answers by William are really great. It would be great to add those to the wiki, or at least some links to the answers here (anyone can edit the wiki ofc)...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1370">demmeln</a> on 2017-01-30 19:46:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

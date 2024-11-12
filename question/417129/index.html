@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Robot_localization seems to ignore some sensors - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417129">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Robot_localization seems to ignore some sensors</h2>
+      <div class="question">
+        <p>Hello everyone,</p>
+
+<p>I try do to a sensor fusion and I decided to use the robot<em>localization package. I have done a simulation with few sensor inside (2 &quot;depth sensors&quot;, 2 IMUs, and a &quot;DVL&quot;. And I made it worked !
+But now I received some real sensors and I try to implement them in r</em>l with a posewithcovariancestamped and a twistwithcovariancestamped msgs but it doesn&#39;t work. It seems to me that r_l just ignore the data or doesn&#39;t manage to include them in the ekf. However, when I look to the debug file I can see them but I doesn&#39;t know where it goes wrong.</p>
+
+<p>The main part of the code that publish my sensor data (I set use<em>sim</em>time to true when I run the node): </p>
+
+<pre><code>def __init__(self):
+        super().__init__(&#39;dvl_pub&#39;)
+        self.publisher_pose_nucleo1000 = self.create_publisher(PoseWithCovarianceStamped, &#39;pose_nucleo1000&#39;, 10)
+        self.publisher_twist_nucleo1000 = self.create_publisher(TwistWithCovarianceStamped, &#39;twist_nucleo1000&#39;, 10)
+        self.publisher_real_imu_nucleo1000 = self.create_publisher(Imu, &#39;real_imu_nucleo1000&#39;, 10)
+        timer_period = 0.01  # seconds
+        self.timer = self.create_timer(timer_period, self.timer_callback)
+        self.driver = NucleusDriver()
+        self.driver.start_measurement()
+        self.real_imu_nucleo1000=Imu()
+        self.pose_nucleo1000 = PoseWithCovarianceStamped()
+        self.twist_nucleo1000 = TwistWithCovarianceStamped()
+        self.pose_nucleo1000.pose.covariance=[0.0]*36
+        self.pose_nucleo1000.pose.covariance[14]=0.9
+        self.pose_nucleo1000.header.frame_id=&quot;pose_nucleo1000&quot;
+        self.twist_nucleo1000.header.frame_id=&quot;twist_bt_nucleo1000&quot;
+        self.real_imu_nucleo1000.header.frame_id=&quot;real_imu_nucleo1000&quot;
+        self.pose_nucleo1000.pose.covariance=[0.0000001]*36
+        self.tf_broadcaster = TransformBroadcaster(self)
+  def timer_callback(self):
+                packet = self.driver.read_packet()
+              self.pose_nucleo1000.header.stamp=self.get_clock().now().to_msg()
+                self.real_imu_nucleo1000.header.stamp=self.get_clock().now().to_msg()
+                ned_quat = np.array([float(packet[&quot;ahrsData.quaternionW&quot;]), float(packet[&quot;ahrsData.quaternionX&quot;]),float(packet[&quot;ahrsData.quaternionY&quot;]), float(packet[&quot;ahrsData.quaternionZ&quot;])])
+                ned_rot_matrix = quaternions.quat2mat(ned_quat)
+                # Transform the rotation matrix to the ENU frame
+                enu_rot_matrix = np.matmul(ned_to_enu, ned_rot_matrix)
+                # Convert the rotation matrix back to a quaternion
+                enu_quat = quaternions.mat2quat(enu_rot_matrix)
+                self.pose_nucleo1000.pose.pose.orientation.w= enu_quat[0]
+                self.pose_nucleo1000.pose.pose.orientation.x= enu_quat[1]
+                self.pose_nucleo1000.pose.pose.orientation.y= enu_quat[2]
+                self.pose_nucleo1000.pose.pose.orientation.z= enu_quat[3]
+                self.real_imu_nucleo1000.orientation=self.pose_nucleo1000.pose.pose.orientation
+                self.twist_nucleo1000.twist.twist.angular.x= float(packet[&quot;turnRateX&quot;])
+                self.twist_nucleo1000.twist.twist.angular.y= float(packet[&quot;turnRateY&quot;])
+                self.twist_nucleo1000.twist.twist.angular.z= float(packet[&quot;turnRateZ&quot;])
+                self.pose_nucleo1000.pose.pose.position.z=packet[&quot;depth&quot;]
+
+
+self.publisher_pose_nucleo1000.publish(self.pose_nucleo1000)
+self.publisher_twist_nucleo1000.publish(self.twist_nucleo1000)
+self.publisher_real_imu_nucleo1000.publish(self.real_imu_nucleo1000)
+</code></pre>
+
+<p>I have checked some quaternions and they are normalized.</p>
+
+<p>My ekf yaml that works with only the simulated sensor :</p>
+
+<pre><code>ekf config file
+ekf_filter_node:
+    ros__parameters:
+        frequency: 30.0
+        sensor_timeout: 2.0
+        two_d_mode: false
+        print_diagnostics: true
+        smooth_lagged_data: true
+        debug: true
+        publish_tf: true
+
+    odom_frame: odom            
+    base_link_frame: main_buddy_link  
+    world_frame: odom        
+
+
+    pose0 : /buddy_sim/depth_Nucleo1000
+    pose0_config: [false, false,  false,
+                   true, true, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    pose0_queue_size: 10
+    pose0_differential: false 
+
+    twist0: /buddy_sim/vel_dvl
+    twist0_config: [false, false, false,
+                    false, false, false,
+                    true,  true,  true,
+                    false, false, false,
+                    false, false, false]
+    twist0_queue_size: 2
+
+    imu0: /buddy_sim/imu_XsensMti3Click
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  true,  true,  true]
+    imu0_differential: true
+    imu0_relative: false
+    imu0_queue_size: 10
+
+    acceleration_limits: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+
+
+    deceleration_limits: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+
+    acceleration_gains: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+
+
+    deceleration_gains: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+
+    process_noise_covariance: [0.05, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.05, 0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.06, 0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.03, 0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.03, 0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.06, 0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.025, 0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.025, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.04, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.01, 0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.01, 0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.02, 0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.01, 0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.01, 0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.015]
+
+
+    # dynamic_process_noise_covariance: true
+
+    reset_on_time_jump: true
+
+    initial_estimate_covariance: [1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9, 1e-9]
+</code></pre>
+
+<p>My ekf yaml that doesn&#39;t work (here I replace the imu with pose msg) :</p>
+
+<pre><code>pose0 : /buddy_sim/depth_Nucleo1000
+        pose0_config: [false, false,  false,
+                       true, true, true,
+                       false, false, false,
+                       false, false, false,
+                       false, false, false]
+        pose0_queue_size: 10
+        pose0_differential: false
+
+    pose1 : /pose_nucleo1000
+    pose1_config: [false,  false,  false,
+                   true, true, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    pose1_queue_size: 2
+    pose1_differential: false
+
+    twist0: /buddy_sim/vel_dvl
+    twist0_config: [false, false, false,
+                    false, false, false,
+                    true,  true,  true,
+                    false, false, false,
+                    false, false, false]
+    twist0_queue_size: 2
+</code></pre>
+
+<p>It also doesn&#39;t work if I set pose1 like this, so I don&#39;t think it can come from the quaternions :</p>
+
+<pre><code> pose1 : /pose_nucleo1000
+        pose1_config: [true,  true,  true,
+                       false, false, false,
+                       false, false, false,
+                       false, false, false,
+                       false, false, false]
+        pose1_queue_size: 2
+        pose1_differential: false
+</code></pre>
+
+<p>And here is the main part of my transform launch file :</p>
+
+<pre><code>tf_depth_keller = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;odom&quot;, &quot;pressure_sensor_kellerld&quot;])
+    tf_depth_Nucleo = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;odom&quot;, &quot;pressure_sensor_Nucleo1000&quot;])
+    tf_imu_MTI = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;0.2898&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;imu_XsensMti3Click&quot;])
+    tf_imu_Nucleo = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;-0.03&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;imu_Nucleo1000&quot;])
+    tf_dvl = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;-0.042&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;dvl_Nucleo1000&quot;])
+    tf_pose_Nucleo = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;-0.042&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;pose_nucleo1000&quot;])
+    tf_twist_Nucleo = Node(package = &quot;tf2_ros&quot;, 
+                       executable = &quot;static_transform_publisher&quot;,
+                       arguments = [&quot;0&quot;, &quot;0&quot;, &quot;-0.042&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;twist_bt_nucleo1000&quot;])
+    tf_real_imu_Nucleo = Node(package = &quot;tf2_ros&quot;, 
+                    executable = &quot;static_transform_publisher&quot;,
+                    arguments = [&quot;0&quot;, &quot;0&quot;, &quot;-0.042&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;real_imu_nucleo1000&quot;])
+</code></pre>
+
+<p>For the ouput when it doesn&#39;t work I can have 2 different results in funciton of what I try : 
+- the real sensor doesn&#39;t seem to have any effects (for example odometry/filtered will have a 0 rotation even if /pose_nucleo1000 publish a quaternion different from 0 0 0 1
+- ekf crashes, but it works during some ms before (but it&#39;s still ignoring my sensor) : </p>
+
+<p>[</p>
+
+<pre><code>ekf_node-1] Error:   TF_NAN_INPUT: Ignoring transform for child_frame_id &quot;main_buddy_link&quot; from authority &quot;Authority undetectable&quot; because of a nan value in the transform (-nan -nan -nan) (-nan -nan -nan -nan)
+[ekf_node-1]          at line 235 in ./src/buffer_core.cpp
+[ekf_node-1] Error:   TF_DENORMALIZED_QUATERNION: Ignoring transform for child_frame_id &quot;main_buddy_link&quot; from authority &quot;Authority undetectable&quot; because of an invalid quaternion in the transform (-nan -nan -nan -nan)
+[ekf_node-1]          at line 254 in ./src/buffer_core.cpp
+[ekf_node-1] [ERROR] [1688395934.308186972] [ekf_filter_node]: Critical Error, NaNs were detected in the output state of the filter. This was likely due to poorly coniditioned process, noise, or sensor covariances.
+[ekf_node-1] [ERROR] [1688395934.343545532] [ekf_filter_node]: Critical Error, NaNs were detected in the output state of the filter. This was likely due to poorly coniditioned process, noise, or sensor covariances.
+</code></pre>
+
+<p>I work with ros2 humble (binary), gazebo garden (binary) and Ubuntu 22.04.</p>
+
+<p>Does someone have an idea of what I do wrong ? Don&#39;t hesitate to tell me if you need more precision/resources !</p>
+
+<h1>EDIT 1 :</h1>
+
+<p>So I try few other things but it still doesn&#39;t work. I tried to just fuse my simulated depth sensor and my simulated dvl, it worked. But when I add my real imu sensor (I just fill the orientation data) the ekf returns NaN values.</p>
+
+<p>My real IMU msg :</p>
+
+<pre><code>header:
+  stamp:
+    sec: 1893
+    nanosec: 470000000
+  frame_id: real_imu_nucleo1000
+orientation:
+  x: 0.8238139152526855
+  y: 0.5636638402938843
+  z: -0.014911673963069916
+  w: 0.058235425502061844
+orientation_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+angular_velocity:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+angular_velocity_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+linear_acceleration:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+linear_acceleration_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+</code></pre>
+
+<p>My different EKF YAML (the other params are the same than above) :</p>
+
+<p>Works : </p>
+
+<pre><code>pose0 : /buddy_sim/depth_Nucleo1000
+        pose0_config: [false, false,  true,
+                       false, false, false,
+                       false, false, false,
+                       false, false, false,
+                       false, false, false]
+        pose0_queue_size: 10
+        pose0_differential: false
+
+
+        twist0: /buddy_sim/vel_dvl
+        twist0_config: [false, false, false,
+                        false, false, false,
+                        true,  true,  true,
+                        false, false, false,
+                        false, false, false]
+        twist0_queue_size: 2
+</code></pre>
+
+<p>Works too but seems to just ignore my IMU data : </p>
+
+<pre><code> pose0 : /buddy_sim/depth_Nucleo1000
+    pose0_config: [false, false,  true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    pose0_queue_size: 10
+    pose0_differential: false 
+
+    twist0: /buddy_sim/vel_dvl
+    twist0_config: [false, false, false,
+                    false, false, false,
+                    true,  true,  true,
+                    false, false, false,
+                    false, false, false]
+    twist0_queue_size: 2
+
+    imu0: /real_imu_nucleo1000
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  false,  false,  false,
+                  false,  false,  false]
+    imu0_differential: true
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+</code></pre>
+
+<p>It doesn&#39;t work if I set imu0<em>relative to true and imu0</em>differential to false.</p>
+
+<p>The only thing that I find strange is the timestamps of my tf when I echo /tf<em>static. It seems than the ones not used by r</em>l doesn&#39;t see their timestamp updated and that&#39;s the case of  real<em>imu</em>nucleo1000:</p>
+
+<pre><code>transforms:
+- header:
+    stamp:
+      sec: 0
+      nanosec: 0
+    frame_id: main_buddy_link
+  child_frame_id: real_imu_nucleo1000
+  transform:
+    translation:
+      x: 0.0
+      y: 0.0
+      z: -0.042
+    rotation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+---
+
+- header:
+    stamp:
+      sec: 2228
+      nanosec: 91000000
+    frame_id: main_buddy_link
+  child_frame_id: wide_camera_right_link
+  transform:
+    translation:
+      x: 0.0
+      y: -0.3496
+      z: 0.4
+    rotation:
+      x: 0.0
+      y: 0.0
+      z: -0.7071067811848163
+      w: 0.7071067811882787
+</code></pre>
+
+<p>I have checked and all my tf broadcaster are using the sim_time.</p>
+
+<p>My tf tree seems fine, I can&#39;t upload it because I don&#39;t have enough karma. But it&#39;s basically odom -&gt;pressure sensors, odom -&gt; main_buddylink-&gt;all other tf.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/157238">mls56</a> on 2023-07-03 10:10:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>So I found a solution but it doesn&#39;t make sens to me...
+I tried to find a function similar to q.normalize() from tf2/LinearMath/Quaternion.h for python but I didn&#39;t find one proper to ros2. So I use the library pyquaternion and it still didn&#39;t work even with the normalization from this library. 
+Like I wanted to be sure it wasn&#39;t coming from the quaternions, I create a c++ node that subscribe to my real IMU topic (real_imu_nucleo1000), create a quaternion with the same value that the msg in input, normalize it with q.normalize() and publish a new imu msg. 
+But actually even without q.normalize() it works ! I literally doesn&#39;t change one thing inside the quaternion, it&#39;s just a copy past...^^&#39; : </p>
+
+<pre><code>class normalize_tf2 : public rclcpp::Node
+{
+  public:
+    normalize_tf2()
+    : Node(&quot;normalize_tf2&quot;), count_(0)
+    {
+      publisher_ = this-&gt;create_publisher&lt;sensor_msgs::msg::Imu&gt;(&quot;real_imu_nucleo1000_tf2&quot;, 10);
+      subscription_ = this-&gt;create_subscription&lt;sensor_msgs::msg::Imu&gt;(
+      &quot;real_imu_nucleo1000&quot;, 10, std::bind(&amp;normalize_tf2::topic_callback, this, _1));
+      imu_real.header.frame_id=&quot;real_imu_nucleo1000_tf2&quot;;
+      imu_real.orientation_covariance={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
+      imu_real.linear_acceleration_covariance={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
+      imu_real.angular_velocity_covariance={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
+    }
+
+  private:
+     void topic_callback(const sensor_msgs::msg::Imu msg) 
+    {
+
+       tf2::Quaternion q;
+       q.setX(msg.orientation.x);
+       q.setY(msg.orientation.y);
+       q.setZ(msg.orientation.z);
+       q.setW(msg.orientation.w);
+       //q.normalize();
+       imu_real.header.stamp=this-&gt;now();
+       imu_real.orientation.w=q.getW();
+       imu_real.orientation.x=q.getX();
+       imu_real.orientation.y=q.getY();
+       imu_real.orientation.z=q.getZ();
+       publisher_-&gt;publish(imu_real);
+    }
+    rclcpp::Subscription&lt;sensor_msgs::msg::Imu&gt;::SharedPtr subscription_;
+    rclcpp::Publisher&lt;sensor_msgs::msg::Imu&gt;::SharedPtr publisher_;
+    size_t count_;
+    sensor_msgs::msg::Imu imu_real;
+};
+</code></pre>
+
+<p>And with this msg r_l works normally... But if I echo &quot;real_imu_nucleo1000_tf2&quot; and &quot;real_imu_nucleo1000&quot; we can see that nothing seems to have changed  : </p>
+
+<p>Quaternion that went through tf2 (works) :</p>
+
+<pre><code>   header:
+  stamp:
+    sec: 784
+    nanosec: 350000000
+  frame_id: real_imu_nucleo1000_tf2
+orientation:
+  x: -0.9935468873394891
+  y: 0.10426965190121015
+  z: 0.0413958013927812
+  w: 0.016697603943751436
+orientation_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+angular_velocity:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+angular_velocity_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+linear_acceleration:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+linear_acceleration_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+</code></pre>
+
+<p>Original quaternion (doesn&#39;t work): </p>
+
+<pre><code>header:
+  stamp:
+    sec: 784
+    nanosec: 350000000
+  frame_id: real_imu_nucleo1000
+orientation:
+  x: -0.9935468873394891
+  y: 0.10426965190121015
+  z: 0.0413958013927812
+  w: 0.016697603943751436
+orientation_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+angular_velocity:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+angular_velocity_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+linear_acceleration:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+linear_acceleration_covariance:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+</code></pre>
+
+<p>I just modified real_imu_nucleo1000 to real_imu_nucleo1000_tf2 here : </p>
+
+<pre><code>tf_real_imu_Nucleo = Node(package = &quot;tf2_ros&quot;, 
+                    executable = &quot;static_transform_publisher&quot;,
+                    arguments = [&quot;0&quot;, &quot;0&quot;, &quot;-0.042&quot;, &quot;0&quot;, &quot;0&quot;, &quot;0&quot;, &quot;main_buddy_link&quot;, &quot;real_imu_nucleo1000&quot;])
+</code></pre>
+
+<p>and here : </p>
+
+<pre><code>imu0: /real_imu_nucleo1000
+</code></pre>
+
+<p>So if someone understand what is going one please tell me ^^  because yes it works, but it&#39;s very messy and not very efficient.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/157238">mls56</a> on 2023-07-04 08:22:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

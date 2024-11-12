@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>RRT planner path passing through wall - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/380671">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>RRT planner path passing through wall</h2>
+      <div class="question">
+        <p><a href="https://i.stack.imgur.com/lh1Cl.png"><img src="https://i.stack.imgur.com/lh1Cl.png" alt="RVIZ image"></a>
+I am trying to write a RRT-based <code>globalplanner</code> in ROS. I am following the following strategy -</p>
+
+<p>Generating a random point in the map -&gt; selecting the best possible node from the current path -&gt; moving a small distance in the direction of the random point. </p>
+
+<p>Even though my planner is able to generate a plan from the start position to the goal position, it sometimes passes through obstacles even though before adding any cell to the path, I am checking the cell as well as the 5 *5 square around it for <code>costmap_2d::LETHAL_OBSTACLE</code> value.</p>
+
+<p>I am attaching the relevant functions that I have used in my code- </p>
+
+<pre><code>bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped&amp; start, const geometry_msgs::PoseStamped&amp; goal,  std::vector&lt;geometry_msgs::PoseStamped&gt;&amp; plan ){
+
+    bool reached = false;
+
+    __uint32_t mx_i, my_i, mx_f, my_f, mx_c, my_c;
+
+    print_world_params(start, goal, mx_i, my_i, mx_f, my_f);
+
+    mx_c = mx_i, my_c = my_i;
+
+    RRT_Cell* head_cell = new RRT_Cell();
+    head_cell-&gt;point = Point{mx_i, my_i};
+    head_cell-&gt;parent = nullptr;
+
+    vector&lt;Point&gt; path_points;
+
+    while(true) {
+
+      Point nxt_pt = generate_next_goal();
+
+      RRT_Cell* best_cell = get_closest_cell(nxt_pt, head_cell);
+      Point best_pt = best_cell-&gt;point;
+
+      double dis_from_goal = heu(nxt_pt, Point{mx_f, my_f});
+
+      if(dis_from_goal &lt; 20) {
+
+        cout &lt;&lt; &quot;Almost reached the goal!&quot; &lt;&lt;endl;
+
+        RRT_Cell* final_cell = new RRT_Cell();
+        final_cell-&gt;point = Point{mx_f, my_f};
+        final_cell-&gt;parent = best_cell;  
+        best_cell-&gt;children.push_back(final_cell);
+
+        update_RRT_path_points(path_points, final_cell);
+        reverse(path_points.begin(), path_points.end());
+        update_RRT_planner_plan(plan, goal, path_points);
+        publish_global_path(plan, goal);
+
+
+        reached = true;
+        break;
+
+      }
+
+
+      __uint32_t step_sz = 20;
+
+      bool valid_pt= true;
+
+      double dis = heu(nxt_pt, Point{best_pt.x, best_pt.y});
+
+      if(dis &lt; 1){continue;}
+
+      //dis = 0;
+      double sin_th = double((int)nxt_pt.y - (int)best_pt.y) / dis;
+      double cos_th = double((int)nxt_pt.x - (int)best_pt.x) / dis;
+      cout &lt;&lt; &quot;sin_th: &quot; &lt;&lt; sin_th &lt;&lt; &quot; cos_th: &quot; &lt;&lt; cos_th &lt;&lt; endl;
+      //cout &lt;&lt; &quot;Sleeping for 1 second!&quot; &lt;&lt; endl;
+      //ros::Duration(1.0).sleep();
+
+      for(int i = 0; i &lt;= step_sz; i++) {
+
+        __uint32_t mx_d = (int)best_pt.x + i * cos_th;
+        __uint32_t my_d = (int)best_pt.y+ i* sin_th;
+
+        if(mx_d &lt;= map_xi || mx_d &gt;= map_xf || my_d &lt;= map_yi || my_d &gt;= map_yf) {
+
+          valid_pt = false;
+          break;
+
+        }
+
+        bool flag = check_cell_neighbour(Point{mx_d, my_d});
+
+        if(!flag){
+
+          valid_pt = false;
+          break;
+
+        }
+
+      }
+
+
+      if(!valid_pt) {continue;}
+
+      mx_c = best_pt.x + step_sz * cos_th;
+      my_c = best_pt.y + step_sz * sin_th;
+
+      RRT_Cell* latest_cell = new RRT_Cell();
+      latest_cell-&gt;point = Point{mx_c, my_c};
+      latest_cell-&gt;parent = best_cell;
+
+      best_cell-&gt;children.push_back(latest_cell);
+
+    }
+
+
+    cout &lt;&lt;&quot;reached: &quot; &lt;&lt; reached &lt;&lt; endl;
+
+
+    if(!reached) {
+
+      cout &lt;&lt; &quot;Something is wrong! ---- Could not reach near the goal!&quot; &lt;&lt; endl;
+
+    }
+
+
+
+
+    return true;
+
+  }
+
+
+
+  bool GlobalPlanner::check_cell_neighbour(const Point &amp;pt) {
+
+
+    int margin_sz = 5;
+
+    for(int i = (int)pt.x - margin_sz; i &lt; (int)pt.x + margin_sz; i++) {
+
+      for(int j = (int)pt.y - margin_sz; j &lt;= (int)pt.y + margin_sz; j++) {
+
+        if(i &lt;= map_xi || j &lt;= map_xi || i &gt;= map_xf || j&gt;= map_yf) {return false;}
+
+        unsigned char cell_cost = costmap_ros_-&gt;getCost(i,j);
+
+        if(cell_cost == costmap_2d::LETHAL_OBSTACLE) {return false;}
+
+        //int cell_cost = costmap_ros_-&gt;getCost(i,j);
+
+        //if(cell_cost &gt; 200) {return false;}
+
+
+
+      }
+
+    }
+
+    return true;
+
+
+  }
+
+
+ GlobalPlanner::RRT_Cell* GlobalPlanner::get_closest_cell(const Point &amp;nxt_pt, RRT_Cell* head_cell) {
+
+      if(head_cell == nullptr) {return nullptr;} 
+
+      if(head_cell-&gt;children.size() == 0) {
+
+        return head_cell;
+
+      }
+
+      long double mn_dis = heu(nxt_pt, head_cell-&gt;point); 
+      RRT_Cell* best_cell = head_cell;
+
+      for(int i = 0; i &lt; (int)head_cell-&gt;children.size(); i++) {
+
+        RRT_Cell* curr_cell = get_closest_cell(nxt_pt, head_cell-&gt;children[i]);
+
+        double dis = heu(nxt_pt, curr_cell-&gt;point);
+
+        if(dis &lt; mn_dis) {
+
+          mn_dis = dis;
+          best_cell = curr_cell;
+
+        }
+
+      }
+
+      return best_cell;
+
+  }
+
+
+  GlobalPlanner::Point GlobalPlanner::generate_next_goal(){
+
+
+
+      std_msgs::ColorRGBA blue;
+      blue.r = 0;
+      blue.g = 0;
+      blue.b = 1.0;
+      blue.a = 1.0;
+      std_msgs::ColorRGBA red;
+      red.r = 1.0;
+      red.g = 0;
+      red.b = 0;
+      red.a = 1.0;
+      std_msgs::ColorRGBA green;
+      green.r = 0;
+      green.g = 1.0;
+      green.b = 0;
+      green.a = 1.0;
+
+      Point nxt_point = {};
+
+      bool point_found = true;
+
+
+
+      while(true) {
+
+        bool obs_found = 0 ;
+
+        __uint32_t mx_ , my_, mx_i, my_i;
+        double wx_, wy_;
+
+
+        mx_= rand() % (map_xf - map_xi + 1) + (map_xi);
+        my_= rand() % (map_yf - map_yi + 1) + (map_yi);
+
+        if(mx_ &gt;= map_xf || mx_ &lt;= map_xi || my_ &gt;= map_yf || my_ &lt;= map_yi) {
+
+          cout &lt;&lt; &quot;out of bound point found! ---- SKIPPING&quot; &lt;&lt; endl;
+          continue;
+
+        }
+
+        costmap_ros_-&gt;mapToWorld(mx_, my_, wx_, wy_);
+
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = &quot;map&quot;;
+        marker.header.stamp = ros::Time();
+        marker.ns = nh_.getNamespace();
+
+        marker.id = marker_id_cnt++;
+
+        marker.type = visualization_msgs::Marker::CUBE;
+        marker.action = visualization_msgs::Marker::ADD;
+
+        marker.pose.position.x = wx_;
+        marker.pose.position.y = wy_;
+        marker.pose.position.z = 1;
+        marker.pose.orientation.x = 0.0;
+        marker.pose.orientation.y = 0.0;
+        marker.pose.orientation.z = 0.0;
+        marker.pose.orientation.w = 1.0;
+
+        marker.lifetime = ros::Duration(5.0);
+
+        marker.scale.x = 0.5;
+        marker.scale.y = 0.5;
+        marker.scale.z = 0.5;
+
+        marker.color.a = 1.0; // Don&#39;t forget to set the alpha!
+
+        marker.color = green;
+
+        //unsigned char cell_cost = costmap_ros_-&gt;getCost(mx_, my_);
+
+        bool flag = check_cell_neighbour(Point{mx_, my_});
+
+
+        /*if(cell_cost == costmap_2d::LETHAL_OBSTACLE) { 
+
+          obs_found = 1;  
+          cout &lt;&lt; &quot;Point lies on an obstacle!&quot; &lt;&lt; endl;
+          marker.color = red;
+          marker.scale.x = 0.5; 
+          marker.scale.y = 0.5;
+          goal_marker_pub.publish(marker);
+          continue;
+
+        }*/
+
+        if(!flag) {
+
+          obs_found = 1;  
+          cout &lt;&lt; &quot;Point lies on an obstacle!&quot; &lt;&lt; endl;
+          marker.color = red;
+          marker.scale.x = 0.5; 
+          marker.scale.y = 0.5;
+          goal_marker_pub.publish(marker);
+          continue;
+
+
+        }
+
+        goal_marker_pub.publish( marker );        
+
+
+        point_found = true;    
+        nxt_point = Point{mx_, my_};
+        return nxt_point;
+
+      }
+
+      cout &lt;&lt; &quot;Something is wrong --- generate_next_goal function!&quot; &lt;&lt; endl;
+      cout &lt;&lt; &quot;Sleeping for 5 seconds!&quot; &lt;&lt; endl;
+      ros::Duration(5.0).sleep();
+
+      return Point{};       
+
+  }
+
+
+
+void GlobalPlanner::print_world_params(const geometry_msgs::PoseStamped &amp;start, const geometry_msgs::PoseStamped &amp;goal, __uint32_t &amp;mx_i, __uint32_t &amp;my_i, __uint32_t &amp;mx_f, __uint32_t &amp;my_f){
+
+    double wx_i, wy_i, wx_f, wy_f;
+
+    wx_i = start.pose.position.x; 
+    wy_i = start.pose.position.y;
+    wx_f = goal.pose.position.x;
+    wy_f = goal.pose.position.y;
+
+    costmap_ros_-&gt;worldToMap(wx_i, wy_i, mx_i, my_i);
+    costmap_ros_-&gt;worldToMap(wx_f, wy_f, mx_f, my_f);
+
+    cout &lt;&lt; &quot;Printing start pose and goal pose: &quot; &lt;&lt; endl;
+    cout &lt;&lt; &quot;w_i: (&quot; &lt;&lt; wx_i &lt;&lt; &quot;,&quot; &lt;&lt; wy_i &lt;&lt; &quot;) m_i: (&quot; &lt;&lt; mx_i &lt;&lt; &quot;,&quot; &lt;&lt; my_i &lt;&lt;&quot;)&quot; &lt;&lt; endl;;
+    cout &lt;&lt; &quot;w_f: (&quot; &lt;&lt; wx_f &lt;&lt; &quot;,&quot; &lt;&lt; wy_f &lt;&lt; &quot;) m_f: (&quot; &lt;&lt; mx_f &lt;&lt; &quot;,&quot; &lt;&lt; my_f &lt;&lt;&quot;)&quot; &lt;&lt; endl;;
+    cout &lt;&lt; endl;
+
+  }
+
+
+
+
+double GlobalPlanner::heu(Point p1, Point p2) {
+
+    if(p1.x &lt; p2.x) {swap(p1.x, p2.x);}
+    if(p1.y &lt; p2.y) {swap(p1.y, p2.y);}
+
+    __uint32_t sum = ((int)p1.x - (int)p2.x) * ((int)p1.x - (int)p2.x) + ((int)p1.y - (int)p2.y) * ((int)p1.y - (int)p2.y);
+
+      return (sqrt(sum));
+
+  }
+</code></pre>
+
+<p>header file - </p>
+
+<pre><code>/** include the libraries you need in your planner here */
+/** for global path planner interface */
+#include &lt;ros/ros.h&gt;
+#include &lt;costmap_2d/costmap_2d_ros.h&gt;
+#include &lt;costmap_2d/costmap_2d.h&gt;
+#include &lt;nav_core/base_global_planner.h&gt;
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+#include &lt;angles/angles.h&gt;
+#include &lt;base_local_planner/world_model.h&gt;
+#include &lt;base_local_planner/costmap_model.h&gt;
+#include &lt;map&gt;
+#include&lt;nav_msgs/Path.h&gt;
+
+
+#ifndef GLOBAL_PLANNER_CPP
+#define GLOBAL_PLANNER_CPP
+
+
+
+namespace global_planner {
+
+    class GlobalPlanner : public nav_core::BaseGlobalPlanner {
+
+
+        struct Point {
+
+                __uint32_t x, y; 
+
+                bool operator==(const Point &amp;p1 ) const{   return ((p1.x == x) &amp;&amp; (p1.y == y));  }   
+
+                bool operator&lt;(const Point &amp;p1 ) const{    return ((p1.x &lt; x) || (p1.x == x &amp;&amp; p1.y &lt; y) ) ;  }   
+
+            };
+
+
+        struct Cell {
+
+            Point point; 
+            __uint32_t cost_till_now;
+
+            bool operator&lt;(const Cell &amp;c1) const {
+
+
+                return (c1.cost_till_now &lt; cost_till_now || (c1.cost_till_now == cost_till_now &amp;&amp; c1.point &lt; point));
+
+            }
+
+        };
+
+        struct RRT_Cell{
+
+            Point point;
+            RRT_Cell* parent;
+            std::vector&lt;RRT_Cell*&gt; children;
+
+        };
+
+
+
+        public:
+
+            GlobalPlanner();
+
+            GlobalPlanner(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
+            void initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
+            bool makePlan(const geometry_msgs::PoseStamped&amp; start,const geometry_msgs::PoseStamped&amp; goal,std::vector&lt;geometry_msgs::PoseStamped&gt;&amp; plan);
+
+
+
+        private: 
+
+
+            double heu(Point p1, Point p2);
+            void update_planner_plan(std::vector&lt;Point&gt; &amp;path_points, std::vector&lt;geometry_msgs::PoseStamped&gt; &amp;plan, const geometry_msgs::PoseStamped &amp;goal); 
+            void publish_global_path(const std::vector&lt;geometry_msgs::PoseStamped&gt; &amp;plan, const geometry_msgs::PoseStamped &amp;goal);
+            bool print_cell(const Cell &amp;cell);
+            void print_world_params(const geometry_msgs::PoseStamped &amp;start, const geometry_msgs::PoseStamped &amp;goal, __uint32_t &amp;mx_i, __uint32_t &amp;my_i, __uint32_t &amp;mx_f, __uint32_t &amp;my_f);
+            Point generate_next_goal();
+            void update_map_bounds();
+            RRT_Cell* get_closest_cell(const Point &amp;nxt_pt, RRT_Cell* head_cell);
+            bool RRT_path_so_far(RRT_Cell *head);
+            void publish_marker_point(const Point &amp;pt);
+            void update_RRT_path_points(std::vector&lt;Point&gt; &amp;path_points, RRT_Cell* final_cell);
+            void update_RRT_planner_plan(std::vector&lt;geometry_msgs::PoseStamped&gt; &amp;plan, const geometry_msgs::PoseStamped &amp;goal, const std::vector&lt;Point&gt; &amp;path_points);
+            bool check_cell_neighbour(const Point &amp;pt);
+
+
+            costmap_2d::Costmap2D* costmap_ros_;
+            costmap_2d::Costmap2DROS *my_costmap_ros;
+            __uint32_t size_x, size_y;
+            __uint32_t map_xi, map_xf, map_yi, map_yf;
+            ros::Publisher global_plan_pub, goal_marker_pub;
+            ros::Subscriber pose_sub;
+            ros::NodeHandle nh_;
+            int marker_id_cnt;
+    };
+
+};
+
+#endif
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/36053"></a> on 2021-06-19 18:16:38 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

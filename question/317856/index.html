@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Preventing excessive callbacks in RosPy - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/317856">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Preventing excessive callbacks in RosPy</h2>
+      <div class="question">
+        <p>I have written a RosPy node for sensing input from the <a href="http://wiki.ros.org/spacenav_node">3Dconnexions mouse</a>, but the mouse&#39;s node publishes messages very often (at about 30Hz). My poor Raspberry Pi can&#39;t handle all of those threads, so I made a timer that prevented the function body from being executed, except every 0.2 seconds. Now, the Pi can handle all the messages and subscriber callbacks, but the whole program is still slow and not very responsive. I would like to prevent the callback methods from being executed at all, that way I don&#39;t have to start a new thread every time I receive a new message. </p>
+
+<p>What would be the best way to prevent excessive callbacks? Is there any way to temporarily unsubscribe from a topic, then resubscribe? I know of the unregister() function, but that doesn&#39;t allow re-subscription. </p>
+
+<p>I would rather not mess with the spacenav program, and I don&#39;t want to convert my Python code into C++ unless I have to.</p>
+
+<p>Edit: Oops. For some reason I thought that the <code>rospy.spin()</code> method made RosPy start a new thread for each callback it received. Does it just call the functions asynchronously, then?</p>
+
+<p>This is the callback for the &#39;/spacenav/joy&#39; topic:</p>
+
+<pre><code># joystick callback for the spacenav
+def spacenav_joy_callback(joy):
+    global actuator_write_callback
+    global control_roomba
+    global spacenav_b0_pressed
+    global spacenav_b1_pressed
+
+    # rospy.loginfo(&#39;In the spacenav_twist callback&#39;)
+    # rospy.loginfo(&#39;The first button is: %i&#39;, int(joy.buttons[0]))
+
+    # in the future, we&#39;ll rely more on this basic type,
+    # but for now, we&#39;re just using the buttons.
+    if joy.buttons[0] and not spacenav_b0_pressed:
+        # flip control between the roomba and the arm
+        control_roomba = not control_roomba
+        spacenav_b0_pressed = True
+        if control_roomba:
+            rospy.loginfo(&#39;Changing control to Roomba.&#39;)
+        else:
+            rospy.loginfo(&#39;Changing control to uArm.&#39;)
+
+    if joy.buttons[1] and not spacenav_b1_pressed and not control_roomba:
+        # toggle the actuator
+        spacenav_b1_pressed = True
+        actuator_write_callback(Bool(not uswift_actuator_out.data))
+
+    if not joy.buttons[0] and spacenav_b0_pressed:
+        # might have to create a threshold for bouncing
+        spacenav_b0_pressed = False
+
+    if not joy.buttons[1] and spacenav_b1_pressed:
+        # might have to create a threshold for bouncing
+        spacenav_b1_pressed = False
+</code></pre>
+
+<p>And this is the one for the &#39;/spacenav/twist&#39; callback:</p>
+
+<pre><code># spacenav twist callback
+def spacenav_twist_callback(twist):
+    global roomba_twist_write
+    global cmd_vel
+    global roomba_vector_scale
+    global roomba_angular_scale
+
+    if control_roomba:
+        cmd_vel.linear.x = roomba_vector_scale * twist.linear.x
+        cmd_vel.linear.y = roomba_vector_scale * twist.linear.y
+        cmd_vel.linear.z = roomba_vector_scale * twist.linear.z
+        cmd_vel.angular.x = roomba_angular_scale * twist.angular.x
+        cmd_vel.angular.y = roomba_angular_scale * twist.angular.y
+        cmd_vel.angular.z = roomba_angular_scale * twist.angular.z
+
+        roomba_twist_write.publish(cmd_vel)
+        # rospy.loginfo(&#39;Publishing a cmd_vel&#39;)
+    else:
+        # this is the equivalent of sending a uarm message
+        keyboard_teleop_callback(twist)
+</code></pre>
+
+<p>And this is <code>keyboard_teleop_callback()</code>, from above:</p>
+
+<pre><code># teleop calllback
+# does nothing fancy; just forwards the messages to the uSwift
+def keyboard_teleop_callback(twist):
+    global uswift_vector_write
+    global uswift_vector_out
+    global uswift_vector_scale
+
+    # rospy.loginfo(&#39;Publishing a uSwift vector&#39;)
+
+    uswift_vector_out.x = uswift_vector_scale * twist.linear.x
+    uswift_vector_out.y = uswift_vector_scale * twist.linear.y
+    uswift_vector_out.z = uswift_vector_scale * twist.linear.z
+
+    uswift_vector_write.publish(uswift_vector_out)
+</code></pre>
+
+<p>I have realized just by posting this that I can reduce the load by only using the <code>joy</code> callback and getting rid of the <code>twist</code> subscriber. But I would still like to know how to prevent callbacks in the future, in case next time the message info of the two topics is mutually exclusive.</p>
+
+<hr>
+
+<p>My timer is actually not in my RosPy file; it&#39;s in my C++ <a href="https://www.ufactory.cc/#/en/uarmswift">uArm SwiftPro</a> driver. The above program simply receives a message, repackages its data, and forwards a new message with the data to wherever it needs to go (in this case, my uSwift driver). What I do in my uSwift driver is set a variable to <code>true</code> every 0.2 seconds with a timer, then when I receive a message from the RosPy node, if that variable is <code>true</code>, I parse the message and send the data to the uSwift. (I know this is a terrible way of going about things, but this uSwift and this Pi are all my senior design team has. I&#39;m trying to make do.)</p>
+
+<p>This is my C++ uSwift driver. Note the use of the global variable <code>accept_vector</code>:</p>
+
+<pre><code>void vector_write_callback(const geometry_msgs::Vector3&amp; msg_in)
+{
+    if (accept_vector &amp;&amp; 
+        (abs(msg_in.x) &gt; 0.001 || 
+         abs(msg_in.y) &gt; 0.001 || 
+         abs(msg_in.z) &gt; 0.001))
+    {
+        // ...
+    }
+}
+
+// ...
+
+void vector_accept_callback(const ros::TimerEvent&amp;)
+{
+    // ROS_DEBUG(&quot;Opening the uSwift floodgate&quot;);
+    accept_vector = true;
+}
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;pnr_swiftpro&quot;);
+    ros::NodeHandle nh(&quot;pnr_swiftpro&quot;);
+    // ...
+    // the vector timer update manager (ensure the vectors don&#39;t flood the uSwift)
+    ros::Timer vec_timer_manager
+        = nh.createTimer(
+            ros::Duration(vector_flood_delay), 
+            vector_accept_callback);
+    // ...
+}
+</code></pre>
+
+<p>The C++ code above actually works just fine. However, I need to figure out a way to keep the Pi from getting flooded with messages now. I thought about doing it with a timer, like in the C++ above, but I would rather have the callbacks not called at all. </p>
+
+<p>Thanks @gvdhoorn for the suggestion. I had never heard of topic_tools. I&#39;ll go check it out.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40362">jakeman555</a> on 2019-03-06 22:58:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>rospy doesn&#39;t spawn a new thread for each callback, and I&#39;m also a little confused about how you&#39;re solving this with a timer. I think it would be more clear if you could share your code, or a simplified (working) example that exhibits the same symptoms.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-03-07 00:56:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>This does sound like either a <a href="http://wiki.ros.org/topic_tools/throttle">throttle</a> node or some other way of preventing messages from even reaching the subscriber would be better suited.</p>
+
+<p>But I agree with @ahendrix that right now it&#39;s rather unclear what you&#39;re really doing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-03-07 04:51:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn: After writing that essay I think I&#39;m just going to use the throttle node. It looks exactly like what I need. Thanks for the help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40362">jakeman555</a> on 2019-03-07 11:28:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would also suggest to take a look at your current architecture / dataflow. I haven&#39;t really tried to understand everything, but all the scaling of Twists and Joy msgs seems like it could be done by <a href="http://wiki.ros.org/teleop_twist_joy">teleop_twist_joy</a> or similar nodes.</p>
+
+<p>Btw: a couple publishers/subscribers at 30 Hz should not be a problem for a Pi running @ &gt; 1 GHz.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-03-07 11:31:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Okay by the sounds of it the processing in your callback is taking too long to run at 30 hz. @ahentrix is correct multiple threads are not being created but you&#39;re probably maxing out a cpu core with a single thread. </p>
+
+<p>I&#39;d recommend moving the processing out of your callback function. So the callback simply saves the content of the last message and the a slower timer callback then performs the processing on the most recent data.</p>
+
+<p>Can you describe what processing you&#39;re doing on the 3d mouse data? It&#39;s possible this could be sped up if you can show us your code. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2019-03-07 04:47:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It looks like the C++ uSwift driver is probably calling some function to communicate with the uArm, so it may not be maxing out the core, but may just be waiting for I/O. The same recommendation still applies: have the callback store the message contents somewhere, and then communicate with the hardware from a slower timer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-03-07 12:14:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You may also want to reduce the queue sizes on all of these nodes; that will allow ROS to drop old messages which will reduce the latency if one of the subscribers cannot keep up.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-03-07 12:15:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ah yes... The IO. Actually, all of the IO is done through the single USB port on a Jetson. Now that you mention it, the problem may not be my Pi&#39;s RosPy at all. I&#39;m going to try to factor in the <code>throttle</code> that gvdhoorn suggested. I think that will help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40362">jakeman555</a> on 2019-03-07 12:52:32 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

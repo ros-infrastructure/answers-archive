@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Weird serial behavior, and ROS loop rate - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/241270">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Weird serial behavior, and ROS loop rate</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/75688/weird-serial-behavior-and-ros-loop-rate">https://robotics.stackexchange.com/questions/75688/weird-serial-behavior-and-ros-loop-rate</a>.</p>
+        <p>Hello everyone.</p>
+
+<p>I am currently working on a project which involves me to write a C++ differential driver and encoder publisher for an old custom DSP board, which communicates through serial port. It constantly displays the encoder info in the form of <code>VXX=YYYY,YYYY</code> lines ending with an <code>\n</code>, XX being the encoder number in DEC (in my case there are two encoders: numbers 11 and 12), and YYYY,YYYY is the encoder tick count, displayed in HEX. So if there are two encoders, the DSP would display:</p>
+
+<pre><code>V11=0000,0000
+V12=0000,0000
+V11=0000,0000
+V12=0000,0000
+V11=0000,0000
+V12=0000,0000
+...
+</code></pre>
+
+<p>My goal would be to:
+- Extract the serial string
+- Define which encoder it is about with the <code>VXX</code> info
+- Extract the encoder counts and convert them as follows: STRING -&gt; HEX -&gt; std_msgs::Int32.</p>
+
+<p>For this matter, I am using <strong>wjwwood&#39;s serial.h library</strong>. I&#39;ve got my DSP board to work correctly on Cutecom and HyperTerminal (Windows), and hence I am 99.99% sure of the accuracy of the info that I receive. So far, I wrote a code that I think should work, but I am facing issues regarding catching the info from the serial port: <strong>I get incomplete data</strong>. Also I was suspecting the ROS loop rate to play a role on this, which in fact has, but when changing it, either the refresh rate is too low, or the second encoder isn&#39;t read, or I loose all the data (and get weird values when <code>rostopic echo lwheel</code> for example).</p>
+
+<p>I would be eternally thankful if anyone could help me on this. I think I&#39;ve wasted way too much time on it trying to figure it out, and I&#39;m starting to be really bothered by it. :/</p>
+
+<p>Please find below the entire code I wrote. Note that I have never written a serial driver before, and therefore my knowledge on this matter is quite limited.</p>
+
+<p>Thank you ever so much.</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;serial/serial.h&gt;
+#include &lt;std_msgs/Int32.h&gt;
+#include &lt;std_msgs/Int16.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;ros/console.h&gt;
+#include &lt;stdlib.h&gt;
+
+#include &lt;sstream&gt;
+
+/*******************/
+/*  Serial setup   */
+/*******************/
+
+serial::Serial ser;
+serial::bytesize_t bytesize = serial::bytesize_t(8);
+serial::parity_t parity = serial::parity_t(1);
+serial::stopbits_t stopbits = serial::stopbits_t(1);
+serial::flowcontrol_t flow = serial::flowcontrol_t(0);
+
+/**********************/
+/*  Variables setup   */
+/**********************/
+
+std_msgs::Int32 lenc;
+std_msgs::Int32 renc;
+std_msgs::Int32 lsp;
+std_msgs::Int32 rsp;
+
+std_msgs::String test;
+
+/////////////////////
+
+void write_callback(const std_msgs::String::ConstPtr&amp; msg){
+    ROS_INFO_STREAM(&quot;Writing to serial port&quot; &lt;&lt; msg-&gt;data);
+    ser.write(msg-&gt;data);
+}
+
+void rmotorCb(const std_msgs::Int16&amp; rmotor_msg){
+    //TBD
+}
+
+void lmotorCb(const std_msgs::Int16&amp; lmotor_msg){
+    //TBD
+}
+
+int main (int argc, char** argv){
+
+    /////////////////////
+
+    //ROS Node initialization
+
+    ros::init(argc, argv, &quot;AMC-8004&quot;);
+    ros::NodeHandle nh;
+
+    /******************/
+    /*  Topics setup  */
+    /******************/
+
+    ros::Subscriber rmotor = nh.subscribe(&quot;rmotor&quot;, 1000, rmotorCb);
+    ros::Subscriber lmotor = nh.subscribe(&quot;lmotor&quot;, 1000, lmotorCb);
+    ros::Publisher rwheel = nh.advertise&lt;std_msgs::String&gt;/*&lt;std_msgs::Int32&gt;*/(&quot;rwheel&quot;, 1000);
+    ros::Publisher lwheel = nh.advertise/*&lt;std_msgs::String&gt;*/&lt;std_msgs::Int32&gt;(&quot;lwheel&quot;, 1000);
+    ros::Publisher test_pub = nh.advertise&lt;std_msgs::String&gt;(&quot;test&quot;, 1000);
+
+    try
+    {
+        ser.setPort(&quot;/dev/ttyUSB0&quot;);
+        ser.setBaudrate(38400);
+        ser.setBytesize(bytesize);
+        ser.setFlowcontrol(flow);
+        ser.setParity(parity);
+        ser.setStopbits(stopbits);
+        serial::Timeout to = serial::Timeout::simpleTimeout(0);
+        ser.setTimeout(to);
+        ser.open();
+    }
+    catch (serial::IOException&amp; e)
+    {
+        ROS_ERROR_STREAM(&quot;Unable to open port lol&quot;);
+        return -1;
+    }
+
+    if(ser.isOpen()){
+        ROS_INFO_STREAM(&quot;Serial is now initialized, okay?&quot;);
+    }else{
+        return -1;
+    }
+
+    std::string V = &quot;&quot;;
+    std::string buffer = &quot;&quot;;
+    std::string var_check;
+
+    renc.data = 456;
+    char *ptr;
+    long ret;
+
+    ros::Rate loop_rate(1000);
+
+    while(ros::ok()){
+
+        ros::spinOnce();
+
+        test_pub.publish(line);
+
+        while(V != &quot;V&quot;) if(ser.available()) V = ser.read(1);
+
+
+        if(V == &quot;V&quot;){
+
+            ser.waitReadable();
+            if(ser.available()) ser.read(1);
+
+            ser.waitReadable();
+            if(ser.available()) buffer = ser.read(1);
+
+            char *cstr = new char[buffer.length()+1];
+            strcpy(cstr, buffer.c_str());
+
+            int i = strtol(cstr, &amp;ptr, 16);
+
+            switch(i){
+                case 1 : {
+                    ser.waitReadable();
+                    ser.read(6);
+
+                    ser.waitReadable();
+                    buffer = ser.read(4);
+
+                    char *cstr = new char[buffer.length()+1];
+                    strcpy(cstr, buffer.c_str());
+
+                    lenc.data = strtol(cstr, &amp;ptr, 16);
+                    if(lenc.data != 0) lwheel.publish(lenc);
+
+                    ros::spinOnce();
+
+                    delete [] cstr;
+                    buffer = &quot;&quot;;
+                }
+
+                case 2 : {
+                    ser.waitReadable();
+                    ser.read(6);
+
+                    ser.waitReadable();
+                    buffer = ser.read(4);
+
+                    char *cstr = new char[buffer.length()+1];
+                    strcpy(cstr, buffer.c_str());
+
+                    lenc.data = strtol(cstr, &amp;ptr, 16);
+                    if(lenc.data != 0) rwheel.publish(renc);
+
+                    ros::spinOnce();
+
+                    delete [] cstr;
+                    buffer = &quot;&quot;;     
+                }
+
+            }
+
+            i = 0;
+        }
+
+        loop_rate.sleep();
+
+    }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/27686">Tsuko G.</a> on 2016-08-08 02:26:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You&#39;re doing a lot of strange things that might be affecting your ability to read the data effectively. The system has a limited serial buffer, so if you&#39;re reading the data slower than it is being sent over serial, then you&#39;ll lose some. You&#39;re calling <code>ros::spinOnce()</code> in your loops where you&#39;re reading the serial data. There are also a lot of cases where you&#39;re reading data but not checking to see what it is.</p>
+
+<p>My recommendation is to start by creating a thread to read from the serial port and do <code>ros::spin()</code> in a separate thread. Then you can write a simpler loop that just reads one byte at a time. I&#39;d also recommend using a timeout rather than doing <code>waitReadable()</code> between calls to <code>read</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/10"></a> on 2016-08-08 22:40:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you so much for your insight William! By thread, you mean std::thread, right? Does ROS support this, and does it have rules to follow in this framework?</p>
+
+<p>Also, I&#39;m really not familiar with serial communication. What do you mean by using a timeout, how does it affect the read and how to do?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27686">Tsuko G.</a> on 2016-08-09 09:53:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You can use <code>std::thread</code> or <code>boost::thread</code>. Most of the ROS&#39;s functions are thread-safe. You can also use an async spinner and do the serial port reading in the main thread. <a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning#Multi-threaded_Spinning">http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning#Multi-threaded_Spinning</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2016-08-09 13:26:25 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

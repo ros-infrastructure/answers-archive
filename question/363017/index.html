@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>set realtime prio before executing launchfile - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/363017">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>set realtime prio before executing launchfile</h2>
+      <div class="question">
+        <p>I’m using the <a href="https://github.com/hans-robot/elfin_robot/blob/kinetic-devel/README_english.md">Elfin robot arm</a> and to launch it you need to execute the following command:</p>
+
+<pre><code>sudo chrt 10 bash
+</code></pre>
+
+<p>then in the same terminal you can launch the controller by running:</p>
+
+<pre><code>roslaunch elfin_robot_bringup elfin_ros_control_v2.launch
+</code></pre>
+
+<p>Now I’m automating the launch of all the nodes, but I have no idea how I can execute ‘sudo chrt 10 bash’ using my launch file.
+I&#39;m looking for a &#39;clean&#39; solution, and hope it doesn&#39;t include calling a bash script. </p>
+
+<p>What is a good /safe way to execute both commands after each other in the same shell?
+hope someone can help me further.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/59954">crnewton</a> on 2020-10-07 09:30:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Does #q246090 cover this?</p>
+
+<p>And actually I would suggest having the driver binary <em>itself</em> request the RT priority. That would be a lot easier and have better UX.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-10-07 10:28:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ll look into it. Having the driver request RT is exactly what I want. I&#39;ll update when It worked :).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59954">crnewton</a> on 2020-10-09 01:19:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Not sure you understood what I meant.</p>
+
+<p>I&#39;m suggesting to add something like this to the driver binary itself: <a href="https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/blob/936ff8d27eece1a87bcfd3fb26220487922a3704/ur_robot_driver/src/ros/hardware_interface_node.cpp#L59-L106">ur_robot_driver/src/ros/hardware_interface_node.cpp; lines 59 to 106</a>.</p>
+
+<p>Not in a <code>.launch</code> file.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-10-09 03:07:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the example code! doing it in the driver itself is what I want, i like to keep launch files only for launching ( as simple as possible)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59954">crnewton</a> on 2020-10-13 06:07:39 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>doing it in the driver itself is what I want, i like to keep launch files only for launching</p>
+</blockquote>
+
+<p>technically <code>.launch</code> files encode the configuration of the application (together with <code>.yaml</code> and some other files). The priority at which processes started by <code>.launch</code> files are run could be considered configuration.</p>
+
+<p>Hiding scheduling configuration in node binaries essentially makes it impossible to introspect or change that configuration, reducing the control a <code>.launch</code> file can exert over that aspect of the application.</p>
+
+<p>I&#39;m not saying you shouldn&#39;t do it, just highlighting some disadvantages.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-10-13 07:36:40 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>For now the propopsed solution(s) won&#39;t be inplemented. 
+@gvdhoorn gave the answer to my question, I&#39;m positive this solves my problem. he refered to this example:</p>
+
+<pre><code> std::ifstream realtime_file(&quot;/sys/kernel/realtime&quot;, std::ios::in);
+  bool has_realtime;
+  realtime_file &gt;&gt; has_realtime;
+  if (has_realtime)
+  {
+    const int max_thread_priority = sched_get_priority_max(SCHED_FIFO);
+    if (max_thread_priority != -1)
+    {
+      // We&#39;ll operate on the currently running thread.
+      pthread_t this_thread = pthread_self();
+
+      // struct sched_param is used to store the scheduling priority
+      struct sched_param params;
+
+      // We&#39;ll set the priority to the maximum.
+      params.sched_priority = max_thread_priority;
+
+      int ret = pthread_setschedparam(this_thread, SCHED_FIFO, &amp;params);
+      if (ret != 0)
+      {
+        ROS_ERROR_STREAM(&quot;Unsuccessful in setting main thread realtime priority. Error code: &quot; &lt;&lt; ret);
+      }
+      // Now verify the change in thread priority
+      int policy = 0;
+      ret = pthread_getschedparam(this_thread, &amp;policy, &amp;params);
+      if (ret != 0)
+      {
+        std::cout &lt;&lt; &quot;Couldn&#39;t retrieve real-time scheduling paramers&quot; &lt;&lt; std::endl;
+      }
+
+      // Check the correct policy was applied
+      if (policy != SCHED_FIFO)
+      {
+        ROS_ERROR(&quot;Main thread: Scheduling is NOT SCHED_FIFO!&quot;);
+      }
+      else
+      {
+        ROS_INFO(&quot;Main thread: SCHED_FIFO OK&quot;);
+      }
+
+      // Print thread scheduling priority
+      ROS_INFO_STREAM(&quot;Main thread priority is &quot; &lt;&lt; params.sched_priority);
+    }
+    else
+    {
+      ROS_ERROR(&quot;Could not get maximum thread priority for main thread&quot;);
+    }
+  }
+</code></pre>
+
+<p>here are some  other examples with a python implementation of the solution:
+<a href="https://python.hotexamples.com/examples/os/-/sched_setscheduler/python-sched_setscheduler-function-examples.html">https://python.hotexamples.com/examples/os/-/sched_setscheduler/python-sched_setscheduler-function-examples.html</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/59954">crnewton</a> on 2020-10-23 07:09:28 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why do I need a sleep before publishing first message to a topic? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/393074">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why do I need a sleep before publishing first message to a topic?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100853/why-do-i-need-a-sleep-before-publishing-first-message-to-a-topic">https://robotics.stackexchange.com/questions/100853/why-do-i-need-a-sleep-before-publishing-first-message-to-a-topic</a>.</p>
+        <p>I am trying to get an explanation for some code that works.</p>
+
+<p>To simplify the general issue, I created a bag file with exactly <strong>2</strong> messages with exact same header time stamp down to nano seconds. First message is of type <code>sensor_msgs/Image</code>. Second message is of type <code>sensor_msgs/PointCloud2</code>. If I read the two messages from the ROS Bag and publish them using two publishers, one for each topic, as shown below, I can not see the messages in <code>rviz</code> or <code>rostopic echo</code>.</p>
+
+<pre><code>#The code below does not show messages in rviz or rostopic echo 
+# ros_publishers in the code below is a dict of ros topic name -&gt; rospy.Publisher
+bag = rosbag.Bag(bag_path)
+for ros_topic, ros_msg, _ in bag.read_messages():
+  ros_publishers[ros_topic].publish(ros_msg)
+bag.close()
+</code></pre>
+
+<p>However, if I add a minimum sleep for 1 second, just before I publish a message on a topic <strong>for the first time</strong>, it works.</p>
+
+<pre><code># This code successfully shows messages in rviz and rostopic echo
+# ros_publishers is a dict of ros topic name -&gt; rospy.Publisher
+bag = rosbag.Bag(bag_path)
+ros_topics = set()
+for ros_topic, ros_msg, _ in bag.read_messages():
+   if not ros_topic in ros_topics:
+     time.sleep(1)
+     ros_topics.add(ros_topic)
+   ros_publishers[ros_topic].publish(ros_msg)
+bag.close()
+</code></pre>
+
+<p>This issue is a proxy for the real issue, which is that if number of messages in the Bag file is below a threshold (don&#39;t know the threshold), the code needs the sleep for first time message on a topic before the message shows up in <code>rviz</code> or <code>rostopic echo</code>. If the number of messages in the Bag file is a above this unknown threshold,  then it works without any sleep. </p>
+
+<p>Interestingly, using <code>rosbag play</code> shows messages in <code>rviz</code> even if there  are just two messages in the Bag, but that may or may not be beside the point for the problem I am trying to solve.  I can change the <code>time.sleep(1)</code> to <code>print(str(ros_msg))</code> and that does the trick also. Note, if I put the <code>time.sleep(1)</code> anywhere else  in the code, it does not work, and less than 1 second also does not work.</p>
+
+<p>I have a solution (maybe a hack) that works for what I am trying to do, but I am requesting an explanation for why it works,  or maybe I need to do something else.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/91833">ajayvohra2005</a> on 2021-12-19 18:28:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>TL;DR: I strongly suspect that what&#39;s happening is that you create a publisher and immediately <strong>publish a message on it before the subscriber has had time to connect</strong>, so the first message (or first few messages) are missed.</p>
+
+<p>Longer version:</p>
+
+<p>Let&#39;s call the node with your code that you pasted above <code>Talker</code> and the node that subscribes <code>Listener</code>.</p>
+
+<p>Here&#39;s the sequence of events:</p>
+
+<ol>
+<li>The ROS master (<code>roscore</code>) is started.</li>
+<li><code>Listener</code> is started.</li>
+<li>At the moment that the <code>Subscriber</code> is created for topic <code>T</code> in the <code>Listener</code> code, it notifies the master that it would like to be notified of any future publishers on that topic.</li>
+<li><code>Talker</code> is started.</li>
+<li>At the moment that the <code>Publisher</code> for topic <code>T</code> is created, the master is notified.</li>
+<li>The master notifies <code>Listener</code> that there is a new publisher and tells it the IP and port of the publisher in the <code>Talker</code> node.</li>
+<li><code>Talker</code> publishes its first message (or couple of messages). They are missed by the <code>Listener</code>.</li>
+<li><code>Listener</code> contacts <code>Talker</code> and requests that future messages are send to it.</li>
+<li><code>Talker</code> keeps publishing messages. They are received by <code>Listener</code>.</li>
+</ol>
+
+<p>If you add a sleep between step 6 and 7 (i.e., after creating the publisher, but before publishing messages), that gives the subscribers time to subscribe, and no messages are missed.</p>
+
+<hr>
+
+<p>A second point is that you are publishing messages as fast as you can read them from disk, without delay. This can result in tens of thousands of messages being published per second. In that case, either the <strong>publisher or subscriber queue will overflow</strong>, and messages are dropped. </p>
+
+<p>In summary, you should do the following:</p>
+
+<ul>
+<li>create a small sleep (1 second is more than enough) <em>after</em> creating the publishers, but <em>before</em> starting to publish if it&#39;s important not to miss any messages.</li>
+<li>Ensure that the <code>queue_size</code> parameters in all publishers <em>and subscribers</em> are large enough to buffer a few seconds worth of messages.</li>
+<li>Rate limit your publishing to ensure that you don&#39;t publish more than <code>queue_size / N</code> messages per second, where <code>N</code> is something like 1..5.</li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22"></a> on 2021-12-20 05:45:09 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for the precise explanation. This solved my problem elegantly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/91833">ajayvohra2005</a> on 2021-12-21 18:49:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

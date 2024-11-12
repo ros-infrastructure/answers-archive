@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Local planner requires protocol when it cannot resolve path - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/396223">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Local planner requires protocol when it cannot resolve path</h2>
+      <div class="question">
+        <p>I have an issue where in certain  occasions, my  local planner on its way to the goal can no longer resolve a path to the goal. and then stops moving. Here is a picture to illustrate what I mean: <a href="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16449630678942773.png">robot<em>stops</em>moving</a>. Because alot of the time, all it takes is for me to manually teleop the robot for a couple seconds and the robot is able to autonomously move to the goal by itself. Basically all it takes is that the robot is jolted back into motion and then the path planner resolves itself. What I&#39;m doing right now running my protocol algorithm at the same time as my motion algorithm(which a series of  goals, one at a time) via same launch file.  How it works is  if  the robot hasn&#39;t moved in 5 seconds, the protocol(ideally takes over for a couple seconds)  jolts the robot back into movement, The issue is it doesn&#39;t seem to work. I make the protocol algorithm print out &quot;move move move&quot; when ever it&#39;s supposed to take over movement.It does print that out but the robot doesn&#39;t move. 
+Here is the code below:</p>
+
+<pre><code>#!/usr/bin/env python3
+#python3
+
+import rospy
+from geometry_msgs.msg import Twist #ros msg that deals with moving the robot
+from sensor_msgs.msg import LaserScan #ros msg that gets the laser scans
+from std_msgs.msg import String
+import time
+
+#word=String()
+# obstacle threshhold, objects a this distance or below it
+#are considered obstacles
+OBSTACLE_DIST = 0.9 #0.5
+#the angle in which each region extends
+REGIONAL_ANGLE = 60
+PI = 3.141592653
+
+#when there&#39;s no obstacles, the robot will move with this linear velocity
+NORMAL_LIN_VEL = 0.50 #meters/second
+#after detecting an obstacle, the robot shall back up a bit (negative) while
+# rotating to help in case it can&#39;t perform a stationary rotation
+TRANS_LIN_VEL = -0.18 #0.08
+#the robot always rotates with the same value of angular velocity
+TRANS_ANG_VEL = 1.75 #1.75
+
+#this list keeps track of the order in which the regions&#39; readings are obtained
+REGIONS = [
+             &quot;front_C&quot;, &quot;upper_L&quot;, &quot;lower_L&quot;, &quot;back_C&quot;, &quot;lower_R&quot;,
+             &quot;upper_R&quot;,
+          ]
+#this is a global variable that keeps handles the orders for the robot to follow
+#if there&#39;s a detected object, &quot;act&quot; is turned to True
+#and the angular_vel and sleep values are calculated appropriately
+Urgency_Report = {
+                    &quot;act&quot;: False, &quot;angular_vel&quot;: 0.0, &quot;sleep&quot;: 0
+                 }
+#this dict keeps track of the distance measures for each region
+Regions_Report = {
+                    &quot;front_C&quot;:[], &quot;upper_L&quot;:[], &quot;lower_L&quot;:[], &quot;back_C&quot;:[], &quot;lower_R&quot;:[],
+                    &quot;upper_R&quot;:[],
+                 }
+#These are the costs to deviate from each region to the goal region (front_C)
+Regions_Distances = {
+                        &quot;front_C&quot;:0, &quot;upper_L&quot;:1, &quot;lower_L&quot;:2, &quot;back_C&quot;:3, &quot;lower_R&quot;:4,
+                         &quot;upper_R&quot;:5,
+                    }
+
+#in this function the clearest paths are calculated and the appropriate
+#values for the angular_vel and the execution times are assigned
+def ClearanceTest():
+    global Urgency_Report
+
+    goal = &quot;front_C&quot;
+    closest = 10e6
+    regional_dist = 0
+    maxima = {&quot;destination&quot;: &quot;back_C&quot;, &quot;distance&quot;: 10e-6}
+    for region in Regions_Report.items():
+        regional_dist = abs(Regions_Distances[region[0]]-Regions_Distances[goal])
+        #if there&#39;re no obstacles in that region
+        if not len(region[1]): #If the region is empty
+            #check if it&#39;s the cheapest option
+            if (regional_dist &lt; closest):
+                closest = regional_dist
+                maxima[&quot;distance&quot;] = OBSTACLE_DIST
+                maxima[&quot;destination&quot;] = region[0]
+        #check if it&#39;s the clearest option
+        elif(max(region[1]) &gt; maxima[&quot;distance&quot;]):
+            maxima[&quot;distance&quot;] = max(region[1])
+            maxima[&quot;destination&quot;] = region[0]
+
+    #calculate the cost to the chosen orientation
+    regional_dist = Regions_Distances[maxima[&quot;destination&quot;]]-Regions_Distances[goal]
+
+    #we act whenever the clearest path is not the front_C (front center)
+    Urgency_Report[&quot;act&quot;] = (closest != 0)
+    Urgency_Report[&quot;angular_vel&quot;] = ((regional_dist/max(1, abs(regional_dist)))
+                                    *TRANS_ANG_VEL)
+    Urgency_Report[&quot;sleep&quot;] = ((abs(regional_dist)*REGIONAL_ANGLE*PI)
+                              /(180*TRANS_ANG_VEL))
+
+def IdentifyRegions(scan):
+    global Regions_Report
+    for i, region in enumerate(REGIONS):
+        Regions_Report[region] = [
+                x for x in scan.ranges[REGIONAL_ANGLE*i : REGIONAL_ANGLE*(i+1)]#[30 degrees*0:30 degrees*1],[30 degrees*1:30 degrees*2] and so on.
+                        if x &lt;= OBSTACLE_DIST and x != &#39;inf&#39;]
+
+def Steer(velocity):
+    global Urgency_Report
+
+    #since we&#39;re moving only on the plane, all we need is move in the x axis,
+    #and rotate in the z (zeta) axis.
+    velocity.linear.x = TRANS_LIN_VEL
+    velocity.linear.y = 0
+    velocity.linear.z = 0
+    velocity.angular.x = 0
+    velocity.angular.y = 0
+    velocity.angular.z = Urgency_Report[&quot;angular_vel&quot;]
+
+    return velocity
+
+
+
+motive=Twist()
+def callback(msg):
+    global motive
+    motive=msg
+
+
+
+def main():
+    global motive
+    #Initialize our node
+    rospy.init_node(&quot;Laser_Obs_Avoid_node&quot;)
+    #Subscribe to the &quot;/scan&quot; topic in order to read laser scans data from it
+    rospy.Subscriber(&quot;/scan&quot;, LaserScan, IdentifyRegions)
+    #rospy.Subscriber(&quot;/evade_1&quot;,String,callback)
+    #create our publisher that&#39;ll publish to the &quot;/cmd_vel&quot; topic
+    pub = rospy.Publisher(&quot;/cmd_vel&quot;, Twist, queue_size = 1)
+    rospy.Subscriber(&quot;/cmd_vel&quot;,Twist,callback)
+    vel = Twist()
+    #ros will try to run this code 10 times/second
+    rate = rospy.Rate(8000) #10Hz , 12000
+    #keep running while the ros-master isn&#39;t isn&#39;t shutdown
+    while not rospy.is_shutdown():
+
+        # Need a do{ ... }while(); here (C is awesome)
+        # Since I need to check at least once the clearance
+        done = False
+        timer=0
+        while not done:
+            ClearanceTest()
+            if motive.linear.x==0 and motive.linear.y==0:
+                rospy.sleep(5.0)
+                if motive.linear.x==0 and motive.linear.y==0:
+                    print(&quot;move move move&quot;)
+                    while timer&lt;=30:
+                        if (Urgency_Report[&quot;act&quot;]):
+                            vel = Steer(vel)
+                            pub.publish(vel)
+                            rospy.sleep(0.5)
+                            timer+=0.5
+
+
+                        else:
+                            vel.linear.x = NORMAL_LIN_VEL
+                            vel.linear.y = 0
+                            vel.linear.z = 0
+                            vel.angular.x = 0
+                            vel.angular.y = 0
+                            vel.angular.z = 0
+                            pub.publish(vel)
+                            rospy.sleep(0.5)
+                            timer+=0.5
+                else:
+                    break
+            else:
+                break
+                        ### This is stupid and shouldn&#39;t be done (sleep()) !
+                        # After publishing our action, we give it some time to execute the
+                        # needed actions before reading the data again.
+                        # time.sleep(Urgency_Report[&quot;sleep&quot;])
+
+            rate.sleep()
+
+if __name__ == &quot;__main__&quot;:
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>How the protocol works is, it keeps moving forward if there are no obstacles within a certain distance directly infront of the robot. If there are obstacles directly infornt, the robot turns away from them.
+Maybe running the protocol in the same launch file is the cause of it not working properly?
+Or could there be a better way to apply the protocol.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/75936">distro</a> on 2022-02-15 17:20:11 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

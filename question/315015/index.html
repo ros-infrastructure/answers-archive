@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>What is the best way to monitor and Remote control the Robot from Tablet? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/315015">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>What is the best way to monitor and Remote control the Robot from Tablet?</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I&#39;m trying to make some Tablet GUI which can monitor and also remote control my robot.<br>
+My robot is already connected to wifi and ROS messages are well communicated between the Ubuntu computer which is connected to the same wifi. Well communicated means, the remote computer can subscribe the message which the robot published, and the robot can subscribe the message which the remote computer published. The robot is publishing its position and camera-image. The remote computer is publishing velocity command.<br>
+Now, I want to make a Tablet GUI which displays the robot position, camera-image, and some button which can control the robot&#39;s velocity.<br>
+The GUI doesn&#39;t need to be a dedicated application. Using a web browser should be fine.<br>
+I have two tablets. One is Android OS and the other is Windows OS. Android could be better for me.<br></p>
+
+<p>What is the best way (Easy way) to make a Tablet GUI? Are there any tutorials for this situation?</p>
+
+<p>Thank you in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36541">yoshiros</a> on 2019-02-07 14:02:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>ROSBRIDGE and robotwebtools.org will have everything you need. Both have tutorials to make it easy.
+I have remote interface that runs fine in safari on iPhone, chrome on android and windows, and firefox on ubuntu. In my case tested from one state to another(1500 Km) using controls and streaming video with minimal lag.</p>
+
+<p>UPDATE after additional question:</p>
+
+<p>My setup is personal hobby, so I just use an old laptop for the server running apache2 on ubuntu. It works fine for my limited case. </p>
+
+<p>Nodes running on the laptop:</p>
+
+<ul>
+<li><p>Full navigation stack and robot interface. AMCL, movebase, map server etc all standard. Robot interface is custom.</p></li>
+<li><p>A few custom house keeping nodes that use voice and keyboard inputs to control robot state(sleeping, idle, navigating, etc) and issue goals to navigation stack, decode cmd_vel, etc.</p></li>
+<li><p>Raspicam is running on a raspberry pi with camera to get video stream. I strongly suggest you find a different source than raspberry pi for video. Major pain to get working.</p></li>
+</ul>
+
+<p>Nodes used to support the web interface:</p>
+
+<ol>
+<li><p>web_video_server</p></li>
+<li><p>robot_pose_publisher</p></li>
+<li><p>image_transport republish compressed in:=/raspicam_node/image/ out:=/convertedimage</p></li>
+<li><p>rosbridge_server rosbridge_websocket.launch</p></li>
+</ol>
+
+<p>The HTML code below is one of the pages that displays the video stream, shows the location of the robot in the map, and has buttons for sending robot to predefined locations. The output from these buttons get published to a topic that is used for voice control local to the robot so the buttons get handled as though they are voice commands being issued to the robot from someone standing right there. The robot will not obey any voice command not preceeded by &quot;robot&quot; so the function for the buttons puts a &quot;robot&quot; on the topic prior to sending the intended location request. These buttons will not help you with your application but serve as one example on how to put info to topic from web interface.</p>
+
+<p>One note: the file &quot;Ros2D.js&quot; from the robotwebtools.org site needs to be in the folder with your index.html file. I&#39;m sure I am doing this is a non-standard way but have no need to fix it.</p>
+
+<p>I am doing this using ROS Jade on Ubuntu 14.04.</p>
+
+<pre><code>&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot; /&gt;
+
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;script src=&quot;https://static.robotwebtools.org/EaselJS/current/easeljs.js&quot;&gt;&lt;/script&gt;
+&lt;script type=&quot;text/javascript&quot; src=&quot;http://static.robotwebtools.org/EventEmitter2/current/eventemitter2.min.js&quot;&gt;&lt;/script&gt;
+&lt;script type=&quot;text/javascript&quot; src=&quot;http://static.robotwebtools.org/roslibjs/current/roslib.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://static.robotwebtools.org/roslibjs/current/roslib.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;Ros2D.js&quot;&gt;&lt;/script&gt;
+
+&lt;script type=&quot;text/javascript&quot;&gt;
+  var pi_img = new Image(); 
+  var ip = location.host;
+&lt;/script&gt;
+
+&lt;script type=&quot;text/javascript&quot; type=&quot;text/javascript&quot;&gt;
+  var ip = String(location.host);
+  var x = 0;
+  var z = 0;
+  var scale = 0;
+  var scale_max = 0.2;
+  var out_message = &quot;&quot;;
+
+  // Connecting to ROS
+  // -----------------
+  var newURL = &quot;ws://&quot; + ip + &quot;:9090&quot;;
+  var ros = new ROSLIB.Ros({
+    url : newURL
+  });
+
+  ros.on(&#39;connection&#39;, function() {
+    console.log(&#39;Connected to websocket server.&#39;);
+
+        ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        // ----------------------------------------------------------------------
+        // Subscribing to the robot&#39;s Pose
+        // ----------------------------------------------------------------------
+
+        // The ROSLIB.Topic handles subscribing and publishing a ROS topic. This
+        // topic interacts with the /robot_pose topic, published by the robot.
+            var poseTopic = new ROSLIB.Topic({
+                ros         : ros,
+                name        : &#39;/robot_pose&#39;,
+                messageType : &#39;geometry_msgs/Pose&#39;
+            });
+
+        // Subscribes to the robot&#39;s pose. When rosbridge receives the pose
+        // message from ROS, it forwards the message to roslibjs, which calls this
+        // callback.
+            console.log(&#39;Before callback&#39;);
+            poseTopic.subscribe(function(message) {
+            console.log(&#39;In pose subscribe callback&#39;);
+
+        // Formats the pose for outputting.
+            var now = new Date();
+            var position = &#39;x: &#39; + message.position.x
+                + &#39;, y: &#39; + message.position.y
+                + &#39;, z: 0.0&#39;;
+            var orientation = &#39;x: &#39; + message.orientation.x
+                + &#39;, y: &#39; + message.orientation.y
+                + &#39;, z: &#39; + message.orientation.z
+                + &#39;, w: &#39; + message.orientation.w;
+            });
+
+        // Create the main viewer.
+            var viewer = new ROS2D.Viewer({
+                divID : &#39;map&#39;,
+                width : 400,
+                height : 300
+            });
+
+        // Setup the map client.
+            var gridClient = new ROS2D.OccupancyGridClient({
+                ros : ros,
+                rootObject : viewer.scene
+            });
+
+        // Scale the canvas to fit to the map
+            gridClient.on(&#39;change&#39;, function() {
+                viewer.scaleToDimensions(gridClient.currentGrid.width, gridClient.currentGrid.height);
+                viewer.shift(gridClient.currentGrid.pose.position.x, gridClient.currentGrid.pose.position.y);
+                displayPoseMarker();
+            });
+
+        // ----------------------------------------------------------------------
+        // Showing the pose on the map
+        // ----------------------------------------------------------------------
+
+            function displayPoseMarker() {
+        // Create a marker representing the robot.
+                var robotMarker = new ROS2D.NavigationArrow({
+                  size : 12,
+                  strokeSize : 1,
+                  fillColor : createjs.Graphics.getRGB(255, 128, 0, 0.66),
+                  pulse : true
+                });
+                robotMarker.visible = false;
+                console.log(&#39;creating robotMarkr: &#39;);
+
+        // Add the marker to the 2D scene.
+                gridClient.rootObject.addChild(robotMarker);
+                var initScaleSet = false;
+
+        // Subscribe to the robot&#39;s pose updates.
+                var poseListener = new ROSLIB.Topic({
+                  ros : ros,
+                  name : &#39;/robot_pose&#39;,
+                  messageType : &#39;geometry_msgs/Pose&#39;,
+                  throttle_rate : 100
+                });
+
+                poseListener.subscribe(function(pose) {
+
+        // Orientate the marker based on the robot&#39;s pose.
+                  console.log(&#39;Got Pose data:&#39;, pose.position.x, pose.position.y );  
+                  robotMarker.x = pose.position.x;
+                  robotMarker.y = -pose.position.y;
+                  console.log(&#39;Pose updated: &#39;, robotMarker.x);
+                  if (!initScaleSet) {
+                    robotMarker.scaleX = 1.0 / viewer.scene.scaleX;
+                    robotMarker.scaleY = 1.0 / viewer.scene.scaleY;
+                    initScaleSet = true;
+                  }
+                  robotMarker.rotation = viewer.scene.rosQuaternionToGlobalTheta(pose.orientation);
+                  robotMarker.visible = true;
+                });
+            } // end display pose marker
+            ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  }); // end ROS.On connection
+
+  ros.on(&#39;error&#39;, function(error) {
+    console.log(&#39;Error connecting to websocket server: &#39;, error);
+  });
+
+  ros.on(&#39;close&#39;, function() {
+    console.log(&#39;Connection to websocket server closed.&#39;);
+  });
+
+
+  function sendLocation(out_message){
+
+    var outputTopic = new ROSLIB.Topic({
+      ros : ros,
+      name : &#39;/recognizer/output&#39;,
+      messageType : &#39;std_msgs/String&#39;
+    });
+
+    var out_string = new ROSLIB.Message({});
+
+    out_string.data = &#39;robot&#39;;
+
+    outputTopic.publish(out_string);
+
+    out_string.data = out_message;
+
+    outputTopic.publish(out_string);
+    console.log(&#39;output publisher: &#39; + out_string.data);
+
+  } // end sendLocation
+
+
+&lt;/script&gt;
+
+&lt;/head&gt;
+
+&lt;body onload=&quot;init()&quot;&gt;
+
+  &lt;h1&gt;Robot Web Interface&lt;/h1&gt;
+  &lt;h2&gt;Allows remote access to the family robot.&lt;/h2&gt;
+  &lt;p&gt;Choose a location to send the robot.&lt;/p&gt;
+    &lt;input type=&quot;button&quot; id=&quot;kitchen&quot; value=&quot;kitchen&quot; onclick=&quot;sendLocation(value);&quot; /&gt;
+
+    &lt;input type=&quot;button&quot; id=&quot;front door&quot; value=&quot;front door&quot;  onclick=&quot;sendLocation(value);&quot; /&gt;
+
+    &lt;input type=&quot;button&quot; id=&quot;bar&quot;   value=&quot;bar&quot;  onclick=&quot;sendLocation(value);&quot; /&gt;
+
+    &lt;input type=&quot;button&quot; id=&quot;coffee table&quot;  value=&quot;coffee table&quot;  onclick=&quot;sendLocation(value);&quot; /&gt;
+
+    &lt;input type=&quot;button&quot; id=&quot;dining table&quot;  value=&quot;dining table&quot;  onclick=&quot;sendLocation(value);&quot; /&gt;
+
+  &lt;p&gt;&lt;/p&gt;
+
+ &lt;div id=&quot;map&quot;&gt;&lt;/div&gt;
+
+  &lt;p&gt;&lt;/p&gt; 
+
+    &lt;iframe src= &#39;&#39; id= &#39;target_frame&#39; name=&#39;target_frame&#39; width=&quot;410&quot; Height=&quot;310&quot;&gt;&lt;/iframe&gt;
+  &lt;p&gt;&lt;/p&gt;
+
+  &lt;script&gt;
+    // put the video stream into the target frame
+    document.getElementById(&#39;target_frame&#39;).src = &quot;http://&quot; + ip + &quot;:8080/stream?topic=/convertedimage&quot;;
+  &lt;/script&gt;
+
+&lt;/body&gt;
+
+&lt;/html&gt;
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26871">billy</a> on 2019-02-07 16:32:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you so much for your answer. Your job sounds wonderful! If you don&#39;t mind, could you tell me more detail? For example, what library and tools did you use for server?
+Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36541">yoshiros</a> on 2019-02-08 09:30:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for your wonderful additional advice!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36541">yoshiros</a> on 2019-02-11 11:16:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Would you have any advice on how to achieve this if my remote station is on a different network than my robot.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/45802">zulfiz</a> on 2019-11-25 17:22:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi @billi
+please describe more about your /recognizer/output topic. which package is running this node. please mention git repo link for the same.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46827">Deepak_Kr_Yadav</a> on 2020-02-03 09:06:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That topic is published by pocketsphinx : <a href="http://wiki.ros.org/pocketsphinx">http://wiki.ros.org/pocketsphinx</a>
+It is the results of speech recognition.  I use voice control as an input to a state-machine node I use to control the robot system. It is custom (no github) that controls robot hardware, monitors battery, issues goals to move-base, etc.  Since the system uses that topic as the primary input for the state-machine, it made sense the webpage would issue to that same topic. And then the webpage was written so that it plays well with the expected state-machine input.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-02-03 21:44:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>could this be used for a turtlebot in gazebo as well? just the mapping/camera to be displaying in the web interface</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53008">saintdere</a> on 2020-06-12 02:25:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I don&#39;t know the first thing about Gazebo so cannot answer that question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-06-12 14:01:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@saintdere yes you can</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/100972">abdulhannan_r</a> on 2022-04-26 06:31:29 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

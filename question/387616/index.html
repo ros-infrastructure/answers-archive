@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2 Foxy] lookupTransform target doesn't exist despite using waitForTransform - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387616">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2 Foxy] lookupTransform target doesn't exist despite using waitForTransform</h2>
+      <div class="question">
+        <p>For a node I am writing I need to lookup a static transform from a sensor frame, <code>gps</code>, to the <code>base_link</code>. I do this in the initialization and save it as a private member of the node class.</p>
+
+<p>This is resulting in</p>
+
+<pre><code>morten@thinkpad:~/ros2_ws$ ros2 run gps velocity_estimation_node 
+[ERROR] [1632903136.082895496] [gps_transform]: couldn&#39;t wait for gps message
+[INFO] [1632903136.087996564] [gps_transform]: Waiting for transform from gps to base_link
+terminate called after throwing an instance of &#39;tf2::LookupException&#39;
+  what():  &quot;base_link&quot; passed to lookupTransform argument target_frame does not exist. 
+</code></pre>
+
+<p>I can confirm that the relevant frames exist by <code>ros2 run tf2_tools view_frames.py</code>: 
+<a href="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1632903426623614.png">frames.pdf</a></p>
+
+<p>I can also check if the transform exists by <code>ros2 run tf2_ros tf2_echo gps base_link</code>, but this results in strange behavior as well despite showing the correct transformation:</p>
+
+<pre><code>morten@thinkpad:~/ros2_ws$ ros2 run tf2_ros tf2_echo gps base_link
+[INFO] [1632903501.716568775] [tf2_echo]: Waiting for transform gps -&gt;  base_link: Invalid frame ID &quot;gps&quot; passed to canTransform argument target_frame - frame does not exist
+At time 0.0
+- Translation: [-1.100, 0.000, -3.000]
+- Rotation: in Quaternion [0.000, 0.000, 0.000, 1.000]
+</code></pre>
+
+<p>The frames originate from a urdf file which is called from a separate launch file, the frames can also be seen clearly in rviz. An abbreviated version of my code for getting the transform is</p>
+
+<pre><code>...
+public:
+    Estimator() : Node(&quot;gps_transform&quot;){...
+        tf_buffer_ = std::make_unique&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+        transform_listener = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_);
+        auto timer_interface = std::make_shared&lt;tf2_ros::CreateTimerROS&gt;(
+                this-&gt;get_node_base_interface(), this-&gt;get_node_timers_interface());
+        tf_buffer_-&gt;setCreateTimerInterface(timer_interface);
+
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Waiting for transform from %s to %s&quot;,
+                    &quot;gps&quot;, &quot;base_link&quot;);
+        tf_buffer_-&gt;waitForTransform(&quot;base_link&quot;, &quot;gps&quot;, this-&gt;now(),
+                                     rclcpp::Duration(10),
+                                     std::bind(&amp;Estimator::tf_cb, this));
+    }
+private:
+    void tf_cb(){
+        tf_buffer_-&gt;lookupTransform(&quot;base_link&quot;, &quot;gps&quot;, tf2::TimePointZero);
+    }...
+
+  std::shared_ptr&lt;tf2_ros::TransformListener&gt; transform_listener_{nullptr};
+  std::unique_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+  geometry_msgs::msg::TransformStamped gps_to_baselink_;
+};
+</code></pre>
+
+<p><strong>Note</strong>: Using ROS2 Foxy on Ubuntu 20.04 LTS.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-29 03:27:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;m not sure if this will help but just take a look at this tutorial: <a href="https://docs.ros.org/en/galactic/Tutorials/Tf2/Writing-A-Tf2-Listener-Cpp.html#writingatf2listenercpp">https://docs.ros.org/en/galactic/Tutorials/Tf2/Writing-A-Tf2-Listener-Cpp.html#writingatf2listenercpp</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33024">pmuthu2s</a> on 2021-09-29 04:46:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I should&#39;ve noted in the original post, given that this is a static transform I would prefer not having to look it up in the callback.</p>
+
+<p>Also just because I figure this is worth knowing how to use the waitForTransform functionality and as far as I can see, it is not well documented/demonstrated for ros2.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-29 04:49:44 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I found a workaround after about 8 hours of tears. The commented code is the first attempt that did not work.</p>
+
+<pre><code>              import asyncio
+...
+                tf_future = self.tf_buffer.wait_for_transform_async(
+                    target_frame=pose_stamped.header.frame_id,
+                    source_frame=reference_frame,
+                    time=rclpy.time.Time()
+                )
+
+                rclpy.spin_until_future_complete(self, tf_future)
+                print(&quot;Got it!&quot;)
+
+#                world_to_reference_transform = self.tf_buffer.lookup_transform(
+#                    pose_stamped.header.frame_id,
+#                    reference_frame,
+#                    rclpy.time.Time(),
+#                    timeout=rclpy.duration.Duration(seconds=5.0))
+
+                world_to_reference_transform = asyncio.run(self.tf_buffer.lookup_transform_async(
+                    pose_stamped.header.frame_id,
+                    reference_frame,
+                    rclpy.time.Time()
+                ))
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21281"></a> on 2023-02-16 18:19:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

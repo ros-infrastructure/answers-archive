@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>unexpected delay in subscriber/ subscriber not getting latest message - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/279791">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>unexpected delay in subscriber/ subscriber not getting latest message</h2>
+      <div class="question">
+        <p>OK, I seriously need help. I know similar topics have been discussed on this forum, but I believe my case is different. I’ll try to keep it succinct, but fully state my situation. I’m using rospy, kinetic, python2.7. All my testing is done on a PC.</p>
+
+<p>I have a node that publishes to /camera/raw_image at 30Hz(it’s a live camera). I didn’t write this node and I don’t intend to largely modify it. The images are around 3.5MB each, and the bandwidth of this topic is roughly 100MB/s. I am writing a node that accomplishes two things: 1. Adjust the exposure setting of the camera. This portion reads a frame and see if it’s too dim/bright and adjust camera settings accordingly. This is very light work. I intend this function to run at 0.5Hz. 2. Detect a target in the image. The time this portion takes is unpredictable, as some images are more complex than others. I want this portion to run as frequently as the CPU allows, but I don’t want multiple frames to be processed at the same time, i.e. I want this function to process one image, and after it’s done, get the current frame and process it. It can run at 8-30Hz</p>
+
+<p>My problem right now is on function 1. I talked about function 2 to illustrate why I can’t drop the publisher’s frame rate to 0.5Hz. 
+The two functi
+onalities are implemented as static class methods, and they take only one argument which is the message. It is critical that whenever they are called, they are provided with the latest message available. I implement the speed control on function 1 by putting a rospy.rate.sleep() statement as I usually does with publisher. 
+My first question is: Does ros spawn a new thread for a callback function whenever a new message is available in the topic? Does ros check if last callback has returned? Based on my testing it seems it does check this, but I want confirmation.</p>
+
+<p>When I was working with the exposure setting callback. I found that this callback keeps getting old messages(frames), so it thought the adjustment it made was not enough, and it keeps over/under adjust. When the rate is 0.5 Hz, I have a constant 4s delay in receiving messages regardless of the publisher’s publish rate( I tried 30fps and 15 fps), correct number of messages are dropped(for 30fps ~59 frame dropped), but the whole thing is lagging behind. 
+When I set the rate to be 0.25Hz, the delay becomes 8s. </p>
+
+<p>My setting for this subscriber is buff<em>size=2**24, queue</em>size=1. Everyone’s problem seems to be fixed by setting the buffer size, but mine isn’t.</p>
+
+<p>Why does this happen, how can I go around and fix it?</p>
+
+<p>There&#39;s a lot of code, here&#39;s related ones:</p>
+
+<h3>Subscriber</h3>
+
+<pre><code>rospy.Subscriber(&quot;camera/image_raw&quot;, Image, vision.autogain,queue_size=1,buff_size=2**24)
+vision.gainrate = rospy.Rate(0.5)
+</code></pre>
+
+<h3>callback:</h3>
+
+<pre><code>@staticmethod
+def autogain(data):
+    rospy.loginfo(rospy.get_caller_id() + &quot;gain&#39;s timediff = &quot;+str( (rospy.Time.now()-data.header.stamp).to_sec()*1000)+&#39;ms&#39;)
+    dropped = data.header.seq-vision.last-1
+    rospy.loginfo(&#39;this= &#39;+str(data.header.seq)+&#39;  dropped = &#39;+str(dropped))
+    vision.last = data.header.seq
+
+    try:
+        frame = vision.bridge.imgmsg_to_cv2(data, &quot;mono8&quot;)
+    except CvBridgeError as e:
+        print(e)
+
+    testframe = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    &#39;&#39;&#39;
+    cv2.imshow(&#39;frame&#39;,testframe)
+    if cv2.waitKey(20) &amp; 0xFF == ord(&#39;q&#39;):
+        pass
+    &#39;&#39;&#39;
+
+    avg = np.average(frame)
+    print(&#39;autogain called  avg=&#39;+str(avg))
+
+    # intervene condition
+    &#39;&#39;&#39;
+    if (avg&lt;100 or avg&gt;140):
+        # estimate adjustment needed
+        adj = (128-avg)*5+vision.gain
+        # create a ceiling and floor
+        if (adj&gt;1023):
+            adj = 1023
+            print(&#39;[warning]: Gain overflow-&gt; Insufficient lumination&#39;)
+        elif (adj&lt;174):
+            adj = 174
+            print(&#39;[warning]: Gain overflow-&gt; Overwhelming lumination&#39;)
+        vision.gain=adj
+        vision.cam.set_property(&quot;Gain&quot;,vision.gain)
+    &#39;&#39;&#39;
+
+    #sleep(2)
+    vision.gainrate.sleep()
+    return
+</code></pre>
+
+<p>```</p>
+
+<p>Thanks in advance.</p>
+
+<p>Nick</p>
+
+        <div class="owner"><p>Asked by <a href="/users/33071">nickzhang</a> on 2018-01-14 15:34:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;m having the same problem, except with Point Clouds. A delay that doesn&#39;t exist for the first message received but increases rapidly until flat lining at about 5 seconds. Increasing the buffer size also failed me. Did you ever find a solution?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38995">hbirdj</a> on 2019-05-16 09:19:41 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>To accomplish this you&#39;ll want to have your <code>rospy.Subscriber</code> callback simply save the latest message. Then use a <code>rospy.Timer</code> with a separate function that calls your processing code with the latest message on a fixed schedule.</p>
+
+<pre><code>class Node:
+    ...
+    self.subscriber = rospy.Subscriber(sub_topic, MessageType, self.sub_callback)
+    self.publisher = rospy.Publisher(pub_topic, MessageType)
+    rospy.Timer(rospy.Duration(1), self.timer_callback)
+
+    def sub_callback(self, message):
+        self.latest_message = message
+
+    def timer_callback(self, _):
+        self.processing_code(self.latest_message)
+
+    def processing_code(self, message):
+        ...
+        self.publisher.pub(processed_message)
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/124966">cserrano</a> on 2022-11-23 22:16:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

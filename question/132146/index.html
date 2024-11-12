@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>What is the best way to record RGB and Depth data from a Kinect using Openni? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/132146">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>What is the best way to record RGB and Depth data from a Kinect using Openni?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/57433/what-is-the-best-way-to-record-rgb-and-depth-data-from-a-kinect-using-openni">https://robotics.stackexchange.com/questions/57433/what-is-the-best-way-to-record-rgb-and-depth-data-from-a-kinect-using-openni</a>.</p>
+        <p>I&#39;m attempting to record short (~10s) video streams from a kinect. Ideally I&#39;d like to output two video files after recording is finished: one file for RGB and the other file for depth (I can save a series of images rather than video file if that&#39;s not possible, but that tends to be space intensive, so I&#39;d prefer not to do that). This is so I can process the data later. I have been searching for the past few days around the internet, and while I have found many resources and posts that are close to what I want to do, none of them are quite exactly what I&#39;m looking for. I&#39;m writing in Python, which is relevant since a lot of the posts I&#39;ve found refer to C++ code, but I can never seem to find the equivalent function calls for Python.</p>
+
+<p>Here&#39;s what I&#39;ve got at the moment, but it is very hacky and doesn&#39;t really work. For recording the RGB data, I use image<em>view extract</em>images. I make this function call:</p>
+
+<pre><code>subprocess.Popen([&quot;rosrun&quot;,&quot;image_view&quot;,&quot;extract_images&quot;,&quot;_sec_per_frame:=0.01&quot;,&quot;image:=camera/rgb/image_color&quot;], cwd=&quot;temp/rgb/&quot;, stdout=DEVNULL)
+</code></pre>
+
+<p>To record the depth data, I wrote a class that subscribes to the &quot;/camera/depth/image_rect&quot; topic and then writes out the images to files:</p>
+
+<pre><code>class ImageConverter:
+
+NUM_THREADS = 1
+
+def __init__(self):
+    self.count = 0
+    self.todo = Queue.Queue()
+    self.stop = False
+    self.sub = None
+    self.threads = None
+    self.countLock = threading.Lock()
+
+def __getCounter(self):
+    self.countLock.acquire()
+    c = self.count
+    self.count = self.count + 1
+    self.countLock.release()
+    ret = str(c)
+    while len(ret) &lt; 4:
+        ret = &quot;0&quot; + ret
+    return ret
+
+def __callback(self, data):
+    self.todo.put(data)
+
+def __processImage(self,data):
+    bridge = CvBridge()
+    try:
+        source = bridge.imgmsg_to_cv(data, &quot;32FC1&quot;)
+    except CvBridgeError, e:
+        print e
+        return
+
+    ret = cv.CreateImage((data.width, data.height), 8, 3)
+
+    mx = 0.0
+    for i in range(data.width):
+        for j in range(data.height):
+            d = source[j,i]
+            if d &gt; mx:
+                mx = d
+
+    for i in range(source.width):
+        for j in range(source.height):
+            v = source[j,i]/mx*255
+            ret[j,i] = (v,v,v)
+
+    return ret
+
+def startRecording(self,topic):
+    self.stop = False
+
+    def processor():
+        rate = rospy.Rate(100.0)
+        while (not self.stop) or (not self.todo.empty()):
+            if not self.todo.empty():
+                data = self.todo.get()
+                img = self.__processImage(data)
+                c = self.__getCounter()
+                cv.SaveImage(&quot;depth/frame&quot; + c + &quot;.jpg&quot;, img)
+                print(&quot;[ImageConverter]: image saved &quot; + c + &quot;/&quot; + str(self.todo.qsize()))
+            rate.sleep()
+
+    self.threads = []
+    for i in range(ImageConverter.NUM_THREADS):
+        t = threading.Thread(target=processor, args = ())
+        t.daemon = True
+        t.start()
+        self.threads.append(t)
+
+    self.sub = rospy.Subscriber(topic, Image, self.__callback)
+
+def stopRecording(self):
+    self.sub.unregister()
+    self.stop = True
+    for t in self.threads:
+        t.join()
+</code></pre>
+
+<p>As you can see in the _<em>processImage method, I had to manually convert the image from 32FC1 to bgr8, since everytime  I try to call the cv</em>bridge method imgmsg<em>to</em>cv with &#39;bgr8&#39; (or &#39;mono8&#39; for that matter) it throws an error saying it can&#39;t convert and saving directly as 32FC1 yields images that are thresholded to either max brightness or black. This is of course very slow, which is why I spin the processing off into a separate thread from the callback so I don&#39;t drop images.</p>
+
+<p>After saving the series of images, I call mencoder to compile them into a video file, which usually reduces the total size down to about a fifth of what all the individual images take up:</p>
+
+<pre><code>subprocess.Popen(&quot;mencoder \&quot;mf://*.jpg\&quot; -mf type=jpg:fps=24 -o &quot; + filename + &quot; -speed 1 -ofps 24 -ovc lavc -lavcopts vcodec=mpeg2video:vbitrate=2500 -oac copy -of mpeg&quot;, cwd=&quot;temp/rgb/&quot;, shell=True, close_fds=True, stdout=DEVNULL, stderr=DEVNULL)
+</code></pre>
+
+<p>This seems like a pretty big hack. It seems like there should be a better way to do this, but after a few days of searching through forums and other ROS resources, I can&#39;t seem to find anything that can help. Additionally, the video files I get out of this are usually jumpy and sometimes frames are entirely missing. Is there any good way to record both RGB and Depth data as video files or a series of images using Python in ROS?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/11836">rse101</a> on 2014-02-22 17:04:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>maybe <a href="http://wiki.ros.org/rosbag">rosbag</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/6486">Hamid Didari</a> on 2014-02-22 21:18:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>What I&#39;ve done in the past is record with rosbag, and I wrote a utility for generating video files from bags: <a href="https://github.com/OSUrobotics/bag2video">https://github.com/OSUrobotics/bag2video</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/173">Dan Lazewatsky</a> on 2014-02-23 04:48:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ve looked at using rosbag, but it seems like it only pushes the problem down the line. For example, this (<a href="http://wiki.ros.org/rosbag/Tutorials/Exporting%20image%20and%20video%20data">http://wiki.ros.org/rosbag/Tutorials/Exporting%20image%20and%20video%20data</a>) tutorial explains how to extract video from a rosbag, but why can&#39;t I just record straight from the topic rather than storing in a rosbag first? Actually, that tutorial is the reason I made the calls to &#39;extract_images&#39; and &#39;mencoder&#39; in the first place, but I didn&#39;t see any reason to store in a rosbag and then play back. Dan, thanks for the utility. When I get back into the lab I will see if I can get that to work. If I can, I think I might go with this route.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/11836">rse101</a> on 2014-02-23 08:22:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah, I think the real answer is that what you&#39;re trying to do is pretty common, but there&#39;s no standard solution. It used to be possible with image_saver + mencoder/ffmpeg, but image_saver disappeared.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/173">Dan Lazewatsky</a> on 2014-02-23 10:07:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for your code. I ran it and it works great for the RGB data, but I get the same problem with depth data as in my original post. I get an error thrown at line 40 of bag2video.py:
+img = np.asarray(bridge.imgmsg_to_cv(msg, &#39;bgr8&#39;))
+that OpenCV can&#39;t convert from 32FC1 to bgr8. I found another solution which I&#39;ll write up, but thanks anyways.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/11836">rse101</a> on 2014-02-24 15:31:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hmm, I had never tried with depth. Even though you found another solution, next time I have a Kinect handy, I&#39;m going to poke around and figure out what the correct conversion is.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/173">Dan Lazewatsky</a> on 2014-02-25 04:38:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@rse101, how did you manage to save depth images? I cant see them with image_view (however they are working in RVIZ)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/6283">aguadopd</a> on 2014-03-01 12:47:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sorry about that. I originally posted my answer a few days ago, but ROS Answers wouldn&#39;t post it and it wasn&#39;t until today that I figured out that it was because I have links in the answer. I managed to get it posted now, so hopefully that answers your question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/11836">rse101</a> on 2014-03-02 09:42:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@rse101, thanks for your answer. I&#39;ve just found the video_record tool here: <a href="http://wiki.ros.org/image_view">http://wiki.ros.org/image_view</a> . It may work if you alrady can see that topics with image_view.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/6283">aguadopd</a> on 2014-03-04 08:47:39 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Ok, so the solution I found is a little specific to my project. I determined that OpenNI .oni files will work as video file output for my purposes. If anyone is reading this and wants to go all the way to .avi files, if you try my solution and then add this: </p>
+
+<p><code>http://kirilllykov[dot]github[dot]io/blog/2013/03/19/convert-openni-star-dot-oni-files-into-avi/</code> </p>
+
+<p>(replace &#39;[dot]&#39; with &#39;.&#39;) solution on top of that, you should be able to get to .avi files.</p>
+
+<p>To get the .oni files from the RGB and depth data, I first downloaded OpenNI (okay, so I already had OpenNI from before, but the ROS version isn&#39;t the same as the release version, so I downloaded that and put it in it&#39;s own folder) from here: </p>
+
+<p><code>http://www[dot]openni[dot]org/openni-sdk/</code></p>
+
+<p>(replace &#39;[dot]&#39; with &#39;.&#39;) (Note, I&#39;m running Linux, so this may work slightly differently for you if you are running something else). I extracted the folder and just placed it in my home directory (so it didn&#39;t interfere with ROS&#39;s OpenNI). Next I downloaded Primesense: </p>
+
+<p><code>https://pypi[dot]python[dot]org/pypi/primesense/2.2.0.30-3</code></p>
+
+<p>(replace &#39;[dot]&#39; with &#39;.&#39;) which adds python bindings for OpenNI. I ran </p>
+
+<pre><code>setup.py build
+</code></pre>
+
+<p>and</p>
+
+<pre><code>setup.py install
+</code></pre>
+
+<p>from the Primesense folder to install the necessary libraries. I then ran the following python code to record the .oni files:</p>
+
+<pre><code>import roslib
+import rospy
+from primesense import openni2
+
+openni2.initialize(OPENNI_REDIST_DIR)    
+
+dev = openni2.Device.open_any()
+
+depth_stream = dev.create_depth_stream()
+color_stream = dev.create_color_stream()
+depth_stream.start()
+color_stream.start()
+rec = openni2.Recorder(&quot;test.oni&quot;)
+rec.attach(depth_stream)
+rec.attach(color_stream)
+print rec.start()
+
+#Do stuff here
+
+rec.stop()
+depth_stream.stop()
+color_stream.stop()
+
+openni2.unload()
+</code></pre>
+
+<p>where OPENNI_REDIST_DIR is the path to the redist folder in the OpenNI library. You can play these back just to double-check that they worked by running &#39;NiViewer&#39; (in the Tools folder of the OpenNI library) with the path to the .oni file.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/11836">rse101</a> on 2014-03-02 09:38:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

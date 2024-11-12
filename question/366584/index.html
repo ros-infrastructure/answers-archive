@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>MoveIt How To: move group --&gt; joint trajectory follower --&gt; hardware interface - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/366584">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>MoveIt How To: move group --&gt; joint trajectory follower --&gt; hardware interface</h2>
+      <div class="question">
+        <p>Hi All,</p>
+
+<p>I have been scouring the internet for information about how to properly implement a joint trajectory controller that I can use to control a real 7 axis robot arm (which I have made already). I would like to use the IK that comes with MoveIt through RViz and the move_group interface. Ideally, I would like to use some of the time parameterization packages as well, to re-process these waypoints before sending them out, but I can wait on that for now.</p>
+
+<p>I am currently at my wits end trying to hack something together from bits and pieces I can find on the web. I haven&#39;t been able to find any examples of a complete configuration with controllers for any robot arm. I ran across jesseweisberg&#39;s example of controlling the Moveo robot arm with ROS but, unless I am mistaken, he is actually using output from the fake<em>controller and then converting that into a path, which is a bit of shortcut unless I&#39;m really misunderstanding how this whole thing is supposed to work. The only robot arm example in moveit</em>robots is the IRI_WAM arm, the controllers and drivers for which appear to be unavailable from their site.</p>
+
+<p>I have done the hard work of building a very functional 7 axis robot arm, and I have written a decent hardware level controllers that can run off of a Teensy 3.6 and take in a stream of waypoints and convert that into smooth motion. I have no trouble getting this running in a non-ROS way. I&#39;ve also managed to piece together a very basic ROS controller plugin that can control joints from a script or custom node. What I am struggling with is the connection between MoveIt and this hardware layer.</p>
+
+<p>My understanding now, and please correct me if I am way off here, is that I will need to implement my own controller and controller manager that will have to set up a <em>follow joint trajectory</em> action server. If anyone could point me in the direction of some complete sample code or a tutorial, I would be incredibly grateful. If I could find some code that bridges this gap between MoveIt and the hardware interface for even a single stepper motor, I think I could probably piece the rest together.</p>
+
+<p>I hope this question is not over-broad, but I suspect I may be thinking about this all wrong so very specific questions will probably just get me very specific answers to the wrong question. I imagine there are many of us weekend warriors toiling away on this problem, many of which probably just give up. </p>
+
+<p>I have taken a look at this post from September of 2014: <a href="https://answers.ros.org/question/192739/implement-moveit-on-real-robot/">https://answers.ros.org/question/192739/implement-moveit-on-real-robot/</a>
+but a complete robot working with Noetic with the full project directory structure would be so, so helpful.</p>
+
+<p>I will be grateful for literally any breadcrumbs or sample code even if it is for an industrial arm. I am using ROS NOETIC, latest build, on Ubuntu 20.04.1 LTS (focal).</p>
+
+<p>If I can get this figured out I would be very motivated to put together some kind of tutorial or YouTube series walking other passionate hobbyist-level enthusiasts through the process as a way to pay it forward for the community. Once you&#39;ve figured something out, it is easy to forget how torturous it can be for the new-comer.</p>
+
+<p>Best,
+Drew Hamilton</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<p>I have tried two approaches. With both approaches I was attempting to get something &quot;up and running&quot; with all the nodes/messages/topics talking to one another, but with no physical hardware attached. The hardware portion, which I have more or less completed will come later. For completeness, I will say that it is a Teensy 3.6 that can take in a sequence of target positions and load them into a circular buffer, and then proceed with the required step generation. My hope is to be able to send the Teensy an array of waypoints that represent points along a trajectory divvied up into 30ms or so increments (maybe shorter, maybe longer). For this reason, I would like to feed the hardware a list of points that have had some kind of velocity/acceleration processing applied to them before they reach the Teensy. </p>
+
+<p>Now, assuming I will be using MoveIt for trajectory planning, I can be sure I will be using Joint Trajectories. The rest can and probably will change...</p>
+
+<p>APPROACH 1:
+My first approach was to build my own SimpleActionServer, taking control<em>msgs::FollowJointTrajectoryActions . I currently have this working as a sort of fake controller. I take in the control</em>msgs and then I publish some fake joint states that essentially update the to the value of the incoming Joint Trajectory messages. I also send out &quot;feedback messages&quot; and &quot;results messages&quot;. I may revisit this (because it works), but I&#39;d like to learn the easy &quot;ROS way&quot;. Here&#39;s a very skeletal version of some code:</p>
+
+<pre><code>class RobotTrajectoryFollower {
+   protected:
+       actionlib::SimpleActionServer&lt;control_msgs::FollowJointTrajectoryAction&gt; as_; 
+       control_msgs::FollowJointTrajectoryFeedback m_feedback;
+       control_msgs::FollowJointTrajectoryResult m_result;
+       sensor_msgs::JointState m_currJointState;
+       ros::Subscriber m_jointSub;
+       ros::Publisher m_jointPub;
+       std::string action_name_;
+       ros::Timer fake_state_publisher_timer;
+
+       //Constructor:
+       RobotTrajectoryFollower(std::string name, ros::NodeHandle *nh_) :
+           as_(*nh_, name, false),
+           action_name_(name)
+      {
+          //Register callback functions:
+           as_.registerGoalCallback(boost::bind(&amp;RobotTrajectoryFollower::goalCB, this));
+           as_.registerPreemptCallback(boost::bind(&amp;RobotTrajectoryFollower::preemptCB, this));
+
+          // Snipped code
+          // (set up timer for publishing joint states, initialize feedback 
+          // and results joint_names and array sizes etc. etc.
+    }
+
+    //Callbacks
+    void goalCB()        {  }    //&lt;--- take in goals, update hardware, etc. etc.
+    void preemptCB()  {  }
+}
+
+int main(int argc, char** argv)
+{
+      ros::init(argc, argv, &quot;action_server&quot;);
+      ros::NodeHandle nh_;
+      RobotTrajectoryFollower robotTrajectoryFollower(&quot;/arm_controller/follow_joint_trajectory&quot;, &amp;nh_);
+      ros::spin();
+      return 0;
+}
+</code></pre>
+
+<p>APPROACH 2:
+In this approach, I am attempting to set up real ROS controllers that take in Joint Trajectories from MoveIT by using the built-in ROS tools and getting these running with launch files. With this approach, I hope to do the bare minimum of coding in C++, not because I don&#39;t like coding but because that&#39;s what the controllers were written for.</p>
+
+<p>My understanding is that controllers need a &quot;controller manager&quot;. MoveIt Setup Assistant tries to set you up with what appears to be it&#39;s own controller manager, the moveit<em>simple</em>controller<em>manager, whereas most of the online documention refers to a plain old controller</em>manager. In some examples, folks seem to just call a controller<em>spawner from the package &quot;controller</em>manager&quot;. I have tried all three, and I&#39;m not sure if it makes a difference at all. But somewhere in my launch file, I will have:</p>
+
+<pre><code> arg name=&quot;moveit_controller_manager&quot; default=&quot;moveit_simple_controller_manager/MoveItSimpleControllerManager&quot; 
+ param name=&quot;moveit_controller_manager&quot; value=&quot;$(arg moveit_controller_manager)&quot;
+ rosparam file=&quot;$(find jt2_7axis_config)/config/traj_controllers.yaml&quot; command=&quot;load&quot;
+ node name=&quot;xxx123interface&quot; pkg=&quot;jt2_hw_interface&quot; type=&quot;interface&quot; output=&quot;screen&quot;
+</code></pre>
+
+<p>Then in my traj_controllers.yaml is something like the following:</p>
+
+<pre><code>controller_list:
+ - name: arm_controller
+   action_ns: follow_joint_trajectory
+   type: FollowJointTrajectory
+   default: true
+   joints:
+     - joint0
+     - joint1
+     - joint2
+     - joint3
+     - joint4
+     - joint5
+     - joint6
+
+arm_controller:
+    type: position_controllers/JointTrajectoryController
+    joints:
+       - joint0
+       - joint1
+       - joint2
+       - joint3
+       - joint4
+       - joint5
+       - joint6
+    constraints:
+        goal_time: 0.5
+        stopped_velocity_tolerance: 0.05
+        joint1: {trajectory: 1, goal: 0.01}
+        joint2: {trajectory: 1, goal: 0.01}
+        joint3: {trajectory: 1, goal: 0.01}
+        joint4: {trajectory: 1, goal: 0.01}
+        joint5: {trajectory: 1, goal: 0.01}
+        joint6: {trajectory: 1, goal: 0.01}
+        joint7: {trajectory: 1, goal: 0.01}
+    stop_trajectory_duration: 0.2
+    state_publish_rate:  25
+    action_monitor_rate: 10
+</code></pre>
+
+<p>Then in my interface node, I have a constructor with something like:</p>
+
+<pre><code>MyRobot::MyRobot(ros::NodeHandle&amp; nh) : nh_(nh) 
+{
+    init();
+    controller_manager_.reset(new controller_manager::ControllerManager(this, nh_));
+}
+
+void MyRobot::init() 
+{
+    // Create joint_state_interface for JointA
+    //hardware_interface::JointStateHandle jointStateHandle0(&quot;joint0&quot;, &amp;joint_position_[0], &amp;joint_velocity_[0], &amp;joint_effort_[0]);
+    //joint_state_interface_.registerHandle(jointStateHandle0);
+    //registerInterface(&amp;joint_state_interface_);
+
+// Create joint_state_interface for JointC
+    hardware_interface::JointStateHandle jointStateHandle0(&quot;Joint0&quot;, &amp;joint_position_[0], &amp;joint_velocity_[0], &amp;joint_effort_[0]);
+    joint_state_interface_.registerHandle(jointStateHandle0);
+    // Create position joint interface as JointC accepts position command.
+    hardware_interface::JointHandle jointPositionHandle0(jointStateHandle0, &amp;joint_position_command_);
+    position_joint_interface_.registerHandle(jointPositionHandle0);
+    registerInterface(&amp;position_joint_interface_);
+}
+void MyRobot::update(const ros::TimerEvent&amp; e) 
+{
+    elapsed_time_ = ros::Duration(e.current_real - e.last_real);
+    read();
+    controller_manager_-&gt;update(ros::Time::now(), elapsed_time_);
+    write(elapsed_time_);
+}
+void MyRobot::read() {}
+void MyRobot::write(ros::Duration elapsed_time) {}
+
+int main(int argc, char** argv)
+{
+
+    //Initialze the ROS node.
+    ros::init(argc, argv, &quot;mybot_controller&quot;);
+    ros::NodeHandle nh;
+
+    //Separate Sinner thread for the Non-Real time callbacks such as service callbacks to load controllers
+    ros::MultiThreadedSpinner(2); 
+
+    ROS_INFO(&quot;Loading mybot...&quot;);
+
+    // Create the object of the robot hardware_interface class and spin the thread. 
+    MyRobot ROBOT(nh);
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>Approach 2 leads to the following error:</p>
+
+<pre><code>[ WARN] [1606873226.818226168]: Waiting for arm_controller/follow_joint_trajectory to come up
+[ WARN] [1606873232.818480914]: Waiting for arm_controller/follow_joint_trajectory to come up
+[ERROR] [1606873238.818770990]: Action client not connected: arm_controller/follow_joint_trajectory
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-11-29 00:06:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You mention <code>hardware_interface</code> in your question title, but then seem to go into the direction of a custom <code>FollowJointTrajectory</code> action server. The former is used with <code>ros_control</code>, which already comes with an implementation of a <code>FollowJointTrajectory</code> action server. The latter would have you implement (almost) everything yourself.</p>
+
+<p>Could you clarify which route you want to take?</p>
+
+<p>Also:</p>
+
+<blockquote>
+<p>I ran across jesseweisberg&#39;s example of controlling the Moveo robot arm with ROS but, unless I am mistaken, he is actually using output from the fake_controller and then converting that into a path, which is a bit of shortcut unless I&#39;m really misunderstanding how this whole thing is supposed to work.</p>
+</blockquote>
+
+<p>no, you did not misunderstand. It&#39;s not even a shortcut, it&#39;s actually wrong.</p>
+
+<p><code>JointState</code> messages encode <em>current</em> state, not <em>desired</em> state.</p>
+
+<p>Using them to control a robot (or other mechanism) has never seen correct to me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-11-30 03:30:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Please do not post answers, unless you are answering your own question. As I believe you didn&#39;t post an answer, I&#39;ve merged it with your original question text (appended it as an <code>Edit</code>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-02 03:29:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>There&#39;s way too much in your follow-up post for me to comment on.</p>
+
+<p>As a high-level response:</p>
+
+<ol>
+<li>if you use <code>ros_control</code>, you don&#39;t write anything, <em>except</em> a <code>hardware_interface</code> implementation, which translates between your specific hardware and &quot;the rest&quot; of <code>ros_control</code>. After that, you get to reuse all the <a href="http://wiki.ros.org/ros_control#Controllers">controllers</a> from <code>ros_control</code>. Including the <code>joint_trajectory_controller</code>.</li>
+<li>re: your action server: well, conceptually, that&#39;s indeed what&#39;s needed for MoveIt to be able to communicate with your hw. But as I wrote in #1, there may be easier ways to achieve this.</li>
+<li>re: &quot;did not find this in the tutorials&quot;: if you&#39;re referring to the MoveIt tutorials, then I&#39;m not surprised. MoveIt is a motion planning framework. It does not deal with hw directly. At some point they will have to assume you have the infrastructure working so their documentation can focus on what they do, which is <em>planning</em>.</li>
+</ol>
+
+<p>I&#39;m not claiming things ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-02 03:33:55 UTC</p></div>
+</div>
+<div class="comment">
+              <p>.. can&#39;t be improved of course. Just wanted to provide a hypothesis.</p>
+
+<p>As to what you &quot;should do&quot;: I can&#39;t really say what you should do, as I don&#39;t know enough about your requirements and goals.</p>
+
+<p>If I were you however, I would go the <code>ros_control</code> way and write a <code>hardware_interface</code>. Then I get to use <code>ros_control</code>&#39;s <code>joint_trajectory_controller</code> and I&#39;m done. As I&#39;m rather lazy, I like to reuse software as much as possible.</p>
+
+<p>But I realise I can write this as I know what&#39;s involved.</p>
+
+<p>And I just noticed this:</p>
+
+<blockquote>
+<p>I&#39;m now trying to add in Time Optimal Trajectory Generation</p>
+</blockquote>
+
+<p>I&#39;m not sure what you mean by this. Time parameterisation is something MoveIt does, <em>before</em> it sends you the trajectory goal. Robot drivers (as that seems to be what we&#39;re discussing here) don&#39;t typically use MoveIt&#39;s time parameterisation plugins <em>again</em> on the execution side.</p>
+
+<p>They could, of course, but I&#39;ve not seen that done often (at all).</p>
+
+<p>If you need to resample an incoming trajectory (fi because you ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-02 03:35:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>.. require a higher resolution in time or space), you could theoretically use MoveIt&#39;s time parameterisation algorithms, but even then I&#39;ve not seen that done, as before TOTG, they just weren&#39;t really meant for that (ie: insufficient control over dt and other parameters).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-02 03:52:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Great. Thanks for the answers. This is very helpful. I had a sense I was overworking this problem. Now I&#39;m trying to do as you suggest and start a joint trajectory controller following the directions on <a href="http://wiki.ros.org/joint_trajectory_controller">http://wiki.ros.org/joint_trajectory_controller</a></p>
+
+<p>If I copy and paste from the examples:</p>
+
+<pre><code>arm_controller:
+  type: &quot;position_controllers/JointTrajectoryController&quot;
+  joints:
+    - joint0
+    - joint1
+    - etc
+</code></pre>
+
+<p>I get the error: [ERROR] [1606958495.226295504]: No controller_list specified.</p>
+
+<p>I also tried:</p>
+
+<pre><code>controller_manager_ns: Mycontroller_manager
+controller_list:
+  - name: arm_controller
+    action_ns: follow_joint_trajectory
+    type: position_controllers/JointTrajectoryController
+    joints:
+      - joint0
+      - joint1
+     - etc
+</code></pre>
+
+<p>which returns: [ERROR] [1606958653.439323999]: Unknown controller type: position_controllers/JointTrajectoryController</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-02 20:25:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Also tried:</p>
+
+<pre><code>controller_manager_ns: controller_manager
+controller_list:
+  - name: arm_controller
+    action_ns: follow_joint_trajectory
+    type: FollowJointTrajectory
+    default: true
+    joints:
+      - joint0
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+</code></pre>
+
+<p>Which returns the familiar: </p>
+
+<pre><code>[ WARN] [1606959326.447484282]: Waiting for arm_controller/follow_joint_trajectory to come up
+[ WARN] [1606959332.447736242]: Waiting for arm_controller/follow_joint_trajectory to come up
+[ERROR] [1606959338.448039327]: Action client not connected: arm_controller/follow_joint_trajectory
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-02 20:36:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>This last error seems the most promising to me. It seems like I&#39;ve set up the controller properly and it is waiting for a client. When I previously wrote my own action server, this warning went away and I was able to receive goals, update feedback, and joint states etc. Right now, the hard way is feeling like the easiest way. I may end up going down this road if I can&#39;t figure this out. Am I simply in beginner &quot;typo and namespace-problems land&quot; or &quot;big conceptual error land&quot;?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-02 23:24:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Let&#39;s take a step back.</p>
+
+<p>Please <em>edit</em> your original question and append a section where you describe what the current status of your project is.</p>
+
+<p>Have you written a <code>hardware_interface</code> implementation? If so: what does it look like? We don&#39;t need the full code, just describe what you&#39;re doing in the <code>read(..)</code>, <code>write(..)</code> and <code>init(..)</code> functions.</p>
+
+<p>Have you written a new node which hosts your <code>hardware_description</code>, a <code>ControllerManager</code> and the rest which is needed for a complete <code>ros_control</code> based system? If so: please describe that a bit.</p>
+
+<p>Finally: describe how you are starting things: <code>.launch</code> files? separate <code>rosrun</code> invocations? Something else? With this, show how you load parameters (as part of the <code>.launch</code> file, from <code>.yaml</code> files loaded from the <code>.launch</code> file, etc).</p>
+
+<p>Using <code>ros_control</code> will allow you to be lazy, but without some of the required parts, <em>and</em> getting the configuration correct, it will not work.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-03 06:54:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m now thinking that my original approach was correct according to <a href="https://answers.ros.org/question/331384/building-a-custom-hardware-interface-for-moveit/">https://answers.ros.org/question/331384/building-a-custom-hardware-interface-for-moveit/</a></p>
+
+<pre><code>Actually, it should be the other way around: it&#39;s the hardware that &quot;spawns&quot; the action server, and MoveIt should simply &quot;connect&quot; to it :) I don&#39;t know if this answers you, since I don&#39;t know your full setup. If you need further details, feel free to comment below. Just give me few more details about the ros connections you have and I&#39;ll try to clarify if possible ;)
+ffusco gravatar image ffusco  ( Jun 9 &#39;20 )
+</code></pre>
+
+<p>After close to 100 wasted hours, I am going with approach #1.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-05 20:06:24 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>After close to 100 wasted hours, I am going with approach #1.</p>
+</blockquote>
+
+<p>these sort of comments don&#39;t really motivate me to continue helping you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-06 11:37:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes. I&#39;m sorry I came back just to apologize for that very rash comment. If you&#39;re interested, my current progress is all on my github: <a href="https://github.com/drewhamiltonasdf/chewbot">https://github.com/drewhamiltonasdf/chewbot</a>
+It will take me another month at the least, working evenings, to get this all up and running. Currently I believe approach #1 is the best, as I will be directly sending a full array of time-optimally-parameterized positions to my hardware, so I intend to skip the ros_control package and the hardware interface and send the commands directly after the server receives a full joint trajectory. I may even skip the rosserial stuff altogether and implement my own CRC-16 serial protocol to keep things simple and less bloated.</p>
+
+<p>Apologies for being a jerk. I had had it with wading through nested launch files and xml includes on that particular day. I&#39;ll be keeping track of my git commits at moments that were particularly difficult for me and hopefully compiling into a beginning to end how-to.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-08 21:10:10 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

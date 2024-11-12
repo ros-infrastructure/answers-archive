@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>adding noise to /odom topic - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/370806">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>adding noise to /odom topic</h2>
+      <div class="question">
+        <p>hi, I am new to ROS,
+I am using ros melodic.in my project, i need to add and change noise type(to poisson distribution). The odometry topic is called in differential drive controller plugin in launch file, which is described in this web site <a href="http://gazebosim.org/tutorials?tut=ros_gzplugins">link text</a>, in this web site I applied changings on imu but, using odom how can i change the noise on it i don&#39;t know.
+A little help please.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/69148">emrebaltaci</a> on 2021-02-01 17:19:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>If you want to add specially noise you can change your odom topic with the another name maybe old_odom and than subscribe this topic. After that you can add what ever want and publish your odom. </p>
+
+<p><a href="https://blog.lxsang.me/post/id/16">https://blog.lxsang.me/post/id/16</a></p>
+
+<pre><code>#! /usr/bin/env python
+import rospy
+from math import *
+import numpy as np
+from nav_msgs.msg import Odometry
+import tf
+
+last_odom = None
+pose = [0.0,0.0,0.0]
+a1 = 0.0
+a2 = 0.0
+a3 = 0.0
+a4 = 0.0
+base_frame = &quot;&quot;
+
+# a callback for Gazebo odometry data
+def callback(data):
+    global last_odom
+    global base_frame
+    global pose
+    global a1
+    global a2
+    global a3
+    global a4
+
+    if(last_odom == None):
+        last_odom = data
+        pose[0] = data.pose.pose.position.x
+        pose[1] = data.pose.pose.position.y
+        q = [ data.pose.pose.orientation.x,
+                data.pose.pose.orientation.y,
+                data.pose.pose.orientation.z,
+                data.pose.pose.orientation.w ]
+        (r, p, y) = tf.transformations.euler_from_quaternion(q)
+        pose[2] = y
+    else:
+        # calculate new odometry pose using the motion model
+        dx = data.pose.pose.position.x - last_odom.pose.pose.position.x
+        dy = data.pose.pose.position.y - last_odom.pose.pose.position.y
+        trans = sqrt(dx*dx + dy*dy)
+        q = [ last_odom.pose.pose.orientation.x,
+                last_odom.pose.pose.orientation.y,
+                last_odom.pose.pose.orientation.z,
+                last_odom.pose.pose.orientation.w ]
+        (r,p, theta1) = tf.transformations.euler_from_quaternion(q)
+        q = [ data.pose.pose.orientation.x,
+                data.pose.pose.orientation.y,
+                data.pose.pose.orientation.z,
+                data.pose.pose.orientation.w ]
+        (r,p, theta2) = tf.transformations.euler_from_quaternion(q)
+        rot1 = atan2(dy, dx) - theta1
+        rot2 = theta2-theta1-rot1
+
+        sd_rot1 = a1*abs(rot1) + a2*trans
+        sd_rot2 = a1*abs(rot2) + a2*trans
+        sd_trans = a3*trans + a4*(abs(rot1) + abs(rot2))
+
+        trans +=  np.random.normal(0,sd_trans*sd_trans)
+        rot1 += np.random.normal(0, sd_rot1*sd_rot1)
+        rot2 += np.random.normal(0, sd_rot2*sd_rot2)
+
+        pose[0] += trans*cos(theta1+rot1)
+        pose[1] += trans*sin(theta1+rot1)
+        pose[2] = theta1 + rot1 + rot2
+        last_odom = data
+
+    # publish the tf
+    br = tf.TransformBroadcaster()
+    br.sendTransform((pose[0], pose[1], 0),
+                     tf.transformations.quaternion_from_euler(0, 0, pose[2]),
+                     data.header.stamp,
+                     base_frame,
+                     &quot;odom&quot;)
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;noisy_odometry&#39;, anonymous=True)
+    # alpha 1 is degree/degree
+    if rospy.has_param(&quot;~alpha1&quot;):
+        a1 = rospy.get_param(&quot;~alpha1&quot;)
+    else:
+        rospy.logwarn(&quot;alpha1 is set to default&quot;)
+        a1 = 15.0*pi/180.0
+    # alpha 2 is degree/m
+    if rospy.has_param(&quot;~alpha2&quot;):
+        a2 = rospy.get_param(&quot;~alpha2&quot;)
+    else:
+        a2 = 15.0*pi/180.0
+        rospy.logwarn(&quot;alpha2 is set to default&quot;)
+    # alpha 3 is m/meter
+    if rospy.has_param(&quot;~alpha3&quot;):
+        a3 = rospy.get_param(&quot;~alpha3&quot;)
+    else:
+        a3 = 0.2
+        rospy.logwarn(&quot;alpha3 is set to default&quot;)
+    # alpha 4 is m/degree
+    if rospy.has_param(&quot;~alpha4&quot;):
+        a4 = rospy.get_param(&quot;~alpha4&quot;)
+    else:
+        a4 = 0.01
+        rospy.logwarn(&quot;alpha4 is set to default&quot;)
+    # get odom topic
+    if rospy.has_param(&quot;~old_odom_topic&quot;):
+        odom_topic = rospy.get_param(&quot;~old_odom_topic&quot;)
+    else:
+        odom_topic = &quot;/odom&quot;
+    # get base frame
+    if rospy.has_param(&quot;~base_frame&quot;):
+        base_frame = rospy.get_param(&quot;~base_frame&quot;)
+    else:
+        base_frame = &quot;/base_footprint&quot;
+
+    rospy.Subscriber(odom_topic, Odometry, callback)
+
+    rospy.spin()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/45026">bekirbostanci</a> on 2021-02-02 12:22:04 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I think it would be a nice addition if this script would include filling up the odometry noise covariance matrix.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/39640">Roberto Z.</a> on 2021-02-12 03:44:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi there. This did this actually work?. The values of a1,a2,a3 and a4 cause my localization to jump all over the place.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72024">psilva</a> on 2021-03-16 10:12:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for the information! Please, to select the correct ALPHAs odometry model noise: Is it correct to calculate the RMSE between /cmd_vel/linear/x and /odom/twist/twsit/linear/x for translation and RMSE between /cmd_vel/angular/z and /odom/twist/twist/angular/z for rotation ?</p>
+
+<p>Can you suggest for me the correct way to tune them to the reasonable values ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/87984">Zuhair95</a> on 2022-08-15 13:44:41 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

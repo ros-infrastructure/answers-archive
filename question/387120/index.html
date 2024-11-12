@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Online path replanning when encountering an obstacle MoveIt - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387120">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Online path replanning when encountering an obstacle MoveIt</h2>
+      <div class="question">
+        <p>Hi all, </p>
+
+<p>I have been using <code>MoveIt MoveGroupInterface</code> to plan and execute simple pose goals and joint-space goals for <code>UR5</code> robotic arm. Static obstacles, added before planning, are taken into account. Robotic arm plans trajectory avoiding such obstacles or it informs when no plan can be found given the static obstacle. </p>
+
+<p>However, I want to achieve a functionality where a an obstacle appears after the motion command has been issued and then the arm can move to the same or nearby goal position by re-planning / adapting its trajectory. I have a separate node that formulates collision objects and publishes on <code>&quot;/collision_object&quot;</code> topic. Also I have another node that is responsible to monitor the planning scene and keep track of any updates that occur.  I am using <code>PlanningSceneMonitorPtr</code>. Currently, I can see, whenever new collision objects are added. Also, I am using the following function <code>checkCollision(collision_request, collision_result)</code>. This function can report if there will be a collision.  </p>
+
+<p>If I have a way to publish collision objects at a certain rate (bounding boxes retrieved for a human and published on the <code>&quot;/collision_object&quot;</code> topic), is this a feasible way to account for dynamic objects in the scene? What are the options to adapt the trajectory, do I need to stop (move_group.stop) and plan again to the same goal, What if the collision objects are frequently appearing in the scene? </p>
+
+<p>thanks, 
+Zahid</p>
+
+        <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-09-22 08:52:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>In the future, please limit yourself to one question per post. It&#39;s harder to provide a complete answer when you&#39;re asking about many things.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-09-23 07:34:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>thanks @Mike Scheutzow. My main question is about dealing with <strong>dynamic</strong> collision objects that are being published on  <code>/collision_object</code> topic with some rate. My system can know when this happens, What is the best way to adapt the trajectory in this case? Please see the edit to the question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-09-27 05:59:23 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I last used MoveIt under kinetic, so my info may be stale. I believe MoveIt did frequent collision checking during both planning and execution <strong>when in cartesian mode</strong>. My recollection is that MoveIt does NOT do collision checking when executing a joint trajectory. I think that if MoveIt detects a collision during execution, it halts the motion and aborts - then it&#39;s completely left to your programming to determine what happens next.</p>
+
+<p>I don&#39;t know what /collision_object topic does as I never used it. i used some class method to add new objects to the Scene. My code never advanced to the point of dynamic moving objects while the arm was also moving.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-09-27 08:05:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <blockquote>
+<p>What are the options to adapt the trajectory</p>
+</blockquote>
+
+<p>1)</p>
+
+<p>When you send a MoveGroup request to plan <strong>and execute</strong>, <a href="https://github.com/ros-planning/moveit/blob/master/moveit_ros/planning/plan_execution/src/plan_execution.cpp#L423">the path will be checked against every geometry update in the scene</a>. If you additionally set <a href="https://github.com/ros-planning/moveit_msgs/blob/master/msg/PlanningOptions.msg#L28-L37"><code>replan == true</code> (and the associate parameters)</a> in your request, the planner will be invoked again in this case to generate a new collision-free trajectory and execute the new one.</p>
+
+<p>Many people do not see this functionality because it will not work if you execute a previously generated/planned trajectory through the ExecuteTrajectory action, e.g., plan first, and then pass the trajectory to execution. That&#39;s weird, but in this case the engine should not be allowed to replan on it&#39;s own and execute a different trajectory.
+If you would like to see trajectory execution abort in this case, please write a pull-request. :)</p>
+
+<p>During execution, the remaining path, which is actually collision-checked, is estimated based on passed time since triggering the trajectory controller. That&#39;s a caveat of the concrete implementation when execution time is not sufficiently deterministic, e.g., when working with compliant controllers or time scaling.</p>
+
+<p>Additionally, the planner is not informed of the aborted trajectory, so the new trajectory might take a very different path when a minor adaptation would have been sufficient. That&#39;s also something that could be improved via the <a href="https://github.com/ros-planning/moveit_msgs/blob/master/msg/MotionPlanRequest.msg#L23-L25"><code>GenericTrajectory</code></a> field that was added long after.</p>
+
+<p>2)</p>
+
+<p>moveit_servo (is be a very different interface with overlapping use-cases) will automatically slow-down and stop in front of dynamic obstacles, but does not replan - a higher-level interface would have to be added.</p>
+
+<p>3)</p>
+
+<p>In MoveIt2 there is ongoing work on a <a href="https://github.com/ros-planning/moveit2/issues/433">hybrid planner framework</a> to implement such a schema, but this is still in development/redesign phases and I haven&#39;t seen it run on a real system.</p>
+
+<p>4)</p>
+
+<p>For anything more sophisticated than the logic above you will need to implement a custom MoveGroupCapability (or run your own node instead of move_group, if you prefer that). The approach could be quite similar to 1), but you could adapt it properly for your use-case.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4809">v4hn</a> on 2021-09-28 03:03:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>thank you @v4hn that was very helpful. I tried using move_group.move and it re-plans, However, concerning parameters that you mentioned, I have  <code>moveit::planning_interface::MoveGroupInterface          m_MoveGroup;</code>. Do I set these with </p>
+
+<pre><code>m_MoveGroup.allowLooking(true);
+  m_MoveGroup.allowReplanning(true);
+  m_MoveGroup.setNumPlanningAttempts(20);
+  m_MoveGroup.setMaxVelocityScalingFactor(0.10);
+</code></pre>
+
+<p>which interface to use for <code>GenericTrajectory</code>. Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-10-01 05:25:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>another comment, I have searched a bit on <code>moveit_servo</code>. It appears to provide fast movements, and collision avoidance. But, do we need to provide a continuous goal pose for <code>moveit_servo</code>? The usual MoveIt plan and execute, computes the plan and then, the arm follows it. How does motion planning work with <code>moveit_servo</code>?  The trajectory to the goal point, how is it laid down for moveit_servo to follow, thanks,</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-10-02 13:28:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>only <code>allowReplanning</code> in your list  is related to the mechanism I mentioned above.
+Thanks for pointing out that not all parameters here are exposed in the MoveGroupInterface, <a href="https://github.com/ros-planning/moveit/pull/2892">I just created a patch for them</a>.</p>
+
+<p>There is no interface for GenericTrajectory either. If you want that as well (stomp might support it or can be readily extended to use it?) you could use <a href="https://github.com/ros-planning/moveit/blob/049be73b8343d67ffde400fed9ed4c387c6ea9e5/moveit_ros/planning_interface/move_group_interface/include/moveit/move_group_interface/move_group_interface.h#L794"><code>constructMotionPlanRequest</code></a> and send the request to the action server by hand.</p>
+
+<p>moveit_servo is a <strong>servoing</strong> node, it&#39;s not a planner. It expects that you send online endeffector waypoints it can reach via PTP motions. Adding a planner on top of that is what hybrid planning is about.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4809">v4hn</a> on 2021-10-03 14:35:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thanks @v4hn. I do not have good knowledge of <code>git</code>. With your patch, you&#39;ve made changes to these files: <code>move_group_interface.h</code> and <code>move_group_interface.cpp</code>. To reflect these changes on my local files, I just  issued the following two commands, <code>sudo apt-get update</code> followed by <code>sudo apt-get upgrade</code>. However, I noticed the location, <code>find / -type f -name &quot;move_group_interface.h&quot;</code> is </p>
+
+<pre><code>/opt/ros/melodic/include/moveit/move_group_interface/move_group_interface.h
+</code></pre>
+
+<p>and, if I replicate the path given <a href="https://github.com/ros-planning/moveit/pull/2892/files?file-filters%5B%5D=">here</a>, which is, </p>
+
+<pre><code>moveit_ros/planning_interface/move_group_interface/src/move_group_interface.cpp
+</code></pre>
+
+<p>I do not find on my system; what I have at <code>/opt/ros/melodic/share/moveit_ros</code>, is only a <code>pcakage.xml</code> file. </p>
+
+<p>What is the correct way to reflect these changes to my local files. </p>
+
+<p>thanks,</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2021-10-04 08:09:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thank you @v4hn, I am returning again, concerning the option 4 that you suggested i.e.,  &quot;<code>implement a custom MoveGroupCapability</code>&quot; can you please refer me to some help / tutorial / example as how to achieve that. thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50178">zahid990170</a> on 2022-01-11 12:36:34 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

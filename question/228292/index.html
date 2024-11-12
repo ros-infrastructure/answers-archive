@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Exposing ROS Containers to Host Machine - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/228292">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Exposing ROS Containers to Host Machine</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/72546/exposing-ros-containers-to-host-machine">https://robotics.stackexchange.com/questions/72546/exposing-ros-containers-to-host-machine</a>.</p>
+        <p>I&#39;ve been corresponding with a few people interested in exposing containers (on a docker network) running ros nodes to the host machine. I believe I&#39;ve stumbled across a viable solution using <a href="https://github.com/gliderlabs/resolvable">resolvable</a>. However, I am uncertain on exactly why it works:</p>
+
+<ul>
+<li>Is this specific to a recent releases of Docker?</li>
+<li>Is this a result of adding DNS entries for the Docker bridge interface address?</li>
+<li>Is something about passive FTP failing without it?</li>
+</ul>
+
+<p>Here is the gist with my complete description of the proposed solution and a small bit of exploration into the issue:   <a href="https://gist.github.com/ruffsl/4a24c26a1aa2cc733c64">gist.github.com/ruffsl/4a24c26a1aa2cc733c64</a></p>
+
+<p>Since the introduction of docker networking in v1.7, with the advent of libnetwork, I&#39;ve not had an issue rostopic-echo&#39;ing between containers within the same defined docker network. The issues I did have were avoiding the need to hard-code IP&#39;s into environment variables, which is why I happened to quote docker&#39;s internal DNS improvement in v1.10 for host names.</p>
+
+<p>Rostopic-echo&#39;ing from outside that network was an entirely different matter, and up until now I hadn&#39;t thought if it easally feasible, short-of exposing the network via custom a network bridge docker-plugin or some dummy vpn container. Perhaps the solution I&#39;ve found using resolvable is not v1.10 specific, but without the resolvable project&#39;s gateway resolver, I observed the same behavior described in this <a href="https://github.com/opencog/docker/blob/28e86462cf0f1b866f387a870a83d12e6c8dbe33/indigo/README.md">status</a> document in the references, i.e:</p>
+
+<ol>
+<li>one could ping the containers from the host</li>
+<li>one could ping the host back from the containers</li>
+<li>one could set the ROS<em>MASTER</em>URI to point to the &quot;master container&quot;</li>
+<li>one could list rostopics published by the master from host</li>
+<li><strong>but yet</strong>, one <em>could not</em> successfully receive subscribe topics from host</li>
+</ol>
+
+<p>I&#39;ve extended my gist example to include some of my experimentation that lead me to the my thought process on why I think it has to do with Resolvable&#39;s provision of a DNS entry for the Docker bridge interface. From my brief poking and prodding using netcat, I don&#39;t think erroneous port remapping is the root of all evil here. As I&#39;m not exposing or reassigning any ports as far as I&#39;m aware of. Yet I certainly could be proven wrong and would find any evidence quite invaluable. Please let me know how if anyone can correct or dispel this hypothesis.</p>
+
+<p>I thought that this deeper question on why this works (be it a corrected extension for passive FTP introduced by one of my changes) would be good question to ask of the larger ROS community, members with networking experience beyond my years.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/5234"></a> on 2016-03-05 11:45:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You don&#39;t mention it, but have you tried setting <code>ROS_IP</code> on the sessions in your container? Set only that, <em>not</em> <code>ROS_HOSTNAME</code>, and make sure you have <code>ROS_MASTER_URI</code> set to an IP as well. I would expect that with proper IP routes between the docker net and your host pc, it would work.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-03-05 15:50:16 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Verified the issues was really a silly resolving issue while posting replying to a <a href="https://github.com/gliderlabs/resolvable/issues/23#issuecomment-192753088">github issue</a> asking the resolvable devs the same thing. Just now seeing @gvdhoorn comment reaffirms my thoughts.</p>
+
+<ul>
+<li>What I had considered was the domain resolution within the project network, making sure the containers could resolve the [<code>master</code>,<code>talker</code>,<code>listener</code>] host names between themselves by setting the <code>ROS_HOSTNAME</code> environmental variable. </li>
+<li>What I didn&#39;t consider was that this was that same domain name used used in generating the publisher&#39;s URI not only need to be resolvable by the ros master node, but as well as any subscriber (i.e. the host). Looking back at the <a href="http://wiki.ros.org/ROS/NetworkSetup">wiki page</a>, this was made clear. I just forgot this relationship pertains to more that just the just (master, publisher), (master, subscriber), but also (subscriber, publisher) after I switched from using domain names to IP address.</li>
+</ul>
+
+<blockquote>
+<ul>
+<li>There must be complete, bi-directional connectivity between all pairs of machines, on all ports.</li>
+<li>Each machine must advertise itself by a name that all other machines can resolve..</li>
+</ul>
+</blockquote>
+
+<p>If instead, I where to use a more rigid setup, I can avoid the need of providing a DNS server for bridge network by setting <code>ROS_IP</code>; this of course comes at the cost of losing a more flexible domain name assignment.</p>
+
+<pre><code>version: &#39;2&#39;
+
+services:
+  master:
+    build: .
+    environment:
+      - &quot;ROS_IP=172.19.0.3&quot;
+    command: roscore
+
+  talker:
+    build: .
+    environment:
+      - &quot;ROS_IP=172.19.0.4&quot;
+      - &quot;ROS_MASTER_URI=http://master:11311&quot;
+    command: rosrun roscpp_tutorials talker
+
+  listener:
+    build: .
+    environment:
+      - &quot;ROS_IP=172.19.0.2&quot;
+      - &quot;ROS_MASTER_URI=http://master:11311&quot;
+    command: rosrun roscpp_tutorials listener
+</code></pre>
+
+<p>On the host:</p>
+
+<pre><code>export ROS_IP=172.19.0.1
+export ROS_MASTER_URI=http://172.19.0.3:11311
+$ rostopic list
+/chatter
+/rosout
+/rosout_agg
+$ rostopic echo /chatter 
+data: hello world 84
+---
+data: hello world 85
+---
+data: hello world 86
+...
+</code></pre>
+
+<p>Note that the compose file above is quite fragile, as I&#39;m assuming the containers will be assigned the same IP as before on my docker engine, such that <code>ROS_IP</code> remains correctly corresponding. Specify a custom IPAM config for the project&#39;s default network (setting each services IP) would be a slight improvement, yet still rigid and possibly conflicting with other networks.</p>
+
+<p>Using a DNS entry for the Docker bridge interface however is so much simpler, I&#39;ll probably keep to that method.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5234"></a> on 2016-03-05 20:14:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <blockquote>
+<p>Using a DNS entry for the Docker bridge interface however is so much simpler [..]</p>
+</blockquote>
+
+<p>And a lot more flexible. Using hostnames is obviously fine, as long as you have a DNS server reachable by all your nodes/machines.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-03-06 01:34:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Also (nitpicking):</p>
+
+<blockquote>
+<p>Using a DNS entry for the Docker bridge interface however is so much simpler [..]</p>
+</blockquote>
+
+<p>I assume you mean:DNS entries for the nics in all the involved containers? The bridge is just relaying traffic, afaik.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-03-06 01:36:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yep, the resovlable container is just servicing a nameserver for only the registered containers attached to the same docker network you attach it to, not necessarily everything on all the bridges.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2016-03-06 02:04:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>When running my containers I often have my nodes start up before my master and end up never registering. What&#39;s a good way of making sure they wait until the master node is online?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4020">waspinator</a> on 2017-02-03 20:16:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@waspinator: if you&#39;re using Docker Compose, you could use <code>depends_on</code> (see: <a href="https://docs.docker.com/compose/startup-order/">Controlling startup order in Compose</a>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-02-04 15:00:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn, <code>Compose will not wait until a container is “ready”</code>. Outside of docker, the node seems to wait for master, but it seems that in docker, it just stops. Not sure if the right answer is to specify <code>restart: always</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4020">waspinator</a> on 2017-02-04 17:01:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>re: won&#39;t wait: no, that is also mentioned in the docs I linked. And a strategy to deal with that is also discussed.</p>
+
+<p>re: it just stops: are you sure your network config is ok? I get that behaviour if there is no bi-directional communication possible between containers (<code>ROS_IP</code>, etc).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-02-05 04:27:13 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>HI, I&#39;&#39;ve been stumbled by how to connect a ROS host computer with another computer&#39;s Docker ros container. The two computers are located in the same network segment because I used a router. When i ran <code>roscore</code> command in ROS host computer , and I could get output infomation when I ran <code>rostopic list</code> in another Docker host Computer. However,  if chose to use docker ros container, it failed  to connect ROS host Computer even if set the port mapping in Docker host computer. DO you know how to figure out? or do you have any othe idea?
+thanks!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/28709">MingCHEN</a> on 2017-02-22 04:25:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

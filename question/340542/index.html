@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>PoseArray not getting published - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/340542">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>PoseArray not getting published</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/94203/posearray-not-getting-published">https://robotics.stackexchange.com/questions/94203/posearray-not-getting-published</a>.</p>
+        <p>Hi, so I&#39;m trying to find the shortest path from source to destination using dijkstra&#39;s algorithm. </p>
+
+<p>In this program, I intend to first store the path in an array from which I retrieve it and publish it as a Pose Array. However, when I run this program I see no PoseArray topics. </p>
+
+<p>I am trying to publish it from inside the dijkstra function. </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;math.h&gt;
+#include &lt;queue&gt;
+#include &lt;vector&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;geometry_msgs/Pose.h&gt;
+#include &lt;geometry_msgs/PoseArray.h&gt;
+#include &lt;nav_msgs/OccupancyGrid.h&gt;
+#include &lt;nav_msgs/GetMap.h&gt;
+#include &lt;ros/console.h&gt;
+#define FMAX 999999999.99
+
+
+    int rows = 1000, columns = 1000, size = rows * columns;
+    bool visited[1000000];
+    float distance[1000000];
+    int prev[1000000];
+    int source = 15100, destination = 990500; // Random source and destination
+    .
+    .
+    .
+
+    void dijkstra(const nav_msgs::OccupancyGrid&amp; map)
+    {
+        prev[source] = 0;
+        node first = {source, 0.0}; 
+        pq.push(first);
+        while(!pq.empty())
+        {
+            .
+                    .
+            int rr, cc;
+            for(int i = 0; i &lt; 8; i++) // to calculate neighbours
+            {
+                .
+                            .
+                            .
+                .
+            }
+        }
+
+        poseArray.poses = pose_vector;
+        ros::NodeHandle n(&quot;~&quot;);
+        ros::Publisher pose_array_pub = n.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/poseArray&quot;, 1);
+        pose_array_pub.publish(poseArray);
+    }
+
+
+
+    int main(int argc, char **argv)
+    {
+        init();
+        distance[source] = 0;
+        visited[source] = true;
+        ros::init(argc, argv, &quot;dijkstra&quot;);
+        ros::NodeHandle n(&quot;~&quot;);
+        ros::ServiceClient client = n.serviceClient&lt;nav_msgs::GetMap&gt;(&quot;/static_map&quot;);
+        nav_msgs::OccupancyGrid my_map = srv.response.map;
+        dijkstra(my_map);
+        ros::spin();    
+    }
+</code></pre>
+
+<p>EDIT - Deleted parts of my code to make the question more relevant.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/48975">Parth2851</a> on 2019-12-22 08:22:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>We see this:</p>
+
+<blockquote>
+<pre><code>void dijkstra(const nav_msgs::OccupancyGrid&amp; map)
+{
+  ...
+
+  ros::NodeHandle n(&quot;~&quot;);
+  ros::Publisher pose_array_pub = n.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/poseArray&quot;, 1);
+  pose_array_pub.publish(poseArray);
+}
+</code></pre>
+</blockquote>
+
+<p><em>Never</em> create <code>NodeHandle</code>s, <code>ros::Publisher</code> or <code>ros::Subscriber</code>s in the body of callbacks or in short-lived functions.</p>
+
+<p>It will not work.</p>
+
+<p>Also <em>never</em> call <code>publish(..)</code> immediately after constructing a <code>ros::Publisher</code>. There is no time for <code>Subscriber</code>s to actually subscribe, so no one receives your message.</p>
+
+<p>Create them in your <code>main(..)</code> and pass them to your callback. Or create them as global variables or create a class and store them as members.</p>
+
+<p>Then if you&#39;re only publishing the message once, make sure there are subscribers. You can use <a href="http://docs.ros.org/api/roscpp/html/classros_1_1Publisher.html#af5574532bf8a9b35efa3696a035d31fc">ros::Publisher::getNumSubscribers()</a> for this. But if only publishing once <em>and</em> it&#39;s important your message always arrives, then I would suggest to use a service instead of a topic.</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<blockquote>
+<p>Okay, yes. I made a publisher in mainand then I declared a global poseArray and then published it in a loop something like this - </p>
+
+<pre><code>while(ros::ok())
+{
+  pose_array_pub.publish(pa);
+}
+</code></pre>
+</blockquote>
+
+<p>I would strongly recommend you do not do this. For two reasons (at least):</p>
+
+<ol>
+<li>you&#39;re not publishing many, many old messages as <code>pa</code> is not updated before <code>publish(..)</code> is called</li>
+<li>if this is the exact code you used: you&#39;re publishing at the maximum rate at which your PC can publish (which for a typical PC is upwards of 10kHz)</li>
+</ol>
+
+<p>What I was actually suggesting was something like this:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+
+...
+
+ros::Publisher pub;   // note: in global scope here
+
+...
+
+void dijkstra(const nav_msgs::OccupancyGrid&amp; map)
+{
+  ...
+
+  // use variable in global scope
+  pub.publish(poseArray);
+}
+
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;dijkstra&quot;);
+  ros::NodeHandle n(&quot;~&quot;);
+  ...
+
+  // initialise variable in global scope
+  pub = n.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/poseArray&quot;, 1);
+
+  ...
+  ros::spin();
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2019-12-22 09:14:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>PS: yes, this is software, so &quot;never&quot; is never <em>really</em> never, but if you&#39;re just starting out with all of this, you should really not do this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-12-22 09:15:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This worked! thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48975">Parth2851</a> on 2019-12-22 13:32:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>For future readers: <em>what</em> worked, specifically?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-12-23 04:03:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Okay, yes. I made a publisher in mainand then I declared a global poseArray and then published it in a loop something like this - </p>
+
+<pre><code>while(ros::ok())
+        {
+            pose_array_pub.publish(pa);
+        }
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48975">Parth2851</a> on 2019-12-23 05:37:26 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

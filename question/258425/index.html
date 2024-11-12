@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Converting Python tf code to C++ - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/258425">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Converting Python tf code to C++</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/79974/converting-python-tf-code-to-c">https://robotics.stackexchange.com/questions/79974/converting-python-tf-code-to-c</a>.</p>
+        <p>Are there any non-trivial examples for using the tf package to calculate quaternions in C++ for an Arduino?</p>
+
+<p>I&#39;m trying to convert this Python code for publishing IMU data, to the equivalent C++, so I can run it on an Arduino using the rosserial_arduino package:</p>
+
+<pre><code>import rospy
+import tf
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Header
+
+imu_msg = Imu()
+imu_msg.header = Header()
+imu_msg.header.stamp = rospy.Time.now()
+imu_msg.header.frame_id = &#39;/base_link&#39;
+quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+imu_msg.orientation.x = quaternion[0]
+imu_msg.orientation.y = quaternion[1]
+imu_msg.orientation.z = quaternion[2]
+imu_msg.orientation.w = quaternion[3]
+imu_msg.linear_acceleration.x = accel[0]
+imu_msg.linear_acceleration.y = accel[1]
+imu_msg.linear_acceleration.z = accel[2]
+imu_pub.publish(imu_msg)
+</code></pre>
+
+<p>However, even though there are several <a href="http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20broadcaster%20%28C%2B%2B%29">general-purpose C++ examples</a> and rosserial_arduino examples <a href="http://wiki.ros.org/rosserial_arduino/Tutorials/Time%20and%20TF">for using Tf</a>, I can&#39;t find anything for calculating quaternions on the Arduino.</p>
+
+<p>All the C++ code I&#39;ve found seems to require defining:</p>
+
+<pre><code>tf::Transform transform;
+</code></pre>
+
+<p>However, there doesn&#39;t seem to be any tf.h header available for the Arduino, and this gives me the compilation error:</p>
+
+<pre><code>error: &#39;Transform&#39; in namespace &#39;tf&#39; does not name a type
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2186">Cerin</a> on 2017-04-01 23:01:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>my 2 cents: I always try to do as little on the arduino as possible, in you case, I&#39;d send the data you read on the serial connection and then handle the conversions on a system where you just have all the libraries (and python)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18581">NEngelhard</a> on 2017-04-02 03:54:14 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Due to it&#39;s limited resources you cannot compile most of the ROS ecosystem onto the Arduino. There&#39;s a minimal implementation to be able to bridge data off the microcontroller, but not fully featured to do all operations on the microcontroller. (For example all the dependencies of tf cannot be compiled into the Arduino&#39;s memory space so there is a stripped down implementation available on in the Arduino interface.</p>
+
+<p>As @NEngelhard suggests it&#39;s recommended to do higher level processing offboard.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2017-04-03 12:16:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>It seems quaternions and IMU message sending work just fine on the Arduino, but some of the tf math is missing. Rosserial only implements <code>createQuaternionFromYaw</code>, but I need <code>createQuaternionFromRPY</code>. Fortunately, this algorithm is well documented elsewhere, as the <a href="https://github.com/ros-drivers/rosserial/issues/84#issuecomment-290981349">rosserial_arduino author noted</a>, so all I had to add to my code was:</p>
+
+<pre><code>static geometry_msgs::Quaternion createQuaternionFromRPY(double roll, double pitch, double yaw) {
+    // https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles#Source_Code
+    // http://docs.ros.org/api/geometry_msgs/html/msg/Quaternion.html
+    geometry_msgs::Quaternion q;
+    double t0 = cos(yaw * 0.5);
+    double t1 = sin(yaw * 0.5);
+    double t2 = cos(roll * 0.5);
+    double t3 = sin(roll * 0.5);
+    double t4 = cos(pitch * 0.5);
+    double t5 = sin(pitch * 0.5);
+    q.w = t0 * t2 * t4 + t1 * t3 * t5;
+    q.x = t0 * t3 * t4 - t1 * t2 * t5;
+    q.y = t0 * t2 * t5 + t1 * t3 * t4;
+    q.z = t1 * t2 * t4 - t0 * t3 * t5;
+    return q;
+}
+</code></pre>
+
+<p>and then my IMU publisher looks like:</p>
+
+<pre><code>imu_msg.header.stamp = nh.now();
+imu_msg.header.frame_id = base_link;
+imu_msg.orientation = createQuaternionFromRPY(imu.roll_radians, imu.pitch_radians, imu.yaw_radians);
+imu_msg.linear_acceleration.x = imu.accel.x;
+imu_msg.linear_acceleration.y = imu.accel.y;
+imu_msg.linear_acceleration.z = imu.accel.z;
+imu_publisher.publish(&amp;imu_msg);
+</code></pre>
+
+<p>I ran into some weird issues because I forgot to advertise my publisher with:</p>
+
+<pre><code>ros::Publisher imu_publisher = ros::Publisher(&quot;imu&quot;, &amp;imu_msg);
+</code></pre>
+
+<p>and I think that was causing the Arduino to crash or hang, and I was confusing that with the IMU packet being too big, when it was actually just fine. But after I added that, I was able to subscribe to <code>/myarduino/imu</code> with rostopic and see IMU messages stream without issue.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2186">Cerin</a> on 2017-04-03 14:17:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

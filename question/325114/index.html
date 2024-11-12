@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>UR5+velocity control: runaway robot after getting closer to goal pose - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/325114">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>UR5+velocity control: runaway robot after getting closer to goal pose</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91961/ur5velocity-control-runaway-robot-after-getting-closer-to-goal-pose">https://robotics.stackexchange.com/questions/91961/ur5velocity-control-runaway-robot-after-getting-closer-to-goal-pose</a>.</p>
+        <p>In my algorithm, the robot seemingly moves towards the right position, as the joint velocities reduce, after that the velocities start increasing as the robot moves away. I cannot understand why this is happening and need some urgent help. My github project link is given below:
+<a href="https://github.com/RiddhimanRaut/Ur5_Visual_Servoing">https://github.com/RiddhimanRaut/Ur5_Visual_Servoing</a>
+The object recognition and everything else is working as expected. Also the robot does not stop when I stop the run_ur5.py code, I&#39;ve checked rostopic echo and joint velocities are still being published. Maybe the two problems are related. Please help. </p>
+
+<p>The codes are all mine.</p>
+
+<h1>EDIT 2:</h1>
+
+<p>This is a trial velocity publisher I&#39;ve written just to test the lag issue</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from ur5_control_nodes.msg import floatList
+
+import rospy
+from std_msgs.msg import String
+
+def talker():
+    pub = rospy.Publisher(&#39;ur5_joint_velocities&#39;, floatList, queue_size=10)
+    rospy.init_node(&#39;talker&#39;, anonymous=True)
+
+    while not rospy.is_shutdown():
+        vels=[0,0,0.05,0,0,0]
+
+        pub.publish(vels)
+
+
+if __name__ == &#39;__main__&#39;:
+    talker()
+</code></pre>
+
+<h1>Code for color detection</h1>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+import numpy as np
+import cv2
+from sensor_msgs.msg import Image
+from ur5_control_nodes.msg import floatList
+from cv_bridge import CvBridge, CvBridgeError
+import imutils
+
+bridge=CvBridge()
+rgb_img=np.zeros((480,640,3),np.uint8)
+depth_img=np.zeros((480,640))
+
+#RGB Image Callback
+def rgb_callback(rgb_msg):
+    global rgb_img   
+    rgb_img=bridge.imgmsg_to_cv2(rgb_msg, &quot;bgr8&quot;)     
+
+
+#Depth Image Callback 
+def d_callback(msg):
+
+    global depth_img
+    depth_img=bridge.imgmsg_to_cv2(msg, desired_encoding=&quot;passthrough&quot;)
+
+
+
+
+#Getting XY Points
+def xy_points(frame):
+    fl=531.15
+
+    xypoints=np.array([0,0,0,0,0,0], dtype=np.int64)
+
+
+    blurred = cv2.GaussianBlur(frame, (11, 11), 0)
+
+    hsv=cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+
+    #defining the Range of Blue color
+    blue_lower=np.array([87,100,150],np.uint8)
+    blue_upper=np.array([110,255,255],np.uint8)
+
+
+
+    blue=cv2.inRange(hsv,blue_lower,blue_upper)
+    blue = cv2.erode(blue, None, iterations=2)
+    blue = cv2.dilate(blue, None, iterations=2)
+
+    cnts_b = cv2.findContours(blue.copy(), cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    cnts_b = imutils.grab_contours(cnts_b)
+    center_b = None
+    if len(cnts_b) &gt; 0:
+        c_b = max(cnts_b, key=cv2.contourArea)
+        # epsilon = 0.1*cv2.arcLength(c,True)
+        # approx = cv2.approxPolyDP(c,epsilon,True)
+        M_b= cv2.moments(c_b)
+        center_b= (int(M_b[&quot;m10&quot;] / M_b[&quot;m00&quot;]), int(M_b[&quot;m01&quot;] / M_b[&quot;m00&quot;]))
+        cv2.circle(frame, center_b, 5, (255, 255,255), -1)
+        xypoints[2]=center_b[0]
+        xypoints[3]=center_b[1]
+    #Red
+    low_r = np.array([140,150,0],np.uint8)
+    high_r = np.array([180,255,255],np.uint8)
+
+    red=cv2.inRange(hsv,low_r,high_r)
+    red = cv2.erode(red, None, iterations=2)
+    red = cv2.dilate(red, None, iterations=2)
+
+    cnts_r = cv2.findContours(red.copy(), cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    cnts_r = imutils.grab_contours(cnts_r)
+    center_r = None
+    if len(cnts_r) &gt; 0:
+        c_r = max(cnts_r, key=cv2.contourArea)
+        # epsilon = 0.1*cv2.arcLength(c,True)
+        # approx = cv2.approxPolyDP(c,epsilon,True)
+        M_r= cv2.moments(c_r)
+        center_r= (int(M_r[&quot;m10&quot;] / M_r[&quot;m00&quot;]), int(M_r[&quot;m01&quot;] / M_r[&quot;m00&quot;]))
+        cv2.circle(frame, center_r, 5, (255, 255,255), -1)
+        xypoints[4]=center_r[0]
+        xypoints[5]=center_r[1]
+
+    #Green
+    low_g = np.array([40,50,50])
+    high_g = np.array([80,255,255])
+    #GREEN_DETECTION
+    #compute mask, erode and dilate it to remove noise
+    green = cv2.inRange(hsv, low_g, high_g)
+    green = cv2.erode(green, None, iterations=2)
+    green = cv2.dilate(green, None, iterations=2)
+    cnts_g = cv2.findContours(green.copy(), cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    cnts_g = imutils.grab_contours(cnts_g)
+    center_g = None
+    if len(cnts_g) &gt; 0:
+        c_g = max(cnts_g, key=cv2.contourArea)
+        # epsilon = 0.1*cv2.arcLength(c,True)
+        # approx = cv2.approxPolyDP(c,epsilon,True)
+        M_g= cv2.moments(c_g)
+        center_g= (int(M_g[&quot;m10&quot;] / M_g[&quot;m00&quot;]), int(M_g[&quot;m01&quot;] / M_g[&quot;m00&quot;]))
+        cv2.circle(frame, center_g, 5, (255, 255,255), -1)
+        xypoints[0]=center_g[0]
+        xypoints[1]=center_g[1]
+        cv2.circle(frame, (320,240), 5, (0,0,255), -1)
+
+
+
+
+
+
+    cv2.imshow(&quot;Color Tracking&quot;,frame)
+    cv2.waitKey(1)
+
+
+    return xypoints
+
+
+def f_points(dimg, xy): 
+    fl=531.1   
+    zr=dimg[xy[5]][xy[4]]
+    zb=dimg[xy[3]][xy[2]]    
+    zg=dimg[xy[1]][xy[0]]
+
+
+    fpoint=[xy[0], xy[1], zr, xy[2], xy[3], zb, xy[4], xy[5],zg]  
+    for i in range(0,len(fpoint),3):
+
+        fpoint[i] = (fpoint[i]-320)/(fl/640)
+    for j in range(1,len(fpoint),3):
+        fpoint[j] = -(fpoint[j]-240)/(fl/480)
+
+    return fpoint
+
+def main():
+    global rgb_img
+    global depth_img
+
+    rospy.init_node(&#39;d_points&#39;, anonymous=True)
+    rospy.Subscriber(&#39;/camera/rgb/image_raw&#39;, Image, rgb_callback )
+    rospy.Subscriber(&#39;/camera/depth/image_raw&#39;, Image, d_callback)
+    pub=rospy.Publisher(&#39;3_point_features&#39;, floatList, queue_size=1)
+
+    rate=rospy.Rate(10) # in Hz
+    features=floatList()
+
+    while not rospy.is_shutdown():
+
+        xy=xy_points(rgb_img)
+
+        c=0
+        while c&lt;20:
+            xy=xy+xy_points(rgb_img)
+            c+=1
+
+        xy=xy/c
+
+
+
+        features.data=f_points(depth_img, xy)
+        print(features.data)
+        pub.publish(features)
+        rate.sleep()
+
+if __name__==&#39;__main__&#39;:
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>CODE FOR VISUAL SERVOING:</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from ur5_control_nodes.msg import floatList
+from sensor_msgs.msg import JointState
+import numpy as np
+from math import *
+from std_msgs.msg import Header
+from control_msgs.msg import *
+from trajectory_msgs.msg import *
+
+
+joint_positions=None
+coordinates=None
+c=0
+def position_callback(position):
+    global joint_positions
+    joint_positions=position.position
+
+
+
+def coordinate_callback(data):
+    global coordinates
+    coordinates=data.data
+
+
+
+def joint_velocities(pose,points):
+
+
+
+    if pose!=None:
+        if points!=None:
+
+
+            theta_x = -pi/2
+            theta_y = pi/2
+            check=np.array([True,True])
+
+            int_matrix = None
+            fl = 531.15
+            desired_points = [209.67802673696102, -22.59461495010356, 878, 53.022029749576355, 80.43682922236867, 891, 237.3940877424214, 87.66710600640181, 884]
+
+            desired_points = np.asarray(desired_points)
+            points=np.asarray(points)
+            pix_vel=[]
+
+            for index in range(len(points)):
+                if (index+1)%3==0:
+                    index+=1
+                else:
+                    pix_vel.append(points[index]-desired_points[index])
+            # print pix_vel
+            pix_vel=np.asarray(pix_vel) #1v8 array
+            pix_vel=np.matrix(pix_vel)
+            pix_vel=np.ndarray.transpose(pix_vel)
+
+
+            for i in range(0,len(points),3):
+                u = desired_points[i]
+                v = desired_points[i+1]
+                z = desired_points[i+2]
+                # new_mat=np.array([[ -fl/z, 0, u/z, u*v/fl, -(fl*fl+u*u)/fl, v],[ 0, -fl/z, v/z, (fl*fl+v*v)/fl, -u*v/fl, -u ]])
+                # new_mat=np.array([[ 0, 0, 0,0,0,0],[ 0, -fl/z, 0, 0,0,0 ]])
+                new_mat=np.array([[ -fl/z, 0, u/z, 0,0,0],[ 0, -fl/z, v/z, 0,0,0 ]])
+                if i==0:
+                    int_matrix=new_mat
+                else:
+                    int_matrix=np.concatenate((int_matrix,new_mat))
+
+
+
+            int_matrix=np.matrix(int_matrix) #8v6 matrix
+            inverse=np.linalg.pinv(int_matrix) #6v8 matrix
+
+            cam_vel_np=-0.00005*inverse*pix_vel #6v1 matrix
+
+
+            cam_vel_lin = cam_vel_np[[0,1,2],:]
+            cam_vel_angular = cam_vel_np[[3,4,5],:]
+
+
+
+
+            Rx=np.array([[1,0,0],[0,cos(theta_x),-sin(theta_x)],[0,sin(theta_x),cos(theta_x)]])
+            Ry=np.array([[cos(theta_y) , 0, sin(theta_y)],[0, 1, 0],[-sin(theta_y), 0, cos(theta_y)]])
+            # Lt=np.array([[1,0,0,-210],[0,1,0,0],[0,0,1,-85],[0,0,0,1]])
+            # # print Rx
+            # # print Ry
+            # cam_vel_lin=Ry*cam_vel_lin
+            # cam_vel_lin=Rx*cam_vel_lin
+
+            # cam_vel_lin=np.vstack((cam_vel_lin,[1]))
+
+            # cam_vel_lin=Lt*cam_vel_lin
+            # cam_vel_lin=np.delete(cam_vel_lin,(3),axis=0)
+
+            # cam_vel_angular=Rx*(Ry*cam_vel_angular)
+            # cam_vel_angular=np.vstack((cam_vel_angular,[1]))
+            # cam_vel_angular=Lt*cam_vel_angular
+            # cam_vel_angular=np.delete(cam_vel_angular,(3),axis=0)
+
+            cam_vel_np=np.concatenate((cam_vel_lin,cam_vel_angular))
+            # cam_vel_np[2]=-cam_vel_np[2]
+            # cam_vel_np[5]=-cam_vel_np[5]
+            # cam_vel_np=np.array([[0],[0],[0],[0],[0],[0]])
+            # cam_vel_np=np.ndarray.transpose(cam_vel_np)
+            # cam_vel_list=np.ndarray.tolist(cam_vel_np)
+            # cam_vel_final=cam_vel_list[0]
+            temp1 = cam_vel_np.item((0,0))
+            temp2 = cam_vel_np.item((1,0))
+            temp3 = cam_vel_np.item((2,0))
+            temp4 = cam_vel_np.item((3,0))
+            temp5 = cam_vel_np.item((4,0))
+            temp6 = cam_vel_np.item((5,0))
+            # cam_vel_np[0,0] = temp3
+            # cam_vel_np[1,0] = -temp1
+            # cam_vel_np[2,0] = temp2
+            # cam_vel_np[3,0] = temp6
+            # cam_vel_np[4,0] = -temp4
+            # cam_vel_np[5,0] = temp5
+            cam_vel_np[0,0] = temp3
+            cam_vel_np[1,0] = -temp1
+            cam_vel_np[2,0] = temp2
+            cam_vel_np[3,0] = temp6
+            cam_vel_np[4,0] = -temp4
+            cam_vel_np[5,0] = temp5
+
+
+            print cam_vel_np
+
+
+
+            Q1=pose[0]
+            Q2=pose[1]
+            Q3=pose[2]
+            Q4=pose[3]
+            Q5=pose[4]
+            Q6=pose[5]
+            jacobian=np.array([[ (2183*np.cos(Q1))/20000 + (823*np.cos(Q1)*np.cos(Q5))/10000 + (17*np.cos(Q2)*np.sin(Q1))/40 - (1569*np.sin(Q1)*np.sin(Q2)*np.sin(Q3))/4000 + (823*np.cos(Q2 + Q3 + Q4)*np.sin(Q1)*np.sin(Q5))/10000 - (591*np.cos(Q2 + Q3)*np.sin(Q1)*np.sin(Q4))/6250 - (591*np.sin(Q2 + Q3)*np.cos(Q4)*np.sin(Q1))/6250 + (1569*np.cos(Q2)*np.cos(Q3)*np.sin(Q1))/4000, np.cos(Q1)*((1569*np.sin(Q2 + Q3))/4000 + (17*np.sin(Q2))/40 + np.sin(Q5)*((823*np.cos(Q2 + Q3)*np.sin(Q4))/10000 + (823*np.sin(Q2 + Q3)*np.cos(Q4))/10000) + (591*np.cos(Q2 + Q3)*np.cos(Q4))/6250 - (591*np.sin(Q2 + Q3)*np.sin(Q4))/6250),                         np.cos(Q1)*((591*np.cos(Q2 + Q3 + Q4))/6250 + (1569*np.sin(Q2 + Q3))/4000 + (823*np.sin(Q2 + Q3 + Q4)*np.sin(Q5))/10000),                         np.cos(Q1)*((591*np.cos(Q2 + Q3 + Q4))/6250 + (823*np.sin(Q2 + Q3 + Q4)*np.sin(Q5))/10000), (823*np.cos(Q1)*np.cos(Q2)*np.cos(Q5)*np.sin(Q3)*np.sin(Q4))/10000 - (823*np.cos(Q1)*np.cos(Q2)*np.cos(Q3)*np.cos(Q4)*np.cos(Q5))/10000 - (823*np.sin(Q1)*np.sin(Q5))/10000 + (823*np.cos(Q1)*np.cos(Q3)*np.cos(Q5)*np.sin(Q2)*np.sin(Q4))/10000 + (823*np.cos(Q1)*np.cos(Q4)*np.cos(Q5)*np.sin(Q2)*np.sin(Q3))/10000, 0],[ (2183*np.sin(Q1))/20000 - (17*np.cos(Q1)*np.cos(Q2))/40 + (823*np.cos(Q5)*np.sin(Q1))/10000 - (823*np.cos(Q2 + Q3 + Q4)*np.cos(Q1)*np.sin(Q5))/10000 + (591*np.cos(Q2 + Q3)*np.cos(Q1)*np.sin(Q4))/6250 + (591*np.sin(Q2 + Q3)*np.cos(Q1)*np.cos(Q4))/6250 - (1569*np.cos(Q1)*np.cos(Q2)*np.cos(Q3))/4000 + (1569*np.cos(Q1)*np.sin(Q2)*np.sin(Q3))/4000, np.sin(Q1)*((1569*np.sin(Q2 + Q3))/4000 + (17*np.sin(Q2))/40 + np.sin(Q5)*((823*np.cos(Q2 + Q3)*np.sin(Q4))/10000 + (823*np.sin(Q2 + Q3)*np.cos(Q4))/10000) + (591*np.cos(Q2 + Q3)*np.cos(Q4))/6250 - (591*np.sin(Q2 + Q3)*np.sin(Q4))/6250),                         np.sin(Q1)*((591*np.cos(Q2 + Q3 + Q4))/6250 + (1569*np.sin(Q2 + Q3))/4000 + (823*np.sin(Q2 + Q3 + Q4)*np.sin(Q5))/10000),                         np.sin(Q1)*((591*np.cos(Q2 + Q3 + Q4))/6250 + (823*np.sin(Q2 + Q3 + Q4)*np.sin(Q5))/10000), (823*np.cos(Q1)*np.sin(Q5))/10000 - (823*np.cos(Q2)*np.cos(Q3)*np.cos(Q4)*np.cos(Q5)*np.sin(Q1))/10000 + (823*np.cos(Q2)*np.cos(Q5)*np.sin(Q1)*np.sin(Q3)*np.sin(Q4))/10000 + (823*np.cos(Q3)*np.cos(Q5)*np.sin(Q1)*np.sin(Q2)*np.sin(Q4))/10000 + (823*np.cos(Q4)*np.cos(Q5)*np.sin(Q1)*np.sin(Q2)*np.sin(Q3))/10000,                      0],[                                                                                                                                                                                                                                                                                            0,                                                      (591*np.sin(Q2 + Q3 + Q4))/6250 - (823*np.sin(Q2 + Q3 + Q4 + Q5))/20000 - (1569*np.cos(Q2 + Q3))/4000 - (17*np.cos(Q2))/40 + (823*np.sin(Q2 + Q3 + Q4 - Q5))/20000, (591*np.sin(Q2 + Q3 + Q4))/6250 - (823*np.sin(Q2 + Q3 + Q4 + Q5))/20000 - (1569*np.cos(Q2 + Q3))/4000 + (823*np.sin(Q2 + Q3 + Q4 - Q5))/20000, (591*np.sin(Q2 + Q3 + Q4))/6250 - (823*np.sin(Q2 + Q3 + Q4 + Q5))/20000 + (823*np.sin(Q2 + Q3 + Q4 - Q5))/20000,                                                                                                                                                                           - (823*np.sin(Q2 + Q3 + Q4 + Q5))/20000 - (823*np.sin(Q2 + Q3 + Q4 - Q5))/20000,                                                     0],[                                                                                                                                                                                                                                                                                            0,                                                                                                                                                                                                  np.sin(Q1),                                                                                                                           np.sin(Q1),                                                                                                np.sin(Q1),                                                                                                                                                                                                                           np.sin(Q2 + Q3 + Q4)*np.cos(Q1),   np.cos(Q5)*np.sin(Q1) - np.cos(Q2 + Q3 + Q4)*np.cos(Q1)*np.sin(Q5)],[                                                                                                                                                                                                                                                                                            0,                                                                                                                                                                                                 -np.cos(Q1),                                                                                                                          -np.cos(Q1),                                                                                               -np.cos(Q1),                                                                                                                                                                                                                           np.sin(Q2 + Q3 + Q4)*np.sin(Q1), - np.cos(Q1)*np.cos(Q5) - np.cos(Q2 + Q3 + Q4)*np.sin(Q1)*np.sin(Q5)],[                                                                                                                                                                                                                                                                                            1,                                                                                                                                                                                                        0,                                                                                                                                 0,                                                                                                      0,                                                                                                                                                                                                                                  -np.cos(Q2 + Q3 + Q4),                            -np.sin(Q2 + Q3 + Q4)*np.sin(Q5)]])
+            jacobian=np.matrix(jacobian)
+            jacobian=np.linalg.pinv(jacobian)
+            joint_vel=jacobian*cam_vel_np
+            joint_vel=joint_vel
+            joint_vel=np.ndarray.transpose(joint_vel)
+
+
+            joint_vel=joint_vel.tolist()
+            joint_vel=joint_vel[0]
+            joint_vel=tuple(joint_vel)
+            print &quot;Joint Velocity: &quot;
+            print joint_vel
+
+
+
+
+
+
+            #Creating the publisher
+            cam_pub=rospy.Publisher(&#39;ur5_joint_velocities&#39;,floatList,queue_size=1)
+            new_List=floatList()
+            new_List.data=joint_vel
+            # print new_List
+            rate = rospy.Rate(0.5) #20 Hz
+            cam_pub.publish(new_List) 
+            rate.sleep()
+            # print pix_vel
+
+def vs_ur5():
+    global joint_positions
+    global coordinates
+    rospy.init_node(&#39;vs_ur5&#39;)
+    rospy.Subscriber(&#39;/3_point_features&#39;, floatList,coordinate_callback,queue_size=1)
+    rospy.Subscriber(&quot;/joint_states&quot;, JointState, position_callback,queue_size=1)
+
+    while not rospy.is_shutdown():
+
+        joint_velocities(joint_positions,coordinates)
+
+
+
+
+
+
+
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        vs_ur5()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>CODE FOR RUNNING THE ROBOT</p>
+
+<pre><code>    #!/usr/bin/env python
+    import rospy
+    from ur5_control_nodes.msg import floatList
+    from sensor_msgs.msg import JointState
+    import numpy as np
+    from math import *
+    from std_msgs.msg import Header
+    from control_msgs.msg import *
+    from trajectory_msgs.msg import *
+
+
+    joint_vel=None   
+    JOINT_NAMES=[&#39;shoulder_pan_joint&#39;, &#39;shoulder_lift_joint&#39;, &#39;elbow_joint&#39;,&#39;wrist_1_joint&#39;, &#39;wrist_2_joint&#39;, &#39;wrist_3_joint&#39;]
+    def joint_velocity_callback(data):
+        global joint_vel
+        joint_vel = data.data
+
+
+
+    def joint_states(velocity):
+        global JOINT_NAMES
+
+
+
+        pub = rospy.Publisher(&#39;/ur_driver/joint_speed&#39;, JointTrajectory, queue_size=1)
+
+        hello_str = JointTrajectory()
+        hello_str.header = Header()
+        hello_str.joint_names=JOINT_NAMES
+        hello_str.points=[JointTrajectoryPoint(velocities=velocity, time_from_start=rospy.Duration(0.0)),JointTrajectoryPoint(time_from_start=rospy.Duration(0.0))]
+        hello_str.header.seq=hello_str.header.seq+1
+        hello_str.header.stamp-rospy.Time.now()
+        pub.publish(hello_str)
+    def run_ur5():
+        global joint_vel
+        rospy.init_node(&#39;run_ur5&#39;, anonymous=True)
+
+
+        rospy.Subscriber(&quot;ur5_joint_velocities&quot;, floatList, joint_velocity_callback,queue_size=1)
+        while not rospy.is_shutdown():
+            joint_states(joint_vel)
+
+
+
+    if __name__ == &#39;__main__&#39;:
+
+            try:
+                run_ur5()
+            except rospy.ROSInterruptException:
+                pass
+</code></pre>
+
+<p>ROS CONTROL LAUNCH FILE:</p>
+
+<p>&lt;?xml version=&quot;1.0&quot;?&gt;
+<launch></p>
+
+<p>&lt;!-- GDB functionality --&gt;
+  <arg name="debug" default="false" />
+  <arg unless="$(arg debug)" name="launch_prefix" value="" />
+  <arg     if="$(arg debug)" name="launch_prefix" value="gdb --ex run --args" /></p>
+
+<p><arg name="robot_ip"/>
+  <arg name="limited" default="false"/>
+  <arg name="min_payload"  default="0.0"/>
+  <arg name="max_payload"  default="3.0"/>
+  <arg name="prefix" default="" /><br>
+  <arg name="max_velocity" default="10.0"/> &lt;!-- [rad/s] --&gt;
+  <arg name="base_frame" default="$(arg prefix)base" />
+  <arg name="tool_frame" default="$(arg prefix)tool0_controller" />
+  &lt;!-- robot model --&gt;
+  <include file="$(find ur_description)/launch/ur5_upload.launch">
+    <arg name="limited" value="$(arg limited)"/>
+  </include></p>
+
+<p>&lt;!-- Load hardware interface --&gt;
+  <node name="ur_hardware_interface" pkg="ur_modern_driver" type="ur_driver" output="log" launch-prefix="$(arg launch_prefix)">
+    <param name="robot_ip_address" type="str" value="$(arg robot_ip)"/>
+    <param name="min_payload" type="double" value="$(arg min_payload)"/>
+    <param name="max_payload" type="double" value="$(arg max_payload)"/>
+    <param name="max_velocity" type="double" value="$(arg max_velocity)"/>
+    <param name="use_ros_control" type="bool" value="True"/>
+    <param name="servoj_gain" type="double" value="750" />
+    <param name="prefix" value="$(arg prefix)" />
+    <param name="base_frame" type="str" value="$(arg base_frame)"/>
+    <param name="tool_frame" type="str" value="$(arg tool_frame)"/>
+  </node></p>
+
+<p>&lt;!-- Load controller settings --&gt;
+  <rosparam file="$(find ur_modern_driver)/config/ur5_controllers.yaml" command="load"/></p>
+
+<p>&lt;!-- spawn controller manager --&gt;
+  <node name="ros_control_controller_spawner" pkg="controller_manager" type="controller_manager" respawn="false"
+    output="screen" args="spawn joint_state_controller force_torque_sensor_controller joint_group_vel_controller" /></p>
+
+<p>&lt;!-- load other controller --&gt; 
+  <node name="ros_control_controller_manager" pkg="controller_manager" type="controller_manager" respawn="false"
+    output="screen" args="load pos_based_pos_traj_controller" /> </p>
+
+<p>&lt;!-- Convert joint states to /tf tranforms --&gt;
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/></p>
+
+<p></launch></p>
+
+<p>YAML FILE</p>
+
+<h1>Settings for ros_control control loop</h1>
+
+<p>hardware<em>control</em>loop:
+   loop_hz: 125</p>
+
+<h1>Settings for ros_control hardware interface</h1>
+
+<p>hardware<em>interface:
+   joints:
+     - shoulder</em>pan<em>joint
+     - shoulder</em>lift<em>joint
+     - elbow</em>joint
+     - wrist<em>1</em>joint
+     - wrist<em>2</em>joint
+     - wrist<em>3</em>joint</p>
+
+<h1>Publish all joint states ----------------------------------</h1>
+
+<p>joint<em>state</em>controller:
+   type:         joint<em>state</em>controller/JointStateController
+   publish_rate: 125</p>
+
+<h1>Publish wrench ----------------------------------</h1>
+
+<p>force<em>torque</em>sensor<em>controller:
+   type:         force</em>torque<em>sensor</em>controller/ForceTorqueSensorController
+   publish_rate: 125</p>
+
+<h1>Joint Trajectory Controller - position based -------------------------------</h1>
+
+<h1>For detailed explanations of parameter see <a href="http://wiki.ros.org/joint_trajectory_controller">http://wiki.ros.org/joint_trajectory_controller</a></h1>
+
+<p>pos<em>based</em>pos<em>traj</em>controller:
+   type: position<em>controllers/JointTrajectoryController
+   joints:
+     - shoulder</em>pan<em>joint
+     - shoulder</em>lift<em>joint
+     - elbow</em>joint
+     - wrist<em>1</em>joint
+     - wrist<em>2</em>joint
+     - wrist<em>3</em>joint
+   constraints:
+      goal<em>time: 0.6
+      stopped</em>velocity<em>tolerance: 0.05
+      shoulder</em>pan<em>joint: {trajectory: 0.1, goal: 0.1}
+      shoulder</em>lift<em>joint: {trajectory: 0.1, goal: 0.1}
+      elbow</em>joint: {trajectory: 0.1, goal: 0.1}
+      wrist<em>1</em>joint: {trajectory: 0.1, goal: 0.1}
+      wrist<em>2</em>joint: {trajectory: 0.1, goal: 0.1}
+      wrist<em>3</em>joint: {trajectory: 0.1, goal: 0.1}
+   stop<em>trajectory</em>duration: 0.5
+   state<em>publish</em>rate:  125
+   action<em>monitor</em>rate: 10</p>
+
+<p># state<em>publish</em>rate:  50 # Defaults to 50
+   # action<em>monitor</em>rate: 20 # Defaults to 20
+   #hold<em>trajectory</em>duration: 0 # Defaults to 0.5</p>
+
+<h1>Joint Trajectory Controller - velocity based -------------------------------</h1>
+
+<h1>For detailed explanations of parameter see <a href="http://wiki.ros.org/joint_trajectory_controller">http://wiki.ros.org/joint_trajectory_controller</a></h1>
+
+<p>joint<em>group</em>vel<em>controller:
+   type: velocity</em>controllers/JointGroupVelocityController
+   joints:
+     - shoulder<em>pan</em>joint
+     - shoulder<em>lift</em>joint
+     - elbow<em>joint
+     - wrist</em>1<em>joint
+     - wrist</em>2<em>joint
+     - wrist</em>3<em>joint
+   constraints:
+      goal</em>time: 0.6
+      stopped<em>velocity</em>tolerance: 0.05
+      shoulder<em>pan</em>joint: {trajectory: 0.1, goal: 0.1}
+      shoulder<em>lift</em>joint: {trajectory: 0.1, goal: 0.1}
+      elbow<em>joint: {trajectory: 0.1, goal: 0.1}
+      wrist</em>1<em>joint: {trajectory: 0.1, goal: 0.1}
+      wrist</em>2<em>joint: {trajectory: 0.1, goal: 0.1}
+      wrist</em>3<em>joint: {trajectory: 0.1, goal: 0.1}
+   stop</em>trajectory<em>duration: 0.5
+   state</em>publish<em>rate:  125
+   action</em>monitor<em>rate: 10
+   gains:
+      #!!These values are useable, but maybe not optimal
+      shoulder</em>pan<em>joint: {p: 1.2,  i: 0.0, d: 0.1, i</em>clamp: 1}
+      shoulder<em>lift</em>joint: {p: 1.2,  i: 0.0, d: 0.1, i<em>clamp: 1}
+      elbow</em>joint: {p: 1.2,  i: 0.0, d: 0.1, i<em>clamp: 1}
+      wrist</em>1<em>joint: {p: 1.2,  i: 0.0, d: 0.1, i</em>clamp: 1}
+      wrist<em>2</em>joint: {p: 1.2,  i: 0.0, d: 0.1, i<em>clamp: 1}
+      wrist</em>3<em>joint: {p: 1.2,  i: 0.0, d: 0.1, i</em>clamp: 1}</p>
+
+<p># state<em>publish</em>rate:  50 # Defaults to 50
+   # action<em>monitor</em>rate: 20 # Defaults to 20
+   #hold<em>trajectory</em>duration: 0 # Defaults to 0.5</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-10 00:33:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Two comments:</p>
+
+<ol>
+<li>please include all relevant code in your question. If (or more: <em>when</em>) your repository gets deleted, this question will lose all its value</li>
+<li>depending on the code, this is most likely <em>not</em> related to the fact that you&#39;re using a UR5 at all. I&#39;ve updated the title of your question and left the &#39;UR5&#39; reference in there for now.</li>
+</ol>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-10 01:57:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your reply, I&#39;ve updated the question to include all my codes.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-10 03:59:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve reformatted it a bit, but there are still many, many empty lines. Please remove those.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-10 06:36:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>There are quite a few things that could be improved here:</p>
+
+<ol>
+<li>don&#39;t create <code>Publisher</code>s or <code>Subscriber</code>s <em>inside</em> callbacks or <code>while</code> loops. Create them in the initialisation phase of your program and keep them around. Then reference them when you need them.</li>
+<li>I don&#39;t understand why you have <code>rate.sleep()</code> in various locations in your code. Sleeping at random places doesn&#39;t make loops or callbacks run at a specific frequency, it just introduces a delay.</li>
+<li>why are you using the <code>joint_velocity</code> topic? Are you using the <code>master</code> branch of the <code>ur_modern_driver</code>? If so, please switch to <code>kinetic-devel</code> and start using the <code>JointGroupVelocityController</code></li>
+<li>overall the code is quite messy and hard to read. You may want to structure it a bit better</li>
+<li>topic names that start with a digit (ie: <code>3_point_features</code>) are illegal.</li>
+</ol>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-10 06:41:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your reply! </p>
+
+<ol>
+<li><p>I thought the infinite loop for callbacks could be used for publishing as well. I will rectify that.</p></li>
+<li><p>I thought we always had to specify the rate of publishing? I had a misconception there, most of the ros codes had it, so I assumed it was necessary. I have now changed it and the delay is a lot less. Not gone completely, but a lot lesser.</p></li>
+<li><p>Yes I am using the ur_modern_driver package. I will look into that package at my earliest.</p></li>
+<li><p>I am really sorry for this, I understand that the code has been very messy and I did plan to clean it up once I had the basic program running.</p></li>
+<li><p>I&#39;ve seen this...I wasn&#39;t really bothered about it because it was just a warning. I&#39;ll change that.</p></li>
+</ol>
+
+<p>I&#39;ll update the post once I&#39;ve worked on that package.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-10 07:24:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Okay, I cannot figure out how to implement ros_control to replace my ur_modern_driver package. Can you help or guide me in any way? I&#39;ve gone through the documentations, most of it as well as the package I&#39;m using is in CPP and i&#39;m not very good at cpp. Can I email you, if you wouldn&#39;t mind?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-10 13:06:12 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Okay, I cannot figure out how to implement ros_control to replace my ur_modern_driver package.</p>
+</blockquote>
+
+<p>That&#39;s not what you should do.</p>
+
+<p>Start <code>ur_modern_driver</code> in <code>ros_control</code> mode (with the appropriate <code>.launch</code> file) and start publishing messages to the <code>command</code> topic of the <code>JointGroupVelocityController</code> after you&#39;ve made <code>joint_group_vel_controller</code> the active controller.</p>
+
+<blockquote>
+<p>Can I email you, if you wouldn&#39;t mind?</p>
+</blockquote>
+
+<p>No, let&#39;s keep this on ROS Answers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-11 02:32:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>okay so the launch shell code goes something like this </p>
+
+<p>roslaunch ur_modern_driver ur5_bringup.launch robot_ip:=(robot_ip) </p>
+
+<p>I&#39;ve edited the following ur5_ros_control.launch code, made the changes in the yaml file, but i cannot see any topic named command in the rostopic list. I have edited the question to include the yaml and the launch file.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-11 03:38:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Have you made sure to make the <code>joint_group_vel_controller</code> controller active? It isn&#39;t by default, so you&#39;ll need to switch to it. You&#39;ll want to use the <a href="http://wiki.ros.org/controller_manager#Services">switch_controller</a> service -- possibly from the command line.</p>
+
+<blockquote>
+<p>I&#39;ve edited the following ur5_ros_control.launch code,</p>
+</blockquote>
+
+<p>why? The default should work.</p>
+
+<blockquote>
+<p>made the changes in the yaml file</p>
+</blockquote>
+
+<p>which changes? The <a href="https://github.com/ros-industrial/ur_modern_driver/blob/6b818fa149bcd070131d6b04e5d97e2f67d28684/config/ur5_controllers.yaml#L98-L107">defaults already include the controller</a>.</p>
+
+<blockquote>
+<p>I have edited the question to include the yaml and the launch file.</p>
+</blockquote>
+
+<p>why? Those look like the default files, minus the <code>joint_group_vel_controller</code> entry.</p>
+
+<p>Please make sure you are using the <code>kinetic-devel</code> branch. <strong>Not</strong> <code>master</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-11 03:40:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just an update, i got that controller working just before you replied, the robot is moving, but the lag is still there. And for some reason the visual servoing algorithm is not working as it is supposed to. In the last control, the robot was moving towards the desired goal, only to accelerate. Now, the end effector is moving straight down. </p>
+
+<p>The problem with the previous yaml file was that i wrote type: joint_group_velocity_controller/JointGroupVelocityController instead of velocity_controllers. I rectified that from rosservice controller list. </p>
+
+<p>The robot does not stop when i press Ctrl+C to exit the node, which shows that lag is still there. I specified queue as 1, but no improvement.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-11 05:02:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I did not expect the switch to <code>ros_control</code> to solve the problem you describe. I just wanted to make sure you were using the latest code and not the deprecated <code>master</code> version.</p>
+
+<p>Try taking small steps: remove the object recognition and visual servoing and try to implement a simple position controller using the velocity input of the <code>JointGroupVelocityController</code>. That would use the same type of input, but should be much easier to debug.</p>
+
+<p>If/when you get that working, start incorporating more and more of the visual servoing you&#39;re trying to implement.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-11 05:23:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I tried, and the controller is working, but the lag is really large! I exited the run_ur5.py code but the robot would keep moving for around 5-6 seconds more!</p>
+
+<p>without a proper solution to the lag problem, it&#39;s obvious visual servoing won&#39;t work....it will just take the older values even when it&#39;s at the proper location.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-11 05:54:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Seeing as there is very little possibility for this delay being introduced on the <code>ur_modern_driver</code> side, it&#39;s likely that your code is doing something that it shouldn&#39;t.</p>
+
+<p>If you could reduce your problem to a simple and <strong>small</strong> piece of code and show us that, perhaps we can spot an obvious problem.</p>
+
+<p>I&#39;d add it at the top of your current question, and clearly mark it as an MWE that you&#39;re using to test things out. Be sure to use the <em>Preformatted Text</em> button to format it correctly (the one with <code>101010</code> on it).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-11 06:28:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>okay so I have written a very basic publisher, giving a velocity to the third joint(elbow). The run_ur5.py has also been updated to remove the rate.sleep(). This should not have any lag within it, but I&#39;m getting a pretty large lag here. The robot starts moving immediately after i start my node, but keep on moving for 5-6 seconds after i stop the node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-11 07:31:45 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Reducing the situation to just looking at the lag reported by the OP, he implemented a MWE that just publishes a simple velocity to the <code>command</code> topic.</p>
+
+<p>In the MWE we see:</p>
+
+<blockquote>
+<pre><code>  while not rospy.is_shutdown():
+        vels=[0,0,0.05,0,0,0]
+        pub.publish(vels)
+</code></pre>
+</blockquote>
+
+<p>this publishes the same velocity at about the maximum rate your computer is able to achieve -- which for typical PCs these days could be 10000 Hz or faster with these small messages.</p>
+
+<p>@Rik1234: you may want to add a sleep in there to moderate the rate at which this loop is executed. There is no point in publishing any faster than the maximum of the URs control loop, which, if you have a non-e-series controller, would be 125 Hz.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2019-06-11 09:32:18 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes, that was it. Now there is no lag between the robot. However, solving one problem leads to another, and for some reason, my jacobian isn&#39;t working anymore. I loaded the previous controller launch file and the jacobian worked differently in both the controllers.I checked the order of the joints in the yaml file, there is no change there. Why is this happening? Even if I can run the code using the old launch, I would like to know the issue behind this. Also, the operations on both the controllers are extremely jerky. Is there a problem with my visual servoing control algorithm?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-11 15:22:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Maybe this will be a separate question. I&#39;ll ask in a new thread.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-12 23:51:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m not sure why you posted a new question.</p>
+
+<p>Afaik, both the <code>JointGroupVelocityController</code> and the old <code>joint_speed</code> topic use the exact same interface to the robot controller.</p>
+
+<p>Again, as with your initial problem, reduce everything to the absolute minimum and start debugging from there.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-13 02:14:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I did try that. the joint velocities as well as the end effector velocities are different in both the controllers. I asked in a separate question because the original delay problem was solved, and this was a different issue. I was hoping if someone could take a closer look at the code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-13 23:38:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Just to give this thread some closure, I&#39;ve restructured the comments into an answer.</p>
+
+<p>Could you accept the answer if you feel we&#39;ve sufficiently dealt with the lag issue?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-14 03:02:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sure. I&#39;ll do that. Thanks for your help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36084">Rik1234</a> on 2019-06-15 04:18:16 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

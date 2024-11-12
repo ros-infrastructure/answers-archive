@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf_static frames not available in lookup_transform - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/386260">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf_static frames not available in lookup_transform</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100067/tf-static-frames-not-available-in-lookup-transform">https://robotics.stackexchange.com/questions/100067/tf-static-frames-not-available-in-lookup-transform</a>.</p>
+        <p>Running ROS2 Foxy + Ubuntu 20.04</p>
+
+<p>I am using TF2 with Python, rclpy</p>
+
+<p>I created a few /tf_static transforms in my launch file, and I have dynamic frames in /tf. The corresponding kinemaitc chain looks correct when calling </p>
+
+<p>$ ros2 run tf2<em>tools view</em>frames.py</p>
+
+<p>$ evince frames.pdf</p>
+
+<p>However, when I call the transform<em>lookup method (Python) and I pass in the frame names, I get a frame not found exception when I pass the name of a static frame as listed in /tf</em>static</p>
+
+<p>Are tf<em>static frames available for access and correct transforming when calling transform</em>lookup?</p>
+
+<p>UPDATE:</p>
+
+<p>This is working intermittantlly.  I am running the same code / launch file, and sometimes I get the expected result, where all frames are available, and other times they are not available...</p>
+
+<p>Any thoughts??</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27373">scott.nortman@gmail.com</a> on 2021-09-10 21:16:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The lookup shouldn&#39;t care about whether the frame is static or not for detecting it. The best way to think of &quot;frame not found&quot; is that the buffer hasn&#39;t heard about that frame yet.</p>
+
+<p>Without seeing anything more specific my first guess is that you are not giving your buffer enough time to initialize and connect on all the topics and for the static transform publisher to publish the static frame information. This will cause a race condition which will give you intermittent behavior. </p>
+
+<p>The most common fix for this is to catch the exception and try again on the next cycle, or explicitly give time to initialize the transform buffer. But making your algorithm robust to the occasional transform data failure is strongly recommended if possible. This is a common race condition on startup of a distributed system.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2021-09-12 02:12:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I found a workaround after about 8 hours of tears. The commented code is the first attempt that did not work.</p>
+
+<pre><code>              import asyncio
+...
+                tf_future = self.tf_buffer.wait_for_transform_async(
+                    target_frame=pose_stamped.header.frame_id,
+                    source_frame=reference_frame,
+                    time=rclpy.time.Time()
+                )
+
+                rclpy.spin_until_future_complete(self, tf_future)
+                print(&quot;Got it!&quot;)
+
+#                world_to_reference_transform = self.tf_buffer.lookup_transform(
+#                    pose_stamped.header.frame_id,
+#                    reference_frame,
+#                    rclpy.time.Time(),
+#                    timeout=rclpy.duration.Duration(seconds=5.0))
+
+                world_to_reference_transform = asyncio.run(self.tf_buffer.lookup_transform_async(
+                    pose_stamped.header.frame_id,
+                    reference_frame,
+                    rclpy.time.Time()
+                ))
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21281"></a> on 2023-02-16 18:22:22 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>+1 for <code>wait_for_transform_async</code> and <code>spin_until_future_complete</code> combo, as I think those helped my tf-buffer when it was struggling to lookup (I didn&#39;t have to use <code>asyncio</code>). I don&#39;t think these are needed particularly for static-stansform as I do see static tf is looked up without (albeit I&#39;m still new to ros2, so mine is just another anecdote).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/875">130s</a> on 2023-05-05 15:11:05 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>My answer may be broader than what OP is asking, but because the initial motivation was the same for me to start tackling (static_transform not looked up via Python api in ROS2 for me), I share here what I found. It&#39;s embarrassing to admit that simple mistake. </p>
+
+<p>Simply, I just had to run lookup AFTER spin at least once.</p>
+
+<p>The following code is verified to lookup with <a href="https://github.com/ros/geometry_tutorials/tree/ros2/turtle_tf2_py">turtle_tf2_py</a> tutorial along with <a href="https://docs.ros.org/en/galactic/Tutorials/Intermediate/Tf2/Writing-A-Tf2-Static-Broadcaster-Py.html">online tutorial (docs.ros.org/en/galactic/Tutorials/Intermediate/Tf2)</a>. Worked with <code>static_transform</code> too.</p>
+
+<p>Btw, I still haven&#39;t had &quot;try2&quot; approach working (the one @AndyZe <a href="https://answers.ros.org/question/386260/tf_static-frames-not-available-in-lookup_transform/?answer=412608#post-id-412608">suggested</a>). I doubt there <em>may</em> be some issues as I see <a href="https://github.com/ros2/rclpy/issues/989">rclpy#989</a>? No idea.</p>
+
+<pre><code>#!/usr/bin/python3
+
+import asyncio
+import time
+import yaml
+
+import rclpy
+import tf2_ros
+from tf2_ros import TransformException
+
+class TfFramesFinder(rclpy.node.Node):
+    def __init__(self):
+        super().__init__(&quot;tf2_frames_finder&quot;)
+        self._tf_buffer = tf2_ros.buffer.Buffer()
+        self._tf_listener = tf2_ros.transform_listener.TransformListener(self._tf_buffer, self, spin_thread = False)
+
+    def try3(self, target_f=&quot;kts2_table_frame&quot;, source_f=&quot;world&quot;):
+        self.get_logger().info(&quot;Getting it3!&quot;)
+        _MAX_ATTEMPTS = 15
+        _attempts = 0
+        _transform_res = None
+        while _attempts &lt; _MAX_ATTEMPTS:
+        _time_snapshot = rclpy.time.Time()
+            try:
+                self.get_logger().info(&quot;Looking up {}th time&quot;.format(_attempts))
+
+                _transform_res = self._tf_buffer.lookup_transform(
+                    target_f,
+                    source_f,
+                    _time_snapshot)
+                break
+            except TransformException as ex:
+                if _MAX_ATTEMPTS &lt; _attempts:
+                    raise RuntimeError(
+                        f&quot;Could not transform &#39;{target_f}&#39; to &#39;{source_f}&#39; at the time &#39;{_time_snapshot}&#39;.: {ex}&quot;)
+                else:
+                    self.get_logger().warn(&quot;Failed {} times&quot;.format(_attempts))
+                    time.sleep(1)
+            _attempts += 1
+        self.get_logger().info(&quot;x: {}, y: {}&quot;.format(
+            _transform_res.transform.translation.x, _transform_res.transform.translation.y))
+
+    def try2(self, target_f=&quot;kts2_table_frame&quot;, source_f=&quot;world&quot;):
+        self.get_logger().info(&quot;Getting it!&quot;)
+        tf_future = self._tf_buffer.wait_for_transform_async(
+            target_frame=target_f,
+            source_frame=source_f,
+            time=rclpy.time.Time())
+        self.get_logger().info(&quot;wait_for_transform_async returned. tf_future: {}&quot;.format(tf_future))
+        rclpy.spin_until_future_complete(self, tf_future)
+        self.get_logger().info(&quot;spin_until_future_complete returned.&quot;)
+        world_to_reference_transform = asyncio.run(self._tf_buffer.lookup_transform_async(
+            target_f, source_f, rclpy.time.Time()))
+
+rclpy.init()
+node = TfFramesFinder()
+#frame_parent = &quot;turtle2&quot;
+frame_parent = &quot;world&quot;
+#frame_child = &quot;turtle2&quot;
+frame_child = &quot;static_3&quot;
+try:
+    rclpy.spin_once(node)
+    node.try3(
+        target_f=frame_parent,
+        source_f=frame_child)
+except KeyboardInterrupt as e:
+    print(&quot;k/b interrupted&quot;)
+
+node.destroy_node()
+rclpy.shutdown()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/875"></a> on 2023-05-04 16:35:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>My takeaway is to avoid Python in ROS2 like the plague  :/</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2023-05-05 15:58:41 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

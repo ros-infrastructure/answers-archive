@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>move_base corrupt linked list - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/237927">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>move_base corrupt linked list</h2>
+      <div class="question">
+        <p>I have the navigation stack working, but the move_base node is consistently crashing. The behavior is very consistent; eventually it crashes with the same error every time. The amount of time it takes to crash does vary. I&#39;m going to post this same question on the </p>
+
+<p>Here&#39;s the exact error, each time corresponding to the following warning: </p>
+
+<pre><code>[ WARN] [1466704185.100935930]: InflationLayer::updateCosts(): seen_ array size is wrong
+</code></pre>
+
+<p>and the error: </p>
+
+<pre><code>*** Error in `/opt/ros/indigo/lib/move_base/move_base&#39;: corrupted double-linked list: 0x00000000029ad9b0 ***
+[move_base-1] process has died [pid 8680, exit code -6, cmd /opt/ros/indigo/lib/move_base/move_base cmd_vel:=/mobility_base/cmd_vel odom:=/odometry/filtered map:=/rtabmap/proj_map __name:=move_base __log:=/home/mb/.ros/log/4d826ab2-396a-11e6-ad82-b8aeed747f2b/move_base-1.log].
+log file: /home/mb/.ros/log/4d826ab2-396a-11e6-ad82-b8aeed747f2b/move_base-1*.log
+all processes on machine have died, roslaunch will exit
+</code></pre>
+
+<p>Unfortunately, the log file isn&#39;t actually written, so I haven&#39;t been able to get any useful information from there. I&#39;ve done some googling and the only thing I can turn up is line 192 of the source of costmap<em>2d&#39;s inflation</em>layer.cpp (<a href="http://docs.ros.org/jade/api/costmap_2d/html/inflation__layer_8cpp_source.html">http://docs.ros.org/jade/api/costmap_2d/html/inflation__layer_8cpp_source.html</a>). So it seems deleting the seen_ array of costmap<em>2d&#39;s inflation layer is causing a corruption of a linked list somewhere else. What&#39;s odd is the warning doesn&#39;t always cause the error. I&#39;m thinking it might be cause by how rtabmap is updating proj</em>map, but I&#39;m somewhat shooting in the dark. Any insight would be helpful. </p>
+
+<p>Here&#39;s my basic robot setup. A kinectv1 mounted on the robot with rtabmap<em>ros for odometry and mapping. The move</em>base package uses the following:</p>
+
+<p>base<em>local</em>planner_params.yaml</p>
+
+<pre><code>TrajectoryPlannerROS:
+  acc_lim_x:  1.0
+  acc_lim_y:  1.0
+  acc_lim_theta: 2.0
+  max_vel_x:  0.4
+  min_vel_x:  0.05
+  escape_vel: -0.05
+  max_vel_theta: 0.5
+  min_vel_theta: -0.5
+  min_in_place_vel_theta: 0.01
+  holonomic_robot: true
+  y_vels: [-0.3, -0.05, 0.05, 0.3]
+
+  xy_goal_tolerance:  0.03
+  yaw_goal_tolerance: 0.05
+  latch_xy_goal_tolerance: true
+
+  # make sure that the minimum velocity multiplied by the sim_period is less than twice the tolerance on a goal. Otherwise, the robot will prefer to rotate in place just outside of range of its target position rather than moving towards the goal.
+  sim_time: 1.5 # set between 1 and 2. The higher he value, the smoother the path (though more samples would be required).
+  sim_granularity: 0.025
+  angular_sim_granularity: 0.025
+  vx_samples: 12
+  vtheta_samples: 20
+
+  meter_scoring: true
+
+  pdist_scale: 0.7 # The higher will follow more the global path.
+  gdist_scale: 0.8
+  occdist_scale: 0.03
+  publish_cost_grid_pc: false
+
+# move_base controller_frequency
+controller_frequency: 5.0 
+
+# global planner 
+NavfnROS:
+  allow_unknown: true
+  visualize_potential: false
+</code></pre>
+
+<p>costmap<em>common</em>params.yaml</p>
+
+<pre><code>footprint: [[0.42, -0.43], [0.42, 0.43], [-0.42, 0.43], [-0.42, -0.43]]
+footprint_padding: 0.02
+
+inflation_layer:
+  inflation_radius: 0.02
+
+transform_tolerance: 2
+
+obstacle_layer:
+  obstacle_range: 3.0
+  raytrace_range: 3.5
+  track_unknown_space: false
+
+  observation_sources: point_cloud_sensor
+
+  point_cloud_sensor: {
+    sensor_frame: /camera_link,
+    data_type: PointCloud2,
+    topic: /rtabmap/cloud_map,
+    expected_update_rate: 1.0,
+    max_obstacle_height: 3.0,
+    min_obstacle_height: 0.1,
+    marking: true,
+    clearing: true
+  }
+</code></pre>
+
+<p>global<em>costmap</em>params.yaml</p>
+
+<pre><code>global_costmap:
+  global_frame: /map
+  robot_base_frame: base_footprint
+  update_frequency: 0.5
+  publish_frequency: 0.5
+  always_send_full_costmap: true
+  static_map: true
+
+  plugins:
+     - {name: static_layer, type: &quot;rtabmap_ros::StaticLayer&quot;}
+     - {name: obstacle_layer, type: &quot;costmap_2d::ObstacleLayer&quot;}
+     - {name: inflation_layer, type: &quot;costmap_2d::InflationLayer&quot;}
+
+local_costmap_params.yaml
+local_costmap:
+  global_frame: odom
+  robot_base_frame: base_footprint
+  update_frequency: 1
+  publish_frequency: 1
+  static_map: false
+  rolling_window: true
+  width: 6.0
+  height: 6.0
+  resolution: 0.025
+  #origin_x: -3.0
+  #origin_y: -3.0
+
+  plugins:
+    - {name: obstacle_layer,   type: &quot;costmap_2d::ObstacleLayer&quot;}
+    - {name: inflation_layer,  type: &quot;costmap_2d::InflationLayer&quot;}
+</code></pre>
+
+<p>And here&#39;s my rtabmap.launch</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;!-- specific additional params --&gt;
+  &lt;arg name=&quot;publish_odom_tf&quot;       default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;publish_map_tf&quot;        default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;proj_min_cluster_size&quot; default=&quot;2.0&quot;/&gt;
+
+  &lt;!-- Localization-only mode --&gt;
+  &lt;arg name=&quot;localization&quot;            default=&quot;true&quot;/&gt;
+
+  &lt;arg if=&quot;$(arg localization)&quot; name=&quot;mapping&quot; value=&quot;false&quot; /&gt;
+  &lt;arg unless=&quot;$(arg localization)&quot; name=&quot;mapping&quot; value=&quot;true&quot; /&gt;
+
+  &lt;!-- Convenience launch file to launch odometry, rtabmap and rtabmapviz nodes at once --&gt;
+
+  &lt;!-- For rgbd:=true
+        Your RGB-D sensor should be already started with &quot;depth_registration:=true&quot;.
+        Examples:
+           $ roslaunch freenect_launch freenect.launch depth_registration:=true 
+           $ roslaunch openni2_launch openni2.launch depth_registration:=true --&gt;
+
+  &lt;!-- For stereo:=true
+        Your camera should be calibrated and publishing rectified left and right 
+        images + corresponding camera_info msgs. You can use stereo_image_proc for image rectification.
+        Example:
+           $ roslaunch rtabmap_ros bumblebee.launch --&gt;
+
+  &lt;!-- Choose between RGB-D and stereo --&gt;      
+  &lt;arg name=&quot;rgbd&quot;            default=&quot;true&quot;/&gt;
+  &lt;arg name=&quot;stereo&quot;          default=&quot;false&quot;/&gt;
+
+  &lt;!-- Choose visualization --&gt;
+  &lt;arg name=&quot;rtabmapviz&quot;              default=&quot;false&quot; /&gt; 
+  &lt;arg name=&quot;rviz&quot;                    default=&quot;false&quot; /&gt;
+
+  &lt;!-- Corresponding config files --&gt;
+  &lt;arg name=&quot;cfg&quot;                     default=&quot;&quot; /&gt; &lt;!-- To change RTAB-Map&#39;s parameters, set the path of config file (*.ini) generated by the standalone app --&gt;
+  &lt;arg name=&quot;gui_cfg&quot;                 default=&quot;~/.ros/rtabmap_gui.ini&quot; /&gt;
+  &lt;arg name=&quot;rviz_cfg&quot;                default=&quot;-d $(find rtabmap_ros)/launch/config/rgbd.rviz&quot; /&gt;
+
+  &lt;arg name=&quot;frame_id&quot;                default=&quot;base_link&quot;/&gt;     &lt;!-- Fixed frame id, you may set &quot;base_link&quot; or &quot;base_footprint&quot; if they are published --&gt;
+  &lt;arg name=&quot;namespace&quot;               default=&quot;rtabmap&quot;/&gt;
+  &lt;arg name=&quot;database_path&quot;           default=&quot;~/.ros/rtabmap.db&quot;/&gt;
+  &lt;arg name=&quot;queue_size&quot;              default=&quot;10&quot;/&gt;
+  &lt;arg name=&quot;wait_for_transform&quot;      default=&quot;0.5&quot;/&gt;
+
+  &lt;arg if=&quot;$(arg localization)&quot; name=&quot;rtabmap_args&quot; value=&quot;&quot; /&gt;
+  &lt;arg unless=&quot;$(arg localization)&quot; name=&quot;rtabmap_args&quot; value=&quot;--delete_db_on_start&quot; /&gt;
+
+  &lt;arg name=&quot;launch_prefix&quot;           default=&quot;&quot;/&gt;              &lt;!-- for debugging purpose, it fills launch-prefix tag of the nodes --&gt;
+
+  &lt;!-- RGB-D related topics --&gt;
+  &lt;arg name=&quot;rgb_topic&quot;               default=&quot;/camera/rgb/image_rect_color&quot; /&gt;
+  &lt;arg name=&quot;depth_topic&quot;             default=&quot;/camera/depth_registered/image_raw&quot; /&gt;
+  &lt;arg name=&quot;camera_info_topic&quot;       default=&quot;/camera/rgb/camera_info&quot; /&gt;
+
+  &lt;!-- stereo related topics --&gt;
+  &lt;arg name=&quot;stereo_namespace&quot;        default=&quot;/stereo_camera&quot;/&gt;
+  &lt;arg name=&quot;left_image_topic&quot;        default=&quot;$(arg stereo_namespace)/left/image_rect_color&quot; /&gt;
+  &lt;arg name=&quot;right_image_topic&quot;       default=&quot;$(arg stereo_namespace)/right/image_rect&quot; /&gt;      &lt;!-- using grayscale image for efficiency --&gt;
+  &lt;arg name=&quot;left_camera_info_topic&quot;  default=&quot;$(arg stereo_namespace)/left/camera_info&quot; /&gt;
+  &lt;arg name=&quot;right_camera_info_topic&quot; default=&quot;$(arg stereo_namespace)/right/camera_info&quot; /&gt;
+  &lt;arg name=&quot;approx_sync&quot;             default=&quot;false&quot;/&gt;         &lt;!-- if timestamps of the stereo images are not synchronized --&gt;
+
+  &lt;arg name=&quot;compressed&quot;              default=&quot;false&quot;/&gt;         &lt;!-- If you want to subscribe to compressed image topics --&gt;
+                                                                &lt;!-- For depth_topic, &quot;compressedDepth&quot; image_transport is used. --&gt; 
+                                                                &lt;!-- For rgb_topic, see &quot;rgb_image_transport&quot; argument. --&gt;
+  &lt;arg name=&quot;rgb_image_transport&quot;     default=&quot;compressed&quot;/&gt;    &lt;!-- Common types: compressed, theora (see &quot;rosrun image_transport list_transports&quot;) --&gt;
+
+  &lt;arg name=&quot;subscribe_scan&quot;          default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;scan_topic&quot;              default=&quot;/scan&quot;/&gt;
+
+  &lt;arg name=&quot;subscribe_scan_cloud&quot;    default=&quot;false&quot;/&gt;
+  &lt;arg name=&quot;scan_cloud_topic&quot;        default=&quot;/scan_cloud&quot;/&gt;
+
+  &lt;arg name=&quot;visual_odometry&quot;         default=&quot;true&quot;/&gt;          &lt;!-- Launch rtabmap visual odometry node --&gt;
+  &lt;arg name=&quot;odom_topic&quot;              default=&quot;/odom&quot;/&gt;         &lt;!-- Odometry topic used if visual_odometry is false --&gt;
+  &lt;arg name=&quot;odom_args&quot;               default=&quot;$(arg rtabmap_args)&quot;/&gt;
+
+  &lt;!-- These arguments should not be modified directly, see referred topics without &quot;_relay&quot; suffix above --&gt;
+  &lt;arg if=&quot;$(arg compressed)&quot;     name=&quot;rgb_topic_relay&quot;           default=&quot;$(arg rgb_topic)_relay&quot;/&gt;
+  &lt;arg unless=&quot;$(arg compressed)&quot; name=&quot;rgb_topic_relay&quot;           default=&quot;$(arg rgb_topic)&quot;/&gt;
+  &lt;arg if=&quot;$(arg compressed)&quot;     name=&quot;depth_topic_relay&quot;         default=&quot;$(arg depth_topic)_relay&quot;/&gt;
+  &lt;arg unless=&quot;$(arg compressed)&quot; name=&quot;depth_topic_relay&quot;         default=&quot;$(arg depth_topic)&quot;/&gt;
+  &lt;arg if=&quot;$(arg compressed)&quot;     name=&quot;left_image_topic_relay&quot;    default=&quot;$(arg left_image_topic)_relay&quot;/&gt;
+  &lt;arg unless=&quot;$(arg compressed)&quot; name=&quot;left_image_topic_relay&quot;    default=&quot;$(arg left_image_topic)&quot;/&gt;
+  &lt;arg if=&quot;$(arg compressed)&quot;     name=&quot;right_image_topic_relay&quot;   default=&quot;$(arg right_image_topic)_relay&quot;/&gt;
+  &lt;arg unless=&quot;$(arg compressed)&quot; name=&quot;right_image_topic_relay&quot;   default=&quot;$(arg right_image_topic)&quot;/&gt;
+
+  &lt;!-- algorithm params --&gt;
+  &lt;arg name=&quot;strategy&quot; default=&quot;0&quot; /&gt;
+  &lt;arg name=&quot;feature&quot; default=&quot;6&quot; /&gt;
+  &lt;arg name=&quot;nn&quot; default=&quot;3&quot; /&gt;
+  &lt;arg name=&quot;max_depth&quot; default=&quot;5.0&quot; /&gt;
+  &lt;arg name=&quot;min_inliers&quot; default=&quot;15&quot; /&gt;
+  &lt;arg name=&quot;inlier_distance&quot; default=&quot;0.02&quot; /&gt;
+  &lt;arg name=&quot;local_map&quot; default=&quot;2000&quot; /&gt;
+  &lt;arg name=&quot;gftt_max_corners&quot; default=&quot;1000&quot; /&gt;
+  &lt;arg name=&quot;gftt_min_distance&quot; default=&quot;7&quot; /&gt;
+
+  &lt;!-- Nodes --&gt;
+  &lt;group ns=&quot;$(arg namespace)&quot;&gt;
+
+
+    &lt;!-- RGB-D Odometry --&gt;
+    &lt;group if=&quot;$(arg rgbd)&quot;&gt;
+      &lt;node if=&quot;$(arg compressed)&quot; name=&quot;republish_rgb&quot; type=&quot;republish&quot; pkg=&quot;image_transport&quot; args=&quot;$(arg rgb_image_transport) in:=$(arg rgb_topic) raw out:=$(arg rgb_topic_relay)&quot; /&gt;
+      &lt;node if=&quot;$(arg compressed)&quot; name=&quot;republish_depth&quot; type=&quot;republish&quot; pkg=&quot;image_transport&quot; args=&quot;compressedDepth in:=$(arg depth_topic) raw out:=$(arg depth_topic_relay)&quot; /&gt;
+
+      &lt;node if=&quot;$(arg visual_odometry)&quot; pkg=&quot;rtabmap_ros&quot; type=&quot;rgbd_odometry&quot; name=&quot;rgbd_odometry&quot; output=&quot;screen&quot; args=&quot;$(arg odom_args)&quot; launch-prefix=&quot;$(arg launch_prefix)&quot;&gt;
+        &lt;remap from=&quot;rgb/image&quot;       to=&quot;$(arg rgb_topic_relay)&quot;/&gt;
+        &lt;remap from=&quot;depth/image&quot;     to=&quot;$(arg depth_topic_relay)&quot;/&gt;
+        &lt;remap from=&quot;rgb/camera_info&quot; to=&quot;$(arg camera_info_topic)&quot;/&gt;
+
+        &lt;param name=&quot;frame_id&quot;                    type=&quot;string&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+        &lt;param name=&quot;wait_for_transform_duration&quot; type=&quot;double&quot; value=&quot;$(arg wait_for_transform)&quot;/&gt;
+        &lt;param name=&quot;config_path&quot;                 type=&quot;string&quot; value=&quot;$(arg cfg)&quot;/&gt;
+        &lt;param name=&quot;queue_size&quot;                  type=&quot;int&quot;    value=&quot;$(arg queue_size)&quot;/&gt;
+        &lt;param name=&quot;publish_tf&quot;                  type=&quot;bool&quot;   value=&quot;$(arg publish_odom_tf)&quot; /&gt;      
+
+        &lt;!-- Force 2D odometry --&gt;
+        &lt;param name=&quot;Reg/Force2D&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt; 
+        &lt;param name=&quot;Reg/Force3DoF&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt; 
+
+        &lt;param name=&quot;Vis/EstimationType&quot; type=&quot;string&quot; value=&quot;$(arg strategy)&quot;/&gt;
+        &lt;param name=&quot;Vis/CorNNType&quot; type=&quot;string&quot; value=&quot;$(arg nn)&quot;/&gt;
+        &lt;param name=&quot;Vis/MaxDepth&quot; type=&quot;string&quot; value=&quot;$(arg max_depth)&quot;/&gt;  
+        &lt;param name=&quot;Vis/MinInliers&quot; type=&quot;string&quot; value=&quot;$(arg min_inliers)&quot;/&gt; 
+        &lt;param name=&quot;Vis/InlierDistance&quot; type=&quot;string&quot; value=&quot;$(arg inlier_distance)&quot;/&gt;       
+        &lt;param name=&quot;OdomF2M/LocalHistorySize&quot; type=&quot;string&quot; value=&quot;$(arg local_map)&quot;/&gt;
+        &lt;param name=&quot;Vis/MaxFeatures&quot; type=&quot;string&quot; value=&quot;$(arg gftt_max_corners)&quot;/&gt;
+        &lt;param name=&quot;GFTT/MinDistance&quot; type=&quot;string&quot; value=&quot;$(arg gftt_min_distance)&quot;/&gt;
+      &lt;/node&gt;
+    &lt;/group&gt;
+
+    &lt;!-- Stereo Odometry --&gt;
+    &lt;group if=&quot;$(arg stereo)&quot;&gt;
+      &lt;node if=&quot;$(arg compressed)&quot; name=&quot;republish_left&quot;  type=&quot;republish&quot; pkg=&quot;image_transport&quot; args=&quot;compressed in:=$(arg left_image_topic) raw out:=$(arg left_image_topic_relay)&quot; /&gt;
+      &lt;node if=&quot;$(arg compressed)&quot; name=&quot;republish_right&quot; type=&quot;republish&quot; pkg=&quot;image_transport&quot; args=&quot;compressed in:=$(arg right_image_topic) raw out:=$(arg right_image_topic_relay)&quot; /&gt;
+
+      &lt;node if=&quot;$(arg visual_odometry)&quot; pkg=&quot;rtabmap_ros&quot; type=&quot;stereo_odometry&quot; name=&quot;stereo_odometry&quot; output=&quot;screen&quot; args=&quot;$(arg rtabmap_args)&quot; launch-prefix=&quot;$(arg launch_prefix)&quot;&gt;
+        &lt;remap from=&quot;left/image_rect&quot;        to=&quot;$(arg left_image_topic_relay)&quot;/&gt;
+        &lt;remap from=&quot;right/image_rect&quot;       to=&quot;$(arg right_image_topic_relay)&quot;/&gt;
+        &lt;remap from=&quot;left/camera_info&quot;       to=&quot;$(arg left_camera_info_topic)&quot;/&gt;
+        &lt;remap from=&quot;right/camera_info&quot;      to=&quot;$(arg right_camera_info_topic)&quot;/&gt;
+
+        &lt;param name=&quot;frame_id&quot;                    type=&quot;string&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+        &lt;param name=&quot;wait_for_transform_duration&quot; type=&quot;double&quot; value=&quot;$(arg wait_for_transform)&quot;/&gt;
+        &lt;param name=&quot;approx_sync&quot;                 type=&quot;bool&quot;   value=&quot;$(arg approx_sync)&quot;/&gt;
+        &lt;param name=&quot;config_path&quot;                 type=&quot;string&quot; value=&quot;$(arg cfg)&quot;/&gt;
+        &lt;param name=&quot;queue_size&quot;                  type=&quot;int&quot; value=&quot;$(arg queue_size)&quot;/&gt;
+      &lt;/node&gt;
+    &lt;/group&gt;
+
+    &lt;!-- Visual SLAM (robot side) --&gt;
+    &lt;!-- args: &quot;delete_db_on_start&quot; and &quot;udebug&quot; --&gt;
+    &lt;node name=&quot;rtabmap&quot; pkg=&quot;rtabmap_ros&quot; type=&quot;rtabmap&quot; output=&quot;screen&quot; args=&quot;$(arg rtabmap_args)&quot; launch-prefix=&quot;$(arg launch_prefix)&quot;&gt;
+      &lt;param name=&quot;subscribe_depth&quot;      type=&quot;bool&quot;   value=&quot;$(arg rgbd)&quot;/&gt;
+      &lt;param name=&quot;subscribe_stereo&quot;     type=&quot;bool&quot;   value=&quot;$(arg stereo)&quot;/&gt;
+      &lt;param name=&quot;subscribe_scan&quot;       type=&quot;bool&quot;   value=&quot;$(arg subscribe_scan)&quot;/&gt;
+      &lt;param name=&quot;subscribe_scan_cloud&quot; type=&quot;bool&quot;   value=&quot;$(arg subscribe_scan_cloud)&quot;/&gt;
+      &lt;param name=&quot;frame_id&quot;             type=&quot;string&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+      &lt;param name=&quot;publish_tf&quot;           type=&quot;bool&quot;   value=&quot;$(arg publish_map_tf)&quot; /&gt;      
+      &lt;param name=&quot;wait_for_transform_duration&quot;  type=&quot;double&quot;   value=&quot;$(arg wait_for_transform)&quot;/&gt;
+      &lt;param name=&quot;database_path&quot;        type=&quot;string&quot; value=&quot;$(arg database_path)&quot;/&gt;
+      &lt;param name=&quot;stereo_approx_sync&quot;   type=&quot;bool&quot;   value=&quot;$(arg approx_sync)&quot;/&gt;
+      &lt;param name=&quot;config_path&quot;          type=&quot;string&quot; value=&quot;$(arg cfg)&quot;/&gt;
+      &lt;param name=&quot;queue_size&quot;           type=&quot;int&quot; value=&quot;$(arg queue_size)&quot;/&gt;
+
+      &lt;remap from=&quot;rgb/image&quot;       to=&quot;$(arg rgb_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;depth/image&quot;     to=&quot;$(arg depth_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;rgb/camera_info&quot; to=&quot;$(arg camera_info_topic)&quot;/&gt;
+
+      &lt;remap from=&quot;left/image_rect&quot;        to=&quot;$(arg left_image_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;right/image_rect&quot;       to=&quot;$(arg right_image_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;left/camera_info&quot;       to=&quot;$(arg left_camera_info_topic)&quot;/&gt;
+      &lt;remap from=&quot;right/camera_info&quot;      to=&quot;$(arg right_camera_info_topic)&quot;/&gt;
+
+      &lt;remap from=&quot;scan&quot;                   to=&quot;$(arg scan_topic)&quot;/&gt;
+      &lt;remap from=&quot;scan_cloud&quot;             to=&quot;$(arg scan_cloud_topic)&quot;/&gt;
+      &lt;remap unless=&quot;$(arg visual_odometry)&quot; from=&quot;odom&quot;  to=&quot;$(arg odom_topic)&quot;/&gt;
+
+      &lt;!-- Force 2D mapping  (constrained to x-y plane + yaw) --&gt;
+      &lt;param name=&quot;Reg/Force3DoF&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt;
+      &lt;param name=&quot;Reg/Force2D&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt;
+      &lt;param name=&quot;Optimizer/Slam2D&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt;
+
+      &lt;param name=&quot;Rtabmap/DetectionRate&quot; type=&quot;string&quot; value=&quot;3.0&quot; /&gt;
+      &lt;param name=&quot;DbSqlite3/InMemory&quot; type=&quot;string&quot; value=&quot;true&quot; /&gt;
+      &lt;param name=&quot;Vis/MinInliers&quot; type=&quot;string&quot; value=&quot;$(arg min_inliers)&quot;/&gt;
+      &lt;param name=&quot;Vis/InlierDistance&quot; type=&quot;string&quot; value=&quot;$(arg inlier_distance)&quot;/&gt;
+      &lt;param name=&quot;proj_min_cluster_size&quot; type=&quot;double&quot; value=&quot;$(arg proj_min_cluster_size)&quot; /&gt;
+
+      &lt;!-- localization mode --&gt;
+      &lt;param     if=&quot;$(arg localization)&quot; name=&quot;Mem/IncrementalMemory&quot; type=&quot;string&quot; value=&quot;false&quot;/&gt;
+      &lt;param unless=&quot;$(arg localization)&quot; name=&quot;Mem/IncrementalMemory&quot; type=&quot;string&quot; value=&quot;true&quot;/&gt;
+      &lt;param name=&quot;Mem/InitWMWithAllNodes&quot; type=&quot;string&quot; value=&quot;$(arg localization)&quot;/&gt;
+    &lt;/node&gt;
+
+    &lt;!-- Visualisation RTAB-Map --&gt;
+    &lt;node if=&quot;$(arg rtabmapviz)&quot; pkg=&quot;rtabmap_ros&quot; type=&quot;rtabmapviz&quot; name=&quot;rtabmapviz&quot; args=&quot;-d $(arg gui_cfg)&quot; output=&quot;screen&quot; launch-prefix=&quot;$(arg launch_prefix)&quot;&gt;
+      &lt;param name=&quot;subscribe_depth&quot;      type=&quot;bool&quot;   value=&quot;$(arg rgbd)&quot;/&gt;
+      &lt;param name=&quot;subscribe_stereo&quot;     type=&quot;bool&quot;   value=&quot;$(arg stereo)&quot;/&gt;
+      &lt;param name=&quot;subscribe_scan&quot;       type=&quot;bool&quot;   value=&quot;$(arg subscribe_scan)&quot;/&gt;
+      &lt;param name=&quot;subscribe_scan_cloud&quot; type=&quot;bool&quot;   value=&quot;$(arg subscribe_scan_cloud)&quot;/&gt;
+      &lt;param name=&quot;subscribe_odom_info&quot;  type=&quot;bool&quot;   value=&quot;$(arg visual_odometry)&quot;/&gt;
+      &lt;param name=&quot;frame_id&quot;             type=&quot;string&quot; value=&quot;$(arg frame_id)&quot;/&gt;
+      &lt;param name=&quot;wait_for_transform_duration&quot; type=&quot;double&quot;   value=&quot;$(arg wait_for_transform)&quot;/&gt;
+      &lt;param name=&quot;queue_size&quot;           type=&quot;int&quot; value=&quot;$(arg queue_size)&quot;/&gt;
+
+      &lt;remap from=&quot;rgb/image&quot;       to=&quot;$(arg rgb_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;depth/image&quot;     to=&quot;$(arg depth_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;rgb/camera_info&quot; to=&quot;$(arg camera_info_topic)&quot;/&gt;
+
+      &lt;remap from=&quot;left/image_rect&quot;        to=&quot;$(arg left_image_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;right/image_rect&quot;       to=&quot;$(arg right_image_topic_relay)&quot;/&gt;
+      &lt;remap from=&quot;left/camera_info&quot;       to=&quot;$(arg left_camera_info_topic)&quot;/&gt;
+      &lt;remap from=&quot;right/camera_info&quot;      to=&quot;$(arg right_camera_info_topic)&quot;/&gt;
+
+      &lt;remap from=&quot;scan&quot;                   to=&quot;$(arg scan_topic)&quot;/&gt;
+      &lt;remap from=&quot;scan_cloud&quot;             to=&quot;$(arg scan_cloud_topic)&quot;/&gt;
+      &lt;remap unless=&quot;$(arg visual_odometry)&quot; from=&quot;odom&quot;  to=&quot;$(arg odom_topic)&quot;/&gt;
+    &lt;/node&gt;
+
+  &lt;/group&gt;
+
+  &lt;!-- Visualization RVIZ --&gt;
+  &lt;node if=&quot;$(arg rviz)&quot; pkg=&quot;rviz&quot; type=&quot;rviz&quot; name=&quot;rviz&quot; args=&quot;$(arg rviz_cfg)&quot;/&gt;
+  &lt;node if=&quot;$(arg rviz)&quot; pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;points_xyzrgb&quot; args=&quot;standalone rtabmap_ros/point_cloud_xyzrgb&quot;&gt;
+    &lt;remap from=&quot;left/image&quot;        to=&quot;$(arg left_image_topic_relay)&quot;/&gt;
+    &lt;remap from=&quot;right/image&quot;       to=&quot;$(arg right_image_topic_relay)&quot;/&gt;
+    &lt;remap from=&quot;left/camera_info&quot;  to=&quot;$(arg left_camera_info_topic)&quot;/&gt;
+    &lt;remap from=&quot;right/camera_info&quot; to=&quot;$(arg right_camera_info_topic)&quot;/&gt;
+    &lt;remap from=&quot;rgb/image&quot;         to=&quot;$(arg rgb_topic_relay)&quot;/&gt;
+    &lt;remap from=&quot;depth/image&quot;       to=&quot;$(arg depth_topic_relay)&quot;/&gt;
+    &lt;remap from=&quot;rgb/camera_info&quot;   to=&quot;$(arg camera_info_topic)&quot;/&gt;
+    &lt;remap from=&quot;cloud&quot;             to=&quot;voxel_cloud&quot; /&gt;
+
+    &lt;param name=&quot;decimation&quot;  type=&quot;double&quot; value=&quot;2&quot;/&gt;
+    &lt;param name=&quot;voxel_size&quot;  type=&quot;double&quot; value=&quot;0.02&quot;/&gt;
+    &lt;param if=&quot;$(arg stereo)&quot; name=&quot;approx_sync&quot; type=&quot;bool&quot;   value=&quot;$(arg approx_sync)&quot;/&gt;
+  &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/25410">mjedmonds</a> on 2016-06-23 14:01:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>What was the root cause to this problem? Ever figure it out? </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/56612">GaganBhat</a> on 2022-08-22 20:03:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

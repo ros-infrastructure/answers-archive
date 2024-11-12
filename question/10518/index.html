@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publishing data using OpenNI - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10518">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publishing data using OpenNI</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/32820/publishing-data-using-openni">https://robotics.stackexchange.com/questions/32820/publishing-data-using-openni</a>.</p>
+        <p>Hi guys,</p>
+
+<p>Although, i am able to find the depth pointer and find the depth value. Now i need to publish the data and want to visualize the point cloud in Rviz. I have written a code and would like to have your opinions.</p>
+
+<pre><code>    /* OpenCV Includes */
+#include &quot;opencv2\opencv.hpp&quot;
+#include &quot;opencv2\highgui\highgui.hpp&quot;
+#include &quot;opencv2\imgproc\imgproc.hpp&quot;
+
+/* OpenNI Includes */
+#include &lt;XnCppWrapper.h&gt;
+#include &lt;XnOpenNI.h&gt;
+#include &lt;XnLog.h&gt;
+#include &lt;XnOS.h&gt;
+
+/* PCL Includes */
+#include &quot;pcl/ModelCoefficients.h&quot;
+#include &quot;pcl/console/parse.h&quot;
+#include &quot;pcl/console/print.h&quot;
+#include &quot;pcl/io/pcd_io.h&quot;
+#include &quot;pcl/point_types.h&quot;
+#include &lt;pcl/features/cvfh.h&gt;
+#include &lt;pcl/features/vfh.h&gt;
+#include &lt;pcl/features/normal_3d.h&gt;
+#include &quot;pcl/filters/extract_indices.h&quot;
+#include &quot;pcl/filters/passthrough.h&quot;
+#include &quot;pcl/filters/statistical_outlier_removal.h&quot;
+#include &quot;pcl/kdtree/kdtree.h&quot;
+#include &quot;pcl/sample_consensus/method_types.h&quot;
+#include &quot;pcl/sample_consensus/model_types.h&quot;
+#include &quot;pcl/segmentation/sac_segmentation.h&quot;
+#include &quot;pcl/segmentation/extract_clusters.h&quot;
+#include &lt;boost/filesystem.hpp&gt;
+
+/* ROS Includes */
+#include &lt;ros/ros.h&gt;
+#include &lt;pcl_ros/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+
+#define SAMPLE_XML_PATH &quot;C:/Program Files (x86)/OpenNI/Data/SamplesConfig.xml&quot;
+#define X_RES 640
+#define Y_RES 480
+#define MAX_DEPTH 10000
+
+using namespace std;
+using namespace xn;
+using namespace pcl::console;
+
+/* Globals */
+Context         context;
+ImageGenerator      g_image;
+DepthGenerator      d_image;
+ImageMetaData       g_imageMD;
+EnumerationErrors   errors;
+XnStatus        nRetVal = XN_STATUS_OK;
+unsigned short      depth[MAX_DEPTH];
+char *depth_data;
+
+/* Typedefs */
+typedef pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt; PointCloud;
+
+void raw2depth(){
+  for (int i=0; i&lt;MAX_DEPTH; i++) {
+  float v = (float)i/MAX_DEPTH;//for visualization purposes only
+  v = powf(v, 2);
+  v = v*36*256;
+  depth[i] = v;
+  }
+}
+
+void depth2rgb(const XnDepthPixel* Xn_disparity){
+  for (int i=0; i&lt;307200; i++) {
+    int pval = depth[Xn_disparity[i]];
+    int lb = pval &amp; 0xff;
+    switch (pval&gt;&gt;8) {
+      case 0:
+        depth_data[3*i+0] = 255;
+        depth_data[3*i+1] = 255;
+        depth_data[3*i+2] = 255-lb;
+        break;
+      case 1:
+        depth_data[3*i+0] = 255;
+        depth_data[3*i+1] = lb;
+        depth_data[3*i+2] = 0;
+        break;
+      case 2:
+        depth_data[3*i+0] = 255-lb;
+        depth_data[3*i+1] = 255;
+        depth_data[3*i+2] = 0;
+        break;
+      case 3:
+        depth_data[3*i+0] = 0;
+        depth_data[3*i+1] = 255;
+        depth_data[3*i+2] = lb;
+        break;
+      case 4:
+        depth_data[3*i+0] = 0;
+        depth_data[3*i+1] = 255-lb;
+        depth_data[3*i+2] = 255;
+        break;
+      case 5:
+        depth_data[3*i+0] = 0;
+        depth_data[3*i+1] = 0;
+        depth_data[3*i+2] = 255-lb;
+        break;
+      default:
+        depth_data[3*i+0] = 0;
+        depth_data[3*i+1] = 0;
+        depth_data[3*i+2] = 0;
+        break;
+    }
+  }
+}
+
+
+void rgbdInit(){
+  //Initialize context object
+  nRetVal = context.Init();
+  if (nRetVal != XN_STATUS_OK){
+    print_error(&quot;Failed to initialize context: %s\n&quot;, xnGetStatusString(nRetVal));
+  }
+
+  // Create a DepthGenerator node
+  nRetVal = d_image.Create(context);
+  if (nRetVal != XN_STATUS_OK){
+    print_error(&quot;Failed to create depth generator: %s\n&quot;, xnGetStatusString(nRetVal));
+  }
+
+  // Create a ImageGenerator node
+  nRetVal = g_image.Create(context);
+  if (nRetVal != XN_STATUS_OK){
+    print_error(&quot;Failed to create image generator: %s\n&quot;, xnGetStatusString(nRetVal));
+  }
+
+  // Make it start generating data
+  nRetVal = context.StartGeneratingAll();
+  if (nRetVal != XN_STATUS_OK){
+    print_error(&quot;Failed generating data: %s\n&quot;, xnGetStatusString(nRetVal));
+  }
+
+/*  //Sync the DepthGenerator with the ImageGenerator
+  nRetVal = d_image.GetFrameSyncCap().FrameSyncWith(g_image);
+  if (nRetVal != XN_STATUS_OK){
+    print_error(&quot;Failed to sync Depth and RGB streams: %s\n&quot;, xnGetStatusString(nRetVal));
+  }*/
+
+  // Set the view point of the DepthGenerator to match the ImageGenerator
+  nRetVal = d_image.GetAlternativeViewPointCap().SetViewPoint(g_image);
+  if (nRetVal != XN_STATUS_OK){
+    print_error(&quot;Failed to match Depth and RGB points of view: %s\n&quot;, xnGetStatusString(nRetVal));
+  }
+}
+
+void getPointCloud(const XnDepthPixel* pDepthMap, const XnUInt8 *rgb, PointCloud &amp;cloud){
+  // Fill in the cloud data
+  cloud.width  = X_RES;
+  cloud.height = Y_RES;
+  cloud.points.resize (cloud.width * cloud.height);
+  XnPoint3D *depthpx = (XnPoint3D*)malloc(X_RES*Y_RES*sizeof(XnFloat)*3); //preallocate data for speed boost
+  int i=0;
+  for (size_t y=0; y&lt;cloud.height; y++){
+    for (size_t x=0; x&lt;cloud.width; x++){
+      depthpx[i].X= x;
+      depthpx[i].Y= y;
+      depthpx[i].Z= pDepthMap[i];
+      i++;
+    }
+  }
+  d_image.ConvertProjectiveToRealWorld(i,depthpx,depthpx);
+  int32_t color;
+  i=0;
+  for (size_t y = 0; y&lt;cloud.height; y++){
+    for (size_t x=0; x&lt;cloud.width; x++){
+      cloud(x,y).x = depthpx[i].X;
+      cloud(x,y).y = depthpx[i].Y;
+      cloud(x,y).z = depthpx[i].Z;
+      color =  (rgb[(3*i)+2]&lt;&lt;16)|(rgb[(3*i)+1]&lt;&lt;8)|(rgb[3*i]);
+      cloud.points[i].rgb = *(float *)(&amp;color);
+      i++;
+    }
+  }
+}
+
+int main( int argc, char** argv )
+{
+    //Initialize ROS
+    ros::init (argc, argv, &quot;pub_pcl&quot;);
+    ros::NodeHandle nh;
+    ros::Publisher pub = nh.advertise&lt;PointCloud&gt; (&quot;points2&quot;, 1);
+
+    rgbdInit();
+
+  // Allocate Storage
+  IplImage *rgbimg = cvCreateImageHeader(cvSize(X_RES,Y_RES), 8, 3);
+  IplImage *depthimg = cvCreateImageHeader(cvSize(X_RES,Y_RES), 8, 3);
+  IplImage *grayimg = cvCreateImage(cvSize(X_RES,Y_RES), IPL_DEPTH_8U, 1);
+  raw2depth();
+  depth_data = (char*)malloc(X_RES*Y_RES*3);
+
+  while( true ) {
+  // Wait for new data to be available
+    nRetVal = context.WaitAndUpdateAll();
+    if (nRetVal != XN_STATUS_OK)
+    {
+       printf(&quot;Failed updating data: %s\n&quot;, xnGetStatusString(nRetVal));
+       continue;
+    }
+
+    // Take current depth map
+    const XnDepthPixel* pDepthMap = d_image.GetDepthMap();
+    // Take current image
+    const XnRGB24Pixel* pImage = g_image.GetRGB24ImageMap();
+
+    //process depth map
+    depth2rgb(pDepthMap);
+    cvSetData(depthimg,depth_data, X_RES*3);
+    cvShowImage(&quot;Depth&quot;,depthimg);
+
+    //process image data
+    g_image.GetMetaData (g_imageMD);
+    XnUInt8* rgb = g_imageMD.WritableData();
+    cvSetData(rgbimg,rgb,rgbimg-&gt;widthStep);
+    cvCvtColor(rgbimg,rgbimg,CV_RGB2BGR);
+    cvCvtColor(rgbimg,grayimg,CV_BGR2GRAY);
+
+    PointCloud cloud;
+    getPointCloud(pDepthMap, rgb,cloud);
+    PointCloud::Ptr cloudPtr (new PointCloud(cloud));
+
+    ros::Rate loop_rate(4);
+    while (nh.ok())
+    {
+        msg-&gt;header.stamp = ros ::Time::now();
+        pub.publish(msg);
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
+
+    getCVFHSignatures(cloudPtr);
+
+    cvShowImage(&quot;RGB&quot;,rgbimg);
+
+    char key =cvWaitKey(15);
+    if (key==27/*ESC*/) {
+      break;
+    }
+  }
+
+  // Clean-up
+  context.Shutdown();
+
+}
+</code></pre>
+
+<p>Hi guys, i am in real need of help.. hope someone can help me. I am a newbie in this. I need to do this urgently.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-07 06:02:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>What do you expect this to do? What doesn&#39;t work? Do you really expect us to compile and debug your code in order to find out the answer to these two questions ourselves? Also, stating that you need an answer urgently doesn&#39;t help getting an answer faster, it just makes you sound impatient.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22">Martin Günther</a> on 2011-07-10 23:18:01 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You have two main loops.</p>
+
+<p>Only when the first one quits, the second one runs. You should merge them.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2011-07-07 07:42:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>is it better now? </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-07 12:22:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

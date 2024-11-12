@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Trying to use Timesynchronizer...getting compile error - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/83316">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Trying to use Timesynchronizer...getting compile error</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/54372/trying-to-use-timesynchronizer-getting-compile-error">https://robotics.stackexchange.com/questions/54372/trying-to-use-timesynchronizer-getting-compile-error</a>.</p>
+        <p>Trying to use Timesynchronizer...getting compile error. Do not know what the error is telling me.  Changed pgm to use ConstPtrs still same error: </p>
+
+<p>It seem based on this reference <a href="http://stackoverflow.com/questions/2304203/how-to-use-boost-bind-with-a-member-function">http://stackoverflow.com/questions/2304203/how-to-use-boost-bind-with-a-member-function</a>  Timesycronizer and other boost type templates are not officially supported by ROS within a class member function. Is my understand correct? If this is true what other interface to these functions is supported? Can the tutorial be updated to show how to use these in member functions or state that they are not available.</p>
+
+<pre><code>find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  tf2_ros
+  std_msgs
+  geometry_msgs
+  sensor_msgs
+  )
+
+catkin_package(
+  DEPENDS boost
+  LIBRARIES
+  CATKIN_DEPENDS
+  tf2_ros
+  std_msgs
+  geometry_msgs
+  sensor_msgs
+  )
+</code></pre>
+
+<p>Here is my code:</p>
+
+<pre><code>#include &lt;string&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf2_ros/transform_broadcaster.h&gt;
+#include &lt;tf2_ros/static_transform_broadcaster.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/TransformStamped.h&gt;
+#include &lt;geometry_msgs/Quaternion.h&gt;
+#include &lt;control_msgs/JointControllerState.h&gt;
+#include &lt;geometry_msgs/Pose.h&gt;
+#include &lt;geometry_msgs/PoseWithCovarianceStamped.h&gt;
+#include &lt;sensor_msgs/JointState.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/time_synchronizer.h&gt;
+
+
+using namespace control_msgs;
+using namespace message_filters;
+
+class PublishOdometry
+{
+public:
+  PublishOdometry()
+  {
+
+     count=0;
+     motor_position_joint1_new =0;
+     motor_position_joint1_old =0;
+     motor_position_joint2_new =0;
+     motor_position_joint2_old =0;
+     x = 0;               
+     y = 0;
+     theta = 0;
+
+     pubOdometry = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 10);
+
+     // Listen and wait for initial pose from nav
+     subInitialPose = n.subscribe(&quot;/initialpose&quot;, 1, 
+           &amp;PublishOdometry::handelerInitialPose,this);
+  }
+
+void handelerOdometry(const JointControllerStateConstPtr&amp; msg1, const JointControllerStateConstPtr&amp; msg2)
+{
+     double wheel_track = 0.4;   //distance between two wheels
+
+     motor_position_joint1_new = msg1-&gt;process_value;
+     motor_position_joint2_new = msg2-&gt;process_value;
+
+     ROS_INFO(&quot;J1PV=%f  J2PV=%f&quot;,motor_position_joint1_new, motor_position_joint2_new);
+
+
+     if (timeold.toSec()==0)  // skip first set of joint cmd
+     {
+       timeold = msg1-&gt;header.stamp;
+       motor_position_joint1_old = motor_position_joint1_new;
+       motor_position_joint2_old = motor_position_joint2_new;
+       return; 
+     }
+
+     float j1 = (motor_position_joint1_new - motor_position_joint1_old); 
+     float j2 = (motor_position_joint2_new - motor_position_joint2_old);
+
+     motor_position_joint1_old = motor_position_joint1_new;
+     motor_position_joint2_old = motor_position_joint2_new;
+
+     double  dt = (msg1-&gt;header.stamp - timeold).toSec();  // elapsed time in seconds
+     float   distance =    ( ((j1 + j2)*dt) / 2.0);             // distance in meters
+     float   dtheta   =    ( ((j1 - j2)*dt) / wheel_track);     // rotation
+
+     double dx = (distance*sin(dtheta));
+     double dy = (distance*cos(dtheta)); 
+
+     theta =  (theta+dtheta); //fmodf((theta+dtheta),(2*M_PI));                   
+     x = x + dx;
+     y = y + dy;
+
+     ROS_INFO(&quot;x=%e  y=%e theta=%f ddtheta=%f &quot;,x,y,theta, dtheta);
+
+     timeold = msg1-&gt;header.stamp;    // new old time
+
+     geometry_msgs::Quaternion  quaternion;
+     quaternion.x = 0.0;
+     quaternion.y = 0.0; 
+     quaternion.z = sin(theta/2);          // set yaw
+     quaternion.w = cos(theta/2);
+
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  timeold;
+     odom_trans.transform.translation.x = x;
+     odom_trans.transform.translation.y = y;
+     odom_trans.transform.translation.z = 0.0; 
+     odom_trans.transform.rotation = quaternion;
+
+     odom_broadcaster.sendTransform(odom_trans);
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = timeold;
+
+     odometry.pose.pose.position.x  = distance;
+     odometry.pose.pose.position.y  = y;
+     odometry.pose.pose.position.z  = 0;
+     odometry.pose.pose.orientation = quaternion;
+     odometry.twist.twist.linear.x  = x;
+     odometry.twist.twist.linear.y  = 0;
+     odometry.twist.twist.angular.z = ((theta)*(M_PI/180));  // convert to radians
+
+     pubOdometry.publish(odometry);
+
+     calculateJointState(motor_position_joint1_old,&quot;joint1&quot;);
+     calculateJointState(motor_position_joint2_old,&quot;joint2&quot;);
+}
+
+
+
+void calculateJointState(const float pv, const std::string name)
+{
+     sensor_msgs::JointState jointStateMsg;
+     jointStateMsg.name.resize(1);
+     jointStateMsg.position.resize(1);
+     jointStateMsg.velocity.resize(1);
+     jointStateMsg.header.frame_id = &quot;base_link&quot;;
+     jointStateMsg.header.stamp = timeold;
+     jointStateMsg.name[0] = name;
+     jointStateMsg.position[0] = pv;
+     jointStateMsg.velocity[0] = 0.0;
+     pubJointState.publish(jointStateMsg);
+}
+
+
+
+
+void handelerInitialPose(geometry_msgs::PoseWithCovarianceStampedConstPtr msg)
+{
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  msg-&gt;header.stamp;
+     odom_trans.transform.translation.x = msg-&gt;pose.pose.position.x;
+     odom_trans.transform.translation.y = msg-&gt;pose.pose.position.y;
+     odom_trans.transform.translation.z = msg-&gt;pose.pose.position.z;
+     odom_trans.transform.rotation = msg-&gt;pose.pose.orientation;
+
+     odom_broadcaster.sendTransform(odom_trans);
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg-&gt;header.stamp;
+     odometry.pose.pose.position = msg-&gt;pose.pose.position;
+     odometry.pose.pose.orientation = msg-&gt;pose.pose.orientation;
+
+     pubOdometry.publish(odometry);
+
+     // Listen for motor control response
+     Subscriber&lt;JointControllerState&gt; j1_sub(n, &quot;/rrbot/joint1_position_controller/state&quot;, 1);
+     Subscriber&lt;JointControllerState&gt; j2_sub(n, &quot;/rrbot/joint2_position_controller/state&quot;, 1);
+     TimeSynchronizer&lt;JointControllerState, JointControllerState&gt; sync(j1_sub, j2_sub, 10);
+     sync.registerCallback(boost::bind(&amp;PublishOdometry::handelerOdometry, _1, _2));
+
+     ROS_INFO(&quot;handelerInitialPose finished processing&quot;);
+}
+
+
+
+private:
+
+   double x,y,count;
+   float motor_position_joint1_new;
+   float motor_position_joint1_old;
+   float motor_position_joint2_new;
+   float motor_position_joint2_old;
+   float theta;
+   ros::Time timeold;
+   ros::NodeHandle n;
+   ros::Publisher pubOdometry;
+   tf2_ros::TransformBroadcaster odom_broadcaster;
+   ros::Publisher  pubJointState;
+   ros::Subscriber subInitialPose;
+   ros::Subscriber j1_sub;
+   ros::Subscriber j2_sub;
+
+
+
+};  // Enodof Class
+
+
+
+int main(int argc, char **argv)
+{ 
+  ros::init(argc, argv, &quot;robot_odometry&quot;);
+
+  PublishOdometry sp;
+
+  // send static latch transformations 
+
+  tf2_ros::StaticTransformBroadcaster static_broadcaster;
+  geometry_msgs::TransformStamped msg;
+
+  msg.header.stamp = ros::Time::now();
+  msg.transform.rotation.x =  0.0;
+  msg.transform.rotation.y =  0.0;
+  msg.transform.rotation.z =  0.0;
+  msg.transform.rotation.w =  1.0;
+
+  msg.header.frame_id = &quot;camera_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.2;
+  msg.child_frame_id = &quot;hokuyo_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;camera_link&quot;;   
+  msg.transform.translation.x = 0;
+  msg.transform.translation.y = 0;
+  msg.transform.translation.z = 0.3;
+  msg.child_frame_id = &quot;camera_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>ERROR FOLLOWS:::::</p>
+
+<pre><code>   uilding CXX object gazebo_ros_demos/rrbot_control/CMakeFiles/robot_odometry.dir/src/robot_odometry.cpp.o
+[100%] [100%] Built target robot_twist_to_vel
+Built target robot_jntcmd_to_jntst
+In file included from /usr/include/boost/bind.hpp:22:0,
+                 from /opt/ros/hydro/include/ros/publisher.h:35,
+                 from /opt/ros/hydro/include/ros/node_handle.h:32,
+                 from /opt/ros/hydro/include/ros/ros.h:45,
+                 from /home/viki/catkin_ws/src/gazebo_ros_demos/rrbot_control/src/robot_odometry.cpp:2:
+/usr/include/boost/bind/bind.hpp: In instantiation of ‘struct boost::_bi::result_traits&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;)&gt;’:
+/usr/include/boost/bind/bind_template.hpp:15:48:   required from ‘class boost::_bi::bind_t&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;), boost::_bi::list2&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt; &gt; &gt;’
+/home/viki/catkin_ws/src/gazebo_ros_demos/rrbot_control/src/robot_odometry.cpp:162:82:   required from here
+/usr/include/boost/bind/bind.hpp:69:37: error: ‘void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;)’ is not a class, struct, or union type
+In file included from /usr/include/boost/function/detail/maybe_include.hpp:58:0,
+                 from /usr/include/boost/function/detail/function_iterate.hpp:14,
+                 from /usr/include/boost/preprocessor/iteration/detail/iter/forward1.hpp:92,
+                 from /usr/include/boost/function.hpp:64,
+                 from /opt/ros/hydro/include/ros/forwards.h:39,
+                 from /opt/ros/hydro/include/ros/common.h:37,
+                 from /opt/ros/hydro/include/ros/ros.h:43,
+                 from /home/viki/catkin_ws/src/gazebo_ros_demos/rrbot_control/src/robot_odometry.cpp:2:
+/usr/include/boost/function/function_template.hpp: In instantiation of ‘static void boost::detail::function::void_function_obj_invoker9&lt;FunctionObj, R, T0, T1, T2, T3, T4, T5, T6, T7, T8&gt;::invoke(boost::detail::function::function_buffer&amp;, T0, T1, T2, T3, T4, T5, T6, T7, T8) [with FunctionObj = boost::_bi::bind_t&lt;boost::_bi::unspecified, boost::_bi::bind_t&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;), boost::_bi::list2&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt; &gt; &gt;, boost::_bi::list9&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt;, boost::arg&lt;3&gt;, boost::arg&lt;4&gt;, boost::arg&lt;5&gt;, boost::arg&lt;6&gt;, boost::arg&lt;7&gt;, boost::arg&lt;8&gt;, boost::arg&lt;9&gt; &gt; &gt;; R = void; T0 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T1 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T2 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T3 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T4 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T5 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T6 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T7 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T8 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;]’:
+/usr/include/boost/function/function_template.hpp:907:60:   required from ‘void boost::function9&lt;R, T1, T2, T3, T4, T5, T6, T7, T8, T9&gt;::assign_to(Functor) [with Functor = boost::_bi::bind_t&lt;boost::_bi::unspecified, boost::_bi::bind_t&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;), boost::_bi::list2&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt; &gt; &gt;, boost::_bi::list9&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt;, boost::arg&lt;3&gt;, boost::arg&lt;4&gt;, boost::arg&lt;5&gt;, boost::arg&lt;6&gt;, boost::arg&lt;7&gt;, boost::arg&lt;8&gt;, boost::arg&lt;9&gt; &gt; &gt;; R = void; T0 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T1 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T2 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T3 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T4 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T5 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T6 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T7 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T8 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;]’
+/usr/include/boost/function/function_template.hpp:722:7:   required from ‘boost::function9&lt;R, T1, T2, T3, T4, T5, T6, T7, T8, T9&gt;::function9(Functor, typename boost::enable_if_c&lt;boost::type_traits::ice_not&lt;boost::is_integral&lt;Functor&gt;::value&gt;::value, int&gt;::type) [with Functor = boost::_bi::bind_t&lt;boost::_bi::unspecified, boost::_bi::bind_t&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;), boost::_bi::list2&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt; &gt; &gt;, boost::_bi::list9&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt;, boost::arg&lt;3&gt;, boost::arg&lt;4&gt;, boost::arg&lt;5&gt;, boost::arg&lt;6&gt;, boost::arg&lt;7&gt;, boost::arg&lt;8&gt;, boost::arg&lt;9&gt; &gt; &gt;; R = void; T0 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T1 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T2 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T3 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T4 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T5 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T6 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T7 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T8 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; typename boost::enable_if_c&lt;boost::type_traits::ice_not&lt;boost::is_integral&lt;Functor&gt;::value&gt;::value, int&gt;::type = int]’
+/usr/include/boost/function/function_template.hpp:1042:16:   required from ‘boost::function&lt;R(T0, T1, T2, T3, T4, T5, T6, T7, T8)&gt;::function(Functor, typename boost::enable_if_c&lt;boost::type_traits::ice_not&lt;boost::is_integral&lt;Functor&gt;::value&gt;::value, int&gt;::type) [with Functor = boost::_bi::bind_t&lt;boost::_bi::unspecified, boost::_bi::bind_t&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;), boost::_bi::list2&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt; &gt; &gt;, boost::_bi::list9&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt;, boost::arg&lt;3&gt;, boost::arg&lt;4&gt;, boost::arg&lt;5&gt;, boost::arg&lt;6&gt;, boost::arg&lt;7&gt;, boost::arg&lt;8&gt;, boost::arg&lt;9&gt; &gt; &gt;; R = void; T0 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T1 = const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; T2 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T3 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T4 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T5 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T6 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T7 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; T8 = const boost::shared_ptr&lt;const message_filters::NullType&gt;&amp;; typename boost::enable_if_c&lt;boost::type_traits::ice_not&lt;boost::is_integral&lt;Functor&gt;::value&gt;::value, int&gt;::type = int]’
+/opt/ros/hydro/include/message_filters/signal9.h:281:98:   required from ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const boost::_bi::bind_t&lt;boost::_bi::unspecified, void (PublishOdometry::*)(const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const boost::shared_ptr&lt;const control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;), boost::_bi::list2&lt;boost::arg&lt;1&gt;, boost::arg&lt;2&gt; &gt; &gt;; M0 = control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt;; M1 = control_msgs::JointControllerState_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-09-25 11:21:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I think your problem might be related to how boost::bind works with member functions:
+<a href="http://stackoverflow.com/questions/2304203/how-to-use-boost-bind-with-a-member-function">http://stackoverflow.com/questions/2304203/how-to-use-boost-bind-with-a-member-function</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2573">georgebrindeiro</a> on 2013-09-26 10:22:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It seem based on this reference  Timesycronizer and other boost type templates are not officially supported by ROS within a class member function. Is my understand correct?  If this is true what other interface to these functions is supported.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-09-26 12:37:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes...I tried adding it to several places....a working example would be great</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-09-26 13:54:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@georgebrindeiro is right. <code>this</code> is missing in the <code>bind()</code>. Every <strong>method of a class</strong> actually has extra argument which is the pointer to the instance of that class. When the method is called within another method of a class, <code>this</code> is passed implicitly. ROS require callback functions to have certain number of arguments, but it has no idea about the host class. So, when the callback is called the only parameters to be passed there are the messages and <code>this</code> is not provided. However your function can not work without <code>this</code>, because it will have no access to any of the class members. So <code>boost::bind</code> simply allows you to pass it as additional argument. Since you didn&#39;t do it the compiler complained.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2873">Boris</a> on 2013-09-26 17:13:38 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Replacing the line for <code>sync.registerCallback()</code> with the <code>sync.registerCallback(boost::bind(&amp;PublishOdometry::handelerOdometry, this, _1, _2));</code> should be sufficient.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2873">Boris</a> on 2013-09-26 17:19:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>This solution worked and the code now compiles...thank you. How can this solution get into the tutorial so others like myself who are not steeped in c++ will not repeat this. Also can you make this an Answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-09-27 02:31:06 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>From a quick glance you are specifying wrong argument types for <code>calculateOdometry()</code>. Instead of <code>const JointControllerState</code>, you should use <code>const JointControllerStateConstPtr&amp;</code> (note <strong>ConstPtr&amp;</strong> at the end). So, all the message callbacks in ROS accepting <code>boost::shared_ptr</code> as the arguments.</p>
+
+<p>Although passing arguments by reference is not mandatory, it is recommended and considered as a good style.</p>
+
+<p>Please also note that template arguments <strong>should not</strong> be pointers, but the types of the messages themselves. So simply fixing the callback function arguments will be enough to make it compile.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2873">Boris</a> on 2013-09-25 15:21:28 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I have made these changes and I am still getting a compile error. Can this be some kind of compiler environment issue?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-09-26 03:49:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What I learn from my past experience (and I didn&#39;t manage to make it work), the timestamps of those to be synchronized have to match &#39;exactly&#39;. Perhaps this is also the culprit in your case.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2013-09-26 19:53:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@alfa_80, the problem that you are talking about is a runtime problem, but the question is about compilation. Anyway, you are right, the time stamps should be exactly same. To deal with misaligned time stamps there is ApproximateTime message filter: <a href="http://wiki.ros.org/message_filters#ApproximateTime_Policy">http://wiki.ros.org/message_filters#ApproximateTime_Policy</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2873">Boris</a> on 2013-09-26 20:43:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Boris: You&#39;re right.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121">alfa_80</a> on 2013-09-27 12:10:52 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Have you tried adding <code>this</code> to the <code>boost::bind</code> function call? That&#39;s what they usually require for binding member functions. That might be the only thing missing.</p>
+
+<p>Citing Boris&#39; comment, this is how you would do it:</p>
+
+<pre><code>sync.registerCallback(boost::bind(&amp;PublishOdometry::handelerOdometry, this, _1, _2));
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2573">georgebrindeiro</a> on 2013-09-26 12:43:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Wow thank you! Saved my day!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30568">soroosh129</a> on 2019-07-05 12:19:03 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

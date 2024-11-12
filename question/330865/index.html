@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>my new robot (rabbot)  is moving very very slow, an the old robot (turtlebot) was moving fast by the same code - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/330865">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>my new robot (rabbot)  is moving very very slow, an the old robot (turtlebot) was moving fast by the same code</h2>
+      <div class="question">
+        <p>Hi everyone</p>
+
+<p>I am working with the human following (object detection like Yolo and SSD ) using a new robot (rabbot) but it moves very very slow with any code when there is this line</p>
+
+<pre><code>rospy.spin()
+</code></pre>
+
+<p>this is my full code:</p>
+
+<pre><code>import rospy
+import cv2
+import numpy as np
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+from geometry_msgs.msg import Twist
+from imutils.video import FPS
+import time
+
+global net
+net = cv2.dnn.readNetFromCaffe(&#39;prototxt.txt&#39;, &#39;caffemodel&#39;)
+
+global counter
+global count_max
+counter = 0
+count_max = 400000
+
+# video writer setup
+global fourcc
+global out
+fourcc = cv2.VideoWriter_fourcc(&#39;M&#39;,&#39;J&#39;,&#39;P&#39;,&#39;G&#39;) #Define the codec and create VideoWriter object
+out = cv2.VideoWriter(&#39;following_human.avi&#39;,fourcc, 20.0, (640,480))
+
+class CVControl:
+    def __init__(self):
+
+
+        self.cmd_pub = rospy.Publisher(&#39;/cmd_vel&#39;, Twist, queue_size=10)
+        self.cmd = Twist()
+
+        # Image subscriber
+        self.bridge = CvBridge()
+
+        self.image_sub = rospy.Subscriber(&quot;/camera/rgb/image_raw&quot;, Image, self.img_callback)
+
+    def img_callback(self, data):
+        global counter ,v,w
+        global net
+        global out
+        global count_max
+        global startX, startY, endX, endY 
+        counter += 1
+
+
+        CLASSES = [&quot;background&quot;, &quot;aeroplane&quot;, &quot;bicycle&quot;, &quot;bird&quot;, &quot;boat&quot;,
+                    &quot;bottle&quot;, &quot;bus&quot;, &quot;car&quot;, &quot;cat&quot;, &quot;chair&quot;, &quot;cow&quot;, &quot;diningtable&quot;,
+                    &quot;dog&quot;, &quot;horse&quot;, &quot;motorbike&quot;, &quot;person&quot;, &quot;pottedplant&quot;, &quot;sheep&quot;,
+                    &quot;sofa&quot;, &quot;train&quot;, &quot;tvmonitor&quot;]
+        COLORS = np.random.uniform(0, 255, size=(len(CLASSES), 3))
+
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(data, &quot;bgr8&quot;)
+        except CvBridgeError as e:
+            print e
+        cv_gray = cv2.cvtColor(cv_image,cv2.COLOR_BGR2GRAY)
+        frame = cv_image
+
+        (h, w1) = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)),0.007843, (300, 300), 127.5)
+        fps = FPS().start()
+        (h, w1) = frame.shape[:2]
+        # pass the blob through the network and obtain the detections and
+                # predictions
+        net.setInput(blob)
+        detections = net.forward()
+
+        big_area = 0
+        big_center = 320
+        detected = 0
+
+        for i in np.arange(0, detections.shape[2]):
+            object_type = detections[0,0,i,1]
+            confidence = detections[0, 0, i, 2]
+            if object_type == 15 and confidence &gt; 0.2: 
+
+
+                box = detections[0, 0, i, 3:7] * np.array([w1, h, w1, h])
+                (startX, startY, endX, endY) = box.astype(&quot;int&quot;)
+
+
+                label = &quot;{}: {:.2f}%&quot;.format(&#39;person&#39;,confidence * 100)
+#                cv2.rectangle(frame, (startX, startY), (endX, endY),[0,0,255], 2)
+                y = startY - 15 if startY - 15 &gt; 15 else startY + 15
+                cv2.putText(frame, label, (startX, y),cv2.FONT_HERSHEY_SIMPLEX, 0.5, [0,0,255], 2)
+
+
+                rect_center = int((startX+endX)/2)
+                rect_area = (endX-startX)*(endY-startY)
+                detected = 1
+                if rect_area &gt; big_area: 
+                    big_area = rect_area
+                    big_center = rect_center
+
+
+        if detected:
+            cv2.rectangle(frame, (startX, startY), (endX, endY),[0,0,255], 2)
+
+            if big_area &gt; 10000: # Execute if the person is within a reasonable range
+                target_center = 320
+                target_area = 150000
+
+                kr = .002
+                w = -kr*(big_center - target_center)
+                kt = 0.0000045
+#               
+                v = -kt*(big_area - target_area)
+                maxv = 1 
+                v = np.max([-maxv, v])
+                v = np.min([maxv, v])
+
+
+                self.send_command(v, w) 
+
+
+        if counter &lt; count_max:
+            out.write(frame)
+            print(counter)
+        if counter == count_max:
+            out.release()
+            print(&#39;made video&#39;)
+        cv2.imshow(&quot;Image window&quot;, frame)
+        cv2.waitKey(3)
+        fps.update()
+        fps.stop()
+        print(&quot;[INFO] elapsed time: {:.2f}&quot;.format(fps.elapsed()))
+        print(&quot;[INFO] approx. FPS: {:.2f}&quot;.format(fps.fps()))
+    def send_command(self, v, w):
+
+        self.cmd.linear.x = v
+        self.cmd.angular.z = w
+
+
+
+        self.cmd_pub.publish(self.cmd)
+
+def main():
+    global v, w
+    ctrl = CVControl()
+    rospy.init_node(&#39;image_converter&#39;)
+    try:
+
+        rospy.spin()
+
+    except KeyboardInterrupt:
+        print &quot;Shutting down&quot;
+        cv2.destroyAllWindows()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>it is fine with an old robot (turtlebot)</p>
+
+<p>the new robot (rabbot) needs to use some lines to work like </p>
+
+<pre><code>self.rate = rospy.Rate(10)
+while not rospy.is_shutdown():            
+            self.rate.sleep()
+</code></pre>
+
+<p>but those line with video gave me another problem (i.e. freeze the streaming video)</p>
+
+<p>please, help me or any suggestion </p>
+
+<p>thank you in advance!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34008">Redhwan</a> on 2019-08-16 04:02:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

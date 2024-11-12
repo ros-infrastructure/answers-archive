@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>LIDAR and Stereo Camera Calibration. Remap input topics - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/336136">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>LIDAR and Stereo Camera Calibration. Remap input topics</h2>
+      <div class="question">
+        <p>Hi All</p>
+
+<p>I have Quanergy LIDAR and PointGrey Grasshoppers RGB cameras that are connected as Master Slave and work as stereo Camera. I want to do Sensor Fusion of LIDAR and Cemeras and for that need to calibrate the LIDAR and Cameras. I have python code but is not working. I took the code from <a href="https://github.com/heethesh/lidar_camera_calibration">link text</a>  and modified to work for my sensors. So This package assumes that the bag file has at least the following topic names and message types by default, these can be modified in the launch scripts.</p>
+
+<pre><code>/sensors/camera/camera_info (sensor_msgs/CameraInfo)
+/sensors/camera/image_color (sensor_msgs/Image)
+/sensors/velodyne_points    (sensor_msgs/PointCloud2)
+</code></pre>
+
+<p>In my case these are </p>
+
+<pre><code>/stereo/left/camera_info
+/stereo/left/image_rect_color
+/Sensor/points
+</code></pre>
+
+<p>Here are the scripts</p>
+
+<pre><code>&#39;&#39;&#39;
+The main ROS node which handles the topics
+Inputs:
+    camera_info - [str] - ROS sensor camera info topic
+    image_color - [str] - ROS sensor image topic
+    velodyne - [str] - ROS velodyne PCL2 topic
+    camera_lidar - [str] - ROS projected points image topic
+
+Outputs: None
+&#39;&#39;&#39;
+def listener(camera_info, image_raw, points, camera_lidar=None):
+    # Start node
+    rospy.init_node(&#39;calibrate_camera_lidar&#39;, anonymous=True)
+    rospy.loginfo(&#39;Current PID: [%d]&#39; % os.getpid())
+    rospy.loginfo(&#39;Projection mode: %s&#39; % PROJECT_MODE)
+    rospy.loginfo(&#39;CameraInfo topic: %s&#39; % camera_info)
+    rospy.loginfo(&#39;Image topic: %s&#39; % image_raw)
+    rospy.loginfo(&#39;PointCloud2 topic: %s&#39; % points)
+    rospy.loginfo(&#39;Output topic: %s&#39; % camera_lidar)
+
+    # Subscribe to topics
+    info_sub = message_filters.Subscriber(camera_info, CameraInfo)
+    image_sub = message_filters.Subscriber(image_raw, Image)
+    Sensor_sub = message_filters.Subscriber(points, PointCloud2)
+
+    # Publish output topic
+    image_pub = None
+    if camera_lidar: image_pub = rospy.Publisher(camera_lidar, Image, queue_size=5)
+
+    # Synchronize the topics by time
+    ats = message_filters.ApproximateTimeSynchronizer(
+        [image_sub, info_sub, Sensor_sub], queue_size=5, slop=0.1)
+    ats.registerCallback(callback, image_pub)
+
+    # Keep python from exiting until this node is stopped
+    try:
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        rospy.loginfo(&#39;Shutting down&#39;)
+
+
+if __name__ == &#39;__main__&#39;:
+
+    # Calibration mode, rosrun
+    if sys.argv[1] == &#39;--calibrate&#39;:
+        camera_info = &#39;/stereo/left/camera_info&#39;
+        image_raw = &#39;/stereo/left/image_raw&#39;
+        points = &#39;/Sensor/points&#39;
+        camera_lidar = None
+        PROJECT_MODE = False
+    # Projection mode, run from launch file
+    else:
+        camera_info = rospy.get_param(&#39;camera_info_topic&#39;)
+        image_raw = rospy.get_param(&#39;image_color_topic&#39;)
+        points = rospy.get_param(&#39;points_topic&#39;)
+        camera_lidar = rospy.get_param(&#39;camera_lidar_topic&#39;)
+        PROJECT_MODE = bool(rospy.get_param(&#39;project_mode&#39;))
+
+    # Start keyboard handler thread
+    if not PROJECT_MODE: start_keyboard_handler()
+
+    # Start subscriber
+    listener(camera_info, image_raw, points, camera_lidar)
+</code></pre>
+
+<p>and display lidar camera calibration </p>
+
+<pre><code>   ?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;launch&gt;
+    &lt;arg name=&quot;camera&quot; default=&quot;/stereo/left&quot; /&gt;
+    &lt;!-- Play rosbag record --&gt;
+    &lt;include file=&quot;$(find lidar_camera_calibration)/launch/play_rosbag.launch&quot;&gt;
+        &lt;arg name=&quot;bagfile&quot; value=&quot;2019-10-24-16-56-30.bag&quot; /&gt;
+    &lt;/include&gt;
+       &lt;!-- Nodelet manager for this pipeline --&gt;
+    &lt;node
+        pkg=&quot;nodelet&quot;
+        type=&quot;nodelet&quot;
+        args=&quot;manager&quot;
+        name=&quot;lidar_camera_manager&quot;
+        output=&quot;screen&quot; /&gt;
+
+    &lt;node
+        pkg=&quot;image_proc&quot;
+        type=&quot;image_proc&quot; 
+        name=&quot;image_proc_node1&quot; /&gt;
+
+    &lt;!-- Run image_proc/rectify nodelet --&gt;
+    &lt;node
+        pkg=&quot;nodelet&quot;
+        type=&quot;nodelet&quot;
+        name=&quot;rectify_color&quot;
+        args=&quot;load image_proc/rectify lidar_camera_manager --no-bond&quot; &gt;
+
+        &lt;!-- Remap input topics --&gt;
+        &lt;remap from=&quot;image_mono&quot;  to=&quot;$(arg camera)/image_rect_color&quot; /&gt;
+        &lt;remap from=&quot;camera_info&quot; to=&quot;$(arg camera)/camera_info&quot; /&gt;
+
+        &lt;!-- Remap output topics --&gt;
+        &lt;remap from=&quot;image_rect&quot; to=&quot;$(arg camera)/image_rect&quot; /&gt;
+    &lt;/node&gt;
+
+    &lt;!-- Wire static transform from the world to velodyne frame --&gt;
+    &lt;node
+        pkg=&quot;tf2_ros&quot;
+        type=&quot;static_transform_publisher&quot;
+        name=&quot;world_velodyne_tf&quot;
+        output=&quot;screen&quot;
+        args=&quot;-0.0 -0.0 -0.0 0.0 -0.0 -0.0 world Sensor&quot; /&gt;
+
+    &lt;!-- Setup params for Camera-LiDAR calibration script --&gt;
+    &lt;param name=&quot;camera_info_topic&quot; type=&quot;str&quot; value=&quot;$(arg camera)/camera_info&quot; /&gt;
+    &lt;param name=&quot;image_color_topic&quot; type=&quot;str&quot; value=&quot;$(arg camera)/image_rect_color&quot; /&gt;
+    &lt;param name=&quot;points_topic&quot; type=&quot;str&quot; value=&quot;/Sensor/points&quot; /&gt;
+    &lt;param name=&quot;camera_lidar_topic&quot; type=&quot;str&quot; value=&quot;$(arg camera)/camera_lidar&quot; /&gt;
+    &lt;param name=&quot;project_mode&quot; type=&quot;bool&quot; value=&quot;true&quot; /&gt;
+
+    &lt;!-- Run Camera-LiDAR projection script --&gt;
+    &lt;node   
+        pkg=&quot;lidar_camera_calibration&quot;
+        type=&quot;calibrate_camera_lidar.py&quot;
+        name=&quot;calibrate_camera_lidar&quot;
+        output=&quot;screen&quot; /&gt;
+
+    &lt;!-- Run image view to display the projected points image --&gt;
+    &lt;node 
+        name=&quot;camera_lidar_projection&quot; 
+        pkg=&quot;image_view&quot;
+        type=&quot;image_view&quot;
+        respawn=&quot;false&quot;
+        output=&quot;screen&quot;&gt;
+
+        &lt;!-- Remap input topics --&gt;
+        &lt;remap from=&quot;image&quot; to=&quot;$(arg camera)/camera_lidar&quot; /&gt;
+    &lt;/node&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>After play the recorded bag file the rostopic list is </p>
+
+<pre><code>  /Sensor/points
+    /clock
+    /rosout
+    /rosout_agg
+    /stereo/left/camera_info
+    /stereo/left/image_raw
+    /stereo/left/image_rect
+    /stereo/left/image_rect_color
+</code></pre>
+
+<p>Any help?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2019-10-25 01:46:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you tell what the exact problem is that you are having?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31829">Choco93</a> on 2019-10-25 07:53:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>when try to  perform calibration using the matplotlib GUI to pick correspondences in the camera and the LiDAR frames wirh  <code>roslaunch lidar_camera_calibration play_rosbag.launch bagfile:=/path/to/file.bag</code>
+and <code>rosrun lidar_camera_calibration calibrate_camera_lidar.py --calibrate</code> it doesnt open the GUI but it compile. So any help?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2019-10-26 05:00:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

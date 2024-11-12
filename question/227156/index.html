@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>roscpp Callback Thread Safety SEGFAULT - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/227156">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>roscpp Callback Thread Safety SEGFAULT</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/72199/roscpp-callback-thread-safety-segfault">https://robotics.stackexchange.com/questions/72199/roscpp-callback-thread-safety-segfault</a>.</p>
+        <p>I&#39;m currently subscribing to every topic ever published in my program via <code>ShapeShifter</code>, and deserializing as necessary. This works great, but I&#39;m receiving SEGFAULTs when using <code>ros::AsyncSpinner</code>. I&#39;m essentially trying to create a live rqt_graph, which monitors latency between sent and received messages.</p>
+
+<p>Why is the below not threadsafe? From my console, it looks like the shared::ptr to <code>Shapeshifter</code> msg within my callback get changed on me without me finishing the callback. Is it not safe to pass shared::ptr to ROS callback threads?</p>
+
+<p><strong>ERROR MESSAGE</strong></p>
+
+<pre><code>Program received signal SIGSEGV, Segmentation fault.
+[Switching to Thread 0x7fffea7fc700 (LWP 31281)]
+__memcpy_sse2_unaligned () at ../sysdeps/x86_64/multiarch/memcpy-sse2-unaligned.S:79
+79  ../sysdeps/x86_64/multiarch/memcpy-sse2-unaligned.S: No such file or directory.
+</code></pre>
+
+<p><strong>MAIN</strong></p>
+
+<pre><code>int main(int argc, char* argv[])
+{
+  ros::init(argc, argv, &quot;performance_tracker_node&quot;);
+
+  ros::AsyncSpinner spinner(4);
+  spinner.start();
+
+  // Loop on the main thread and search for new topics being published
+  // If the topic caught doesn&#39;t exist in our Node list yet, add it
+  while(ros::ok()){
+       //Code that finds new topics not included
+                PerformanceTracker newNode = PerformanceTracker(info.name);
+                performanceNodes.insert(std::pair&lt;std::string, PerformanceTracker&gt;(info.name, newNode));
+     }
+      ros::waitForShutdown;
+}
+</code></pre>
+
+<p><strong>Performance Tracker Constructor</strong></p>
+
+<pre><code>PerformanceTracker::PerformanceTracker(std::string topicName):
+_topicName(topicName)
+ {
+   ros::NodeHandle nh(&quot;~&quot;);
+  _nh = nh;
+  // Subscribe To Generic Message 
+ _sub =  _nh.subscribe( _topicName, 10, &amp;PerformanceTracker::topicCallback, this);
+}
+</code></pre>
+
+<p><strong>Performance Tracker Callback</strong></p>
+
+<pre><code>void PerformanceTracker::topicCallback(const boost::shared_ptr&lt;topic_tools::ShapeShifter&gt; msg){
+//Current Time
+ros::Time begin = ros::Time::now();
+
+    //Prevent OOB error by only checking msgs that are at least the size of a header msg 
+    if(msg-&gt;size() &gt;= sizeof(std_msgs::Header)){
+        //Deserialize message
+        std_msgs::Header header;
+        uint8_t buf[msg-&gt;size()];
+        ros::serialization::OStream stream(buf, msg-&gt;size());
+        msg-&gt;write(stream);
+        header.seq = ((uint32_t *)buf)[0];
+        header.stamp.sec = ((int32_t *)buf)[1];
+        header.stamp.nsec = ((int32_t *)buf)[2];
+
+        // Delays greater than 1 hour are clearly wrong., and the header doesn&#39;t exist, so skip this
+        double lagTime = (begin-header.stamp).toSec();
+        if(lagTime &gt; 3600){
+            // Skip this topic in the future
+            std::cout &lt;&lt; &quot;Topic &quot; &lt;&lt; _topicName &lt;&lt;  &quot; sent at &quot; &lt;&lt;  header.stamp &lt;&lt; &quot; returned nonsense time for &quot; &lt;&lt; lagTime &lt;&lt;  &quot; seconds&quot; &lt;&lt; std::endl;
+            _nh.shutdown();
+        }
+       //if delayed, then log time lag
+        else if(lagTime &gt; 1){
+            std::cout &lt;&lt; &quot;Topic &quot; &lt;&lt; _topicName &lt;&lt;  &quot; sent at &quot; &lt;&lt;  header.stamp &lt;&lt; &quot; delayed for&quot; &lt;&lt; lagTime &lt;&lt;  &quot; seconds&quot; &lt;&lt; std::endl;
+        }
+    }
+     // Remove topic for future if topic message type is too small 
+    else{
+        // Skip this topic in the future
+        std::cout &lt;&lt; &quot;Topic &quot; &lt;&lt; _topicName &lt;&lt;  &quot; message size was smaller than just a std::msg Header, and likely did not have a header &quot;&lt;&lt; std::endl;
+        _nh.shutdown();
+    }
+ }
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/25924">solb22</a> on 2016-02-20 00:56:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p><code>boost::shared_ptr</code> are explicitly designed to be shared between threads; the function prototype for your callback seems fine.</p>
+
+<p>I would run your program through a debugger (gdb) to determine the location of the segfault.</p>
+
+<p>(It&#39;s also odd that you&#39;re calling <code>_nh.shutdown()</code> when you want to unsubscribe from a single topic, because this will shut down your entire process; not just a single subscriber).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2016-02-20 14:12:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I posted the error from gdb, Ill post the full stacktrace. I&#39;m create a new <code>nodehandle</code> for each topic, and then calling shutdown(). Is that not allowed?  I wasn&#39;t aware of how to use only one nodehandle for the entire node and unsubscribe from a particular topic</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25924">solb22</a> on 2016-02-20 19:01:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>roscpp only creates one node per process, regardless of how many NodeHandles you create. Calling shutdown on any NodeHandle shuts down the entire process. If you want to stop a particular subscriber, call the unsubscribe method on that subscriber.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2016-02-21 00:24:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I don&#39;t see an unsubscribe member function on <code>ros::Subscriber</code>. I only see <code>shutdown</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25924">solb22</a> on 2016-02-21 06:02:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sorry; that&#39;s what I meant.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2016-02-21 15:25:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Did you ever figure this out? I think i&#39;m having the same problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30932">jlack</a> on 2017-11-14 08:32:17 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Time synchronization problem to show the images from a binocular camera - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/330303">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Time synchronization problem to show the images from a binocular camera</h2>
+      <div class="question">
+        <p><strong>Backgrounds:</strong> Hi, everyone. I am a beginner of vision SLAM and now trying to show images in the real time of a binocular camera. Something I have done is that I have used the <code>usb-cam</code> package to get the image data and shown them in the <code>rviz</code> and <code>rqt</code>. But I meet a time synchroniazation problem with the <code>OpenCV imshow()</code>. Specificlly, I want to use <code>usb-cam</code> to get the data and do some image procession with <code>OpenCV</code> and at first I try to display the images.</p>
+
+<p><strong>Environment:</strong> Ubuntu 16.04 in the Vmware WorkStation 12 (in win10), ROS Kinetic, OpenCV 3.3.0. Binocular camera can support the mjepg format with 640*480 and 30fps.</p>
+
+<p><strong>Problem:</strong> I meet a problem that one of image from a binocular camera has a time delay corresponding to another image  and the image is fixed that I mean that there is only that one camera with the time delay in the image display. Further, the time delay has a increase trend to be longer.</p>
+
+<p><strong>Codes</strong> :</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/Image.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+
+#include &lt;opencv2/opencv.hpp&gt;
+
+#include &lt;queue&gt;
+#include &lt;thread&gt;
+#include &lt;mutex&gt;
+#include &lt;iostream&gt;
+
+std::queue&lt;sensor_msgs::ImageConstPtr&gt; img0_buf;
+std::queue&lt;sensor_msgs::ImageConstPtr&gt; img1_buf;
+std::mutex m_buf;
+
+//Test for rqt, 0 for cv, else for rviz
+int flag = 0;
+
+ros::Publisher pubImg0;
+ros::Publisher pubImg1;
+
+void img0_callback(const sensor_msgs::ImageConstPtr &amp;img0)
+{
+    m_buf.lock();
+    //For rqt
+    if(flag != 0)
+    {
+        sensor_msgs::Image img;
+img.header=img0-&gt;header;
+img.height = img0-&gt;height;
+img.width = img0-&gt;width;
+img.is_bigendian = img0-&gt;is_bigendian;
+img.step = img0-&gt;step;
+img.data=img0-&gt;data;
+img.encoding=img0-&gt;encoding;
+pubImg0.publish(img);
+// std::cout&lt;&lt;&quot;0.&quot;&lt;&lt;img.header&lt;&lt;std::endl;
+}
+
+else
+    {
+            img0_buf.push(img0);
+        }
+    m_buf.unlock();
+}
+
+void img1_callback(const sensor_msgs::ImageConstPtr &amp;img1)
+{
+    m_buf.lock();
+    if(flag != 0)
+    {
+        sensor_msgs::Image img;
+        img.header=img1-&gt;header;
+img.height = img1-&gt;height;
+img.width = img1-&gt;width;
+img.is_bigendian = img1-&gt;is_bigendian;
+img.step = img1-&gt;step;
+img.data=img1-&gt;data;
+img.encoding=img1-&gt;encoding;
+pubImg1.publish(img);
+// std::cout&lt;&lt;&quot;1.&quot;&lt;&lt;img.header&lt;&lt;std::endl;
+}
+
+else
+{
+    img1_buf.push(img1);
+}
+m_buf.unlock();
+
+}
+
+//Use the cv_bridge of ros to change the image data format from msgs to cv
+cv::Mat msg2cv(const sensor_msgs::ImageConstPtr &amp;img_msg)
+{
+    cv_bridge::CvImageConstPtr ptr;
+    sensor_msgs::Image img_tmp;
+    img_tmp.header = img_msg-&gt;header;
+    img_tmp.height = img_msg-&gt;height;
+    img_tmp.width = img_msg-&gt;width;
+    img_tmp.is_bigendian = img_msg-&gt;is_bigendian;
+    img_tmp.step = img_msg-&gt;step;
+    img_tmp.data = img_msg-&gt;data;
+    img_tmp.encoding =img_msg-&gt;encoding;
+
+    ptr = cv_bridge::toCvCopy(img_tmp, sensor_msgs::image_encodings::BGR8);
+    cv::Mat img = ptr-&gt;image.clone();
+
+    return img;
+}
+
+//With reference of VINS rosNodeTest.cpp
+void display()
+
+{
+    while(1)
+    {
+        cv::Mat image0, image1;
+        // double t1,t2;
+        m_buf.lock();
+        if(!img0_buf.empty() &amp;&amp; !img1_buf.empty())
+        {
+            ROS_INFO(&quot;Two cameras work&quot;);
+            image0=msg2cv(img0_buf.front());
+        // ROS_INFO(&quot;img0 %.9lf&quot;, img0_buf.front()-&gt;header.stamp.toSec());
+    // t1=img0_buf.front()-&gt;header.stamp.toSec();
+    img0_buf.pop();
+    imshow(&quot;camera1&quot;, image0);
+
+    image1=msg2cv(img1_buf.front());
+    // ROS_INFO(&quot;img1 %.9lf&quot;, img1_buf.front()-&gt;header.stamp.toSec());
+    // t2=img1_buf.front()-&gt;header.stamp.toSec();
+    img1_buf.pop();
+    cv::imshow(&quot;camera2&quot;, image1);
+    cv::waitKey(1);
+}
+   m_buf.unlock();
+
+// //display with cv
+// if(!image0.empty())
+// {
+//     imshow(&quot;camera1&quot;, image0);
+//     // cv::waitKey(1);
+// }
+// // else
+// // { std::cout&lt;&lt;&quot;image0 is empty!&quot;&lt;&lt;std::endl;}
+
+
+// if(!image1.empty())
+// {
+//     imshow(&quot;camera2&quot;, image1);
+//     // cv::waitKey(1);
+
+// }
+// else
+// {std::cout&lt;&lt;&quot;image1 is empty!&quot;&lt;&lt;std::endl;}
+
+// cv::waitKey();
+//std::chrono::milliseconds dura(2);
+//std::this_thread::sleep_for(dura);
+}
+}
+
+
+int main(int argc, char** argv)
+{
+    //Initialize a ros node
+    ros::init(argc,argv,&quot;demo&quot;);
+    ros::NodeHandle n;
+    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+
+    //Subscribe the binocular camera raw data
+    ros::Subscriber sub_img0=n.subscribe(&quot;/camera1/usb_cam1/image_raw&quot;, 2000, img0_callback);
+
+
+
+  ros::Subscriber sub_img1=n.subscribe(&quot;/camera2/usb_cam2/image_raw&quot;, 2000, img1_callback);
+
+    ROS_INFO(&quot;Wait for camera data.&quot;);
+
+    if(flag != 0) //for rviz
+    {
+        pubImg0 = n.advertise&lt;sensor_msgs::Image&gt;(&quot;/Img0&quot;, 100);
+            pubImg1 = n.advertise&lt;sensor_msgs::Image&gt;(&quot;/Img1&quot;, 100);
+            std::cout&lt;&lt;&quot;for rviz&quot;&lt;&lt;std::endl;
+        }
+        else  //for cv
+        {
+        //Synchronization and display
+        std::cout&lt;&lt;&quot;for cv&quot;&lt;&lt;std::endl;
+        std::thread sync_thread{display};
+        sync_thread.detach();
+        //display();
+    }
+
+    ros::spin();
+
+    return 1;
+}
+</code></pre>
+
+<p>I have no idea the reason. Next I want to print or write a document to show the time stamps of two images. So anyoe there says something or advice? Thank you! </p>
+
+        <div class="owner"><p>Asked by <a href="/users/44257">YancenBOB</a> on 2019-08-08 20:34:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi guys. I solve the problem.
+The code is referred with the VINS Fusion (<a href="https://github.com/HKUST-Aerial-Robotics/VINS-Fusion">https://github.com/HKUST-Aerial-Robotics/VINS-Fusion</a>)
+and I miss the time synchronization above.
+I will close the question and I hope to help others who see it.
+Thank you!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/44257">YancenBOB</a> on 2019-08-09 02:10:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

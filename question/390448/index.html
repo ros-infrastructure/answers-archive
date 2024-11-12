@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Calling Service from Node does not work, but calling it from CLI works. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/390448">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Calling Service from Node does not work, but calling it from CLI works.</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100500/calling-service-from-node-does-not-work-but-calling-it-from-cli-works">https://robotics.stackexchange.com/questions/100500/calling-service-from-node-does-not-work-but-calling-it-from-cli-works</a>.</p>
+        <p>I want to make an interface for controlling many of my nodes. One function of this node is to set the lifecycle state of the map server provided by the navigation2 package. To do so, I run the following code.</p>
+
+<pre><code>from ros2lifecycle.api import get_node_names
+from lifecycle_msgs.srv import GetAvailableTransitions
+[...]
+for node in get_node_names(node=self):
+        if &#39;map_server&#39; in node:
+            self.get_logger().info(&#39;switching_to_mapping: Found node {0.full_name}&#39;.format(node))
+            # Since this service doesnt work, we will just call the node&#39;s lifecycle service.
+            client = self.create_client(
+                GetAvailableTransitions,
+                f&#39;{node.full_name}/get_available_transitions&#39;)
+            self.get_logger().info(&#39;switching_to_mapping: Waiting for service to become available&#39;)
+            while True:
+                if client.service_is_ready():
+                    self.get_logger().info(&#39;switching_to_mapping: Service is ready&#39;)
+                    msg = GetAvailableTransitions.Request()
+                    future = client.call_async(msg)
+                    self.get_logger().info(&#39;switching_to_mapping: Calling service&#39;)
+                    break
+                else:
+                    rclpy.spin_once(self, timeout_sec=1.0)
+    self.get_logger().info(&#39;switching_to_mapping: Waiting for service to return&#39;)
+    while not future.done():
+        time.sleep(0.1)
+    self.get_logger().info(&#39;switching_to_mapping: Service returned&#39;)
+</code></pre>
+
+<p>I never reach that final log statement. Output side looks like this.</p>
+
+<pre><code>[control_node-21] 1636472070.912905585 [hugo_utils.hugo_control_node] [INFO] switching_to_mapping: Found node /navigation/map_server
+[control_node-21] 1636472070.927478081 [hugo_utils.hugo_control_node] [INFO] switching_to_mapping: Waiting for service to become available
+[control_node-21] 1636472070.929866791 [hugo_utils.hugo_control_node] [INFO] switching_to_mapping: Service is ready
+[control_node-21] 1636472070.932301519 [hugo_utils.hugo_control_node] [INFO] switching_to_mapping: Calling service
+[control_node-21] 1636472070.933709630 [hugo_utils.hugo_control_node] [INFO] switching_to_mapping: Waiting for service to return
+</code></pre>
+
+<p>Meanwhile, service caller,</p>
+
+<pre><code># ros2 service call /hugo_utils/switch_to_mapping std_srvs/srv/Trigger 
+requester: making request: std_srvs.srv.Trigger_Request()
+</code></pre>
+
+<p>Making sure that service is available and can be called</p>
+
+<pre><code> # ros2 service call /navigation/map_server/get_available_transitions lifecycle_msgs/srv/GetAvailableTransitions 
+requester: making request: lifecycle_msgs.srv.GetAvailableTransitions_Request()
+
+response:
+lifecycle_msgs.srv.GetAvailableTransitions_Response(available_transitions=[lifecycle_msgs.msg.TransitionDescription(transition=lifecycle_msgs.msg.Transition(id=4, label=&#39;deactivate&#39;), start_state=lifecycle_msgs.msg.State(id=3, label=&#39;active&#39;), goal_state=lifecycle_msgs.msg.State(id=14, label=&#39;deactivating&#39;)), lifecycle_msgs.msg.TransitionDescription(transition=lifecycle_msgs.msg.Transition(id=7, label=&#39;shutdown&#39;), start_state=lifecycle_msgs.msg.State(id=3, label=&#39;active&#39;), goal_state=lifecycle_msgs.msg.State(id=12, label=&#39;shuttingdown&#39;))])
+</code></pre>
+
+<p>What is going on here? Why does my node not call the service even though it can be found?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/79869">Per Edwardsson</a> on 2021-11-09 10:41:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is the indentation in your code correct? Remember that in Python indentation creates a scope, so your variables might be going out of scope. Also the <code>future</code> probably goes out of scope when the <code>while</code> loop exits. You need to make the variable exist outside of the while loop.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2021-11-09 18:07:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would think the scope is correct, but at this rate python never ceases to surprise me. If a variable has gone out of scope, surely it would crash?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79869">Per Edwardsson</a> on 2021-11-10 03:39:50 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Short answer:
+Replace <code>time.sleep</code> with <code>rclpy.spin_once</code></p>
+
+<p>Long answer:
+Remember that <em>async</em> != <em>multithreading</em>. When you use async, all the code runs in a single thread. So using a <code>for</code> loop that only runs <code>time.sleep</code> means the only thread you have is now locked, and no other code can be executed. You have to give up control so that <code>call_async</code> can do its job. This can be achieved using <code>rclpy.spin_once</code>. I think it is similar to <code>asyncio.sleep(0)</code>.</p>
+
+<p>You can learn more about async in <a href="https://www.youtube.com/watch?v=8aGhZQkoFbQ">this video</a> (which is fantastic but explains async in javascript; so the syntax is a bit different) and <a href="https://www.youtube.com/watch?v=F19R_M4Nay4">this video</a> that talks about python&#39;s async in particular.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/73017">m2-farzan</a> on 2021-11-09 18:00:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>What is the correct way to call <code>rclpy.spin_once()</code>? Neither <code>rclpy.spin_until_future_complete(self, future)</code> nor <code>rclpy.spin_once(self)</code> seems to produce any different result. <code>self</code> is a class inherited from <code>rclpy.node.Node</code>. Looks like the problem is that <code>rclpy.spin_once(self)</code> never returns - maybe <code>self</code> is busy elsewhere in the loop?
+Edit: needed to supply a <code>timeout_sec</code> parameter to allow the thread to finish. Thank you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79869">Per Edwardsson</a> on 2021-11-10 02:49:37 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

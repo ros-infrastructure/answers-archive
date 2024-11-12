@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why image not recieved using ROS2 functions in the node? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417747">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why image not recieved using ROS2 functions in the node?</h2>
+      <div class="question">
+        <p>Hi</p>
+
+<p>created ,monocular-inertial node for ORB_SLAM3 in ROS2 humble. Its can build without any errors. My camera image is RGB image . So I have the function to get the image in this way</p>
+
+<pre><code>cv::Mat ImageGrabber::GetImage(const sensor_msgs::msg::Image::SharedPtr img_msg)
+{
+  // Copy the ros image message to cv::Mat.
+  cv_bridge::CvImageConstPtr cv_ptr;
+  try
+  {
+    cv_ptr = cv_bridge::toCvShare(img_msg, sensor_msgs::image_encodings::RGB8);
+  }
+  catch (cv_bridge::Exception&amp; e)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;Mono_Inertial&quot;), &quot;cv_bridge exception: %s&quot;, e.what());  }
+
+  if(cv_ptr-&gt;image.type()==0)
+  {
+    return cv_ptr-&gt;image.clone();
+  }
+  else
+  {
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;Mono_Inertial&quot;), &quot;Error image type&quot;);
+    return cv_ptr-&gt;image.clone();
+  }
+}
+</code></pre>
+
+<p>The whole node is this</p>
+
+<pre><code>class ImuGrabber
+{
+public:
+    ImuGrabber(){};
+    void GrabImu(const sensor_msgs::msg::Imu::SharedPtr imu_msg);
+    queue&lt;sensor_msgs::msg::Imu::SharedPtr&gt; imuBuf;
+    std::mutex mBufMutex;
+};
+
+class ImageGrabber
+{
+public:
+    ImageGrabber(ORB_SLAM3::System* pSLAM, ImuGrabber *pImuGb, const bool bClahe): mpSLAM(pSLAM), mpImuGb(pImuGb), mbClahe(bClahe){}
+
+    void GrabImage(const sensor_msgs::msg::Image::SharedPtr img_msg);
+    cv::Mat GetImage(const sensor_msgs::msg::Image::SharedPtr img_msg);
+
+    void SyncWithImu();
+
+    //method for setting ROS publisher
+    void SetPub(rclcpp::Publisher&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr pub);
+
+    queue&lt;sensor_msgs::msg::Image::SharedPtr&gt; img0Buf;
+    std::mutex mBufMutex;
+
+    ORB_SLAM3::System* mpSLAM;
+    ImuGrabber *mpImuGb;
+    //additional variables for publishing pose &amp; broadcasting transform - https://roboticsknowledgebase.com/wiki/state-estimation/orb-slam2-setup/
+
+    cv::Mat m1, m2;
+    bool do_rectify, pub_tf, pub_pose;
+    rclcpp::Publisher&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr orb_pub;
+    std::unique_ptr&lt;tf2_ros::TransformBroadcaster&gt; tf_broadcaster_;
+
+    const bool mbClahe;
+    cv::Ptr&lt;cv::CLAHE&gt; mClahe = cv::createCLAHE(3.0, cv::Size(8, 8));
+};
+
+class MonoInertial : public rclcpp::Node
+{
+public:
+    MonoInertial(const std::string&amp; vocabulary_path, const std::string&amp; settings_path, bool do_equalize)
+        : Node(&quot;Mono_Inertial&quot;)
+    {
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Mono_Inertial node started&quot;);
+
+        // Create SLAM system. It initializes all system threads and gets ready to process frames.
+        SLAM_ = new ORB_SLAM3::System(vocabulary_path, settings_path, ORB_SLAM3::System::IMU_MONOCULAR, true);
+
+        imugb_ = new ImuGrabber();
+        igb_ = new ImageGrabber(SLAM_, imugb_, do_equalize);
+
+        pose_pub_ = this-&gt;create_publisher&lt;geometry_msgs::msg::PoseStamped&gt;(&quot;orb_pose&quot;, 100);
+
+        // Maximum delay, 5 seconds
+        sub_imu_ = this-&gt;create_subscription&lt;sensor_msgs::msg::Imu&gt;(
+            &quot;/anafi/drone/linear_acceleration&quot;, 10, [&amp;](const sensor_msgs::msg::Imu::SharedPtr msg) { imugb_-&gt;GrabImu(msg); });
+
+        sub_img0_ = this-&gt;create_subscription&lt;sensor_msgs::msg::Image&gt;(
+            &quot;/anafi/camera/image&quot;, 1, [&amp;](const sensor_msgs::msg::Image::SharedPtr msg) { igb_-&gt;GrabImage(msg); });
+
+         // Initialize the transform broadcaster
+        // Create publisher
+        igb_-&gt;SetPub(pose_pub_);
+
+        sync_thread_ = std::thread(&amp;ImageGrabber::SyncWithImu, igb_);
+    }
+
+private:
+    ORB_SLAM3::System* SLAM_;
+    ImuGrabber* imugb_;
+    ImageGrabber* igb_;
+    rclcpp::Publisher&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr pose_pub_;
+    rclcpp::Subscription&lt;sensor_msgs::msg::Imu&gt;::SharedPtr sub_imu_;
+    rclcpp::Subscription&lt;sensor_msgs::msg::Image&gt;::SharedPtr sub_img0_;
+    std::thread sync_thread_;
+};
+
+
+int main(int argc, char **argv)
+{
+  rclcpp::init(argc, argv);
+  bool do_equalize = false;
+  if (argc &lt; 3 || argc &gt; 4)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;Mono_Inertial&quot;), &quot;Usage: ros2 run ORB_SLAM3 Mono_Inertial path_to_vocabulary path_to_settings [do_equalize]&quot;);
+    rclcpp::shutdown();
+    return 1;
+  }
+
+
+  if(argc==4)
+  {
+    std::string sbEqual(argv[3]);
+    if (sbEqual == &quot;true&quot;)
+        do_equalize = true;
+  }
+
+  auto node = std::make_shared&lt;MonoInertial&gt;(argv[1], argv[2], do_equalize);
+
+ rclcpp::spin(node);
+ rclcpp::shutdown();
+
+  return 0;
+}
+
+//method for assigning publisher
+void ImageGrabber::SetPub(rclcpp::Publisher&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr pub)
+{
+  orb_pub = pub;
+}
+
+void ImageGrabber::GrabImage(const sensor_msgs::msg::Image::SharedPtr img_msg)
+{
+  mBufMutex.lock();
+  if (!img0Buf.empty())
+    img0Buf.pop();
+    img0Buf.push(img_msg);
+    mBufMutex.unlock();
+}
+
+cv::Mat ImageGrabber::GetImage(const sensor_msgs::msg::Image::SharedPtr img_msg)
+{
+  // Copy the ros image message to cv::Mat.
+  cv_bridge::CvImageConstPtr cv_ptr;
+  try
+  {
+    cv_ptr = cv_bridge::toCvShare(img_msg, sensor_msgs::image_encodings::RGB8);
+  }
+  catch (cv_bridge::Exception&amp; e)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;Mono_Inertial&quot;), &quot;cv_bridge exception: %s&quot;, e.what());  }
+
+  if(cv_ptr-&gt;image.type()==0)
+  {
+    return cv_ptr-&gt;image.clone();
+  }
+  else
+  {
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;Mono_Inertial&quot;), &quot;Error image type&quot;);
+    return cv_ptr-&gt;image.clone();
+  }
+}
+
+void ImageGrabber::SyncWithImu()
+{
+  //while(1)
+  while (rclcpp::ok())
+  {
+    cv::Mat im;
+    double tIm = 0;
+    if (!img0Buf.empty()&amp;&amp;!mpImuGb-&gt;imuBuf.empty())
+    {
+      tIm = img0Buf.front()-&gt;header.stamp.sec + img0Buf.front()-&gt;header.stamp.nanosec * 1e-9;
+      if (tIm &gt; mpImuGb-&gt;imuBuf.back()-&gt;header.stamp.sec + mpImuGb-&gt;imuBuf.back()-&gt;header.stamp.nanosec * 1e-9)
+          continue;
+      {
+        this-&gt;mBufMutex.lock();
+        im = GetImage(img0Buf.front());
+        img0Buf.pop();
+        this-&gt;mBufMutex.unlock();
+      }
+
+      vector&lt;ORB_SLAM3::IMU::Point&gt; vImuMeas;
+      mpImuGb-&gt;mBufMutex.lock();
+      if(!mpImuGb-&gt;imuBuf.empty())
+      {
+        // Load imu measurements from buffer
+        vImuMeas.clear();
+        while (!mpImuGb-&gt;imuBuf.empty() &amp;&amp; mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.sec +
+                        mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.nanosec * 1e-9 &lt;= tIm)
+        {
+          double t = mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.sec + mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.nanosec * 1e-9;          
+          cv::Point3f acc(mpImuGb-&gt;imuBuf.front()-&gt;linear_acceleration.x, mpImuGb-&gt;imuBuf.front()-&gt;linear_acceleration.y, mpImuGb-&gt;imuBuf.front()-&gt;linear_acceleration.z);
+          cv::Point3f gyr(mpImuGb-&gt;imuBuf.front()-&gt;angular_velocity.x, mpImuGb-&gt;imuBuf.front()-&gt;angular_velocity.y, mpImuGb-&gt;imuBuf.front()-&gt;angular_velocity.z);
+          vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc,gyr,t));
+          mpImuGb-&gt;imuBuf.pop();
+        }
+      }
+      mpImuGb-&gt;mBufMutex.unlock();
+      if(mbClahe)
+        mClahe-&gt;apply(im,im);
+
+      cv::Mat T_, R_, t_ ;
+
+      //stores return variable of TrackMonocular
+      mpSLAM-&gt;TrackMonocular(im, tIm, vImuMeas);
+
+      //this line seems to break things
+      //aftermarket publish function
+
+      if (pub_tf || pub_pose)
+      {    
+        if (!(T_.empty())) {
+
+          cv::Size s = T_.size();
+          if ((s.height &gt;= 3) &amp;&amp; (s.width &gt;= 3)) {
+            R_ = T_.rowRange(0,3).colRange(0,3).t();
+            t_ = -R_*T_.rowRange(0,3).col(3);
+            std::vector&lt;float&gt; q = ORB_SLAM3::Converter::toQuaternion(R_);
+            float scale_factor=1.0;
+            tf2::Transform tf_transform;
+            geometry_msgs::msg::TransformStamped tf_msg;
+            tf_msg.header.stamp = rclcpp::Time(tIm);
+            tf_msg.header.frame_id = &quot;/camera&quot;;
+            tf_msg.child_frame_id = &quot;ORB_SLAM3_MONO_INERTIAL&quot;;
+            //geometry_msgs::msg::Transform tf2;
+
+            //tf2::Transform tf_msg1;
+            tf_msg.transform.translation.x = t_.at&lt;float&gt;(0, 0) * scale_factor;
+            tf_msg.transform.translation.y = t_.at&lt;float&gt;(0, 1) * scale_factor;
+            tf_msg.transform.translation.z = t_.at&lt;float&gt;(0, 2) * scale_factor;
+            tf_msg.transform.rotation.x = q[0];
+            tf_msg.transform.rotation.y = q[1];
+            tf_msg.transform.rotation.z = q[2];
+            tf_msg.transform.rotation.w = q[3];
+
+          if (pub_pose)
+            {
+              geometry_msgs::msg::PoseStamped pose;
+              //pose.header.stamp = img0Buf.front()-&gt;header.stamp;
+              pose.header.frame_id =&quot;ORB_SLAM3_MONO_INERTIAL&quot;;
+              tf2::toMsg(tf_transform, pose.pose);
+              orb_pub-&gt;publish(pose);
+            }
+
+          }
+        }
+      }
+    }
+
+    std::chrono::milliseconds tSleep(1);
+    std::this_thread::sleep_for(tSleep);
+  }
+}
+
+void ImuGrabber::GrabImu(const sensor_msgs::msg::Imu::SharedPtr imu_msg)
+{
+  mBufMutex.lock();
+  imuBuf.push(imu_msg);
+  mBufMutex.unlock();
+  return;
+}
+</code></pre>
+
+<p>But still when run it, there is no image and no map is load and no localisation. There is no imu topic, but I can use separately linear acceleration and angular velocity topics.</p>
+
+<p>Any help?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2023-07-26 05:01:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I suspect no one can help if you don&#39;t look through the log files and post the bits that are relevent, and then you also explain what you have already tried to fix it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2023-07-27 22:15:24 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

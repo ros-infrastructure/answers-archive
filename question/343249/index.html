@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to know when spin() is up and running? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/343249">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to know when spin() is up and running?</h2>
+      <div class="question">
+        <p>Consider the following code example:</p>
+
+<pre><code>class Talker : public rclcpp::Node {
+public:
+    talker_component_EXPORT explicit Talker(const rclcpp::NodeOptions&amp; options);
+    void publish(std_msgs::msg::String s);
+
+protected:
+    // void on_timer();
+
+private:
+    size_t count_;
+    rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr pub_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+Talker::Talker(const rclcpp::NodeOptions&amp; options)
+    : Node(&quot;talker&quot;, options)
+    , pub_{ create_publisher&lt;std_msgs::msg::String&gt;(
+          &quot;chatter&quot;,
+          // Prefer reponsiveness over completeness of data
+          rclcpp::QoS(rclcpp::KeepLast(1), rmw_qos_profile_sensor_data)) }
+{
+}
+
+void Talker::publish(std_msgs::msg::String s) { pub_-&gt;publish(std::move(s)); }
+
+class Listener : public rclcpp::Node {
+public:
+    listener_component_EXPORT explicit Listener(
+        const rclcpp::NodeOptions&amp; options,
+        std::function&lt;void(std_msgs::msg::String)&gt; callback = [](auto s) {});
+
+private:
+    rclcpp::Subscription&lt;std_msgs::msg::String&gt;::SharedPtr sub_;
+};
+
+Listener::Listener(
+    const rclcpp::NodeOptions&amp; options,
+    std::function&lt;void(std_msgs::msg::String)&gt; callback)
+    : Node(&quot;listener&quot;, options)
+    , sub_{ create_subscription&lt;std_msgs::msg::String&gt;(
+          &quot;chatter&quot;,
+          rclcpp::QoS{ rclcpp::KeepLast(1), rmw_qos_profile_sensor_data },
+          [this, callback](const std::shared_ptr&lt;std_msgs::msg::String&gt; msg) {
+              RCLCPP_INFO(
+                  this-&gt;get_logger(), &quot;I heard: [%s]&quot;, msg-&gt;data.c_str());
+              callback(*msg);
+          }) }
+{
+}
+
+
+int main(int argc, char* argv[])
+{
+    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+    rclcpp::init(argc, argv);
+
+    rclcpp::executors::MultiThreadedExecutor exec;
+    rclcpp::NodeOptions options;
+
+    auto talker = std::make_shared&lt;composition::Talker&gt;(options);
+    exec.add_node(talker);
+
+    using string_t = std_msgs::msg::String;
+    std::vector&lt;string_t&gt; receivedMessages;
+
+    auto reaction = [&amp;receivedMessages](auto msg) {
+        std::cerr &lt;&lt; &quot;Received &quot; &lt;&lt; msg.data;
+        std::cerr &lt;&lt; &quot; in thread &quot; &lt;&lt; std::this_thread::get_id() &lt;&lt; std::endl;
+        receivedMessages.push_back(msg);
+    };
+
+    auto listener = std::make_shared&lt;composition::Listener&gt;(options, reaction);
+    exec.add_node(listener);
+
+    // Here we deviate from the toy example
+    std::thread t([&amp;exec]() {
+        std::cerr &lt;&lt; &quot;Starting to spin&quot; &lt;&lt; std::endl;
+        exec.spin();
+    });
+
+    using namespace std::chrono_literals;
+    // MITIGATION
+    // std::this_thread::sleep_for(1s);
+
+    auto makeMsg = [](auto s) {
+        string_t result;
+        result.data = std::move(s);
+        return result;
+    };
+
+    std::vector&lt;string_t&gt; sentMessages
+        = { makeMsg(&quot;A&quot;), makeMsg(&quot;B&quot;), makeMsg(&quot;C&quot;) };
+
+    auto task = [&amp;sentMessages, &amp;talker]() {
+        for (auto const&amp; msg : sentMessages) {
+            std::cerr &lt;&lt; &quot;Publishing &quot; &lt;&lt; msg.data;
+            std::cerr &lt;&lt; &quot; in thread &quot; &lt;&lt; std::this_thread::get_id()
+                      &lt;&lt; std::endl;
+            talker-&gt;publish(msg);
+            std::this_thread::sleep_for(1ms);
+        }
+    };
+
+    std::thread t2(task);
+    std::this_thread::sleep_for(2s);
+
+    exec.cancel();
+    t.join();
+    t2.join();
+    rclcpp::shutdown();
+
+    std::cerr &lt;&lt; &quot;receivedMessages = &quot;;
+    for (auto msg : receivedMessages) {
+        std::cerr &lt;&lt; msg.data &lt;&lt; &quot;, &quot;;
+    }
+
+    return 0;
+}
+</code></pre>
+
+<p>Executor::spin() takes some time and therefore some messages might get lost, unless we introduce an explicit sleep command after calling spin. </p>
+
+<p>Do you have another idea how to deal with this? I&#39;d prefer an async_spin() giving me back a std::future on which I could wait. Any comments?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/44157">daixtrose</a> on 2020-02-04 11:09:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Have you considered using a MultiThreadedSpinner instead of creating a new thread for spinning? Here is a code example <a href="https://yuzhangbit.github.io/tools/several-ways-of-writing-a-ros-node/">https://yuzhangbit.github.io/tools/several-ways-of-writing-a-ros-node/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1016">lucascoelho</a> on 2020-02-04 12:12:22 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I am not sure if your proposal fits into the ROS2 context.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44157">daixtrose</a> on 2020-02-04 16:57:54 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Spin doesn&#39;t take significant time to start up what you&#39;re observing is the discovery and time required to establish connections.  It&#39;s a race condition between creating your publisher, starting it publishing and making the connection to the subscriber. Spin doesn&#39;t necessarily have the state to know about whether there&#39;s a connection at the other end. And if you publish without any subscribers the message will be dropped.</p>
+
+<p>If you want to have deterministic startup like this where you&#39;re coordinating the startup of publishers and subscribers to establish connections before starting to communicate please see the <a href="https://design.ros2.org/articles/node_lifecycle.html">Lifecycle Nodes design</a> and <a href="https://index.ros.org/p/lifecycle/github-ros2-demos/">documentation</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2020-02-04 13:27:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>So IIUC you mean that if I am not using Lifecycle Nodes there is no possibility to obtain the information when all connections are established at runtime?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44157">daixtrose</a> on 2020-02-06 06:29:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>At a conceptual level, there&#39;s no definition of &quot;all&quot; to answer that question in a distributed system. If the publisher comes up first anything it publishes will have no subscribers until it heard the subscription request, then all goes from zero to one. And at a later time it could go up or down depending on if a new subscriber appears out there existing one disconnects.</p>
+
+<p>Lifecycle let&#39;s you check that both sides of the pub sub link are initialized, so you know that there&#39;s not going to be a race condition at startup because both are already connected before you transition to active.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2020-02-06 06:58:48 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

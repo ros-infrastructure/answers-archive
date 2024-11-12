@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>LibraryLoadException when instantiating nested ClassLoader within custom SystemInterface implementation - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/405020">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>LibraryLoadException when instantiating nested ClassLoader within custom SystemInterface implementation</h2>
+      <div class="question">
+        <p>I have a hardware plugin (let&#39;s call it <code>MyHardware</code>) that implements <code>hardware_interface::SystemInterface</code> and is automatically loaded via the pluginlib framework at runtime as per the <code>ros2_control</code> tag below:</p>
+
+<pre><code> &lt;ros2_control name=&quot;my_robot&quot; type=&quot;system&quot;&gt;
+    &lt;hardware&gt;
+      &lt;plugin&gt;my_hardware_package::MyHardware&lt;/plugin&gt;
+    &lt;/hardware&gt;
+   &lt;joint ... /&gt;
+   &lt;joint ... /&gt;
+&lt;/ros2_control&gt;
+</code></pre>
+
+<p>I get the following error:</p>
+
+<pre><code>[somenode-3] terminate called after throwing an instance of &#39;pluginlib::LibraryLoadException&#39;
+[somenode-3]   what():  Failed to load library /home/user/code/colcon_ws/install/my_hardware_package/lib/libmy_hardware_package.so. Make sure that you are calling the PLUGINLIB_EXPORT_CLASS macro in the library code, and that names are consistent between this macro and your XML. Error string: Could not load library dlopen error: /home/user/code/colcon_ws/install/my_hardware_package/lib/libmy_hardware_package.so: undefined symbol: _ZTIN25my_nested_interface_package14MyNestedInterfaceE, at /tmp/binarydeb/ros-galactic-rcutils-4.0.3/src/shared_library.c:99
+</code></pre>
+
+<p>My setup is peculiar because I am instantiating another <code>ClassLoader&lt;my_nested_interface_package::MyNestedInterface&gt;</code> instance within my <code>MyHardware</code> class, to invoke additional dynamic code. I have narrowed down the cause of the exception to the following initialization statement within my <code>MyHardware</code> class:</p>
+
+<pre><code>using namespace pluginlib;
+using namespace NestedInterface = my_nested_interface_package::MyNestedInterface;
+
+namespace my_hardware_package {
+class MyHardware : public hardware_interface::SystemInterface {
+    ...
+
+    CallbackReturn RealworldSystem::on_init(const HardwareInfo&amp; info) {
+
+       ...&lt;log-statements-here&gt;...
+
+       ...&lt;PROBLEMATIC-CODE-HERE&gt;...
+       this-&gt;nested_plugin_loader = std::shared_ptr&lt;ClassLoader&lt;NestedInterface&gt;&gt; (
+               new ClassLoader&lt;NestedInterface&gt; (
+                   &quot;my_nested_interface_package&quot;,
+                   &quot;my_nested_interface_package::MyNestedInterface&quot;
+               )
+       );
+       ...&lt;/PROBLEMATIC-CODE-HERE&gt;...
+    }
+
+    ...
+};
+} // namespace
+
+#include &quot;pluginlib/class_list_macros.hpp&quot;  // NOLINT
+PLUGINLIB_EXPORT_CLASS(
+        my_hardware_package::MyHardware,
+        hardware_interface::SystemInterface
+)
+</code></pre>
+
+<p>Observations:</p>
+
+<ol>
+<li>The error occurs even without any call to <code>ClassLoader::createInstance()</code> within the code, so neither the instantiation nor the use of the actual nested plugin figures into the error.</li>
+<li>If I include the <em>PROBLEMATIC-CODE-HERE</em> section (and recompile), I get the <code>LibraryLoadException</code> for the <strong><em>entire</em></strong> <code>my_hardware_package</code> (so, even the <em>log-statements-here</em> section doesn&#39;t get printed). Merely adding that statement makes the <code>my_hardware_package</code> unloadable, with the <code>LibraryLoadException</code>.</li>
+<li>However, if I comment out the <em>PROBLEMATIC-CODE-HERE</em> section (and recompile), <code>my_hardware_package::MyHardware</code> gets loaded successfully and the <em>log-statements-here</em> section runs normally, with no <code>LibraryLoadException</code>.</li>
+</ol>
+
+<p><strong>The CMakeLists.txt for <code>my_hardware_package</code> is as follows:</strong></p>
+
+<pre><code>cmake_minimum_required(VERSION 3.8)
+project(my_hardware_package)
+
+###################################################
+#           Compilation Flags/Options
+###################################################
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 14)
+endif()
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES &quot;Clang&quot;)
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+###################################################
+#           Package dependencies
+###################################################
+find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_core REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(hardware_interface REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp REQUIRED)
+
+find_package(my_nested_interface_package REQUIRED)
+
+###################################################
+#           Libraries
+###################################################
+add_library(${PROJECT_NAME} SHARED
+  src/my_hardware.cpp
+)
+target_include_directories(${PROJECT_NAME} PRIVATE include)
+ament_target_dependencies(${PROJECT_NAME}
+  ament_index_cpp
+  hardware_interface
+  pluginlib
+  rclcpp
+
+  my_nested_interface_package
+)
+target_compile_definitions(${PROJECT_NAME} PRIVATE &quot;MY_HARDWARE_PLUGIN_PACKAGE_BUILDING_LIBRARY&quot;)
+
+###################################################
+#           Installation Targets
+###################################################
+install(TARGETS
+    ${PROJECT_NAME}               # Install the output library
+
+  # TO:
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)
+
+###################################################
+#           Exports
+###################################################
+pluginlib_export_plugin_description_file(hardware_interface plugins.xml)
+ament_export_include_directories(
+  include
+)
+ament_export_libraries(
+  ${PROJECT_NAME}
+)
+ament_export_dependencies(
+  hardware_interface
+  pluginlib
+  rclcpp
+
+  my_nested_interface_package
+)
+
+ament_package()
+</code></pre>
+
+<p><strong>The <code>MyNestedInterface</code> class:</strong>
+(parameter to the nested <code>ClassLoader</code> template above)</p>
+
+<pre><code>namespace my_nested_interface_package {
+class MyNestedInterface {
+public:
+    virtual void do_something() = 0;
+};
+} // namespace
+</code></pre>
+
+<p><strong>The CMakeLists.txt for <code>my_nested_interface_package</code>:</strong>
+(It is built via cmake as an <em>INTERFACE</em> target)</p>
+
+<pre><code>cmake_minimum_required(VERSION 3.8)
+project(my_nested_interface_package)
+
+###################################################
+#           Compilation Flags/Options
+###################################################
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 14)
+endif()
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES &quot;Clang&quot;)
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+###################################################
+#           Package dependencies
+###################################################
+find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_core REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp REQUIRED)
+
+###################################################
+#           Libraries
+###################################################
+add_library(${PROJECT_NAME} INTERFACE)
+target_include_directories(${PROJECT_NAME} INTERFACE include/)
+target_compile_definitions(${PROJECT_NAME} INTERFACE &quot;MY_NESTED_INTERFACE_PACKAGE_BUILDING_LIBRARY&quot;)
+
+###################################################
+#           Exports
+###################################################
+ament_export_include_directories(
+  include
+)
+ament_export_dependencies(
+  pluginlib
+  rclcpp
+  rclcpp_lifecycle
+)
+
+###################################################
+#           Installation Targets
+###################################################
+install(DIRECTORY include/
+        DESTINATION include
+        )
+
+ament_package()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/54063">alikureishy</a> on 2022-08-13 12:55:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

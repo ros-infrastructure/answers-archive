@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Easy way to cancel a ROS2 action - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/401286">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Easy way to cancel a ROS2 action</h2>
+      <div class="question">
+        <p>For quick testing, what&#39;s the easiest way to cancel a ROS2 action? Preferably something that I can run external to my program, without having to hack its source code.</p>
+
+<p>It looks like <code>rclpy</code> does not have a way to cancel an action without having a goal handle.  <a href="https://github.com/ros2/rclpy/blob/master/rclpy/rclpy/action/client.py">https://github.com/ros2/rclpy/blob/master/rclpy/rclpy/action/client.py</a>  So we can rule out Python.</p>
+
+<p>I don&#39;t see a command line option.</p>
+
+<p>The best I have so far is this C++ script. It goes with the examples <a href="https://github.com/ros2/examples/tree/master/rclcpp/actions">here</a>.</p>
+
+<pre><code>#include &quot;example_interfaces/action/fibonacci.hpp&quot;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;rclcpp_action/rclcpp_action.hpp&quot;
+
+namespace {
+  using Fibonacci = example_interfaces::action::Fibonacci;
+}
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::NodeOptions node_options;
+  auto node = rclcpp::Node::make_shared(&quot;action_server_cancellation&quot;, &quot;&quot;, node_options);
+
+rclcpp_action::Client&lt;Fibonacci&gt;::SharedPtr client_ptr = rclcpp_action::create_client&lt;Fibonacci&gt;(node, &quot;fibonacci&quot;);
+  if (!client_ptr-&gt;wait_for_action_server(std::chrono::seconds(5))) {
+    RCLCPP_ERROR(node-&gt;get_logger(), &quot;Action server not available after waiting&quot;);
+    rclcpp::shutdown();
+  }
+  client_ptr-&gt;async_cancel_all_goals();
+  RCLCPP_ERROR(node-&gt;get_logger(), &quot;Cancellation was requested.&quot;);
+
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/21281"></a> on 2022-05-24 10:57:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>So .. what&#39;s your question?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-05-24 12:08:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>vaguely hoping there is an easier way while realizing that the ROS2 default implementation is a <a href="https://github.com/AndyZe/examples/blob/14c743af8bbca6a40e83da7a470c5332dce66d9d/rclcpp/actions/minimal_action_server/member_functions.cpp#L110">memory violation</a>   ;)</p>
+
+<p>But maybe this will be useful to other people</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2022-05-24 12:11:22 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Tbh, personally I find it really weird a random client can cancel <em>all</em> goals currently being processed by an action server, but it appears it&#39;s part of the service spec (from <a href="https://github.com/ros2/rcl_interfaces/blob/b949fe767f61ef42dcce3a6445427b4cde93de96/action_msgs/srv/CancelGoal.srv#L1-L9">here</a>):</p>
+
+<blockquote>
+<pre><code># Cancel one or more goals with the following policy:
+#
+# - If the goal ID is zero and timestamp is zero, cancel all goals.
+# - If the goal ID is zero and timestamp is not zero, cancel all goals accepted
+#   at or before the timestamp.
+# - If the goal ID is not zero and timestamp is zero, cancel the goal with the
+#   given ID regardless of the time it was accepted.
+# - If the goal ID is not zero and timestamp is not zero, cancel the goal with
+#   the given ID and all goals accepted at or before the timestamp.
+</code></pre>
+</blockquote>
+
+<p>I&#39;ve not checked it, but from the documentation, it would appear submitting a new goal with ID <code>0</code> and stamp <code>0</code> would result in all goals getting cancelled (this is actually how <a href="https://github.com/ros2/rclcpp/blob/6815022909086487f2b8dc14c0540b00d4cf61a0/rclcpp_action/include/rclcpp_action/client.hpp#L555-L563">async_cancel_all_goals(..) is implemented</a>.</p>
+
+<p>You might even be able to achieve the same thing by invoking the (hidden) service which is used to submit goals directly.</p>
+
+<p>That should be doable using <code>ros2 service ...</code>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2022-05-24 12:29:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the answer. I&#39;ll try it soon.</p>
+
+<p><code>Tbh, personally I find it really weird a random client can cancel all goals</code></p>
+
+<p>^I like this. It is nice for things like protective stops, where you just want to stop whatever&#39;s running.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2022-05-24 14:34:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Without any additional authentication or authorisation, this makes it trivial to implement a DoS attack against action servers, from any client (if it works as the documentation implies it does).</p>
+
+<blockquote>
+<p>It is nice for things like protective stops, where you just want to stop whatever&#39;s running.</p>
+</blockquote>
+
+<p>as long as you&#39;re not using it for actual safety-related purposes.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-05-25 02:01:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Did it work?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-05-25 09:02:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I haven&#39;t thoroughly tested it because filling out an action request from command line in ROS2 is burdensome. Tab-complete doesn&#39;t work. I&#39;m sure it would work but the C++ executable is almost easier.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2022-05-25 09:12:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m confused. Action goals are submitted using a service.</p>
+
+<p>The idea would be to invoke that service directly.</p>
+
+<p>Not to construct a goal.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-05-25 09:23:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@AndyZe</p>
+
+<p>To find your <code>&lt;service-name&gt;</code>:  <code>ros2 node info &lt;your-action-server-node&gt; --include-hidden</code></p>
+
+<p>To cancel all goals: <code>ros2 service call &lt;service-name&gt; action_msgs/srv/CancelGoal</code></p>
+
+<p>The <code>&lt;service-name&gt;</code> should look something like that: <code>&lt;node-name&gt;/_action/cancel_goal</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36992">tnajjar</a> on 2022-08-29 08:00:37 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

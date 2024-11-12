@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to subsribe to a ROS topic for several seperate times? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/191220">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to subsribe to a ROS topic for several seperate times?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/62121/how-to-subsribe-to-a-ros-topic-for-several-seperate-times">https://robotics.stackexchange.com/questions/62121/how-to-subsribe-to-a-ros-topic-for-several-seperate-times</a>.</p>
+        <p>I have a scanlist of 5 positions for the robot to go. And for each position, I hope to subscribe to a topic to get the sensor data and add a marker in the rviz. Here is my code:</p>
+
+<pre><code>def addMarkerCallback(msg):
+    draw_functions = DrawFunctions(&#39;visualisation_marker&#39;)
+    if msg.data:
+        draw_functions.draw_rviz_sphere(0.02)
+    else:
+        print &#39;no data&#39;
+rospy.init_node(&quot;sensor_marker&quot;, anonymous = True)
+
+for item in scanlist:    
+    moveit_cmd.go(item, wait=True)
+    sub1 = rospy.Subscriber(&#39;sensor/right&#39;, SensorData, addMarkerCallback)   
+    rospy.spin()
+    print &#39;go finished&#39; 
+</code></pre>
+
+<p>However when I run the code, the problem is the loop will always stay in the first iteration, so the robot will not go to the other positions in the scanlist. I guess it is the problem of rospy.spin(). Could anyone please tell me how to solve this problem...Thanks a lot! </p>
+
+        <div class="owner"><p>Asked by <a href="/users/4544">guodi</a> on 2014-08-25 16:48:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>I have a scanlist of 5 positions for the robot to go. And for each position, I hope to subscribe to a topic to get the sensor data and add a marker in the rviz [..]</p>
+</blockquote>
+
+<p>This is admittedly more of a design question, but I would argue for a different approach to get to what you want to do.</p>
+
+<p>Essentially, you want to store some data from a sensor, based on the rest of the state of your system (ie: its position relative to some reference position). This to me sounds like a state machine, in which the transitions are taken based on whether or not a position in your <em>scan list</em> has been reached.</p>
+
+<p>Going for a <a href="http://wiki.ros.org/smach">smach</a> state machine might be a bit overkill - a simple <code>state_</code> integer member variable in a class would probably be enough.</p>
+
+<p>The sequence of states could be something like: <code>init -&gt; pre_p1 -&gt; at_pre1 -&gt; post_pre1 -&gt; pre_p2 -&gt; at_p2 -&gt; post_p2 -&gt; ..</code> etc (I&#39;m assuming your robot is visiting the positions in sequence).
+The callback registered for the <code>sensor/right</code> topic you are interested in is always active, but only handles incoming messages whenever the state machine is in the right states (so in <code>at_pN</code> states). If your program is in the right state, it &quot;<em>[..] get(s) the sensor data and add(s) a marker in the rviz</em>&quot;, and then immediately transitions to the <code>post_N</code> state. In all other states, it does nothing but compare the current <code>eef</code> position to the scan list.</p>
+
+<p>The decision to go from <code>pre_p1</code> to <code>at_p1</code> is dependent on the position of your manipulator&#39;s <code>eef</code> link. You could probably use MoveIts RobotState class for that, or alternatively, do the FK yourself, based on a <code>joint_states</code> topic. Then you update the <code>state_</code> variable based on whether the robot is close enough to the current target point in the list.</p>
+
+<p>As your state machine does not define any backward transitions, you probably don&#39;t need any filtering on the <code>eef</code> position: once you are in state <code>at_pN</code> you cannot go back to <code>pre_pN</code>. You could however add a proximity threshold which has to be reached before taking the transition to <code>at_pN</code>.</p>
+
+<p>PS: for a sensor at 500Hz, it might make sense to disable your <code>sensor/right</code> subscriber when you are not in a <code>at_pN</code> state. You could use the <code>pre_pN</code> and <code>post_pN</code> states for that. Then take your measurements in <code>at_pN</code>. This would also remove the need to check the <code>state_</code> variable in the <code>sensor/right</code> callback (as it is only active when needed).</p>
+
+<p>Edit: updated based on clarification by OP in the comments.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2014-08-26 14:10:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>As a possible refinement, you could just go for 3 states and a counter: <code>init</code>, <code>pre_p</code>, <code>at_p</code> and <code>scan_list_pointer_</code>. In <code>init</code>, set <code>scan_list_pointer_ = 0</code>, go to <code>pre_p</code>. Now base transition to <code>at_p</code> on proximity to <code>scan_list[scan_list_pointer_]</code>. In <code>at_p</code>, publish RViz marker, increment <code>scan_list_pointer_</code> and transition immediately to <code>pre_p</code>. Return, repeat (but now <code>scan_list[scan_list_pointer_]</code> points to the next point automatically).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2014-08-26 14:13:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks a lot! Actually I am trying to let the robot gripper pass the five positions in the scanlist successively. And the sensor embedded in the finger are giving sensor data continuously in 500Hz. I would like to check the sensor data in each position and draw a marker in the rviz...so do you know how to do that then....Thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4544">guodi</a> on 2014-08-26 23:55:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ah, so <code>sensor/right</code> is the sensor data you want to selectively record? I was under the impression that <code>sensor/right</code> provided you with a position. I&#39;ll update my answer accordingly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2014-08-27 01:43:21 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

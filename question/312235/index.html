@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Error linking to OpenCV DNN Library - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/312235">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Error linking to OpenCV DNN Library</h2>
+      <div class="question">
+        <p>I&#39;m writing a Publisher-Subscriber node to run a face detection program using the images from my webcam. I am trying to use the OpenCV DNN module. The problem is, whenever I try to catkin_make my project, the following is output on the console:</p>
+
+<pre><code>pedrosc@PEDROSC:~/robotics$ catkin_make
+Base path: /home/pedrosc/robotics
+Source space: /home/pedrosc/robotics/src
+Build space: /home/pedrosc/robotics/build
+Devel space: /home/pedrosc/robotics/devel
+Install space: /home/pedrosc/robotics/install
+####
+#### Running command: &quot;make cmake_check_build_system&quot; in &quot;/home/pedrosc/robotics/build&quot;
+####
+####
+#### Running command: &quot;make -j8 -l8&quot; in &quot;/home/pedrosc/robotics/build&quot;
+####
+[ 50%] Linking CXX executable /home/pedrosc/robotics/src/artrack/src/artrack_imgproc
+CMakeFiles/artrack_imgproc.dir/src/artrack_imgproc.cpp.o: In function `ImageProcessor::ImageProcessor()&#39;:
+artrack_imgproc.cpp:(.text._ZN14ImageProcessorC2Ev[_ZN14ImageProcessorC5Ev]+0xdd): undefined reference to `cv::dnn::experimental_dnn_v2::Net::Net()&#39;
+artrack_imgproc.cpp:(.text._ZN14ImageProcessorC2Ev[_ZN14ImageProcessorC5Ev]+0x622): undefined reference to `cv::dnn::experimental_dnn_v2::Net::~Net()&#39;
+CMakeFiles/artrack_imgproc.dir/src/artrack_imgproc.cpp.o: In function `ImageProcessor::~ImageProcessor()&#39;:
+artrack_imgproc.cpp:(.text._ZN14ImageProcessorD2Ev[_ZN14ImageProcessorD5Ev]+0x53): undefined reference to `cv::dnn::experimental_dnn_v2::Net::~Net()&#39;
+artrack_imgproc.cpp:(.text._ZN14ImageProcessorD2Ev[_ZN14ImageProcessorD5Ev]+0xd4): undefined reference to `cv::dnn::experimental_dnn_v2::Net::~Net()&#39;
+collect2: error: ld returned 1 exit status
+artrack/CMakeFiles/artrack_imgproc.dir/build.make:229: recipe for target &#39;/home/pedrosc/robotics/src/artrack/src/artrack_imgproc&#39; failed
+make[2]: *** [/home/pedrosc/robotics/src/artrack/src/artrack_imgproc] Error 1
+CMakeFiles/Makefile2:477: recipe for target &#39;artrack/CMakeFiles/artrack_imgproc.dir/all&#39; failed
+make[1]: *** [artrack/CMakeFiles/artrack_imgproc.dir/all] Error 2
+Makefile:138: recipe for target &#39;all&#39; failed
+make: *** [all] Error 2
+Invoking &quot;make -j8 -l8&quot; failed
+</code></pre>
+
+<p>I have successfully installed OpenCV 3.4.5 (since the one included with ROS Kinetic is version 3.0.0 and it doesn&#39;t have the files I need). Here is my CMakeLists.txt file:</p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8.3)
+project(artrack)
+find_package(catkin REQUIRED COMPONENTS
+    roscpp 
+    rospy
+    std_msgs
+    message_generation
+    image_transport
+    geometry_msgs
+    ardrone_autonomy
+)
+
+find_package(OpenCV 3.4.5 REQUIRED)
+find_package(uvc_camera REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+
+include_directories(
+    ${catkin_INCLUDE_DIRS}
+    ${uvc_camera_INCLUDE_DIRS}
+    ${cv_bridge_INCLUDE_DIRS}
+    ${sensor_msgs_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+
+add_executable(artrack_imgproc src/artrack_imgproc.cpp)
+target_link_libraries(artrack_imgproc 
+    ${catkin_LIBRARIES}
+    ${uvc_camera_LIBRARIES}
+    ${cv_bridge_LIBRARIES}
+    ${sensors_msgs_LIBRARIES}
+    ${OpenCV_LIBRARIES}
+)
+set_target_properties(artrack_imgproc PROPERTIES RUNTIME_OUTPUT_DIRECTORY ~/robotics/src/artrack/src)
+
+
+catkin_package(CATKIN_DEPENDS
+    message_runtime
+    sensor_msgs
+    image_transport
+    cv_bridge
+    geometry_msgs
+)
+</code></pre>
+
+<p>And the .cpp file for the node:</p>
+
+<pre><code>//////////////////////////////////////////////////////////////////////////////////////////////////////
+//  
+//  ImageProcessor 
+//  
+//  Node source code for the processing of the image. It uses neural networks to detect faces,
+//  then tracks the detected face using a tracking algorithm. It publishes the coordinates of
+//  the centroid of the face. This node also handles the GUI elements of the main window of 
+//  the project.
+//
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#include &lt;ros/ros.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;opencv2/core.hpp&gt;
+#include &lt;opencv2/dnn.hpp&gt;
+#include &lt;opencv2/imgproc.hpp&gt;
+#include &lt;opencv2/highgui.hpp&gt;
+#include &lt;opencv2/core/utils/trace.hpp&gt;
+#include &lt;iostream&gt;
+
+using namespace cv;
+using namespace cv::dnn;
+using namespace std;
+
+static const std::string OPENCV_WINDOW = &quot;OpenCV Image Window&quot;;
+
+//Image Processor Class
+
+class ImageProcessor
+{
+  //Object declarations for the ROS elements
+  ros::NodeHandle nh_;
+
+  image_transport::ImageTransport it_;
+  image_transport::Subscriber image_sub_;
+  image_transport::Publisher image_pub_;
+
+  //Object initialization for neural network
+  cv::dnn::Net net;
+
+  //Variables
+  uint16_t columns = 0, rows = 0;
+  uint16_t detections[];
+
+
+public:
+  ImageProcessor()
+    : it_(nh_)
+  {
+
+    //Assign publisher and subscriber to receive image and output it
+
+    image_sub_        = it_.subscribe(&quot;imageinput&quot;, 1, &amp;ImageProcessor::imagePr, this);
+    image_pub_        = it_.advertise(&quot;/artrack/output_video&quot;, 1);
+
+
+    //Initializing an OpenCV Window
+
+    cv::namedWindow(OPENCV_WINDOW);
+
+    //Initializing strings containing paths for the prototxt and caffemodel files
+
+    cv::String modelTxt = &quot;/home/pedrosc/robotics/src/artrack/src/deploy.prototxt.txt&quot;;
+    cv::String modelBin = &quot;/home/pedrosc/robotics/src/artrack/src/res10_300x300_ssd_iter_140000.caffemodel&quot;;
+
+    //Initializing and configuring the neural network
+
+    try {
+        net = cv::dnn::readNetFromCaffe(modelTxt, modelBin);
+    }
+    catch (cv::Exception&amp; e) {
+        std::cerr &lt;&lt; &quot;Exception: &quot; &lt;&lt; e.what() &lt;&lt; std::endl;
+        if (net.empty())
+        {
+            std::cerr &lt;&lt; &quot;Can&#39;t load network by using the following files: &quot; &lt;&lt; std::endl;
+            std::cerr &lt;&lt; &quot;prototxt:   &quot; &lt;&lt; modelTxt &lt;&lt; std::endl;
+            std::cerr &lt;&lt; &quot;caffemodel: &quot; &lt;&lt; modelBin &lt;&lt; std::endl;
+            exit(-1);
+        }
+    }
+
+  }
+
+  ~ImageProcessor()
+  {
+    cv::destroyWindow(OPENCV_WINDOW);
+  }
+
+  void imagePr(const sensor_msgs::ImageConstPtr&amp; msg)
+  {
+
+    //Convert ROS Message Image into OpenCV Image
+
+    cv_bridge::CvImagePtr cv_ptr;
+    try
+    {
+      cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+      ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+      return;
+    }
+
+    //Assigning converted image into a Mat variable 
+    cv::Mat original = cv_ptr-&gt;image;
+
+    //Extracting original dimensions
+    columns = original.cols;
+    rows = original.rows;
+
+    //Creating a blob and resizing the input
+    //cv::Mat inputBlob = cv::dnn::blobFromImage(original, 1.0f, cv::Size(300, 300), cv::Scalar(104, 177, 123), false);
+
+    //Input and run the blob through the neural network
+    //net.setInput(inputBlob);
+    //cv::Mat detections = net.forward();
+
+    //Display results
+    cv::imshow(OPENCV_WINDOW, original);
+    cv::waitKey(3);
+  }
+
+};
+
+//Main
+
+int main(int argc, char** argv)
+{
+
+  //Initialize ROS Node called imageProcessor
+  ros::init(argc, argv, &quot;imageProcessor&quot;);
+
+  //Initialize a new object called ip, class ImageProcessor
+  ImageProcessor ip;
+
+  //&quot;Loop&quot; the ROS cycle
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Any help would be really appreciated!!!!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/39366">pedrosc97</a> on 2019-01-08 16:28:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi, I also have a problem like you with the OpenCV 3.4.1 and trying to use DNN with ROS. But I managed to solve it, by adding the cv_bridge from source to my workspace and modify the CMakelists to use the same local OpenCV version.</p>
+
+<p>The problem is caused by cv_bridge which use the OpenCV 3 from ROS instead of our local version. Hope it works!</p>
+
+<hr>
+
+<p>This is my CMakelists</p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8.3)
+project(dnn_detector)
+
+add_compile_options(-std=c++11)
+
+find_package(catkin REQUIRED COMPONENTS
+    roscpp
+    roslib
+    std_msgs
+    sensor_msgs
+    geometry_msgs
+    dynamic_reconfigure
+    cv_bridge
+    image_transport
+    message_generation
+    )
+
+find_package(Boost REQUIRED COMPONENTS thread)
+
+set(OpenCV_DIR &quot;/usr/local/share/OpenCV/&quot;)
+find_package(OpenCV 3.4.1 REQUIRED)
+find_package(yaml-cpp REQUIRED)
+
+################################################################################
+# Declare catkin specific configuration to be passed to dependent projects
+##################################################################################
+catkin_package(
+    INCLUDE_DIRS include
+    CATKIN_DEPENDS
+    roscpp
+    roslib
+    std_msgs
+    sensor_msgs
+    geometry_msgs
+    dynamic_reconfigure
+    cv_bridge
+    image_transport
+    message_runtime
+    DEPENDS Boost OpenCV
+    )
+
+###########
+## Build ##
+###########
+
+## Specify additional locations of header files
+## Your package locations should be listed before other locations
+include_directories(
+    include
+    ${OpenCV_INCLUDE_DIRS}
+    ${catkin_INCLUDE_DIRS}
+    ${Boost_INCLUDE_DIRS}
+    ${YAML_CPP_INCLUDE_DIR}
+    )
+
+## Add cmake target dependencies of the library
+## as an example, code may need to be generated before libraries
+## either from message generation or dynamic reconfigure
+# add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+## Declare a C++ executable
+## With catkin_make all packages are built within a single CMake context
+## The recommended prefix ensures that target names across packages don&#39;t collide
+add_executable(${PROJECT_NAME}_node dnn_detector_node.cpp
+    src/dnn_detector.cpp
+    )
+
+## Add cmake target dependencies of the executable
+## same as for the library above
+add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} dnn_detector_generate_messages_cpp)
+
+## Specify libraries to link a library or executable target against
+target_link_libraries(${PROJECT_NAME}_node
+    ${catkin_LIBRARIES}
+    ${OpenCV_LIBS}
+    ${Boost_LIBRARIES}
+    ${YAML_CPP_LIBRARIES}
+    )
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/39877">haritsahm</a> on 2019-02-05 22:23:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

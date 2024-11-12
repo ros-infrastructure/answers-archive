@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[rospy] Messages are not published, any idea why? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387885">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[rospy] Messages are not published, any idea why?</h2>
+      <div class="question">
+        <p>Hello people,</p>
+
+<p>I have an issue and I am out of ideas. Let me describe my situation. I have some videos and 1 bag that contains a point cloud topic and a topic that contains timestamps for each frame of the videos and I am trying to republish the data by republishing the point cloud topic as it is and creating the image topics from the video frames with their timestamps. The problem is that although the Image messages are created as they should be, they are not getting published but the velodyne points are published normally.</p>
+
+<p>The code that I am experimenting with is uploaded <a href="https://pastebin.com/JGrpKGUD">here</a> at pastebin and as you can see I am a beginner at this and any help or suggestion will be greatly appreciated. </p>
+
+<p>EDIT: here is the code</p>
+
+<pre><code>#!/usr/bin/env python
+
+import cv2
+import rospy
+from sensor_msgs.msg import Image, PointCloud2, CameraInfo
+import os
+import yaml
+import rosbag
+from cv_bridge import CvBridge
+
+rospy.init_node(&#39;Translator&#39;)
+
+
+class Translator:
+    mode = &#39;republish&#39;
+    cam_ids = [i for i in range(4)]
+    video_name = &#39;econVideo_2021-09-29-10-29-58&#39;
+    camera_info_msg = CameraInfo()
+    bridge = CvBridge()
+
+    def __init__(self, input_bag, video_path, calibration_files_path):
+        # Takes as input a ROSbag containing
+        self.bag = input_bag    
+        self.video_path = video_path
+        self.calibration_files_path = calibration_files_path
+
+    #@staticmethod
+    #def 
+    #orig = os.path.splitext(bag)[0] + &quot;.orig.bag&quot;
+    #move(bag, orig)
+
+    def translate(self, video_path):
+        setup_cameras(video_path)
+        do_translate()
+
+    def setup_cameras(self):
+
+        self.cameras = dict()
+
+        for cid in self.cam_ids:
+            self.cam_info = dict()
+            print(&quot;{}&quot;.format(self.video_path) + &quot;/{}_{}.mkv&quot;.format(self.video_name, cid))
+            self.cam_info[&#39;cap&#39;] = cv2.VideoCapture(&quot;{}&quot;.format(self.video_path) + &quot;/{}_{}.mkv&quot;.format(self.video_name, cid))
+            self.cameras[cid] = self.cam_info
+
+        if self.mode == &#39;republish&#39;:
+        # Setting up camera, camera_info &amp; velodyne publishers. Also setting up cv2.VideoCapture for each video file.
+            for cid in self.cam_ids:
+                self.cam_info[&#39;publisher&#39;] = rospy.Publisher(&#39;/econ_cam_{}/image_raw&#39;.format(cid), Image, queue_size=25)
+                self.cam_info[&#39;publisher_info&#39;] = rospy.Publisher(&#39;/econ_cam_{}/camera_info&#39;.format(cid), CameraInfo, queue_size=25)
+                self.cameras[cid] = self.cam_info
+            self.velo_publisher = rospy.Publisher(&#39;/velodyne_points&#39;, PointCloud2, queue_size=10)
+            print(self.cameras[1][&#39;publisher&#39;])
+        return self.cameras, self.velo_publisher
+
+    @staticmethod
+    def parse_camera_info_from_yaml(yaml_fname):
+        info = {}
+
+        if os.path.isfile(yaml_fname): # if a file containing camera info exists extract its content.
+            with open(yaml_fname, &quot;r&quot;) as file_handle:
+                calib_data = yaml.load(file_handle)
+            # Parse
+            info[&#39;width&#39;] = calib_data[&quot;image_width&quot;]
+            info[&#39;height&#39;] = calib_data[&quot;image_height&quot;]
+            info[&#39;K&#39;] = calib_data[&quot;camera_matrix&quot;][&quot;data&quot;]
+            info[&#39;D&#39;] = calib_data[&quot;distortion_coefficients&quot;][&quot;data&quot;]
+            info[&#39;R&#39;] = calib_data[&quot;rectification_matrix&quot;][&quot;data&quot;]
+            info[&#39;P&#39;] = calib_data[&quot;projection_matrix&quot;][&quot;data&quot;]
+            info[&#39;distortion_model&#39;] = calib_data[&quot;distortion_model&quot;]
+        else: # if a file containing camera info does not exist create dummy camera info.
+            info[&#39;width&#39;] = 0
+            info[&#39;height&#39;] = 0
+            info[&#39;K&#39;] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            info[&#39;D&#39;] = [0, 0, 0, 0, 0]
+            info[&#39;R&#39;] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            info[&#39;P&#39;] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            info[&#39;distortion_model&#39;] = &quot;plumb_bob&quot;
+        return info
+
+    def cam_info_data(self):
+        self.info_data = {}
+
+        for idx in self.cameras.keys():
+            yaml_fname = &#39;{}&#39;.format(self.calibration_files_path) + &#39;cam-{}-camerainfo.yaml&#39;.format(idx)
+            self.info_data[idx] = self.parse_camera_info_from_yaml(yaml_fname)
+            #print(self.info_data[idx])
+        return self.info_data
+
+    def pub_camera_info(self, frames, timestamp, info):
+        for idx, frame in enumerate(frames):
+            self.camera_info_msg.header.stamp = timestamp # NOT TAKEN BY SOMETHING YET
+            self.camera_info_msg.header.frame_id = &#39;cam_{}&#39;.format(idx)
+            self.camera_info_msg.width = info[idx][&quot;width&quot;]
+            self.camera_info_msg.height = info[idx][&quot;height&quot;]
+            self.camera_info_msg.K = info[idx][&quot;K&quot;]
+            self.camera_info_msg.D = info[idx][&quot;D&quot;]
+            self.camera_info_msg.R = info[idx][&quot;R&quot;]
+            self.camera_info_msg.P = info[idx][&quot;P&quot;]
+            self.camera_info_msg.distortion_model = info[idx][&quot;distortion_model&quot;]
+            if self.mode == &#39;republish&#39;:
+                self.cameras[idx][&#39;publisher_info&#39;].publish(self.camera_info_msg)
+            #elif mode == &#39;rewrite&#39;:
+            #   outbag.write(&#39;/econ_cam_{}/camera_info&#39;.format(idx), camera_info_msg, timestamp
+
+
+    def read_frames(self, msg):
+        frames = [None for i in range(4)]
+
+        for idx, cam in enumerate(self.cameras):
+
+            ret, frames[idx] = self.cameras[idx][&#39;cap&#39;].read()
+            if not ret:
+                print(&quot;Non-valid frame.&quot;)
+                break
+            elif not any(frame is None for frame in frames): # Wait to gather all the frames from the videos.
+                timestamp = msg.header.stamp
+                return frames, timestamp
+
+    def pub_imgs(self,frames, cameras, timestamp):
+        for idx, frame in enumerate(frames):
+            img_msg = self.bridge.cv2_to_imgmsg(frame, encoding=&quot;bgr8&quot;)
+            img_msg.header.frame_id = &#39;cam_{}&#39;.format(idx)
+            img_msg.header.stamp = timestamp
+            if self.mode == &#39;republish&#39;:
+                self.cameras[idx][&#39;publisher&#39;].publish(img_msg)
+            elif self.mode == &#39;rewrite&#39;:
+                pass #outbag.write(&#39;/econ_cam_{}/image_raw&#39;.format(idx), img_msg, timestamp)
+
+
+    def translate(self):
+        info_data = self.cam_info_data()
+        bag = rosbag.Bag(self.bag)
+        cameras = self.cameras
+
+        for topic, msg, t in bag.read_messages():
+            if topic==&#39;/velodyne_points&#39;:
+                self.velo_publisher.publish(msg)
+            elif topic==&#39;/econ_vid&#39;:
+                frames, timestamp = self.read_frames(msg)
+                self.pub_imgs(frames, cameras, timestamp)
+                self.pub_camera_info(frames, timestamp, info_data)
+
+test_1 = Translator(&#39;/home/u2m/time_check/check.bag&#39;, &#39;/home/u2m/time_check&#39;, &#39;/home/u2m/time_check/&#39;)
+
+
+test_1.setup_cameras()
+#print(test_1.cameras)
+#test_1.cam_info_data()
+#print(test_1.cam_info_data())
+
+print(test_1.cameras[1])
+
+test_1.translate()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/70606">Ifx13</a> on 2021-10-04 03:59:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>External links quickly go bad. Please edit your description and copy/paste the code into it. It&#39;s OK if it&#39;s many lines, but try not to show us unnecessary stuff. You can format it as code by using the 101010 button.</p>
+
+<p>You edit using the &quot;edit&quot; button at the end of the description.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-10-04 06:48:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>This code has too many levels of indirection for me to look for your bug. I suggest you create a minimal test program that reads the bag and publishes images to just one topic. This will tell you if your use of the API is correct or not.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-10-04 07:44:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>do you have a <code>rate = rospy.Rate(10)</code> anywhere else in your code?  It doesn&#39;t need to be 10Hz</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-10-04 08:14:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>To expand on @osilva point: you must sleep in the main loop, or the background rospy threads never get an opportunity to execute.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-10-04 08:27:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I do not use a certain rate. I just read frames from each video file once the topic containing the timestamp of the frames is read (check the method called translate, it is the last one). I used to structure my script, not in  OOP fashion, but when I did create this class as an exercise to the OOP principles.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70606">Ifx13</a> on 2021-10-04 08:49:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@lfx13 I suggest you read this answer #q264812 to understand how rate() and sleep() are needed when publishing. You are not creating interruptions otherwise. It’s ok to use OOP but you still need to invoke these methods.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-10-04 16:56:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p><a href="https://answers.ros.org/users/84086/osilva/">@osilva</a> hello, it still does not seem to work; I&#39;ve added the rate object and the sleep method at the for loop, it seems to take effect and introduce some latency as intended. The pointcloud2 topic is only being published as previously mentioned, but the image messages are not getting published. The post you mentioned explains how rate object works, especially the sleep method, but it does not mention why it is needed other than maintaining a specific rate. I&#39;ve read <a href="https://answers.ros.org/question/291702/rospy-publish-is-unreliable/">here</a>  that the publisher should be given enough time and for this task, the rate object helps but it does not make a difference in my case.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70606">Ifx13</a> on 2021-10-05 01:49:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The issue seems to be with the publisher, because when I write the topics to a bag, everything seems to be working as intended. But the output bag needs to be reindexed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70606">Ifx13</a> on 2021-10-05 02:05:00 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Turtlebot Netbook Battery Error - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/55151">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Turtlebot Netbook Battery Error</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/48299/turtlebot-netbook-battery-error">https://robotics.stackexchange.com/questions/48299/turtlebot-netbook-battery-error</a>.</p>
+        <p>Hi!</p>
+
+<p>While launching the turtlebot_bringup minimal.launch that generally uses the &quot;info&quot; and &quot;state&quot; files to check the turtlebot laptop battery I get the following Error: </p>
+
+<p>[WARN] [WallTime: 1360800362.124919] Battery : unable to check laptop battery info [[Errno 2] No such file or directory: &#39;/proc/acpi/battery/BAT0/info&#39;] </p>
+
+<p>However in Ubuntu Quantal 12.10 these files no longer exist. Now they&#39;ve broken the data into several different files located in /sys/class/power_supply/BAT0.</p>
+
+<p>So I&#39;m wondering if there is an updated script (which I haven&#39;t been able to find) or if the laptop_battery.py file needs to be changed in order to get it working, however I&#39;m kind of new at this and that would take longer. =S</p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4196">LCROBOT</a> on 2013-02-13 13:21:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>laptop_battery.py has evolved over time, as laptop vendors and driver developers don&#39;t follow any sort of standard for how they expose those stats. If you aren&#39;t using an official turtlebot laptop from either iHeartEngineering or Clearpath Robotics, chances are that your specific laptop isn&#39;t exactly supported. I would suggest posting a ticket on github.com/turtlebot with as much details as you have about the layout of your ACPI -- and of course, if you do get around to fixing it, please submit a pull request with your changes!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/84"></a> on 2013-02-13 21:22:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Hi!</p>
+
+<p>I experienced the same problem and was now able to solve it (at least for my configuration).
+Since I&#39;m no Python programmer and the changes are really quick and dirty, I don&#39;t feel able to post a ticket. But maybe this helps some people.</p>
+
+<p>Setup: ROS Fuerte on Laptop Lenovo Thinkpad X130e (which was delivered with my TurtleBot) running Ubunto 12.04 (fresh install). My battery information is located in /sys/class/power_supply/BAT1.
+I found some information here: mjmwired.net/kernel/Documentation/power/power_supply_class.txt
+My system provided power_now, energy_now and voltage_now that I could use to calculate the values. Since all such entries just contain a single value, you don&#39;t need to parse anything, just devide it by 1.000.000 because values are supplied in micro-A/W/V. Also remember to change the path to the battery in minimal.launch!</p>
+
+<p>Attached see my changed laptop_battery.py (you can identify modified lines by the commented original lines next to them).</p>
+
+<pre><code>from __future__ import division
+
+import roslib; roslib.load_manifest(&#39;turtlebot_node&#39;)
+
+from   collections import deque
+import threading
+import copy
+import yaml
+import math
+import rospy
+
+from turtlebot_node.msg import LaptopChargeStatus
+from diagnostic_msgs.msg import DiagnosticStatus, DiagnosticArray, KeyValue
+
+def _strip_Ah(raw_val):
+    if &#39;mAh&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;mAh&#39;).strip()) / 1000.0
+    elif &#39;Ah&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;Ah&#39;).strip())
+    elif &#39;mWh&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;mWh&#39;).strip()) / 1000.0
+    elif &#39;Wh&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;Wh&#39;).strip())
+    else:
+        raise Exception(&#39;Value %s did not have supported units. (mAh,Ah,mWh,Wh)&#39; % raw_val)
+    return rv
+
+def _strip_V(raw_val):
+    if &#39;mV&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;mV&#39;).strip()) / 1000.0
+    elif &#39;V&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;V&#39;).strip())
+    else:
+        raise Exception(&#39;Value %s did not have &quot;V&quot; or &quot;mV&quot;&#39; % raw_val)
+    return rv
+
+def _strip_A(raw_val):
+    if &#39;mA&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;mA&#39;).strip()) / 1000.0
+    elif &#39;A&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;A&#39;).strip())
+    elif &#39;mW&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;mW&#39;).strip()) / 1000.0
+    elif &#39;W&#39; in raw_val:
+        rv = float(raw_val.rstrip(&#39;W&#39;).strip())
+    else:
+        raise Exception(&#39;Value %s did not have supported units. (A,mA,W,mW)&#39; % raw_val)
+    return rv
+
+def slerp(filename):
+    f = open(filename, &#39;r&#39;)
+    data = f.read()
+    f.close()
+    data = data.replace(&#39;\t&#39;, &#39;  &#39;)
+    return data
+
+#/proc/acpi/battery/BAT0/state
+def _check_battery_info(_battery_acpi_path):
+    o = slerp(_battery_acpi_path+&#39;/energy_full_design&#39;)
+
+#    batt_info = yaml.load(o)
+    design_capacity = float(o) / 1000000.0
+    o = slerp(_battery_acpi_path+&#39;/energy_full&#39;)
+    last_full_capacity = float(o) / 1000000.0
+#    design_capacity    = _strip_Ah(batt_info.get(&#39;design capacity&#39;,    &#39;0 mAh&#39;))
+#    last_full_capacity = _strip_Ah(batt_info.get(&#39;last full capacity&#39;, &#39;0 mAh&#39;))
+
+    return (design_capacity, last_full_capacity)
+
+state_to_val = {&#39;Full&#39;:     LaptopChargeStatus.CHARGED, 
+                &#39;Charging&#39;:    LaptopChargeStatus.CHARGING, 
+                &#39;Discharging&#39;: LaptopChargeStatus.DISCHARGING }
+
+diag_level_to_msg = { DiagnosticStatus.OK:    &#39;OK&#39;, 
+                      DiagnosticStatus.WARN:  &#39;Warning&#39;,
+                      DiagnosticStatus.ERROR: &#39;Error&#39;    }
+
+def _check_battery_state(_battery_acpi_path):
+    &quot;&quot;&quot;
+    @return LaptopChargeStatus
+    &quot;&quot;&quot;
+    o = slerp(_battery_acpi_path+&#39;/status&#39;)
+
+#    batt_info = yaml.load(o)
+
+    rv = LaptopChargeStatus()
+
+#    state = batt_info.get(&#39;charging state&#39;, &#39;discharging&#39;)
+    state = o
+    rv.charge_state = state_to_val.get(state, 0)
+    o = slerp(_battery_acpi_path+&#39;/power_now&#39;)
+    rv.rate = float(o) / 1000000.0
+#    rv.rate     = _strip_A(batt_info.get(&#39;present rate&#39;,        &#39;-1 mA&#39;))
+    if rv.charge_state == LaptopChargeStatus.DISCHARGING:
+        rv.rate = math.copysign(rv.rate, -1) # Need to set discharging rate to negative
+
+    o = slerp(_battery_acpi_path+&#39;/energy_now&#39;)
+    rv.charge = float(o) / 1000000.0
+#    rv.charge   = _strip_Ah(batt_info.get(&#39;remaining capacity&#39;, &#39;-1 mAh&#39;))
+    o = slerp(_battery_acpi_path+&#39;/voltage_now&#39;)
+    rv.voltage = float(o) / 1000000.0
+#    rv.voltage  = _strip_V(batt_info.get(&#39;present voltage&#39;,     &#39;-1 mV&#39;))
+    o = slerp(_battery_acpi_path+&#39;/present&#39;)
+    rv.present = float(o)
+#    rv.present  = batt_info.get(&#39;present&#39;, False)
+
+    rv.header.stamp = rospy.get_rostime()
+
+    return rv
+
+def _laptop_charge_to_diag(laptop_msg):
+    rv = DiagnosticStatus()
+    rv.level   = DiagnosticStatus.OK
+    rv.message = &#39;OK&#39;
+    rv.name    = &#39;Laptop Battery&#39;
+
+    if not laptop_msg.present:
+        rv.level = DiagnosticStatus.ERROR
+        rv.message = &#39;Laptop battery missing&#39;
+
+    rv.values.append(KeyValue(&#39;Voltage (V)&#39;,          str(laptop_msg.voltage)))
+    rv.values.append(KeyValue(&#39;Current (A)&#39;,          str(laptop_msg.rate)))
+    rv.values.append(KeyValue(&#39;Charge (Ah)&#39;,          str(laptop_msg.charge)))
+    rv.values.append(KeyValue(&#39;Capacity (Ah)&#39;,        str(laptop_msg.capacity)))
+    rv.values.append(KeyValue(&#39;Design Capacity (Ah)&#39;, str(laptop_msg.design_capacity)))
+
+    return rv
+
+class LaptopBatteryMonitor(object):
+    def __init__(self):
+        self._mutex = threading.Lock()
+
+        self._last_info_update  = 0
+        self._last_state_update = 0
+        self._msg = LaptopChargeStatus()
+
+        self._power_pub = rospy.Publisher(&#39;laptop_charge&#39;, LaptopChargeStatus, latch=True)
+        self._diag_pub  = rospy.Publisher(&#39;/diagnostics&#39;, DiagnosticArray)
+
+        # Battery info
+        self._batt_acpi_path = rospy.get_param(&#39;~acpi_path&#39;, &quot;/sys/class/power_supply/BAT1&quot;)
+        self._batt_design_capacity = 0
+        self._batt_last_full_capacity = 0
+        self._last_info_update = 0
+
+        self._batt_info_rate = 1 / 60.0
+        self._batt_info_thread = threading.Thread(target=self._check_batt_info)
+        self._batt_info_thread.daemon = True
+        self._batt_info_thread.start()
+
+        # Battery state
+        self._batt_state_rate = 1 / 5.0
+        self._batt_state_thread = threading.Thread(target=self._check_batt_state)
+        self._batt_state_thread.daemon = True
+        self._batt_state_thread.start()
+
+    def _check_batt_info(self):
+        rate = rospy.Rate(self._batt_info_rate)
+        while not rospy.is_shutdown():
+            try:
+                design_cap, last_full_cap = _check_battery_info(self._batt_acpi_path)
+                with self._mutex:
+                    self._batt_last_full_capacity = last_full_cap
+                    self._batt_design_capacity    = design_cap
+                    self._last_info_update        = rospy.get_time()
+            except Exception, e:
+                rospy.logwarn(&#39;Unable to check laptop battery info. Exception: %s&#39; % e)
+
+            rate.sleep()
+
+    def _check_batt_state(self):
+        rate = rospy.Rate(self._batt_state_rate)
+        while not rospy.is_shutdown():
+            try:
+                msg = _check_battery_state(self._batt_acpi_path)
+                with self._mutex:
+                    self._msg = msg
+                    self._last_state_update = rospy.get_time()
+            except Exception, e:
+                rospy.logwarn(&#39;Unable to check laptop battery state. Exception: %s&#39; % e)
+
+            rate.sleep()
+
+    def update(self):
+        with self._mutex:
+            diag = DiagnosticArray()
+            diag.header.stamp = rospy.get_rostime()
+
+            info_update_ok  = rospy.get_time() - self._last_info_update  &lt; 5.0 / self._batt_info_rate
+            state_update_ok = rospy.get_time() - self._last_state_update &lt; 5.0 / self._batt_state_rate
+
+            if info_update_ok:
+                self._msg.design_capacity = self._batt_design_capacity
+                self._msg.capacity        = self._batt_last_full_capacity
+            else:
+                self._msg.design_capacity = 0.0
+                self._msg.capacity        = 0.0
+
+            if info_update_ok and state_update_ok and self._msg.capacity != 0:
+                self._msg.percentage = int(self._msg.charge / self._msg.capacity * 100.0)
+
+            diag_stat = _laptop_charge_to_diag(self._msg)
+            if not info_update_ok or not state_update_ok:
+                diag_stat.level   = DiagnosticStatus.ERROR
+                diag_stat.message = &#39;Laptop battery data stale&#39;
+
+            diag.status.append(diag_stat)
+
+            self._diag_pub.publish(diag)
+            self._power_pub.publish(self._msg)
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;laptop_battery&#39;)
+
+    bm = LaptopBatteryMonitor()
+    try:
+        r = rospy.Rate(1.0)
+        while not rospy.is_shutdown():
+            bm.update()
+            r.sleep()
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        import traceback
+        traceback.print_exc()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3036">Melvin</a> on 2013-03-18 00:55:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

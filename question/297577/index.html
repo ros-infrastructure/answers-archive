@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Controlling Baxter robot using HTC Vive - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/297577">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Controlling Baxter robot using HTC Vive</h2>
+      <div class="question">
+        <p>Hi </p>
+
+<p>I&#39;m very new to ROS &amp; robotics in general so any help/advice/videos are welcome! I am currently trying to accurately map controller movements (from a HTC Vive device) to a Baxter robot.  I only have access to a Linux Ubuntu 16.04 machine so any projects requiring Windows I have probably already tried but failed.  However, I suspect what I am trying to achieve is not so far off.</p>
+
+<p>Now I have adapted some code I found online &amp; found a way to extract pose data from the controllers, this is my publisher.  I will post the code at the end just in case.  But basically running <code>rostopic echo /topicname</code> allows me to see the x, y, z points and qx, qy, qz, qw co-ordinates.  It <strong>seems</strong> to be right but how can I double check that these co-ordinates are accurate?</p>
+
+<p>My second question involves the actual mapping to Baxter.  I&#39;m struggling to find resources to learn about how mapping actually works.  I&#39;ve gone through the ROS tutorials &amp; read a lot about the IK services that Baxter offers.
+I assume that is what I need. I know I will need to create a subscriber (possibly 2) for each controller. But I&#39;m still very misty on the process of actually using the Pose data (x ,y, z &amp; quaternions) &amp; how this is used to map the position for the Baxter robot.  Can anyone point me in the right direction of what steps I should be taking? or any resources online is appreciated too.  Thank you!</p>
+
+<p>Code for controllers: (I&#39;ve also got a main.py script which imports from this &amp; creates a HTCViveTracking using a vr system object accessed through openvr)</p>
+
+<pre><code>#!/usr/bin/env python
+
+import math
+
+# OpenVR package
+import openvr
+
+# ROS packages
+import rospy
+import tf
+
+# ROS messages
+from sensor_msgs.msg import Joy
+from geometry_msgs.msg import Point, Pose, Quaternion
+
+# Constants
+topic_name = &quot;openvr&quot;
+
+# --- adapted from triad_openvr --- #
+#Convert the standard 3x4 position/rotation matrix to a x,y,z location and the appropriate Quaternion
+def convert_to_quaternion(pose_mat):
+    # Per issue #2, adding a abs() so that sqrt only results in real numbers
+    r_w = math.sqrt(abs(1+pose_mat[0][0]+pose_mat[1][1]+pose_mat[2][2]))/2
+    r_x = (pose_mat[2][1]-pose_mat[1][2])/(4*r_w)
+    r_y = (pose_mat[0][2]-pose_mat[2][0])/(4*r_w)
+    r_z = (pose_mat[1][0]-pose_mat[0][1])/(4*r_w)
+
+    x = pose_mat[0][3]
+    y = pose_mat[1][3]
+    z = pose_mat[2][3]
+    return [x,y,z,r_w,r_x,r_y,r_z]
+
+def openvr_state_to_ros_joy(pControllerState, timestamp, device_name):
+    &quot;&quot;&quot; 
+    Converts an OpenVR pControllerState (https://github.com/ValveSoftware/openvr/wiki/IVRSystem::GetControllerState)
+    for the HTC Vive Controller (https://docs.unity3d.com/560/Documentation/Manual/OpenVRControllers.html)
+    to a 
+    ROS Joy MSG (http://docs.ros.org/api/sensor_msgs/html/msg/Joy.html)
+    &quot;&quot;&quot;
+
+    # See http://docs.ros.org/api/sensor_msgs/html/msg/Joy.htm
+    joy_msg = Joy()
+
+    # Standard ROS header msg http://docs.ros.org/api/std_msgs/html/msg/Header.html
+    joy_msg.header.frame_id = device_name
+    joy_msg.header.stamp = timestamp
+
+    # the x axis represents the trigger axis (NOTE there are other axes, for the touchpad, but we are only concerned with the touchpad)
+    trigger_axis = pControllerState.rAxis[1].x
+    button_trackpad = pControllerState.ulButtonPressed
+
+    # third bit marks grip button
+    button_grip = bool(pControllerState.ulButtonPressed &gt;&gt; 2 &amp; 1)
+
+    # Add the trigger axis to the Jog msg
+    joy_msg.axes = [
+        trigger_axis
+    ]
+
+    d = {}
+    d[&#39;unPacketNum&#39;] = pControllerState.unPacketNum
+    # on trigger .y is always 0.0 says the docs
+    d[&#39;trigger&#39;] = pControllerState.rAxis[1].x
+    # 0.0 on trigger is fully released
+    # -1.0 to 1.0 on joystick and trackpads
+    d[&#39;trackpad_x&#39;] = pControllerState.rAxis[0].x
+    d[&#39;trackpad_y&#39;] = pControllerState.rAxis[0].y
+    # These are published and always 0.0
+    # for i in range(2, 5):
+    #     d[&#39;unknowns_&#39; + str(i) + &#39;_x&#39;] = pControllerState.rAxis[i].x
+    #     d[&#39;unknowns_&#39; + str(i) + &#39;_y&#39;] = pControllerState.rAxis[i].y
+    d[&#39;ulButtonPressed&#39;] = pControllerState.ulButtonPressed
+    d[&#39;ulButtonTouched&#39;] = pControllerState.ulButtonTouched
+    # To make easier to understand what is going on
+    # Second bit marks menu button
+    d[&#39;menu_button&#39;] = bool(pControllerState.ulButtonPressed &gt;&gt; 1 &amp; 1)
+    # 32 bit marks trackpad
+    d[&#39;trackpad_pressed&#39;] = bool(pControllerState.ulButtonPressed &gt;&gt; 32 &amp; 1)
+    d[&#39;trackpad_touched&#39;] = bool(pControllerState.ulButtonTouched &gt;&gt; 32 &amp; 1)
+    # third bit marks grip button
+    d[&#39;grip_button&#39;] = bool(pControllerState.ulButtonPressed &gt;&gt; 2 &amp; 1)
+    # System button can&#39;t be read, if you press it
+    # the controllers stop reporting
+
+    # Add buttons to the Joy msg
+    joy_msg.buttons = [
+        d[&#39;trigger&#39;] == 1.0,
+        d[&#39;trackpad_touched&#39;],
+        d[&#39;trackpad_pressed&#39;],
+        d[&#39;menu_button&#39;],
+        d[&#39;grip_button&#39;]
+    ]
+
+    return joy_msg
+
+class HTCViveTracking():
+    &quot;&quot;&quot;Handles publishing of OpenVR device poses&quot;&quot;&quot;
+
+    def __init__(self, vr):
+        &quot;&quot;&quot;Initialise Vive publisher&quot;&quot;&quot;
+        print(&quot;Initialising Vive tracker&quot;)
+
+        print(&quot;Setting up VR scene&quot;)
+
+        self.vr = vr
+
+        print(&quot;Initially getting devices&quot;)
+        self.poses_t = openvr.TrackedDevicePose_t * openvr.k_unMaxTrackedDeviceCount
+
+        self.update_vr()
+        self.check_devices()
+
+        self.publisher = {}
+        self.num_packet = {}
+
+        print(&quot;Waiting until 2 controllers are connected&quot;)
+        # Loop until two controllers connected
+        while True:
+            if len(self.object_names[&quot;Controller&quot;]) == 2:
+                print(&quot;Both controllers set up&quot;)
+                break
+            else:
+                self.check_devices()
+        print(&quot;2 controllers connected. Setting up publishers&quot;)
+
+        # Create publishers (controllers also have an additional joy topic)
+        for device_name in self.devices:
+            self.publisher[device_name] = rospy.Publisher(&quot;/{}/{}/pose&quot;.format(topic_name, device_name), Pose, queue_size=10)
+
+            if &quot;controller&quot; in device_name:
+                self.publisher[device_name+&quot;_joy&quot;] = rospy.Publisher(&quot;/{}/{}/joy&quot;.format(topic_name, device_name), Joy, queue_size=10)
+                self.num_packet[device_name] = 0
+
+        print(&quot;Initialisation finished&quot;)
+
+
+    def check_devices(self):
+        &quot;&quot;&quot;Identify connected devices&quot;&quot;&quot;
+        self.devices = {}
+        self.object_names = {&quot;Tracking Reference&quot;:[],&quot;HMD&quot;:[],&quot;Controller&quot;:[],&quot;Tracker&quot;:[]}
+
+        for i in range(openvr.k_unMaxTrackedDeviceCount):
+            # Get this device&#39;s class https://github.com/ValveSoftware/openvr/wiki/IVRSystem::GetTrackedDeviceClass
+            device_class = self.vr.getTrackedDeviceClass(i)
+
+            # If device is still connected See https://github.com/ValveSoftware/openvr/blob/d35c04ca3d7ddb762afa4a1c6c4a9d5de992cda7/headers/openvr.h#L189
+            if self.poses[i].bPoseIsValid and self.poses[i].bDeviceIsConnected:
+
+                # If device is a controller
+                if (device_class == openvr.TrackedDeviceClass_Controller):
+                    device_num = len(self.object_names[&quot;Controller&quot;])+1
+                    device_name = &quot;controller_{}&quot;.format(device_num)
+                    self.object_names[&quot;Controller&quot;].append(device_name)
+                    self.devices[device_name] = i
+
+                # Or device is and HMD
+                elif (device_class == openvr.TrackedDeviceClass_HMD):
+                    device_num  = len(self.object_names[&quot;HMD&quot;])+1
+                    device_name = &quot;hmd_{}&quot;.format(device_num)
+                    self.object_names[&quot;HMD&quot;].append(device_name)
+                    self.devices[device_name] = i
+
+    def update_vr(self):
+        &quot;&quot;&quot;Update the poses, as recommended by (TODO: openvr github comment)&quot;&quot;&quot;
+
+        # Reset pose list
+        self.poses = self.poses_t()
+
+        # Get pose states from openvr https://github.com/ValveSoftware/openvr/wiki/IVRSystem::GetDeviceToAbsoluteTrackingPose
+        self.vr.getDeviceToAbsoluteTrackingPose(
+            openvr.TrackingUniverseStanding,
+            0,
+            len(self.poses),
+            self.poses)
+
+    def publish_data(self):
+        &quot;&quot;&quot;Publishes pose data (and state data for controllers) of OpenVR devices to ROS topics&quot;&quot;&quot;
+
+        # Update device and VR state
+        self.update_vr()
+        self.check_devices()
+
+        # What time is it?
+        now = rospy.Time.now()
+
+        # Loop through name of each connected device
+        for device_name in self.devices:
+
+            # Get device, device&#39;s pose and publisher
+            device = self.devices[device_name]
+            publisher = self.publisher[device_name]
+            pose = self.poses[device].mDeviceToAbsoluteTracking
+
+            # Get device pose as a quaternion
+            [x, y, z, qx, qy, qz, qw] = convert_to_quaternion(pose)
+
+            # Publish controller state data
+            if &quot;controller&quot; in device_name:
+                # Rotate Vive Trackers 180, so Z+ comes out of the top of the Tracker
+                [qx, qy, qz, qw] = tf.transformations.quaternion_multiply([qx, qy, qz, qw], tf.transformations.quaternion_from_euler(math.pi, 0.0, -math.pi/2.0))
+
+                # Get state https://github.com/ValveSoftware/openvr/wiki/IVRSystem::GetControllerState
+                result, state = self.vr.getControllerState(device)
+
+                # ID state by packet number
+                state_packet = state.unPacketNum
+
+                # Check that this is a different state packet
+                if state_packet != self.num_packet[device_name]:
+                    # Convert state to ROS joystick message
+                    state_joy = openvr_state_to_ros_joy(state, now, device_name)
+
+                    # Publish controller state
+                    self.publisher[device_name+&quot;_joy&quot;].publish(state_joy)
+
+                # Set last packet number to current
+                self.num_packet[device_name] = state_packet
+
+            # Build Pose
+            pose = Pose(Point(x, y, z), Quaternion(qx,qy,qz,qw))
+
+            # Publish pose
+            publisher.publish(pose)
+
+    def shutdown(self):
+        &quot;&quot;&quot;Shuts down the OpenVR application&quot;&quot;&quot;
+
+        openvr.shutdown()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/36259">flightlesskite</a> on 2018-07-16 13:17:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This is asking a lot of different things. As to the visualizing of the poses, rviz is the best thing to use for that. And if you are doing VR work, you may want to check out a ROS VR project like <a href="https://github.com/RViMLab/vrviz">vrviz</a> which can visualize the robot in VR as well as control it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32286">john.j.oneill</a> on 2018-09-19 04:53:42 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

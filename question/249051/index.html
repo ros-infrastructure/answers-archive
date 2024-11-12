@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscriber callback missing messages - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/249051">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscriber callback missing messages</h2>
+      <div class="question">
+        <p>Summary: I have a node publishing messages at ~300hz, but a callback subscribing to the topic in another node only gets called at ~25hz. The spinOnce in the subscriber node is being called at ~700hz, so I don&#39;t know why it&#39;s missing messages.</p>
+
+<p>Publisher node:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;ros/console.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+
+...
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;sim_node&quot;);
+    ros::NodeHandle nh;
+
+    ...
+
+    // Publishers
+    tf::TransformBroadcaster tfbr;
+    ros::Publisher odomPub = nh.advertise&lt;nav_msgs::Odometry&gt;(&quot;pose&quot;,10);
+
+   ...
+
+    ros::Rate r(300); // loop rate
+    while(ros::ok())
+    {
+        ...
+
+        // Publish pose and velocity
+            ...
+        odomPub.publish(msg);
+
+        ros::spinOnce();
+        r.sleep();
+    }
+
+    ros::waitForShutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Subscriber node:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;ros/console.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+
+...
+
+std::mutex mtx1, mtx2;
+
+class DataHandler
+{
+private:
+    ros::NodeHandle nh;
+    ros::Publisher odomPub;
+    double lastTime;
+    int lastSeq;
+
+public:
+    Eigen::Vector3d x, xDot, w;
+    Eigen::Vector3d xDes, xDesDot, xDesDotDot, b1Des, b1DesDot;
+    Eigen::Matrix3d R;
+
+    DataHandler()
+    {
+        // Initialize data
+        xDes = Eigen::Vector3d(1,0,1);
+        xDesDot = Eigen::Vector3d::Zero();
+        xDesDotDot = Eigen::Vector3d::Zero();
+        b1Des = Eigen::Vector3d(1,0,0);
+        b1DesDot = Eigen::Vector3d::Zero();
+        x = Eigen::Vector3d::Zero();
+        xDot = Eigen::Vector3d::Zero();
+        R = Eigen::Matrix3d::Identity();
+
+        odomPub = nh.advertise&lt;nav_msgs::Odometry&gt;(&quot;controller_pose&quot;,10);
+        trajPub = nh.advertise&lt;asap_control::DesiredTrajectory&gt;(&quot;controller_desTraj&quot;,10);
+        lastTime = ros::Time::now().toSec();
+        lastSeq = 0;
+    }
+
+    // Get current pose and velocity
+    void odomCB(const nav_msgs::OdometryConstPtr&amp; odomMsg)
+    {
+
+        mtx1.lock();
+            // Get data
+        double time1 = ros::Time::now().toSec();
+        x &lt;&lt; odomMsg-&gt;pose.pose.position.x, odomMsg-&gt;pose.pose.position.y, ...;
+        xDot &lt;&lt; odomMsg-&gt;twist.twist.linear.x, odomMsg-&gt;twist.twist.linear.y, ...;
+        R = Eigen::Quaterniond(odomMsg-&gt;pose.pose.orientation.w, odomMsg-&gt;pose.pose.orientation.x,...;
+        w &lt;&lt; odomMsg-&gt;twist.twist.angular.x, odomMsg-&gt;twist.twist.angular.y, ...;
+        double time2 = ros::Time::now().toSec();
+
+            // Time to extract data, &lt; 1ms
+        double delTproc = time2 - time1;
+        std::cout &lt;&lt; &quot;\n\n&quot;;
+        std::cout &lt;&lt; &quot;proc elapsed time: &quot; &lt;&lt; delTproc &lt;&lt; &quot;\n&quot;;
+        std::cout &lt;&lt; &quot;proc frequency: &quot; &lt;&lt; 1.0/delTproc &lt;&lt; &quot;\n&quot;;
+
+        odomPub.publish(odomMsg); // rostopic hz says this is publishing at ~25Hz
+
+            // Time between callback calls, ~25Hz
+        double timeNow = ros::Time::now().toSec();
+        double delT = timeNow - lastTime;
+        lastTime = timeNow;
+        std::cout &lt;&lt; &quot;elapsed time: &quot; &lt;&lt; delT &lt;&lt; &quot;\n&quot;;
+        std::cout &lt;&lt; &quot;frequency: &quot; &lt;&lt; 1.0/delT &lt;&lt; &quot;\n&quot;;
+
+            // Message sequence IDs, shows 12 msgs skipped every call
+        int seqNow = odomMsg-&gt;header.seq;
+        int delSeq = seqNow - lastSeq;
+        lastSeq = seqNow;
+        std::cout &lt;&lt; &quot;delta seq: &quot; &lt;&lt; delSeq &lt;&lt; &quot;\n&quot;;
+        mtx1.unlock();
+    }
+
+};
+
+...
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;asap_control&quot;);
+    ros::NodeHandle nh;
+
+    ...
+
+    // Publishers
+    ros::Publisher outputPub = nh.advertise&lt;geometry_msgs::WrenchStamped&gt;(&quot;wrench_command&quot;,10);
+    ros::Publisher debugPub = nh.advertise&lt;asap_control::ControllerSignals&gt;(&quot;controller_debug&quot;,10);
+    tf::TransformBroadcaster tfbr;
+
+    // Subscribers
+    DataHandler callbacks;
+    ros::Subscriber poseSub = nh.subscribe(&quot;pose&quot;,10,&amp;DataHandler::odomCB,&amp;callbacks);
+
+    // Asynchronous threads for callback handling
+    //ros::AsyncSpinner spinner(2);
+    //spinner.start();
+
+    double lastTime = ros::Time::now().toSec();
+
+
+    // Main loop
+    ros::Rate r(700); // loop rate
+    while(ros::ok())
+    {
+        // Data (extracted for cleanliness further down, and thread safety)
+        mtx1.lock();
+        Eigen::Vector3d x = callbacks.x;
+        Eigen::Vector3d xDot = callbacks.xDot;
+        Eigen::Matrix3d R = callbacks.R;
+        Eigen::Vector3d w = callbacks.w;
+        mtx1.unlock();
+
+            ...
+
+        // Publish
+            ...
+        outputPub.publish(msg);
+
+        // Publish debug signals
+        asap_control::ControllerSignals debugMsg;
+        debugMsg.x[0] = x(0);
+        ...
+        debugPub.publish(debugMsg);
+
+        //double timeNow = ros::Time::now().toSec();
+        //double delT = timeNow - lastTime;
+        //lastTime = timeNow;
+        //std::cout &lt;&lt; &quot;\n\n&quot;;
+        //std::cout &lt;&lt; &quot;elapsed time: &quot; &lt;&lt; delT &lt;&lt; &quot;\n&quot;;
+        //std::cout &lt;&lt; &quot;frequency: &quot; &lt;&lt; 1.0/delT &lt;&lt; &quot;\n&quot;;
+
+        ros::spinOnce();
+        r.sleep();
+    }
+
+    ros::waitForShutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Additional info:</p>
+
+<ol>
+<li>The publisher is publishing at ~300Hz (confirmed by <code>rostopic hz</code> of the &quot;pose&quot; topic)</li>
+<li>The main loop in the subscriber node is running at ~700Hz (confirmed by <code>rostopic hz</code> of the &quot;wrench_command&quot; topic being published to in the loop, as well as loop timing via <code>ros::Time::now()</code>), and hence, <code>spinOnce</code> is being called at the same rate.</li>
+<li>The callback for the pose topic is being called at ~25 Hz (confirmed by <code>rostopic hz</code> of the &quot;controller_pose&quot; topic being published to in the callback, as well as loop timing via <code>ros::Time::now()</code>)</li>
+<li>I get the same behavior even if I use the <code>AsyncSpinner</code> instead of <code>spinOnce</code>, though can only confirm using <code>rostopic hz</code>. Timing produces erratic output, as expected</li>
+<li>Increasing the subscriber queue<em>length to e.g., 10 increases the callback rate to ~250Hz, however, I want to keep a queue</em>length of 1 to get only the most recent data.</li>
+<li>System monitor in Ubuntu shows less than 50% cpu utilization, so I don&#39;t think it&#39;s cpu bottleneck issue.</li>
+</ol>
+
+        <div class="owner"><p>Asked by <a href="/users/5082">anuppari</a> on 2016-11-29 15:18:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

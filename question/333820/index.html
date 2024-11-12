@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Use tf2 within a dynamic reconfigure server - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/333820">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Use tf2 within a dynamic reconfigure server</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93388/use-tf2-within-a-dynamic-reconfigure-server">https://robotics.stackexchange.com/questions/93388/use-tf2-within-a-dynamic-reconfigure-server</a>.</p>
+        <p>I&#39;m trying to publish a TF of my calibration board in RVIZ. To initialize this frame I specified the pose an <code>a .yaml</code> file. I load these parameters in my launch ile and based on these publish the frame using the <a href="https://wiki.ros.org/tf2">transform library</a>. After the frame is published, I use the <a href="https://wiki.ros.org/dynamic_reconfigure">dynamic_reconfigure</a> library to correct for small errors in the position of this frame. </p>
+
+<p>To do this, I created a launch file and a <code>tf_publisher_node.py</code> (see the code below). When running the <code>tf_publisher_node</code> using the <code>rosrun my_package tf_publisher_node.py</code> command the frame is successfully published in rviz and I can change it using the <code>rosrun rqt_gui rqt_gui -s reconfigure</code> GUI . Unfortunately, when trying to add the node to my launch file the frame doesn&#39;t show up unless I first open the GUI and change a parameter value. I suspect this has something to do with the <code>tf_publisher_node</code> initialising the frame before rviz or the tf2 tree is loaded. Further the frame further also fades away as the dynamic reconfigure callback function is only called when you change the parameters.</p>
+
+<p><strong>Launchfile code</strong></p>
+
+<pre><code>&lt;launch&gt;
+
+    &lt;!-- Start the Kinect processing ROS nodes
+        The IAI_kinect2 package was used for the kinect processing.
+    --&gt;
+    &lt;include file=&quot;$(find panda_autograsp)/launch/kinect2_bridge.launch&quot; &gt;
+        &lt;arg name=&quot;output&quot; value=&quot;log&quot; /&gt;
+    &lt;/include&gt;
+
+    &lt;!-- Load Rviz--&gt;
+    &lt;include file=&quot;$(find panda_autograsp)/launch/panda_autograsp_rviz.launch&quot;&gt;
+        &lt;arg name=&quot;output&quot; value=&quot;log&quot; /&gt;
+    &lt;/include&gt;
+
+    &lt;!-- Load dynamic reconfigure GUI --&gt;
+    &lt;node pkg=&quot;rqt_gui&quot; type=&quot;rqt_gui&quot; name=&quot;dyn_reconf_gui&quot; args=&quot;-s reconfigure&quot; /&gt;
+
+    &lt;!-- Create static TF for the calibration board (CB)
+        The pose for this static TF can be set in the calib_frame_pose.yaml file.
+
+        TF broadcaster conventions:
+            yaw: is rotation about Z (blue axis)
+            pitch: is rotation about Y (red axis)
+            roll: is rotation about X (green axis)
+    --&gt;
+    &lt;rosparam command=&quot;load&quot; file=&quot;$(find panda_autograsp)/cfg/calib_frame_pose.yaml&quot;/&gt; &lt;!-- Load calibration parametesr --&gt;
+    &lt;node pkg=&quot;panda_autograsp&quot; type=&quot;calib_frame_tf2_broadcaster.py&quot; name=&quot;calib_frame_broadcaster&quot; args=&quot;panda_link0 calib_frame&quot; /&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p><strong>tf<em>publisher</em>node.py code</strong></p>
+
+<pre><code>#!/usr/bin/env python
+&quot;&quot;&quot; Calib frame tf2 broadcaster node
+This node publishes the calibframe position relative to the robot base (panda_link0).
+It also includes a dynamic reconfiguration server such that this frame can be changed by the user.
+&quot;&quot;&quot;
+
+## Import standard library packages ##
+import sys
+
+## Import ros packages ##
+import rospy
+from dynamic_reconfigure.server import Server
+from panda_autograsp.cfg import PandaAutoGraspConfig
+import tf_conversions
+import tf
+import tf2_ros
+import geometry_msgs.msg
+
+#################################################
+## calib_frame_tf2_broadcaster script ###########
+#################################################
+class calib_frame_tf2_broadcaster():
+    def __init__(self, parent_frame=&quot;panda_link0&quot;, child_id=&quot;calib_frame&quot;):
+        &quot;&quot;&quot;Calib_frame_tf2_broadcaster class initialization.
+
+        Parameters
+        ----------
+        parent_frame : str, optional
+            Name of the parent frame, by default &quot;panda_link0&quot;
+        child_id : str, optional
+            Name of the child frame, by default &quot;calib_frame&quot;
+        &quot;&quot;&quot;
+
+        ## Retrieve parameters ##
+        self.parent_frame = parent_frame
+        self.child_id = child_id
+
+        ## Create static broadcster ##
+        self.static_br = tf2_ros.StaticTransformBroadcaster()
+
+        ## Initialize transform broardcaster ##
+        self.br = tf2_ros.TransformBroadcaster()
+        self.tf_msg = geometry_msgs.msg.TransformStamped()
+
+        ## Initialize dynamic reconfigure server ##
+        self.srv = Server(PandaAutoGraspConfig, self.dync_reconf_callback)
+
+    def dync_reconf_callback(self, config, level):
+        &quot;&quot;&quot;Dynamic reconfigure callback function.
+
+        Parameters
+        ----------
+        config : dict
+            Dictionary containing the dynamically reconfigured parameters.
+        level : int
+            A bitmask which will later be passed to the dynamic reconfigure callback.
+            When the callback is called all of the level values for parameters that have
+            been changed are ORed together and the resulting value is passed to the callback.
+        &quot;&quot;&quot;
+
+        ## Print information ##
+        rospy.loginfo(&quot;&quot;&quot;Reconfigure Request: {x_pos}, {y_pos},\ 
+            , {z_pos}, {yaw}, {pitch} &amp; {roll}&quot;&quot;&quot;.format(**config))
+
+        ## Generate TF message ##
+        self.tf_msg.header.stamp = rospy.Time.now()
+        self.tf_msg.header.frame_id = self.parent_frame
+        self.tf_msg.child_frame_id = self.child_id
+        self.tf_msg.transform.translation.x = config[&quot;x_pos&quot;]
+        self.tf_msg.transform.translation.y = config[&quot;y_pos&quot;]
+        self.tf_msg.transform.translation.z = config[&quot;z_pos&quot;]
+        quat = tf.transformations.quaternion_from_euler(
+            float(config[&quot;yaw&quot;]), float(config[&quot;pitch&quot;]), float(config[&quot;roll&quot;]), axes=&#39;rzyx&#39;)
+        self.tf_msg.transform.rotation.x = quat[0]
+        self.tf_msg.transform.rotation.y = quat[1]
+        self.tf_msg.transform.rotation.z = quat[2]
+        self.tf_msg.transform.rotation.w = quat[3]
+
+        ## Send tf message ##
+        self.br.sendTransform(self.tf_msg)
+
+        ## Return dynamic configuration dictionary ##
+        return config
+
+#################################################
+## Main script ##################################
+#################################################
+if __name__ == &quot;__main__&quot;:
+
+    ## Initialize TF2 broadcaster node ##
+    rospy.init_node(&#39;calib_frame&#39;, anonymous=False)
+
+    ## Check if enough arguments are supplied ##
+    if len(sys.argv) &lt; 3:
+        rospy.logerr(&#39;Invalid number of parameters\nusage: &#39;
+                     &#39;./static_calib_frame_tf2_broadcaster.py &#39;
+                     &#39;frame_id child_frame_name&#39;)
+        sys.exit(0)
+    else:
+
+        ## Check if frame name is valid ##
+        if sys.argv[2] == &#39;world&#39;:
+            rospy.logerr(&#39;Your frame cannot be named &quot;world&quot;&#39;)
+            sys.exit(0)
+
+    ## Initialize calib frame broadcaster ##
+    calib_frame_tf2_broadcaster(sys.argv[1], sys.argv[2])
+
+    ## Spin forever ##
+    rospy.spin()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/40372">rickstaa</a> on 2019-09-24 10:49:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I was able to solve my problem using a <a href="https://wiki.ros.org/rospy/Overview/Time">rospy.timer()</a> class as explained in <a href="https://roboticsbackend.com/how-to-use-a-ros-timer-in-python-to-publish-data-at-a-fixed-rate/">this blog post</a>. I added my full solution below.</p>
+
+<pre><code>#!/usr/bin/env python
+&quot;&quot;&quot; tf2 broadcaster node
+This node broadcasts a number of tf2 frames and ensures these frames can be updated using a dynamic reconfigure server.
+&quot;&quot;&quot;
+
+## Import standard library packages ##
+import sys
+
+## Import ros packages ##
+import rospy
+from dynamic_reconfigure.server import Server
+from panda_autograsp.cfg import PandaAutoGraspConfig
+import tf_conversions
+import tf
+import tf2_ros
+import geometry_msgs.msg
+
+#################################################
+## tf2_broadcaster class ########################
+#################################################
+class tf2_broadcaster():
+    def __init__(self, parent_frame=&quot;panda_link0&quot;, child_id=&quot;calib_frame&quot;):
+        &quot;&quot;&quot;Calib_frame_tf2_broadcaster class initialization.
+
+        Parameters
+        ----------
+        parent_frame : str, optional
+            Name of the parent frame, by default &quot;panda_link0&quot;
+        child_id : str, optional
+            Name of the child frame, by default &quot;calib_frame&quot;
+        &quot;&quot;&quot;
+
+        ## Retrieve parameters ##
+        self.parent_frame = parent_frame
+        self.child_id = child_id
+
+        ## Set member variables ##
+        self.x_pos = rospy.get_param(&quot;x_pos&quot;)
+        self.y_pos = rospy.get_param(&quot;y_pos&quot;)
+        self.z_pos = rospy.get_param(&quot;z_pos&quot;)
+        self.yaw = rospy.get_param(&quot;yaw&quot;)
+        self.pitch = rospy.get_param(&quot;pitch&quot;)
+        self.roll = rospy.get_param(&quot;roll&quot;)
+
+        ## Create static broadcster ##
+        self.static_br = tf2_ros.StaticTransformBroadcaster()
+
+        ## Initialize transform broardcaster ##
+        self.timer = rospy.Timer(rospy.Duration(1.0/10.0),
+                                 self.tf2_broadcaster_callback)
+        self.br = tf2_ros.TransformBroadcaster()
+        self.tf_msg = geometry_msgs.msg.TransformStamped()
+
+        ## Initialize dynamic reconfigure server ##
+        self.srv = Server(PandaAutoGraspConfig, self.dync_reconf_callback)
+
+    def dync_reconf_callback(self, config, level):
+        &quot;&quot;&quot;Dynamic reconfigure callback function.
+
+        Parameters
+        ----------
+        config : dict
+            Dictionary containing the dynamically reconfigured parameters.
+        level : int
+            A bitmask which will later be passed to the dynamic reconfigure callback.
+            When the callback is called all of the level values for parameters that have
+            been changed are ORed together and the resulting value is passed to the callback.
+        &quot;&quot;&quot;
+
+        ## Print information ##
+        rospy.loginfo(&quot;&quot;&quot;Reconfigure Request: {x_pos}, {y_pos},\ 
+            , {z_pos}, {yaw}, {pitch} &amp; {roll}&quot;&quot;&quot;.format(**config))
+
+        ## Read dynamic parameter values ##
+        self.x_pos = config[&quot;x_pos&quot;]
+        self.y_pos = config[&quot;y_pos&quot;]
+        self.z_pos = config[&quot;z_pos&quot;]
+        self.yaw = config[&quot;yaw&quot;]
+        self.pitch = config[&quot;pitch&quot;]
+        self.roll = config[&quot;roll&quot;]
+
+        ## Update parameters in the parameter server ##
+        rospy.set_param(&#39;x_pos&#39;, config[&quot;x_pos&quot;])
+        rospy.set_param(&#39;y_pos&#39;, config[&quot;y_pos&quot;])
+        rospy.set_param(&#39;z_pos&#39;, config[&quot;z_pos&quot;])
+        rospy.set_param(&#39;yaw&#39;, config[&quot;yaw&quot;])
+        rospy.set_param(&#39;pitch&#39;, config[&quot;pitch&quot;])
+        rospy.set_param(&#39;roll&#39;, config[&quot;roll&quot;])
+
+        ## Return possibly updated configuration ##
+        return config
+
+    def tf2_broadcaster_callback(self, event=None):
+        &quot;&quot;&quot;TF2 broadcaster callback function. This function broadcast the tf2 frames.
+
+        Parameters
+        ----------
+        event : rospy.timer.TimerEvent, optional
+            Structure passed in provides you timing information that can be useful when debugging or profiling. , by default None
+        &quot;&quot;&quot;
+        ## Generate TF message ##
+        self.tf_msg.header.stamp = rospy.Time.now()
+        self.tf_msg.header.frame_id = self.parent_frame
+        self.tf_msg.child_frame_id = self.child_id
+        self.tf_msg.transform.translation.x = self.x_pos
+        self.tf_msg.transform.translation.y = self.y_pos
+        self.tf_msg.transform.translation.z = self.z_pos
+        quat = tf.transformations.quaternion_from_euler(
+            float(self.yaw), float(self.pitch), float(self.roll), axes=&#39;rzyx&#39;)
+        self.tf_msg.transform.rotation.x = quat[0]
+        self.tf_msg.transform.rotation.y = quat[1]
+        self.tf_msg.transform.rotation.z = quat[2]
+        self.tf_msg.transform.rotation.w = quat[3]
+
+        ## Send tf message ##
+        self.br.sendTransform(self.tf_msg)
+
+#################################################
+## Main script ##################################
+#################################################
+if __name__ == &quot;__main__&quot;:
+
+    ## Initialize TF2 broadcaster node ##
+    rospy.init_node(&#39;calib_frame&#39;, anonymous=False)
+
+    ## Check if enough arguments are supplied ##
+    if len(sys.argv) &lt; 3:
+        rospy.logerr(&#39;Invalid number of parameters\nusage: &#39;
+                     &#39;./static_calib_frame_tf2_broadcaster.py &#39;
+                     &#39;frame_id child_frame_name&#39;)
+        sys.exit(0)
+    else:
+
+        ## Check if frame name is valid ##
+        if sys.argv[2] == &#39;world&#39;:
+            rospy.logerr(&#39;Your frame cannot be named &quot;world&quot;&#39;)
+            sys.exit(0)
+
+    ## Initialize calib frame broadcaster ##
+    tf2_broadcaster(sys.argv[1], sys.argv[2])
+
+    ## Spin forever ##
+    rospy.spin()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40372">rickstaa</a> on 2019-09-25 02:33:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

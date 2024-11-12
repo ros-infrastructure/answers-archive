@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>roslaunch and NVidia profiling - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/302417">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>roslaunch and NVidia profiling</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88858/roslaunch-and-nvidia-profiling">https://robotics.stackexchange.com/questions/88858/roslaunch-and-nvidia-profiling</a>.</p>
+        <p>Has anyone had any success getting NVidia profiling tools and ROS to play well together?</p>
+
+<p>At the moment, the best I can do is profile all processes, but that only reports memory copies to and from host, and some OpenCV (copy to and from <code>cv::Mat</code> and <code>cv::cuda::GpuMat</code>). My custom kernels are never profiled (yes, I have explicit <code>cudaProfilerStart()/Stop()</code> calls) and trying to use <code>launch-prefix=&quot;nvprof&quot;</code> or directly profiling <code>roslaunch</code> never gets me anywhere except errors about being unable to load some nodelets.</p>
+
+<p>Any suggestions as to what I might be doing wrong? I&#39;m on Ubuntu 16.04.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/25651">KenYN</a> on 2018-09-04 23:45:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Are you running cuda code within nodelets? If your cuda code is running within a nodelet, you may want to try running nvprof on the nodelet manager.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2018-09-05 00:17:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve tried that too, but no joy. I even have my <code>cudaProfilerStart()</code> called from every thread within the nodelet. Once or twice I have actually managed to capture calls to my CUDA code, but I&#39;ve never managed to reproduce that...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25651">KenYN</a> on 2018-09-05 00:41:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ah, I&#39;ve tried again and just noticed an error about being unable to activate Unified Memory Profiling, so using <code>launch-prefix=&quot;nvprof --unified-memory-profiling off&quot;</code> gets me further than I&#39;ve ever got before.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25651">KenYN</a> on 2018-09-05 01:13:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@KenYN: what was the answer here? Your last comment?</p>
+
+<p>If so: please post that as an answer and then accept your own answer.</p>
+
+<p>We don&#39;t really close questions here on ROS Answers when they have an actual answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-09-05 01:19:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn Oops, I cannot re-open. Can someone else please? I also discovered how to get final output, so I can actually answer the question now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25651">KenYN</a> on 2018-09-05 02:16:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve re-opened it for you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-09-05 02:28:19 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I finally managed to get output, but not very prettily...</p>
+
+<p>In my manager <code>node</code> line, I added <code>launch-prefix=&quot;nvprof --unified-memory-profiling off --profile-child-process --profile-from-start off&quot;</code>. Then in a suitable callback I added the following:</p>
+
+<pre><code>static bool startedProfile = false;
+void MyClass::image_cb(const sensor_msgs::ImageConstPtr image)
+{
+    if (!startedProfile)
+    {
+        startedProfile = true;
+        cudaProfilerStart();
+    }
+    else if (startedProfile &amp;&amp; image-&gt;header.seq &gt; 400) // 400 frames is enough profiling
+    {
+        cudaProfilerStop();
+        cudaDeviceReset();
+        exit(0);
+    }
+
+    // Existing code...
+}
+</code></pre>
+
+<p>This is a <em>very</em> ugly way to finish profiling, but <code>cudaProfilerStop()</code> on its own didn&#39;t produce any output and neither did the addition of <code>exit(0)</code>. There are other nodelets running other CUDA code on both the same and different GPUs, so perhaps we needed to force every CUDA process to stop to get the profiling results to output?</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25651">KenYN</a> on 2018-09-05 02:36:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Just in case you have troubles with this as i did. You need sudo for profiling CUDA GPUs. Just adding sudo in front unfortunatelly does not work, as sudo users have different envrionment variables. ROS commands are not be available in the sudo environment. What worked for me is:</p>
+
+<ol>
+<li>sudo -s</li>
+<li>nvprof --output-profile ./profile.dat &#39;/home/ma/catkin_ws/devel/lib/YOUR_PKG/YOUR_NODE&#39; --profile-from-start off</li>
+</ol>
+
+<p>If this still does not work, try to source the .bashrc after the first step. Btw. if you open the profile.dat in the NVIDiA visual profiler (nvvp) you get a very nice timeline. You can only open the file if the profiler comes from the same CUDA version as nvprof.
+Good luck!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/83196">look001</a> on 2021-09-01 08:29:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Forget <strong>nvprof</strong>, current method is to use <strong>Nsight Systems</strong> @ <strong>nsys</strong>, here are some examples:
+<a href="https://docs.nvidia.com/nsight-systems/UserGuide/index.html#example-single-command-lines">https://docs.nvidia.com/nsight-systems/UserGuide/index.html#example-single-command-lines</a></p>
+
+<p>Just ensure to use corresponding version of <strong>nsys-ui</strong> to open the report generated by <strong>nsys</strong> (i.e. *<em>.nsys-rep</em>): 
+<a href="https://developer.nvidia.com/gameworksdownload#?tx=$gameworks,developer_tools">https://developer.nvidia.com/gameworksdownload#?tx=$gameworks,developer_tools</a></p>
+
+<p>One can generate the report in Jetson and viewing it on a Windows desktop:
+<a href="https://ibb.co/nwtkp7d">https://ibb.co/nwtkp7d</a></p>
+
+<p>I used the following command to generate the report:</p>
+
+<pre><code>nsys profile --profile-from-start=off --trace=cuda,nvtx --capture-range=cudaProfilerApi roslaunch &lt;package_name&gt; *.launch
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/145677">jstumpin</a> on 2023-04-19 02:19:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

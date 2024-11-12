@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Launch Node from code spawns node 2 times and breaks output - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/217153">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Launch Node from code spawns node 2 times and breaks output</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I&#39;m a bit confused. When I try to launch my nav<em>stack.lauch from my benchmarking code for evaluation purposes and trying to parse the output of it, the output stops. I launch the node via execl and redirect the output to a file that gets later parsed. My call to start the node boils down to:
+<pre><code>execl(&quot;/bin/bash&quot;, &quot;/bin/bash&quot;, &quot;-c&quot;, &quot;/usr/bin/python /opt/ros/hydro/bin/roslaunch gki</em>3dnav<em>benchmark nonenav</em>stack.launch 2&gt;&amp;1 &gt; navstackoutput.txt&quot;, NULL);</pre></code>
+When I call the makeplan service from the same code I do get a valid response. But when I take look at the <code>navstackoutput.txt</code> there&#39;s no trace of a request getting handled. Here the ouput of <code>ps ax | grep nav<em>stack</code>:
+<pre><code>24328 ?  S  0:00 /bin/bash -c /usr/bin/python /opt/ros/hydro/bin/roslaunch gki</em>3dnav<em>benchmark nonenav</em>stack.launch 2&gt;&amp;1 &gt; navstackoutput.txt
+24329 ?  Sl 0:00 /usr/bin/python /opt/ros/hydro/bin/roslaunch gki<em>3dnav</em>benchmark nonenav_stack.launch
+</code></pre> 
+It seems to me the node starts but another gets started too, which actually handle the requests. Does anyone know how to prevent this? Or do I do something wrong in my <code>execl</code>call?</p>
+
+<p>PS: I know it&#39;s kind of hacky but still the behaviour confuses me. You can find the benchmark project <a href="https://github.com/PhiPhiper/gki_3dnav/blob/benchmark/benchmark">here</a>.
+As for why I&#39;m doing it this way is that the sbpl outputs some information to stdout that I want to dump in my evaluation database which are not getting published.</p>
+
+<p><strong>Update</strong>: Seems the output gets cutoff too when trying the same thing from the shell
+<pre>roslaunch gki<em>3dnav</em>benchmark nonenav<em>stack.launch &gt; test.txt</pre>
+The result of the txt where you can see the cutoff:
+<pre>[0m[ INFO] [1441555720.539266930, 9773.525000000]: Tolerance rot: 0.200000[0m
+[0m[ INFO] [1441555720.539284357, 9773.525000000]: Tolerance time: 0.500000[0m
+[0m[ INFO] [1441555721.024403188, 9773.861000000]: pluginlib WARNING: In file /tmp/buildd/ros-hydro-clear-costmap-recovery-1.11.16-0precise-20150501-0923/src/clear</em>costmap<em>recovery.cpp PLUGINLIB</em>DECLARE<em>CLASS is deprecated, please use PLUGINLIB</em>EXPORT<em>CLASS instead. You can run the script &#39;plugin</em>macro<em>update&#39; provided with pluginlib in your package source folder to automatically and recursively update legacy macros.  Base = base</em>class<em>type, Derived = derived</em>class_type[0m
+[0m[ INFO] [1441555721.025830108, 9</pre></p>
+
+        <div class="owner"><p>Asked by <a href="/users/23775">PhiPhiper</a> on 2015-09-06 09:40:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>stdout usually buffers a bunch of data when writing to a file; try checking the output file again after your node has exited and actually written all of its output to disk.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2015-09-06 11:50:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Would be odd if that&#39;s the reason, when executing &quot;sudo find / &gt; test.txt&quot; I got my results in seconds without a hitch. Btw it&#39;s a navstack that runs &quot;indefinitely&quot;. I do fork the call and the new pipe doesn receive any new data too.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23775">PhiPhiper</a> on 2015-09-06 12:11:22 UTC</p></div>
+</div>
+<div class="comment">
+              <p>A tool like find terminates, and flushes the output buffer when it exits; hence a complete file in that case. Since the navstack doesn&#39;t exit and isn&#39;t constantly writing, it never fills up the log output buffer, and never needs to flush it to disk.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2015-09-06 21:24:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I moved on not parsing the output anymore. I deleted the results where you could have seen, that after the cutoff, the killing notification of the node got written. As far as my understanding goes, redirecting stdout to file should always flush the current output, at least when the process exits.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23775">PhiPhiper</a> on 2015-09-07 05:35:23 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As far as I&#39;m aware, you can&#39;t redirect files like that with execl. Here&#39;s a complete example with redirection written in C (should also compile in C++, but change <code>NULL</code> to <code>nullptr</code>).</p>
+
+<p>Also be sure to source your ROS environment before you execute this.</p>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(int argc, char ** argv)
+{
+  int pid = fork();
+  if (-1 == pid) {
+    /* fork failed */
+    perror(&quot;fork&quot;);
+    return 1;
+  } else if (0 == pid) {
+    /* child process */
+    FILE * fp = fopen(&quot;navstackoutput.txt&quot;, &quot;w&quot;);
+    if (NULL == fp) {
+      perror(&quot;fopen&quot;);
+      return 1;
+    }
+    /* get descriptor for the file */
+    int fd = fileno(fp);
+    /* redirect stderr to stdout */
+    dup2(fd, 1);
+    /* redirect stdout (and stderr) to the file */
+    dup2(fd, 2);
+    close(fd);  /* close redundant fd */
+    execlp(&quot;roslaunch&quot;, &quot;roslaunch&quot;, &quot;gazebo_ros&quot;, &quot;willowgarage_world.launch&quot;, NULL);
+    perror(&quot;execlp&quot;);  /* should never get here */
+  } else {
+    /* parent process */
+    printf(&quot;Waiting for pid &#39;%d&#39; to exit...\n&quot;, pid);
+    int status;
+    int ret = waitpid(pid, &amp;status, WUNTRACED);
+    if (0 &gt; ret) {
+      perror(&quot;waitpid&quot;);
+      return 1;
+    }
+    printf(&quot;Child exited with return code &#39;%d&#39;\n&quot;, status);
+  }
+
+  return 0;
+}
+</code></pre>
+
+<p>I should also note that the process will probably hang until you manually kill it, so you should do a <code>kill -SIGINT [pid]</code> where <code>pid</code> is the number output in the line <code>&quot;Waiting for pid &#39;%d&#39; to exit...&quot;</code>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1086">allenh1</a> on 2020-09-22 07:35:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

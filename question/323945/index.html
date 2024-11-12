@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>My robot cannot pick a target with MoveIt - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/323945">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>My robot cannot pick a target with MoveIt</h2>
+      <div class="question">
+        <p>I want use moveit to control my robot for a simple pick<em>and</em>place task in rviz, and I use ur10 with a robotiq85 gripper. But its plans always fail. The information shows that there is a contact between &#39;target&#39; and &#39;wrist<em>2</em>link&#39; (the link of ur10) and the IK failed. So the robot cannot plan to pick and it didn&#39;t move. I changed the place of target for some times. but the results were the same. I don&#39;t know what&#39;s wrong with it.</p>
+
+<p>The information in the terminal is as follows:</p>
+
+<pre><code>[ INFO] [1558698830.071226740]: Collision checking is considered complete (collision was found and 0 contacts are stored)[ INFO] [1558698830.071521909]: Found a contact between &#39;target&#39; (type &#39;Object&#39;) and &#39;wrist_2_link&#39; (type &#39;Robot link&#39;), which constitutes a collision. Contact information is not stored.
+[ INFO] [1558698830.071596110]: Collision checking is considered complete (collision was found and 0 contacts are stored)[ INFO] [1558698830.071945170]: IK failed[ INFO] [1558698830.072022409]: Sampler failed to produce a state[ INFO] [1558698830.072103597]: Manipulation plan 5 failed at stage &#39;reachable &amp; valid pose filter&#39; on thread 0[ INFO] [1558698830.072665101]: Pickup planning completed after 0.009758 seconds
+</code></pre>
+
+<p>there is the main part of my python script:</p>
+
+<pre><code>import sys
+from copy import deepcopy
+import rospy
+import moveit_commander
+from geometry_msgs.msg import PoseStamped, Pose
+from moveit_commander import MoveGroupCommander, PlanningSceneInterface
+from moveit_msgs.msg import PlanningScene, ObjectColor
+from moveit_msgs.msg import Grasp, GripperTranslation, MoveItErrorCodes
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from tf.transformations import quaternion_from_euler
+
+GROUP_NAME_ARM = &#39;arm&#39;
+
+GROUP_NAME_GRIPPER = &#39;gripper&#39;
+
+GRIPPER_FRAME = &#39;tool0&#39;
+
+GRIPPER_OPEN = [0.0]
+
+GRIPPER_CLOSED = [0.05]
+
+REFERENCE_FRAME = &#39;base_link&quot;
+
+class MoveItPickAndPlaceDemo:
+
+    def __init__(self):
+
+        moveit_commander.roscpp_initialize(sys.argv)
+        rospy.init_node(&#39;moveit_pick_and_place_demo&#39;)
+        scene = PlanningSceneInterface()
+        self.scene_pub = rospy.Publisher(&#39;planning_scene&#39;, PlanningScene, queue_size=10)
+        self.gripper_pose_pub = rospy.Publisher(&#39;gripper_pose&#39;, PoseStamped, queue_size=10)
+        self.colors = dict()
+        arm = MoveGroupCommander(GROUP_NAME_ARM)
+        gripper = MoveGroupCommander(GROUP_NAME_GRIPPER)
+        arm.set_goal_position_tolerance(0.05)
+        arm.set_goal_orientation_tolerance(0.1)
+        arm.allow_replanning(True)
+        arm.set_pose_reference_frame(REFERENCE_FRAME)
+        target_size = [0.05, 0.05, 0.15]
+        target_pose = PoseStamped()
+        target_pose.header.frame_id = REFERENCE_FRAME
+        target_pose.pose.position.x = -1.0
+        target_pose.pose.position.y = 0.3
+        target_pose.pose.position.z = table_ground + table_size[2] + target_size[2] / 2.0 + 0.1
+        target_pose.pose.orientation.w = 1.0
+        scene.add_box(target_id, target_pose, target_size)
+        self.setColor(target_id, 0.9, 0.9, 0, 1.0)
+        self.sendColors()
+        grasp_pose = target_pose
+        grasps = self.make_grasps(grasp_pose, [target_id])
+
+        for grasp in grasps:
+            self.gripper_pose_pub.publish(grasp.grasp_pose)
+            rospy.sleep(0.2)
+
+        result = None
+        n_attempts = 0
+
+        while result != MoveItErrorCodes.SUCCESS and n_attempts &lt; max_pick_attempts:
+            n_attempts += 1
+            rospy.loginfo(&quot;Pick attempt: &quot; +  str(n_attempts))
+            result = arm.pick(target_id, grasps)
+            rospy.sleep(0.2)
+
+        if result == MoveItErrorCodes.SUCCESS:
+            result = None
+            n_attempts = 0
+
+           places = self.make_places(place_pose)
+          # ...........................
+
+    def make_gripper_posture(self, joint_positions):  
+
+        t = JointTrajectory()
+        t.joint_names = [&#39;robotiq_85_left_knuckle_joint&#39;]
+        tp = JointTrajectoryPoint()
+        tp.positions = joint_positions
+        tp.effort = [1.0]
+        tp.time_from_start = rospy.Duration(1.0)
+        t.points.append(tp)
+        return t
+
+    def make_gripper_translation(self, min_dist, desired, vector):
+
+        g = GripperTranslation()
+        g.direction.vector.x = vector[0]
+        g.direction.vector.y = vector[1]
+        g.direction.vector.z = vector[2]
+        g.direction.header.frame_id = GRIPPER_FRAME
+        g.min_distance = min_dist
+        g.desired_distance = desired
+        return g
+
+    def make_grasps(self, initial_pose_stamped, allowed_touch_objects):
+        g = Grasp()
+        g.pre_grasp_posture = self.make_gripper_posture(GRIPPER_OPEN)
+        g.grasp_posture = self.make_gripper_posture(GRIPPER_CLOSED)
+        g.pre_grasp_approach = self.make_gripper_translation(0.01, 0.1, [1.0, 0.0, 0.0])
+        g.post_grasp_retreat = self.make_gripper_translation(0.1, 0.15, [0.0, -1.0, 1.0])
+        g.grasp_pose = initial_pose_stamped
+        pitch_vals = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3]
+        yaw_vals = [0]
+
+        grasps = []
+        for y in yaw_vals:
+            for p in pitch_vals:
+                q = quaternion_from_euler(0, p, y)
+                g.grasp_pose.pose.orientation.x = q[0]
+                g.grasp_pose.pose.orientation.y = q[1]
+                g.grasp_pose.pose.orientation.z = q[2]
+                g.grasp_pose.pose.orientation.w = q[3]
+                g.id = str(len(grasps))
+                g.allowed_touch_objects = allowed_touch_objects
+                grasps.append(deepcopy(g))
+        return grasps
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/41801">balabala</a> on 2019-05-24 06:42:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Are you sure that your end-effector is configured correctly? Have you tried the <a href="http://docs.ros.org/melodic/api/moveit_tutorials/html/doc/pick_place/pick_place_tutorial.html">tutorial</a>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8631">fvd</a> on 2020-03-03 08:44:36 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

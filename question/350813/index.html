@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Random segfaults for python rqt plugin - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/350813">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Random segfaults for python rqt plugin</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95619/random-segfaults-for-python-rqt-plugin">https://robotics.stackexchange.com/questions/95619/random-segfaults-for-python-rqt-plugin</a>.</p>
+        <p>I&#39;ve tried to write a couple of rqt plugins in order to make interaction with our ROS system easier. I&#39;m not confident or familiar with QT (or C++) from beforehand, so I wrote the plugins with basis in the <a href="http://wiki.ros.org/rqt/Tutorials">rqt-plugin tutorials</a>.</p>
+
+<p>One of the plugins is a used for controlling a simulation. This interacts with a node controlling a simulated clock using a service, and echoes the simulated clock to a QLineEdit. The plugin works well, but randomly exits with segfault. This seems to happen more often when my system has been running for a while. If I restart the plugin after it segfaults, it may segfault straight away, or run for an extended time period. After a restart, the plugin runs for a long time before I experience problems.</p>
+
+<p>Some thought on what may cause this, without being able to fix it:</p>
+
+<ul>
+<li>Python garbage collection: I understand that python may garbage collect QT objects that have gone out of scope in Python, while the objects are still referenced/used in C++. I&#39;ve made all my QT objects attributes of the plugin class to tackle this.</li>
+<li>The clock-topic is published at a high rate (100Hz). I figured that it may be a problem that the clock-callback got &quot;stuck&quot; if the plugin was occupied in a service call. I tried adding a lock to ignore received clock topics in such cases, without it seeming to have an effect.</li>
+</ul>
+
+<p>I&#39;ve run the plugin both by launching <code>rqt</code> and loading it (using <code>python 2</code> and <code>PyQt5</code>), and running it standalone (using <code>python 3</code> and <code>PySide2</code>). The problem occurs for both approaches.</p>
+
+<p>I&#39;m running Meldic Morenia on ubuntu 18.04 with kernel 5.3.0-45-generic. All inputs or suggestions are highly appreciated!</p>
+
+<p>The plugin code:</p>
+
+<pre><code>import os
+import rospy
+import rospkg
+
+from qt_gui.plugin import Plugin
+from python_qt_binding import loadUi
+from python_qt_binding.QtWidgets import QWidget
+from threading import Lock
+
+import std_srvs.srv as stdsrvs
+from rosgraph_msgs.msg import Clock
+
+
+class SimControl(Plugin):
+    gui_lock = Lock()
+
+    def __init__(self, context):
+        super(SimControl, self).__init__(context)
+        # Give QObjects reasonable names
+        self.setObjectName(&#39;SimControl&#39;)
+
+        # Process standalone plugin command-line arguments
+        from argparse import ArgumentParser
+        parser = ArgumentParser()
+        # Add argument(s) to the parser.
+        parser.add_argument(&quot;-q&quot;, &quot;--quiet&quot;, action=&quot;store_true&quot;,
+                            dest=&quot;quiet&quot;,
+                            help=&quot;Put plugin in silent mode&quot;)
+        args, unknowns = parser.parse_known_args(context.argv())
+        if not args.quiet:
+            print(&#39;arguments: &#39;, args)
+            print(&#39;unknowns: &#39;, unknowns)
+
+        # Create QWidget
+        self._widget = QWidget()
+        # Get path to UI file which should be in the &quot;resource&quot; folder of this package
+        ui_file = os.path.join(rospkg.RosPack().get_path(&#39;ros_af_sim&#39;),
+                               &#39;resource&#39;, &#39;sim_control.ui&#39;)
+        # Extend the widget with all attributes and children from UI file
+        loadUi(ui_file, self._widget)
+        # Give QObjects reasonable names
+        self._widget.setObjectName(&#39;SimControlUi&#39;)
+        # Show _widget.windowTitle on left-top of each plugin (when
+        # it&#39;s set in _widget). This is useful when you open multiple
+        # plugins at once. Also if you open multiple instances of your
+        # plugin at once, these lines add number to make it easy to
+        # tell from pane to pane.
+        if context.serial_number() &gt; 1:
+            self._widget.setWindowTitle(self._widget.windowTitle() + (
+                        &#39; (%d)&#39; % context.serial_number()))
+
+        # Set up handlers
+        run_service = &#39;/sim_control/run&#39;
+        print(&#39;Waiting for services&#39;)
+        rospy.wait_for_service(run_service, timeout=5.0)
+        self.s_run = rospy.ServiceProxy(run_service, stdsrvs.SetBool)
+
+        self._widget.run_button.clicked[bool].connect(self._handle_run_clicked)
+        self._widget.pause_button.clicked[bool].connect(
+            self._handle_pause_clicked)
+
+        self.clock_sub = rospy.Subscriber(&#39;/clock&#39;, Clock, self._clock_sub)
+        print(&quot;Finished setup&quot;)
+
+        # Add widget to the user interface
+        context.add_widget(self._widget)
+
+    def shutdown_plugin(self):
+        # Unregister all publishers here
+        with self.gui_lock:
+            self.clock_sub.unregister()
+            self.s_run.close()
+
+    def save_settings(self, plugin_settings, instance_settings):
+        # TODO save intrinsic configuration, usually using:
+        # instance_settings.set_value(k, v)
+        pass
+
+    def restore_settings(self, plugin_settings, instance_settings):
+        # TODO restore intrinsic configuration, usually using:
+        # v = instance_settings.value(k)
+        pass
+
+    def _handle_run_clicked(self):
+        with self.gui_lock:
+            try:
+                self.s_run(stdsrvs.SetBoolRequest(True))
+            except rospy.service.ServiceException as e:
+                print(e.message)
+
+    def _handle_pause_clicked(self):
+        with self.gui_lock:
+            try:
+                self.s_run(stdsrvs.SetBoolRequest(False))
+            except rospy.service.ServiceException as e:
+                print(e.message)
+
+    def _clock_sub(self, msg):
+        if self.gui_lock.locked():
+            rospy.logdebug(&#39;{}: Lock locked, dropping clock &#39;
+                           &#39;update.&#39;.format(rospy.get_name()))
+            return
+        with self.gui_lock:
+            clock = msg.clock.to_sec()
+            self._widget.clock_field.setText(&#39;{}&#39;.format(clock))
+
+    # def trigger_configuration(self):
+    # Comment in to signal that the plugin has a way to configure
+    # This will enable a setting button (gear icon) in each dock widget title bar
+    # Usually used to open a modal configuration dialog
+</code></pre>
+
+<p>And the .ui file:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;ui version=&quot;4.0&quot;&gt;
+ &lt;class&gt;SimControl&lt;/class&gt;
+ &lt;widget class=&quot;QWidget&quot; name=&quot;SimControl&quot;&gt;
+  &lt;property name=&quot;geometry&quot;&gt;
+   &lt;rect&gt;
+    &lt;x&gt;0&lt;/x&gt;
+    &lt;y&gt;0&lt;/y&gt;
+    &lt;width&gt;188&lt;/width&gt;
+    &lt;height&gt;126&lt;/height&gt;
+   &lt;/rect&gt;
+  &lt;/property&gt;
+  &lt;property name=&quot;windowTitle&quot;&gt;
+   &lt;string&gt;Simulation Control&lt;/string&gt;
+  &lt;/property&gt;
+  &lt;layout class=&quot;QVBoxLayout&quot; name=&quot;verticalLayout_3&quot;&gt;
+   &lt;item&gt;
+    &lt;layout class=&quot;QVBoxLayout&quot; name=&quot;verticalLayout_2&quot;&gt;
+     &lt;item&gt;
+      &lt;widget class=&quot;QLabel&quot; name=&quot;label_2&quot;&gt;
+       &lt;property name=&quot;text&quot;&gt;
+        &lt;string&gt;Simulation Control&lt;/string&gt;
+       &lt;/property&gt;
+      &lt;/widget&gt;
+     &lt;/item&gt;
+     &lt;item&gt;
+      &lt;layout class=&quot;QHBoxLayout&quot; name=&quot;horizontalLayout&quot;&gt;
+       &lt;item&gt;
+        &lt;widget class=&quot;QPushButton&quot; name=&quot;pause_button&quot;&gt;
+         &lt;property name=&quot;text&quot;&gt;
+          &lt;string&gt;Pause&lt;/string&gt;
+         &lt;/property&gt;
+        &lt;/widget&gt;
+       &lt;/item&gt;
+       &lt;item&gt;
+        &lt;widget class=&quot;QPushButton&quot; name=&quot;run_button&quot;&gt;
+         &lt;property name=&quot;text&quot;&gt;
+          &lt;string&gt;Run&lt;/string&gt;
+         &lt;/property&gt;
+        &lt;/widget&gt;
+       &lt;/item&gt;
+      &lt;/layout&gt;
+     &lt;/item&gt;
+    &lt;/layout&gt;
+   &lt;/item&gt;
+   &lt;item&gt;
+    &lt;layout class=&quot;QVBoxLayout&quot; name=&quot;verticalLayout&quot;&gt;
+     &lt;item&gt;
+      &lt;widget class=&quot;QLabel&quot; name=&quot;label&quot;&gt;
+       &lt;property name=&quot;frameShadow&quot;&gt;
+        &lt;enum&gt;QFrame::Plain&lt;/enum&gt;
+       &lt;/property&gt;
+       &lt;property name=&quot;text&quot;&gt;
+        &lt;string&gt;Simulated clock&lt;/string&gt;
+       &lt;/property&gt;
+      &lt;/widget&gt;
+     &lt;/item&gt;
+     &lt;item&gt;
+      &lt;widget class=&quot;QLineEdit&quot; name=&quot;clock_field&quot;&gt;
+       &lt;property name=&quot;palette&quot;&gt;
+        &lt;palette&gt;
+         &lt;active&gt;
+          &lt;colorrole role=&quot;Base&quot;&gt;
+           &lt;brush brushstyle=&quot;SolidPattern&quot;&gt;
+            &lt;color alpha=&quot;255&quot;&gt;
+             &lt;red&gt;186&lt;/red&gt;
+             &lt;green&gt;189&lt;/green&gt;
+             &lt;blue&gt;182&lt;/blue&gt;
+            &lt;/color&gt;
+           &lt;/brush&gt;
+          &lt;/colorrole&gt;
+         &lt;/active&gt;
+         &lt;inactive&gt;
+          &lt;colorrole role=&quot;Base&quot;&gt;
+           &lt;brush brushstyle=&quot;SolidPattern&quot;&gt;
+            &lt;color alpha=&quot;255&quot;&gt;
+             &lt;red&gt;186&lt;/red&gt;
+             &lt;green&gt;189&lt;/green&gt;
+             &lt;blue&gt;182&lt;/blue&gt;
+            &lt;/color&gt;
+           &lt;/brush&gt;
+          &lt;/colorrole&gt;
+         &lt;/inactive&gt;
+         &lt;disabled&gt;
+          &lt;colorrole role=&quot;Base&quot;&gt;
+           &lt;brush brushstyle=&quot;SolidPattern&quot;&gt;
+            &lt;color alpha=&quot;255&quot;&gt;
+             &lt;red&gt;239&lt;/red&gt;xcept rospy.service.ServiceException as e:
+                print(e.message)
+
+    def _handle_pause_clicked(self):
+        with self.gui_lock:
+            try:
+                self.s_run(stdsrvs.SetBoolRequest(False))
+            except rospy.service.ServiceException as e:
+                print(e.message)
+
+    def _clock_sub(self, msg):
+        if self.gui_lock.locked():
+            rospy.logdebug(&#39;{}: Lock locked, dropping clock &#39;
+                           &#39;update.&#39;.format(rospy.get_name()))
+            return
+        with self.gui_lock:
+            clock = msg.clock.to_sec()
+            self._widget.clock_field.setText(&#39;{}&#39;.format(clock))
+
+    # def trigger_configuration(self):
+    # Comment in to signal that the plugin has a way to configure
+    # This will enable a setting button (gear icon) in each dock widget title bar
+    # Usually used to open a modal configuration dialog
+
+             &lt;green&gt;235&lt;/green&gt;
+             &lt;blue&gt;231&lt;/blue&gt;
+            &lt;/color&gt;
+           &lt;/brush&gt;
+          &lt;/colorrole&gt;
+         &lt;/disabled&gt;
+        &lt;/palette&gt;
+       &lt;/property&gt;
+       &lt;property name=&quot;readOnly&quot;&gt;
+        &lt;bool&gt;true&lt;/bool&gt;
+       &lt;/property&gt;
+      &lt;/widget&gt;
+     &lt;/item&gt;
+    &lt;/layout&gt;
+   &lt;/item&gt;
+  &lt;/layout&gt;
+ &lt;/widget&gt;
+ &lt;resources/&gt;
+ &lt;connections/&gt;
+&lt;/ui&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/47245">bjoernolav</a> on 2020-04-28 02:44:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Please see the Qt documentation about the gui thread and worked threads: <a href="https://doc.qt.io/qt-5/thread-basics.html">https://doc.qt.io/qt-5/thread-basics.html</a></p>
+
+<p>Your custom <code>gui_lock</code> isn&#39;t sufficient. You simply can&#39;t directly manipulate widgets in a ROS callback (which is being invoked on a different thread).</p>
+
+<p>Also see the rqt documentation which mentions this: <a href="http://wiki.ros.org/rqt/Tutorials/Writing%20a%20Python%20Plugin#Using_rospy">http://wiki.ros.org/rqt/Tutorials/Writing%20a%20Python%20Plugin#Using_rospy</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2575">Dirk Thomas</a> on 2020-04-28 14:31:48 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you very much for the answer! Using a slot for updating the <code>QLineEdit</code> widget, and emitting a signal in the ROS callback function solved the problem. </p>
+
+<p>A follow-up question: In the <a href="https://wiki.qt.io/Qt_for_Python_Signals_and_Slots">Qt for Python tutorial on signals/slots</a>, slots are defined with a <code>@slot()</code> decorator. I noticed that this is not done in e.g. the <code>bag</code> plugin, where the <a href="https://github.com/ros-visualization/rqt_common_plugins/blob/bd5efbb4f4f2e8ca40e54725e674e7ac5afdd0ba/rqt_bag/src/rqt_bag/bag_widget.py#L174">_handle_play_clicked function</a> is connected to a <a href="https://github.com/ros-visualization/rqt_common_plugins/blob/bd5efbb4f4f2e8ca40e54725e674e7ac5afdd0ba/rqt_bag/src/rqt_bag/bag_widget.py#L90">signal</a>. Is there a reason for this? I&#39;ve done it similarly in my plugin - it would be nice to verify that it&#39;s okay to do so.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/47245">bjoernolav</a> on 2020-04-29 06:24:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>In some cases the <code>slot</code> decorator is options: see <a href="https://stackoverflow.com/questions/14421897/is-the-pyside-slot-decorator-necessary">https://stackoverflow.com/questions/14421897/is-the-pyside-slot-decorator-necessary</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2020-04-29 12:51:05 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>For reference in case other people are interested: The complete code for the working plugin.</p>
+
+<pre><code>import os
+import rospy
+import rospkg
+
+from qt_gui.plugin import Plugin
+from python_qt_binding import loadUi
+from python_qt_binding.QtWidgets import QWidget
+from python_qt_binding.QtCore import Signal, Slot
+
+import std_srvs.srv as stdsrvs
+from rosgraph_msgs.msg import Clock
+
+
+class SimControl(Plugin):
+    update_clock_signal = Signal(float)  # Update clock signal, has to be defined as class attribute
+
+    def __init__(self, context):
+        super(SimControl, self).__init__(context)
+        # Give QObjects reasonable names
+        self.setObjectName(&#39;SimControl&#39;)
+
+        # Process standalone plugin command-line arguments
+        from argparse import ArgumentParser
+        parser = ArgumentParser()
+        # Add argument(s) to the parser.
+        parser.add_argument(&quot;-q&quot;, &quot;--quiet&quot;, action=&quot;store_true&quot;,
+                            dest=&quot;quiet&quot;,
+                            help=&quot;Put plugin in silent mode&quot;)
+        args, unknowns = parser.parse_known_args(context.argv())
+        if not args.quiet:
+            print(&#39;arguments: &#39;, args)
+            print(&#39;unknowns: &#39;, unknowns)
+
+        # Create QWidget
+        self._widget = QWidget()
+        # Get path to UI file which should be in the &quot;resource&quot; folder of this package
+        ui_file = os.path.join(rospkg.RosPack().get_path(&#39;ros_af_sim&#39;),
+                               &#39;resource&#39;, &#39;sim_control.ui&#39;)
+        # Extend the widget with all attributes and children from UI file
+        loadUi(ui_file, self._widget)
+        # Give QObjects reasonable names
+        self._widget.setObjectName(&#39;SimControlUi&#39;)
+        # Show _widget.windowTitle on left-top of each plugin (when
+        # it&#39;s set in _widget). This is useful when you open multiple
+        # plugins at once. Also if you open multiple instances of your
+        # plugin at once, these lines add number to make it easy to
+        # tell from pane to pane.
+        if context.serial_number() &gt; 1:
+            self._widget.setWindowTitle(self._widget.windowTitle() + (
+                        &#39; (%d)&#39; % context.serial_number()))
+
+        # Set up handlers
+        run_service = &#39;/sim_control/run&#39;
+        print(&#39;Waiting for services&#39;)
+        rospy.wait_for_service(run_service, timeout=5.0)
+        self.s_run = rospy.ServiceProxy(run_service, stdsrvs.SetBool)
+
+        self._widget.run_button.clicked[bool].connect(self._handle_run_clicked)
+        self._widget.pause_button.clicked[bool].connect(
+            self._handle_pause_clicked)
+
+        self.update_clock_signal.connect(self._update_clock)  # Connect GUI updater to signal
+        self.clock_sub = rospy.Subscriber(&#39;/clock&#39;, Clock, self._clock_sub)
+        print(&quot;Finished setup&quot;)
+
+        # Add widget to the user interface
+        context.add_widget(self._widget)
+
+    def shutdown_plugin(self):
+        # Unregister all publishers here
+        self.clock_sub.unregister()
+        self.s_run.close()
+
+    def save_settings(self, plugin_settings, instance_settings):
+        # TODO save intrinsic configuration, usually using:
+        # instance_settings.set_value(k, v)
+        pass
+
+    def restore_settings(self, plugin_settings, instance_settings):
+        # TODO restore intrinsic configuration, usually using:
+        # v = instance_settings.value(k)
+        pass
+
+    def _handle_run_clicked(self):
+        try:
+            self.s_run(stdsrvs.SetBoolRequest(True))
+        except rospy.service.ServiceException as e:
+            print(e.message)
+
+    def _handle_pause_clicked(self):
+        try:
+            self.s_run(stdsrvs.SetBoolRequest(False))
+        except rospy.service.ServiceException as e:
+            print(e.message)
+
+    def _clock_sub(self, msg):
+        clock = msg.clock.to_sec()
+        self.update_clock_signal.emit(clock)  # Emit signal
+
+    @Slot(float)
+    def _update_clock(self, clock):
+        self._widget.clock_field.setText(&#39;{}&#39;.format(clock))
+
+    # def trigger_configuration(self):
+    # Comment in to signal that the plugin has a way to configure
+    # This will enable a setting button (gear icon) in each dock widget title bar
+    # Usually used to open a modal configuration dialog
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/47245">bjoernolav</a> on 2020-04-29 06:32:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

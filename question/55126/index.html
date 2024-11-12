@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why does ROS overwrite my sequence number? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/55126">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why does ROS overwrite my sequence number?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/48284/why-does-ros-overwrite-my-sequence-number">https://robotics.stackexchange.com/questions/48284/why-does-ros-overwrite-my-sequence-number</a>.</p>
+        <p>I have noticed that the ROS Publishers seem to overwrite the sequence number set by me in the message header (<code>std<em>msgs/Header</code>). This only happens if the message is one known by ROS (such as <code>sensor</em>msgs/Image</code>) but not if it is one I defined myself.</p>
+
+<p>What happens is that I set the header.seq field in e.g. the <code>sensor<em>msgs/Image</code> message to something, but during publishing, ROS overwrites this number with a counter which is apparently kept in the <code>ros::Publisher</code> class itself. So, when I subscribe to the message, sequence numbers of <code>sensor</em>msgs/Image</code> always start with 0 and count up by one from here, no matter what I set in the header before my call to <code>ros::Publisher::publish()</code>.</p>
+
+<p>I dug a little deeper and found that I can prevent this by using <code>ros::AdvertiseOptions</code>.</p>
+
+<pre><code>ros::NodeHandle n;
+ros::AdvertizeOptions op = ros::AdvertiseOptions::create&lt;sensor_msgs::Image&gt;(&quot;/foo&quot;, 1, &amp;connected, &amp;disconnected, ros::VoidPtr(), NULL);
+op.has_header = false;
+ros::Publisher pub = n.advertise(op);
+</code></pre>
+
+<p>The callbacks unfortunately have to be defined, I was unable to just give <code>NULL</code>...</p>
+
+<pre><code>void connected(const ros::SingleSubscriberPublisher&amp;) {}
+void disconnected(const ros::SingleSubscriberPublisher&amp;) {}
+</code></pre>
+
+<p>This way, my sequence numbers persist and are not overwritten by the <code>ros::Publisher::publish()</code> call later.</p>
+
+<p>My question is, why does ROS not trust me to set the sequence number as I want it?</p>
+
+<p>My test publisher:
+<pre></p>
+
+<h1>include <stdio.h></h1>
+
+<h1>include <stdlib.h></h1>
+
+<h1>include <time.h></h1>
+
+<h1>include <ros/ros.h></h1>
+
+<h1>include <sensor_msgs/Image.h></h1>
+
+<p>// dummy callbacks
+void connected(const ros::SingleSubscriberPublisher&amp;) {}
+void disconnected(const ros::SingleSubscriberPublisher&amp;) {}</p>
+
+<p>int main(int argc, char** argv) {
+    srand ( time(NULL) );</p>
+
+<pre><code>ros::init(argc, argv, &quot;test_pub&quot;);
+
+ros::NodeHandle n;
+
+ros::Publisher pub_messed_up = n.advertise&lt;sensor_msgs::Image&gt;(&quot;/foo&quot;, 1);
+
+ros::AdvertiseOptions op = ros::AdvertiseOptions::create&lt;sensor_msgs::Image&gt;(&quot;/bar&quot;, 1, &amp;connected, &amp;disconnected, ros::VoidPtr(), NULL);
+op.has_header = false;
+ros::Publisher pub_ok = n.advertise(op);
+
+
+ros::Rate r(1);
+while(ros::ok()) {
+    sensor_msgs::Image msg;
+    msg.header.seq = rand();
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = &quot;foo&quot;;
+
+    msg.height = msg.header.seq;
+
+    pub_messed_up.publish(msg);
+    pub_ok.publish(msg);
+    r.sleep();
+}
+</code></pre>
+
+<p>}
+</pre></p>
+
+<p>My test subscriber:
+<pre></p>
+
+<h1>include <ros/ros.h></h1>
+
+<h1>include <sensor_msgs/Image.h></h1>
+
+<p>void callback( const sensor<em>msgs::ImageConstPtr&amp; msg ) {
+    ROS</em>INFO(&quot;BAD: image seq is: %10u, should be %10u&quot;, msg-&gt;header.seq, msg-&gt;height);
+}</p>
+
+<p>void callback2( const sensor<em>msgs::ImageConstPtr&amp; msg ) {
+    ROS</em>INFO(&quot;OK : image seq is: %10u, should be %10u&quot;, msg-&gt;header.seq, msg-&gt;height);
+}</p>
+
+<p>int main(int argc, char** argv) {
+    ros::init(argc, argv, &quot;test_sub&quot;);</p>
+
+<pre><code>ros::NodeHandle n;
+ros::Subscriber sub = n.subscribe(&quot;/foo&quot;, 1, &amp;callback);
+ros::Subscriber sub2 = n.subscribe(&quot;/bar&quot;, 1, &amp;callback2);
+
+ros::spin();
+</code></pre>
+
+<p>}
+</pre></p>
+
+<p>Output:
+<pre>
+[ INFO] [1360774481.858622442]: OK : image seq is:  180403487, should be  180403487
+[ INFO] [1360774481.858737733]: BAD: image seq is:          3, should be  180403487
+[ INFO] [1360774481.958441959]: OK : image seq is: 1993875195, should be 1993875195
+[ INFO] [1360774481.958503343]: BAD: image seq is:          4, should be 1993875195
+[ INFO] [1360774482.058392020]: OK : image seq is:  458683548, should be  458683548
+[ INFO] [1360774482.058461137]: BAD: image seq is:          5, should be  458683548
+[ INFO] [1360774482.158405818]: OK : image seq is:  146467386, should be  146467386
+[ INFO] [1360774482.158460950]: BAD: image seq is:          6, should be  146467386
+[ INFO] [1360774482.258369550]: OK : image seq is:  615549610, should be  615549610
+[ INFO] [1360774482.258405823]: BAD: image seq is:          7, should be  615549610
+[ INFO] [1360774482.358434563]: OK : image seq is:  598694760, should be  598694760
+[ INFO] [1360774482.358496809]: BAD: image seq is:          8, should be  598694760
+[ INFO] [1360774482.458443763]: OK : image seq is: 1102210696, should be 1102210696
+[ INFO] [1360774482.458504035]: BAD: image seq is:          9, should be 1102210696
+</pre></p>
+
+        <div class="owner"><p>Asked by <a href="/users/4191">Max Pfingsthorn</a> on 2013-02-13 05:58:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The sequence number is the sequence number of published messages. You are not supposed to change that or set that yourself as then you could only do it exactly as is or wrong (according to what it is supposed to be). This is why you can&#39;t change it nicely.</p>
+
+<p>Your fix just tells ROS that there is no place (header) to store the sequence number and thus it can&#39;t supply one. If you need some unique number in your custom message, you should just define another message field.</p>
+
+<p>I can&#39;t really see a use case, where you&#39;d need to set a user-defined sequence number in an sensor_msgs/Image message that is used by a standard ROS program.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2013-02-13 08:20:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;m working on a sensor fusion application where node A subscribes to an image stream, and outputs a pose estimate for each image. Node B also subscribes to the image stream, along with the pose estimates from node A, so it&#39;s useful if it can simply match the seq # to determine image-pose pairs.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3606">Stephen Vidas</a> on 2013-07-18 14:11:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If you have a sequence number, you have a header. Use the time stamp in the header to synchronize messages from the same origin. There is even a message filter that does this for you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2013-07-18 23:10:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If ROS is so clever, why doesn&#39;t it know if a message has a header or not? Only core messages show this behavior by default, which makes it hard to track down and inconsistent. Also, this is the only thing ROS changes when I publish a message, so it&#39;s very unintuitive.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4191">Max Pfingsthorn</a> on 2013-07-24 06:29:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sequence numbers were deprecated from the specification 4 years ago.  But existing behavior was left for backwards compatibility.  <a href="https://code.ros.org/trac/ros/ticket/1965">https://code.ros.org/trac/ros/ticket/1965</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2013-11-10 21:20:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The link <a href="https://code.ros.org/trac/ros/ticket/1965">https://code.ros.org/trac/ros/ticket/1965</a> doesn&#39;t seem to be working (I&#39;ll keep searching migrated link if any).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/875">130s</a> on 2014-10-21 00:00:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I still can&#39;t find the aforementiond ticket but there&#39;s <a href="https://discourse.ros.org/t/is-the-sequence-number-in-header-message-deprecated/1528">an updated discussion on discourse</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/875">130s</a> on 2019-01-11 15:22:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It seems that ROS overwrites header.seq if it is part of sensor_msgs.
+Publishing the same header message separately as std_msgs::Header and as part of a sensor_msgs::Pointcloud2 message, the seq field of sensor_msgs::Pointcloud2 message is overwritten by ROS whereas the seq field of std_msgs::Header is preserved.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31060">cynosure4sure</a> on 2020-07-20 07:47:23 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

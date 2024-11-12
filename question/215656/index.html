@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to transform a pose - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/215656">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to transform a pose</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/69177/how-to-transform-a-pose">https://robotics.stackexchange.com/questions/69177/how-to-transform-a-pose</a>.</p>
+        <p>I have a pose of a frame that is not correctly positioned (think about it like the /odom frame when doing AMCL navigation, it gets continuously corrected). I calculate this amount of necessary correction and save it as a Pose variable (from geometry_msgs). Now I want to apply this correction to the pose of my frame. How can I do that with tf in Python?</p>
+
+<p>What I tried until now is:</p>
+
+<pre><code>    # Get pose of camera in world frame (true pose from marker observation=
+    pose_from_marker = self.tf_listener.transformPose(&quot;/map&quot;, pose_camera_marker_frame)
+    # Now get transform between odom_marker and camera_frame_marker (copy of normal odometry)
+    (trans, rot) = self.tf_listener.lookupTransform(&#39;camera_frame_marker&#39;, &#39;odom_marker&#39;, rospy.Time(0))
+    print rot
+    R_cam_odom = quaternion_matrix(rot)
+    t_cam_odom = np.zeros((3, 1))
+    t_cam_odom[0] = trans[0]
+    t_cam_odom[1] = trans[1]
+    t_cam_odom[2] = trans[2]
+
+    print trans
+    t_true_pose = np.zeros((3, 1))
+    t_true_pose[0, 0] = pose_from_marker.pose.position.x
+    t_true_pose[1, 0] = pose_from_marker.pose.position.y
+    t_true_pose[2, 0] = pose_from_marker.pose.position.z
+    R_true_pose = quaternion_matrix((pose_from_marker.pose.orientation.x, pose_from_marker.pose.orientation.y, pose_from_marker.pose.orientation.z, pose_from_marker.pose.orientation.w))
+
+
+    R_final = np.dot(R_cam_odom, R_true_pose)
+    t_final = np.dot(R_cam_odom[:-1, :-1], t_true_pose) + t_cam_odom
+    q_final = quaternion_from_matrix(R_final)
+
+    # update the new odom with correct values
+    self.odom_marker_pose.position.x = t_final[0]
+    self.odom_marker_pose.position.y = t_final[1]
+    self.odom_marker_pose.position.z = t_final[2]
+    self.odom_marker_pose.orientation.x = q_final[0]
+    self.odom_marker_pose.orientation.y = q_final[1]
+    self.odom_marker_pose.orientation.z = q_final[2]
+    self.odom_marker_pose.orientation.w = q_final[3]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/13601">Mehdi.</a> on 2015-08-11 09:27:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You need a tf frame that the correcting node has control over (nothing else is trying to broadcast it), and insert it in your tf tree between the incorrect frame and the robot or other frame you are correcting.  That&#39;s how odom is set up.  If there is no correction available the node ought to regularly broadcast a translation of <code>(0,0,0)</code> and  <code>tf.transformations.quaternion_from_matrix(numpy.identity(4))</code> or similar using 0,0,0 for roll-pitch-yaw for the quaternion, or the last good correction if there is one.</p>
+
+<pre><code>    br = tf.TransformBroadcaster()
+    br.sendTransform(
+        (pose.position.x, pose.position.y, pose.position.z),
+        (pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w)
+        rospy.Time.now(),  
+        child_frame,    # maybe base_link
+        parent_frame    # equivalent of odom
+        )
+</code></pre>
+
+<p>You don&#39;t need to store the correction as a <code>Pose</code> unless you are using that as a convenient container or want to publish it as a topic also.  <code>geometry_msgs/Transform</code> is more technically correct even though the contents are the same.</p>
+
+<p>If your Pose actually is relative to the higher level in the tf tree, and not a correction, then you have to pre-multiply it by the inverse of incorrect frame to turn it into a correction, and convert it to a numpy 4x4 matrix and then get it back into a translation + quaternion tuple format using <code>tf.transformations</code> for use by <code>sendTransform</code>.</p>
+
+<pre><code>    # numpy arrays to 4x4 transform matrix 
+    trans_mat = tf.transformations.translation_matrix(trans)
+    rot_mat = tf.transformations.quaternion_matrix(rot)
+    # create a 4x4 matrix
+    mat = numpy.dot(trans_mat, rot_mat)
+
+
+    # do something with numpy.linalg.pinv(mat) (can&#39;t do a simple transpose with a full 4x4 to get the inverse as can be done with a 3x3 rotation matrix)
+
+    # go back to quaternion and 3x1 arrays
+    rot2 = tf.transformations.quaternion_from_matrix(mat)
+    trans2 = tf.transformations.translation_from_matrix(mat)
+</code></pre>
+
+<hr>
+
+<p>One route you can take to get the correction transform is to broadcast the correct transform in parallel, then ask tf for the transform from odometry to correct and broadcast that as the tf from odometry to base_link:</p>
+
+<pre><code>                              parent
+                             /       \
+ correct (but low frequency?)      odom (low quality but hi Hz)
+                                       \
+                                   base_link
+</code></pre>
+
+<p>I think there is one oddity here where the correct frame is only getting updated infrequently, and if odom -&gt; to base_link is also low frequency then no one else will be able to get parent -&gt; base_link at the desired higher rate of parent -&gt; odom.  So the publisher of odom -&gt; base_link has to know when odom -&gt; correct is fresh and only look it up then but  rebroadcast that same tf at a higher rate until a new correct arrives.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2015-08-11 11:12:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks but the thing with the inverse is a bit confusing, I couldn&#39;t find any fast way to do it in Python. I edited my question and put what I tried until now but keep getting wrong poses. Do you see anything that seems not right?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/13601">Mehdi.</a> on 2015-08-11 12:29:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Now that I think about it I don&#39;t think you have to mess around with the inverse, you can use the tf tree to do the work for you... details above.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2015-08-11 12:44:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks, using 4x4 matrices instead of separately calculating translation and rotation made it easier to track my mistake, I was multiplying 4x4 matrices in the wrong order.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/13601">Mehdi.</a> on 2015-08-11 12:57:27 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

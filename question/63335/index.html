@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>RGBDSLAM ICP fallback when there are not enough features - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/63335">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>RGBDSLAM ICP fallback when there are not enough features</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/51342/rgbdslam-icp-fallback-when-there-are-not-enough-features">https://robotics.stackexchange.com/questions/51342/rgbdslam-icp-fallback-when-there-are-not-enough-features</a>.</p>
+        <p>I&#39;m currently using RGBDSLAM for mapping and autonomous driving. 
+The room I&#39;m trying to map has a big white wall, of course there are not enough features to be detected/extracted (&lt;10), so RGBDSLAM tells me that it didn&#39;t add this node (&quot;Found only %i features on image, node is not included&quot;).</p>
+
+<p>So my question is: is the functionality for falling back to ICP only(!), if there are not enough features in the 2d image already implemented and if so, what am I doing wrong in the config/CMakeLists.txt ?</p>
+
+<p>I first tried to activate ICP in the CMakieLists.txt, and in the launch file</p>
+
+<ul>
+<li>&lt; param name=&quot;config/use_icp&quot; value=&quot;true&quot; /&gt; </li>
+<li>&lt; param name=&quot;config/icp_method&quot; value=&quot;icp&quot; /&gt;</li>
+<li>set(USE<em>GICP</em>BIN 1)</li>
+<li>set(USE<em>GICP</em>CODE 0)</li>
+<li>set(USE<em>PCL</em>ICP 1)</li>
+</ul>
+
+<p>Do i need to pick only one of these or do I have to combine them in some way?</p>
+
+<p>Using only USE<em>PCL</em>ICP 1 doesn&#39;t seem to have an effect.
+Additionaly setting USE<em>GICP</em>BIN 1 is the same.
+Setting USE<em>GICP</em>CODE 1 leads to a compile error:</p>
+
+<pre><code>/home/sarcoma/groovy/sandbox/rgbdslam/rgbdslam/src/node.cpp:1221:114: error: ‘getRelativeTransformationTo_ICP_code’ was not declared in this scope
+</code></pre>
+
+<p>So then I took a look at the code.</p>
+
+<p>The comment &quot;///Apply Feature based Alignment and/or ICP&quot; in node.cpp suggests, that (G)ICP was indeed intended to be used to improve the feature-based transformation estimation, or to replace it (when no features are found?)</p>
+
+<p>In graph_manager.cpp I found the origion of the &quot;node is not included&quot; message:</p>
+
+<pre><code>if ((int)new_node-&gt;feature_locations_2d_.size() &lt; ps-&gt;get&lt;int&gt;(&quot;min_matches&quot;) &amp;&amp; 
+    ! ps-&gt;get&lt;bool&gt;(&quot;keep_all_nodes&quot;))
+</code></pre>
+
+<p>Setting the &quot;keep<em>all</em>nodes&quot; option in the launch file sure avoided the problem but, yeah, didn&#39;t help, because the new pointclouds were added all in the same position (&quot;no-motion assumption&quot;). Decreasing the &quot;min_matches&quot; option to &lt;10 only drastically decreased the quality of the output.</p>
+
+<p>Commenting out said if-statement didn&#39;t help either.</p>
+
+<p>Another thing I found in node.cpp:</p>
+
+<pre><code>#if  defined USE_ICP_CODE || defined USE_ICP_CODE
+///ICP - This sets the icp transformation in &quot;mr&quot;, if the icp alignment is better than the ransac_quality
+found_transformation = found_transformation || edge_from_icp_alignment(found_transformation, this, older_node, mr, ransac_quality);
+#endif
+</code></pre>
+
+<p>So, when USE<em>ICP</em>CODE is defined (which it is, if USE<em>GICP</em>BIN or USE<em>GICP</em>CODE are set to 1?), the function edge<em>from</em>icp_alignment should be called, which should produce the transformation estimation even without features?</p>
+
+<p>I also tried &quot;manually&quot; doing ICP when the if-statement for not enough features is triggered:</p>
+
+<pre><code>    if ((int)new_node-&gt;feature_locations_2d_.size() &lt; ps-&gt;get&lt;int&gt;(&quot;min_matches&quot;) &amp;&amp; 
+    ! ps-&gt;get&lt;bool&gt;(&quot;keep_all_nodes&quot;))
+{
+    //magic?
+    ROS_INFO(&quot;Found only %i features on image, initializing ICP fallback&quot;,(int)new_node-&gt;feature_locations_2d_.size());
+    pcl::VoxelGrid&lt;point_type&gt; voxel;
+    new_node-&gt;id_ = graph_.size();
+    ros::Time now = ros::Time::now();
+    std::vector&lt;int&gt; indices;
+    pointcloud_type::Ptr cloud_1;
+    pointcloud_type::Ptr cloud_2;
+    pcl::IterativeClosestPoint&lt;point_type, point_type&gt;* icp = new pcl::IterativeClosestPoint&lt;point_type, point_type&gt;();
+    Node* old_node = graph_[graph_.size()-1];
+    cloud_1 = old_node-&gt;pc_col;
+    cloud_2 = new_node-&gt;pc_col;
+    pcl::removeNaNFromPointCloud(*cloud_1, *cloud_1, indices);
+    pcl::removeNaNFromPointCloud(*cloud_2, *cloud_2, indices);
+    voxel.setLeafSize(0.01, 0.01, 0.01);
+    voxel.setInputCloud(cloud_1);
+    voxel.filter(*cloud_1);
+    voxel.setInputCloud(cloud_2);
+    voxel.filter(*cloud_2);
+    // Set the input source and target
+    icp-&gt;setInputCloud(cloud_1);
+    icp-&gt;setInputTarget(cloud_2);
+    // Set the max correspondence distance to 5cm (e.g., correspondences with higher distances will be ignored)
+    icp-&gt;setMaxCorrespondenceDistance(0.05);
+    // Set the maximum number of iterations (criterion 1)
+    icp-&gt;setMaximumIterations(50);
+    // Set the transformation epsilon (criterion 2)
+    icp-&gt;setTransformationEpsilon(1e-8);
+    // Set the euclidean distance difference epsilon (criterion 3)
+    icp-&gt;setEuclideanFitnessEpsilon(1);
+    // Perform the alignment
+    pointcloud_type::Ptr final;
+    icp-&gt;align(*final);
+    if (icp-&gt;hasConverged()) {
+    publishCloud(new_node, now, batch_cloud_pub_);
+    delete icp;
+    process_node_runs_ = false;
+    return true;
+    }else{
+    delete icp;
+    process_node_runs_ = false;
+    return false;
+    }
+</code></pre>
+
+<p>But I do get a nice &quot;process has died&quot;-error when icp-&gt;align() is called.</p>
+
+<p>Any suggestions/hints?</p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4958">goetz.marc</a> on 2013-05-23 02:42:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi. ICP support is constantly changing, with me thinking I can get it to improve results and ICP not delivering good results :-). Anyway, USE_ICP_BIN is outdated, we used to execute Segal&#39;s gicp as an external program. </p>
+
+<p>I fixed the compile-time error, so try updating. You can leave USE_ICP_CODE and USE_PCL_ICP both set to 1 now. </p>
+
+<p>However, the results are still almost always disappointing. I am using a rather old version of pcl though, they might have improved it.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/113">Felix Endres</a> on 2013-05-24 05:05:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>compiling now works fine, thank you</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4958">goetz.marc</a> on 2013-05-26 22:14:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Let me know how ICP works out for you</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/113">Felix Endres</a> on 2013-05-26 23:13:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>honestly i can&#39;t really see any difference, neither good nor bad; but i&#39;m using rgbdslam in headless-mode (so no GUI) and only display the generated octomap (res: 0.075), which might be a reason that i&#39;m not noticing any changes</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4958">goetz.marc</a> on 2013-05-28 22:29:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@goetz.marc Could you give more information about the mapping of big white walls using ICP algorithm? I&#39;m facing the same problem (related just to numbers of features in the image and adding this as node, compilation is working) and that&#39;ll be great to know you did that! Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21088">Phelipe</a> on 2015-01-16 08:49:53 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

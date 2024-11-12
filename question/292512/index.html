@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>stop my robot if  /cmd_vel doesn't receive a message within a certain time period - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/292512">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>stop my robot if  /cmd_vel doesn't receive a message within a certain time period</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87167/stop-my-robot-if-cmd-vel-doesnt-receive-a-message-within-a-certain-time-period">https://robotics.stackexchange.com/questions/87167/stop-my-robot-if-cmd-vel-doesnt-receive-a-message-within-a-certain-time-period</a>.</p>
+        <p>how can make my robot stop moving when /cmd_vel doesn&#39;t receive a message within a certain time period</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-05-28 18:01:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@abdelkrim: take a look at how (fi) <code>diff_drive_controller</code> does this: <a href="https://github.com/ros-controls/ros_controllers/blob/d43e5a250f9ae2bb99097eb10dc6d29b0fddfc6e/diff_drive_controller/src/diff_drive_controller.cpp#L427-L432">here</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-05-29 02:06:55 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn  yeah exactly what i am looking for thank you ... but i still have question how i can implement that in my node i am coding with python and in this example it&#39;s not very clear how  he used timeout</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-05-29 06:06:44 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I don&#39;t think this is possible if the robot velocity is set directly by whatever is published to /cmd_vel</p>
+
+<p>But if you had a node subscribed to the original velocity commands, it could figure out based on the rostime if the last message is older than a certain time period and if so, publish a 0 to /cmd_vel</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35508">mntan</a> on 2018-05-28 19:26:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>What the OP asks is actually pretty standard: in the driver node, configure a ROS timer to fire at a certain period. In the callback, reset all motion commands (ie: zero velocity). Now reset that timer each time a new <code>Twist</code> is received.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-05-29 02:05:35 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Hello,</p>
+
+<p>I&#39;ve created a Python script that does that, using the /clock topic.</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from geometry_msgs.msg import Twist
+from rosgraph_msgs.msg import Clock
+import time
+
+class Timer():
+
+    def __init__(self):
+        self.cmd_vel_subscriber = rospy.Subscriber(&#39;/cmd_vel&#39;, Twist, self.sub_callback)
+        self.cmd_vel_publisher = rospy.Publisher(&#39;/cmd_vel&#39;, Twist, queue_size=1)
+        self.clock_sub = rospy.Subscriber(&#39;/clock&#39;, Clock , self.sub_clock)
+        self.ctrl_c = False
+        self.ref_time = -1
+        self.current_time = -1
+        rospy.on_shutdown(self.shutdownhook)
+        self.rate = rospy.Rate(1)
+
+    def init_timer(self):
+        self.ref_time = self.current_time
+
+    def sub_clock(self, msg):
+        self.current_time = msg.clock.secs
+        if self.ref_time == -1:
+            self.init_timer()
+        print &#39;Seconds without cmd_vel cmd:&#39; + str((self.current_time - self.ref_time))
+        if (self.current_time - self.ref_time) &gt; 15:
+            self.stop_robot()
+            self.init_timer()
+
+        print &#39;Ref Time:&#39; + str(self.ref_time)
+        print &#39;Current Time:&#39; + str(self.current_time)
+
+
+    def sub_callback(self, msg):
+        self.init_timer()
+
+    def publish_once_in_cmd_vel(self, cmd):
+        while not self.ctrl_c:
+            connections = self.cmd_vel_publisher.get_num_connections()
+            if connections &gt; 0:
+                self.cmd_vel_publisher.publish(cmd)
+                break
+            else:
+                self.rate.sleep()
+
+    def shutdownhook(self):
+        self.stop_robot()
+        self.ctrl_c = True
+
+    def stop_robot(self):
+        cmd = Twist()
+        cmd.linear.x = 0.0
+        cmd.angular.z = 0.0
+        self.publish_once_in_cmd_vel(cmd)
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;timer_test&#39;, anonymous=True)
+    timer_object = Timer()
+    rospy.spin()
+</code></pre>
+
+<p>Basically, it works like this:</p>
+
+<ul>
+<li><p>In the initialization of the class, we define 2 subscribers, for /cmd_vel and for /clock, 
+and 1 publisher for /cmd_vel.</p></li>
+<li><p>The init_timer function just restarts the counter</p></li>
+<li><p>sub_clock is the subscriber for the /clock topic. It checks if a certain period of time
+has passed (15 seconds in this case). If so, it restarts the counter and stops the robot.</p></li>
+<li><p>sub_callback is the subscriber for the /cmd_vel topic. If a message is published into the 
+topic, the counter will be restarted.</p></li>
+<li><p>publish_once_in_cmd_vel it&#39;s just a helper function to publish a message into the /cmd_vel
+topic.</p></li>
+<li><p>shutdownhook it&#39;s just a function that is called when the program is terminated, and stops
+the robot.</p></li>
+<li><p>stop_robot is the function that I use to stop the robot. It basically generates a message
+with all zeros to stop the robot, and publishes it into the /cmd_vel topic.</p></li>
+</ul>
+
+<p>You can also have a look at the following video I&#39;ve created explaining a little bit the
+code and showing how it performs: <a href="https://www.youtube.com/watch?v=8m0QFlX38k0">https://www.youtube.com/watch?v=8m0QFlX38k0</a></p>
+
+<p>Hope it helps!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/31003">Alberto E.</a> on 2018-05-31 05:03:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p><code>rospy.Timer</code> was too convenient (<a href="http://wiki.ros.org/rospy/Overview/Time#Timer">docs</a>)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-05-31 05:27:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ve actually decided to downvote this answer. If for one reason only: it&#39;s overly complicated for what the OP asks and doesn&#39;t help make the basic principle clear. We have to remember that ROS Answers primarily targets beginners (with the occasional hard question by experienced members). If ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-05-31 05:29:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>.. we start showing them these kind of convoluted setups for something which should realistically be something that <code>rospy.Timer</code> could do, then I believe we&#39;re not doing a very good job at helping those beginners.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-05-31 05:29:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Alberto E.  thank you very much and thank you to robotigniteacademy   :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29601">abdelkrim</a> on 2018-06-01 05:09:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@abdelkrim: if you feel Alberto answered your question, you may want to click the checkmark to the left of the answer to mark your question as solved.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-01 05:10:10 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>A quite general version of this problem I came up with is attached:</p>
+
+<pre><code>#! /usr/bin/env python
+
+import rospy
+from geometry_msgs.msg import Twist
+from ackermann_msgs.msg import AckermannDriveStamped
+
+class SendEmptyWatchdog(object):
+    def __init__(self, datatype, topic, timeout=0.15, send_value=None):
+        self.timeout = timeout
+        self.datatype = datatype
+
+        if send_value is None:
+            self.send_value = datatype()
+        else:
+            self.send_value = send_value
+
+        self.twist_subscriber = rospy.Subscriber(topic, self.datatype, self.message_callback, queue_size=1)
+        self.twist_publisher = rospy.Publisher(topic, self.datatype, queue_size=1)
+        self.timer = rospy.Timer(rospy.Duration(self.timeout), self.timer_callback, oneshot=True)
+        self.timeout_triggered = False
+
+    def message_callback(self, msg):
+        rospy.logdebug(&quot;SendEmptyWatchdog{}: Message Callback&quot;.format(self.datatype))
+        if self.timeout_triggered:
+            self.timeout_triggered = False
+        else:
+            self.timer.shutdown()
+            self.timer = rospy.Timer(rospy.Duration(self.timeout), self.timer_callback, oneshot=True)
+
+    def timer_callback(self, event):
+        rospy.logwarn(&quot;SendEmptyWatchdog{}: Timeout Triggered. Received no message for {} seconds&quot;.format(self.datatype, self.timeout))
+
+        self.timeout_triggered = True
+        self.twist_publisher.publish(self.send_value)
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&quot;command_watchdog&quot;)
+    twist_watchdog = SendEmptyWatchdog(Twist, &quot;cmd_vel&quot;)
+    ackermann_watchdog = SendEmptyWatchdog(AckermannDriveStamped, &quot;cmd_ackermann&quot;)
+    rospy.spin()
+</code></pre>
+
+<p>What it does is to subscribe to the topic &quot;cmd_vel&quot; and reset a oneshot timer to send a &quot;zero twist&quot; message once the time is expired. The timer.shutdown() and reinitializing is to stop the previously generated timer from firing and spamming &quot;zero twist&quot; messages <code>self.timeout</code> seconds after each received message on &quot;cmd_vel&quot;. </p>
+
+<p>To avoid the reset of the timer with a published &quot;zero twist&quot; message, no timer is started for the first message after a timeout wast triggered.</p>
+
+<p>The snippet works with Twists and basically any other datatype (Example with &quot;AckermannDriveStamped&quot; in the code).</p>
+
+<p>Since by default all numeric fields of a newly created message are set to 0 stopping the robot in case of a timeout doesn&#39;t need a &quot;send_value&quot; specified. However you can do so, if e.g. a frame has to be specified.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3541">ipa-jba</a> on 2018-06-21 04:22:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

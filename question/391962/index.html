@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>how to use action stop the aubo arm - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/391962">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>how to use action stop the aubo arm</h2>
+      <div class="question">
+        <p>When i run below action server and client, i&#39;m getting error,and the arm trembling：（I want to when action client receive the &quot;stop&quot; msg, use cancelGoal to stop the arm immediately）</p>
+
+<pre><code>[ERROR] [1638238733.121161624]:  got preempted!
+[ INFO] [1638238734.081915554]: Replanning: yes
+[ INFO] [1638238734.101238868]: Execution succeed
+[ERROR] [1638238735.101471751]: To transition to a succeeded state, the goal must be in a preempting or active state, it is currently in state: 2
+</code></pre>
+
+<p>My action server is:</p>
+
+<pre><code>void AuboCommandAPI::preemptCb()
+{
+    ROS_ERROR(&quot; got preempted!&quot;);
+    if(act_server_.isPreemptRequested()){
+        act_server_.setPreempted();
+        // move_group_.stop();
+    }
+}
+void AuboCommandAPI::commandExecuteCallback(const human_avoid::AuboCommandGoalConstPtr&amp; goal)
+{
+    human_avoid::AuboCommandResult res;
+    // bool successP=true;
+    if(act_server_.isPreemptRequested()||!act_server_.isActive()){
+        ROS_INFO(&quot;Danger!!!,Cancel the goal!\n&quot;);
+        return;
+    }
+    const unsigned char act = goal-&gt;action;
+    if (act == goal-&gt;MOVE_ARM)
+        res.success = movePosition(goal-&gt;pose);
+    else if (act == goal-&gt;MOVE_JOINT)
+        res.success = moveJoints(goal-&gt;start_joint_position);
+    else if (act == goal-&gt;GO_HOME)
+        res.success = goHome();
+    else if (act == goal-&gt;MOVE_GRIPPER)
+        res.success = moveGripper(goal-&gt;gripper_cmd);
+    else if (act == goal-&gt;OPEN_GRIPPER)
+        res.success = openGripper();
+    else if (act == goal-&gt;CLOSE_GRIPPER)
+        res.success = closeGripper();
+    else if (act == goal-&gt;GRASP)
+    {
+        // openGripper();
+        // arrive the start position
+        bool flag1 = moveJoints(goal-&gt;start_joint_position);
+        if (flag1)
+        {
+            // grasp
+            bool flag2 = closeGripper();
+            res.success = flag1 &amp;&amp; flag2;
+        }
+        else
+            res.success = false;
+    }
+    else if (act == goal-&gt;DROP)
+    {
+        // arrive the goal position
+        bool flag1 = moveJoints(goal-&gt;end_joint_position);
+        if (flag1)
+        {
+            // place
+            bool flag2 = openGripper();
+            res.success = flag1 &amp;&amp; flag2;
+        }
+        else
+            res.success = false;
+    }
+    if (res.success)
+        act_server_.setSucceeded(res);
+    else
+        act_server_.setAborted(res);
+}
+</code></pre>
+
+<p>And my action client is:</p>
+
+<pre><code>#include&lt;human_avoid/AuboCommandAction.h&gt;
+#include&lt;actionlib/client/simple_action_client.h&gt;
+#include&lt;std_msgs/String.h&gt;
+
+typedef actionlib::SimpleActionClient&lt;human_avoid::AuboCommandAction&gt;  Client;
+class HumanAvoidActionClient
+{
+private:
+        void done_cb(const actionlib::SimpleClientGoalState&amp; state, const human_avoid::AuboCommandResultConstPtr&amp; result)
+        {
+          ROS_INFO(&quot;Finished in state [%s]&quot;,state.toString().c_str());
+          ros::shutdown();
+        }
+
+        void active_cb()
+        {
+          ROS_INFO(&quot;连接建立&quot;);
+        }
+
+        void feedback_cb(const human_avoid::AuboCommandFeedbackConstPtr&amp; feedback)
+        {
+          ROS_INFO(&quot;当前进度：%s&quot;, feedback-&gt;status);
+        }
+
+public:
+  HumanAvoidActionClient(const std::string client_name,bool flag=true):
+                  client(client_name,flag){
+  }
+  void doStopMsg(const std_msgs::String::ConstPtr &amp;msg)
+  {
+    setlocale(LC_ALL, &quot;&quot;);
+    if (msg-&gt;data == &quot;stop&quot;)
+    {
+      client.cancelAllGoals();
+    }
+  }
+ //客户端开始
+ void Start(human_avoid::AuboCommandGoal goal){
+          client.waitForServer();
+          client.sendGoal(goal,
+                                            boost::bind(&amp;HumanAvoidActionClient::done_cb,this,_1,_2),
+                                            boost::bind(&amp;HumanAvoidActionClient::active_cb,this),
+                                            boost::bind(&amp;HumanAvoidActionClient::feedback_cb,this,_1));
+          client.waitForResult(ros::Duration(10.0));
+ }
+private:
+  Client client;
+};
+
+
+
+int main(int argc, char  *argv[])
+{
+  setlocale(LC_ALL, &quot;&quot;);
+  ros::init(argc, argv, &quot;avoid&quot;);
+  ros::NodeHandle nh;
+  HumanAvoidActionClient actionClient(&quot;/aubo_control&quot;, true);
+  human_avoid::AuboCommandGoal startGoal;
+  human_avoid::AuboCommandGoal endGoal;
+  ros::Subscriber stopSub = nh.subscribe&lt;std_msgs::String&gt;(&quot;stop&quot;, 1, &amp;HumanAvoidActionClient::doStopMsg, &amp;actionClient);
+  ros::AsyncSpinner spinner(2);
+  spinner.start();
+  startGoal.action = 6;
+  startGoal.start_joint_position = {-43.42 * M_PI / 180, 11.51 * M_PI / 180, -84.88 * M_PI / 180, -13.57 * M_PI / 180, -83.09 * M_PI / 180, -43.41 * M_PI / 180};
+  endGoal.action = 7;
+  endGoal.end_joint_position = {6.92 * M_PI / 180, 4.03 * M_PI / 180, -91.40 * M_PI / 180, -15.30 * M_PI / 180, -91.14 * M_PI / 180, 6.84 * M_PI / 180};
+
+  ros::Rate rate(10);
+  while (ros::ok())
+  {
+      actionClient.Start(startGoal);
+      actionClient.Start(endGoal);
+  rate.sleep();
+</code></pre>
+
+<p>}
+  return 0;
+}</p>
+
+        <div class="owner"><p>Asked by <a href="/users/73717">Robot_AI</a> on 2021-12-01 03:11:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi Robot_AI, please take a look at this prior answer: <a href="https://answers.ros.org/question/9997/simpleactionclient-callback-for-pre-empted-goals/">https://answers.ros.org/question/9997/simpleactionclient-callback-for-pre-empted-goals/</a> to see what may cause this behaviour.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-12-01 09:32:15 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

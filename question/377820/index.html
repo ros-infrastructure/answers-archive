@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros2_control - Created node by ControllerInterface gets nodename of controller_manager no matter what (diff_drive_controller) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377820">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros2_control - Created node by ControllerInterface gets nodename of controller_manager no matter what (diff_drive_controller)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99005/ros2-control-created-node-by-controllerinterface-gets-nodename-of-controller-m">https://robotics.stackexchange.com/questions/99005/ros2-control-created-node-by-controllerinterface-gets-nodename-of-controller-m</a>.</p>
+        <p>Hi!</p>
+
+<p>I started to work with ros2<em>control and want to set it up with a diff</em>drive<em>controller. Therefore I wrote an Actuator that implements the handling of my motors.
+The issue I now have is that when loading the controller, the new created Node is getting the name of controller</em>manager, not the passed controller<em>name. Therefore I have a) two nodes with the same name and b) the defined parameters for the diffdrive</em>controller can not be loaded because the a node with that name is does not exist (caused by a) :) )</p>
+
+<p>To find the cause of that issue I step by step cloned the ros2<em>controllers and then the ros2</em>control github repos into my workspace to be able to at least add some debugmessages.</p>
+
+<p>So my setup is now the following:</p>
+
+<ul>
+<li>ros:foxy docker image with updated packages (apt update &amp;&amp; apt upgrade) </li>
+<li>/ros2<em>ws/src contains { ros2</em>controllers, ros2<em>control, myrobot</em>control, myrobot_description }</li>
+</ul>
+
+<p>whereas the launchfile from myrobot_control looks like that</p>
+
+<pre><code>#!/usr/bin/env python3
+
+import os
+
+import xacro
+import launch
+from launch_ros.actions import Node
+
+from launch import LaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import DeclareLaunchArgument, GroupAction, ExecuteProcess, IncludeLaunchDescription
+from launch.substitutions import LaunchConfiguration, PythonExpression
+
+from ament_index_python.packages import get_package_share_directory, get_package_prefix
+
+
+def get_parsed_urdf_string():
+    shared_dir = get_package_share_directory(&#39;myrobot_description&#39;)
+    path = os.path.join(shared_dir, &#39;urdf&#39;, &#39;myrobot.xacro&#39;)
+    return xacro.process(path)
+
+def generate_launch_description():
+    urdf_description_string = get_parsed_urdf_string()
+    robot_description = { &#39;robot_description&#39;: urdf_description_string }
+
+    myrobot_controller_config = os.path.join(
+        get_package_share_directory(&quot;myrobot_control&quot;),
+        &quot;config&quot;,
+        &quot;controller.yaml&quot;,
+    )
+
+    return LaunchDescription([
+        Node(
+            package=&quot;robot_state_publisher&quot;,
+            executable=&quot;robot_state_publisher&quot;,
+            name=&quot;robot_state_publisher&quot;,
+            output=&quot;screen&quot;,
+            parameters=[robot_description],
+        ),
+        Node(
+            package=&quot;controller_manager&quot;,
+            executable=&quot;ros2_control_node&quot;,
+            name=&quot;controller_manager&quot;,
+            parameters=[ {&quot;update_rate&quot;: 1 },
+                         robot_description,
+                         myrobot_controller_config ],
+            output={
+                &quot;stdout&quot;: &quot;screen&quot;,
+                &quot;stderr&quot;: &quot;screen&quot;,
+            },
+        ),
+    ])
+</code></pre>
+
+<p>and the controller.yaml</p>
+
+<pre><code>controller_manager:
+  ros__parameters:
+    update_rate: 1 # Hz
+
+    diffdrive_controller:
+      type: diff_drive_controller/DiffDriveController
+
+diffdrive_controller:
+    left_wheel_names: [ &#39;front_left_wheel_joint&#39;, &#39;rear_left_wheel_joint&#39; ]
+    right_wheel_names: [ &#39;front_right_wheel_joint&#39;, &#39;rear_right_wheel_joint&#39; ]
+
+    wheel_separation: 0.51
+    wheels_per_side: 2
+    wheel_radius: 0.141
+
+    wheel_separation_multiplier: 1.0
+    left_wheel_radius_multiplier: 1.0
+    right_wheel_radius_multiplier: 1.0
+
+    publish_rate: 50.0
+    enable_odom_tf: False
+</code></pre>
+
+<p>Moreover, like initially said, I added some debug outputs to ros2<em>controls controller</em>interface.cpp</p>
+
+<pre><code>return_type
+ControllerInterface::init(const std::string &amp; controller_name)
+{
+    RCLCPP_INFO(rclcpp::get_logger(&quot;ControllerInterface&quot;), &quot;!!!!!!!!!! controller_name: %s&quot;, controller_name.c_str());
+
+    node_ = std::make_shared&lt;rclcpp::Node&gt;(
+        controller_name,
+        rclcpp::NodeOptions().allow_undeclared_parameters(true));
+    lifecycle_state_ = rclcpp_lifecycle::State(
+        lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, &quot;unconfigured&quot;);
+
+    std::shared_ptr&lt;rclcpp::Node&gt; node2 = std::make_shared&lt;rclcpp::Node&gt;(&quot;test&quot;, rclcpp::NodeOptions().allow_undeclared_parameters(true));
+    std::shared_ptr&lt;rclcpp::Node&gt; node3 = std::make_shared&lt;rclcpp::Node&gt;(&quot;test&quot;, &quot;controller_manager&quot;, rclcpp::NodeOptions().allow_undeclared_parameters(true));
+
+    std::shared_ptr&lt;rclcpp::Node&gt; node4 = std::make_shared&lt;rclcpp::Node&gt;(&quot;test&quot;);
+    std::shared_ptr&lt;rclcpp::Node&gt; node5 = std::make_shared&lt;rclcpp::Node&gt;(&quot;test&quot;, &quot;controller_manager&quot;);
+
+    RCLCPP_INFO(rclcpp::get_logger(&quot;ControllerInterface&quot;), &quot;controller_name: %s, nodename: %s, fqn: %s&quot;, controller_name.c_str(), node_-&gt;get_name(), node_-&gt;get_fully_qualified_name());
+    RCLCPP_INFO(rclcpp::get_logger(&quot;ControllerInterface&quot;), &quot;controller_name: %s, nodename: %s, fqn: %s&quot;, controller_name.c_str(), node2-&gt;get_name(), node2-&gt;get_fully_qualified_name());
+    RCLCPP_INFO(rclcpp::get_logger(&quot;ControllerInterface&quot;), &quot;controller_name: %s, nodename: %s, fqn: %s&quot;, controller_name.c_str(), node3-&gt;get_name(), node3-&gt;get_fully_qualified_name());
+    RCLCPP_INFO(rclcpp::get_logger(&quot;ControllerInterface&quot;), &quot;controller_name: %s, nodename: %s, fqn: %s&quot;, controller_name.c_str(), node4-&gt;get_name(), node4-&gt;get_fully_qualified_name());
+
+    return return_type::OK;
+}
+</code></pre>
+
+<p>Based on that infos I start the launchfile like</p>
+
+<pre><code>ros2 launch myrobot_control myrobot_control_launch.py
+</code></pre>
+
+<p>and try to load the diffdrive_controller in another terminal with</p>
+
+<pre><code>ros2 control load_controller diffdrive_controller
+</code></pre>
+
+<p>The output i get now is</p>
+
+<pre><code>[ros2_control_node-2] [INFO] [1620293060.380857877] [controller_manager]: update rate is 1 Hz
+[ros2_control_node-2] [INFO] [1620293064.272236880] [controller_manager]: Loading controller &#39;diffdrive_controller&#39;
+[ros2_control_node-2] [INFO] [1620293064.275526854] [ControllerInterface]: !!!!!!!!!! controller_name: diffdrive_controller
+[ros2_control_node-2] [WARN] [1620293064.275653258] [rcl.logging_rosout]: Publisher already registered for provided node name. If this is due to multiple nodes with the same name then all logs for that logger name will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.
+[ros2_control_node-2] [WARN] [1620293064.289270181] [rcl.logging_rosout]: Publisher already registered for provided node name. If this is due to multiple nodes with the same name then all logs for that logger name will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.
+[ros2_control_node-2] [WARN] [1620293064.319312104] [rcl.logging_rosout]: Publisher already registered for provided node name. If this is due to multiple nodes with the same name then all logs for that logger name will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.
+[ros2_control_node-2] [WARN] [1620293064.334594738] [rcl.logging_rosout]: Publisher already registered for provided node name. If this is due to multiple nodes with the same name then all logs for that logger name will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.
+[ros2_control_node-2] [INFO] [1620293064.351882523] [ControllerInterface]: controller_name: diffdrive_controller, nodename: controller_manager, fqn: /controller_manager
+[ros2_control_node-2] [INFO] [1620293064.351914271] [ControllerInterface]: controller_name: diffdrive_controller, nodename: controller_manager, fqn: /controller_manager
+[ros2_control_node-2] [INFO] [1620293064.351937679] [ControllerInterface]: controller_name: diffdrive_controller, nodename: controller_manager, fqn: /controller_manager/controller_manager
+[ros2_control_node-2] [INFO] [1620293064.351946740] [ControllerInterface]: controller_name: diffdrive_controller, nodename: controller_manager, fqn: /controller_manager
+[ros2_control_node-2] [INFO] [1620293064.393450838] [DiffDriveController]: namespace: /, controller_name: diffdrive_controller, nodename: controller_manager
+^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+</code></pre>
+
+<p>For some reason the Node is changing the its name to &quot;controller_manager&quot;, ignoring or overwriting the name passed to it.
+Am I doing something wrong or is there an known issue?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/72129">Webadone</a> on 2021-05-06 05:09:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This feels similar to an <a href="https://github.com/ros2/rviz/issues/671">issue I recently had with rviz</a>... If you remove the <code>name=&quot;controller_manager&quot;</code> line from your launch file, does it resolve your node-name-clashing issue?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69938">shonigmann</a> on 2021-05-06 17:26:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ohh indeed that is solving the issue! Thanks a lot! But is that by design or is that a bug? At least it would make sense that its somewhere documented that this can happen</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72129">Webadone</a> on 2021-05-07 02:41:31 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>As mentioned in the comments, setting the node <code>name</code> argument will set the name of all nodes created by the node as well. The issue is that, if you look in the <a href="https://github.com/ros2/launch_ros/blob/01c90fa5ca46e941e246876fdbabd10b7b100af7/launch_ros/launch_ros/actions/node.py#L203">source of the Node() class</a>, setting the name argument is essentially equivalent to using <code>--ros-args --remap __node:=&lt;new_name&gt;</code>.This remapping seems to hold for all nodes generated by the node itself as they are within the scope of the original remap.</p>
+
+<p>Whether that&#39;s by design or its an unintended &quot;feature&quot;, I&#39;m not entirely sure, but I&#39;ve seen the same misuse of the name remap in a number of packages now and I think the current implementation is pretty non-intuitive. In any case, I think most people would be better off using either <a href="https://design.ros2.org/articles/static_remapping.html">namespaces</a> with default node names, or using <a href="https://docs.ros.org/en/foxy/Tutorials/Composition.html">node composition</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/69938"></a> on 2021-05-07 11:37:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

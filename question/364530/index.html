@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rosserial_mbed breaks SPI communication - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/364530">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rosserial_mbed breaks SPI communication</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97458/rosserial-mbed-breaks-spi-communication">https://robotics.stackexchange.com/questions/97458/rosserial-mbed-breaks-spi-communication</a>.</p>
+        <p>Hi,</p>
+
+<p>I&#39;m working on a project on the <a href="https://greenwaves-technologies.com/product/gapuino/">Gapuino</a> development board using Mbed OS. In my implementation I need to sample data from an SPI device (<a href="https://www.ti.com/product/ADS1299">ADS1299</a>) at a constant rate of 250Hz and without any data losses (this is done using a data ready interrupt coming from the device). Batches of data then needs to be sent to my computer using rosserial_mbed at a much slower rate.</p>
+
+<p>Given the fact that rosserial mbed uses asynchronous UART communication, messages could arrive anytime and thus breaking the blocking SPI write functions when sampling data.</p>
+
+<p>I will post the source code to give some context:</p>
+
+<pre><code>#include &lt;mbed.h&gt;
+#include &quot;ADS1299.h&quot;
+#include &quot;Biquad.h&quot;
+#include &quot;Definitions.h&quot;
+#include &quot;ros.h&quot;
+#include &quot;ads1299/ChannelData.h&quot;
+
+// ADS1299
+ADS1299 ads;
+
+// ROS stuff
+ros::NodeHandle nh;
+ads1299::ChannelData ads_msg;
+ros::Publisher gap8(&quot;channel_data&quot;, &amp;ads_msg);
+
+// Thread
+Thread thread;
+osThreadId threadID;
+
+// Prototypes
+void sendDataThread(void); 
+void dataReadyISR(void);
+
+// Interrupt pin
+InterruptIn DRDY(GPIO_A5_B40);
+
+
+// Signal data ready
+void dataReadyISR(void)
+{
+    osSignalSet(threadID, 0x05);
+}
+
+// Acquire and publish data
+void sendDataThread(void)
+{
+    // Get thread ID
+    threadID = osThreadGetId();
+    uint8_t counter = 0;
+
+    for(;;)
+    {   
+        // Wait for data ready signal
+        osSignalWait(0x05, osWaitForever);
+
+        // Read new data
+        ads.updateChannelData(); // &lt;-------- Here is used SPI::write 
+
+        // Publish message every 100ms
+        if (counter == 25)
+        {
+            // Insert data inside payload
+            ads_msg.ch1 = ads.channelData[0];
+            ads_msg.ch2 = ads.channelData[1];
+            ads_msg.ch3 = ads.channelData[2];
+            ads_msg.ch4 = ads.channelData[3];
+            ads_msg.ch5 = ads.channelData[4];
+            ads_msg.ch6 = ads.channelData[5];
+            ads_msg.ch7 = ads.channelData[6];
+            ads_msg.ch8 = ads.channelData[7];
+
+            // Publish message
+            gap8.publish(&amp;ads_msg);
+            nh.spinOnce();
+            counter = 0;
+        }
+        counter++;
+    }
+}
+
+
+int main(void)
+{
+    // Setup ROS node
+    nh.getHardware()-&gt;setBaud(115200);
+    nh.initNode();
+    nh.advertise(gap8);
+
+    // Start connection
+    while(!nh.connected())
+    {   
+        nh.spinOnce();
+        printf(&quot;Connecting...\n&quot;);
+        Thread::wait(1000);
+    }
+    printf(&quot;Connection enstablished.\n&quot;);
+
+    // Start thread
+    thread.start(callback(sendDataThread));
+
+    // Start data reayd ISR
+    DRDY.fall(dataReadyISR);
+
+    // Main thread wait forever
+    Thread::wait(osWaitForever);
+}
+</code></pre>
+
+<p>I couldn&#39;t find any other questions regarding this incompatibility,  I&#39;m wondering if there is a way to make the SPI communication interrupt safe from ROS messages without disabling interrupts entirely (this will of course end with a lost connection).</p>
+
+<p>I tried many approaches without any luck, I will sincerely appreciate anyone who could provide some help! </p>
+
+        <div class="owner"><p>Asked by <a href="/users/59474">Gualor</a> on 2020-11-01 12:57:00 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>you may use diffrent threads and a mmutex. you may say threat the thread  spi com has more priority so it is evertyme execudet. </p>
+
+<p>you lock the communication between ros and spi with a mutex und you done. </p>
+
+<p>otherwise i do not know why you are using thread because you could also code everything in the main loop. </p>
+
+<p>and how mutch of the cpu time is allready used bei you update funktion is there enought cpu power for ros communication. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22870">duck-development</a> on 2020-11-02 01:59:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Hi @duck-development!
+Firstly thank you for your quick answear!</p>
+
+<p>I moved the <code>sendDataThread</code> code inside the main loop since there wasn&#39;t any reason to do it. Then I tried using mutex to lock the SPI write function, but I had no luck with it and it always gives me the same error as before, which is:</p>
+
+<blockquote>
+<p>Assert failed: g_spiHandle[1], file: /home/gualor/.platformio/packages/framework-gap_sdk/mbed-os/targets/TARGET_GWT/TARGET_GAP8</p>
+
+<p>++ MbedOS Error Info ++</p>
+
+<p>Error Status: 0x8001011D Code: 285 Module: 1</p>
+
+<p>Error Message: </p>
+
+<p>Pre main thread not created</p>
+</blockquote>
+
+<p>The code now looks something like this:</p>
+
+<pre><code>#include &lt;mbed.h&gt;
+#include &quot;ADS1299.h&quot;
+#include &quot;Biquad.h&quot;
+#include &quot;Definitions.h&quot;
+#include &quot;ros.h&quot;
+#include &quot;ads1299/ChannelData.h&quot;
+
+
+// ADS1299
+ADS1299 ads;
+
+// ROS stuff
+ros::NodeHandle nh;
+ads1299::ChannelData ads_msg;
+ros::Publisher gap8(&quot;channel_data&quot;, &amp;ads_msg);
+
+// Thread
+osThreadId threadID;
+
+// Prototypes
+void dataReadyISR(void);
+
+// Interrupt pin
+InterruptIn DRDY(GPIO_A5_B40);
+
+
+// Signal data ready
+void dataReadyISR(void)
+{
+    osSignalSet(threadID, 0x05);
+}
+
+
+int main(void)
+{
+    // Setup ROS node
+    nh.getHardware()-&gt;setBaud(115200);
+    nh.initNode();
+    nh.advertise(gap8);
+
+    // Start connection
+    while(!nh.connected())
+    {   
+        nh.spinOnce();
+        printf(&quot;Connecting...\n&quot;);
+        Thread::wait(1000);
+    }
+    printf(&quot;Connection enstablished.\n&quot;);
+
+    // Get thread ID
+    threadID = osThreadGetId();
+    uint8_t counter = 0;
+    Mutex mutex;
+
+    // Start data reayd ISR
+    DRDY.fall(dataReadyISR);
+
+    for(;;)
+    {   
+        // Wait for data ready signal
+        osSignalWait(0x05, osWaitForever);
+
+        // Read new data
+        mutex.lock();
+        ads.updateChannelData();
+        mutex.unlock();
+
+        // Publish message every 1s
+        if (counter == 25)
+        {
+            // Insert data inside payload
+            ads_msg.ch1 = ads.channelData[0];
+            ads_msg.ch2 = ads.channelData[1];
+            ads_msg.ch3 = ads.channelData[2];
+            ads_msg.ch4 = ads.channelData[3];
+            ads_msg.ch5 = ads.channelData[4];
+            ads_msg.ch6 = ads.channelData[5];
+            ads_msg.ch7 = ads.channelData[6];
+            ads_msg.ch8 = ads.channelData[7];
+
+            // Publish message
+            gap8.publish(&amp;ads_msg);
+            nh.spinOnce();
+            counter = 0;
+        }
+        counter++;
+    }
+}
+</code></pre>
+
+<p>I thought the error was due to SPI write being interrupted, but mutex lock should have solved at least this issue. Could it be that the mutex failed to lock properly and interruption occurred anyway? Do you have any idea how I could debug this?</p>
+
+<p>Thank you again for the help!</p>
+
+<hr>
+
+<p>UPDATE:</p>
+
+<p>As suggested I tried having 2 threads running, one for acquiring data via SPI and one for publishing ROS messaging and calling spin once. Saddly it seems to behave exactly like before even with the use of mutexes inside the code:</p>
+
+<pre><code>#include &quot;mbed.h&quot;
+#include &quot;ADS1299.h&quot;
+#include &quot;Definitions.h&quot;
+#include &quot;ros.h&quot;
+#include &quot;ads1299/ChannelData.h&quot;
+
+// ADS1299
+ADS1299 ads;
+
+// ROS stuff
+ros::NodeHandle nh;
+ads1299::ChannelData ads_msg;
+ros::Publisher gap8(&quot;channel_data&quot;, &amp;ads_msg);
+
+// Threads
+osThreadId id;
+Thread thread1;
+Thread thread2(osPriorityAboveNormal1);
+void acquireThread(void);
+void publishThread(void);
+Mutex mutex;
+
+// Interrupt
+InterruptIn DRDY(GPIO_A5_B40);  
+void dataReadyISR(void);
+
+
+// Data ready interrupt
+void dataReadyISR(void)
+{
+    osSignalSet(id, 0x01);
+}
+
+// Acquire data from ADS1299
+void acquireThread(void)
+{
+    id = ThisThread::get_id();
+    for(;;)
+    {
+        osSignalWait(0x01, osWaitForever);
+        mutex.lock();
+        ads.updateChannelData();
+        mutex.unlock();
+    }
+}
+
+// Publish ROS messages
+void publishThread(void)
+{
+    for(;;)
+    {
+        // Update message data
+        ads_msg.ch1 = ads.channelData[0];
+        ads_msg.ch2 = ads.channelData[1];
+        ads_msg.ch3 = ads.channelData[2];
+        ads_msg.ch4 = ads.channelData[3];
+        ads_msg.ch5 = ads.channelData[4];
+        ads_msg.ch6 = ads.channelData[5];
+        ads_msg.ch7 = ads.channelData[6];
+        ads_msg.ch8 = ads.channelData[7];
+
+        // Publish message        
+        mutex.lock();
+        gap8.publish(&amp;ads_msg);
+        nh.spinOnce();
+        mutex.unlock();
+
+        ThisThread::sleep_for(100);
+    }
+}
+
+int main() 
+{
+    // ROS setup
+    nh.getHardware()-&gt;setBaud(115200);
+    nh.initNode();
+    nh.advertise(gap8);
+
+    // Start threads
+    thread1.start(callback(&amp;acquireThread));
+    thread2.start(callback(&amp;publishThread));
+
+    // Attach data ready ISR
+    DRDY.fall(callback(&amp;dataReadyISR));
+
+    Thread::wait(osWaitForever);
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/59474">Gualor</a> on 2020-11-02 04:51:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>If you have mutexs then you need more threads.</p>
+
+<p>One ads read thread and one ros write thread. </p>
+
+<p>Did you Software have an compile or runtime error?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22870">duck-development</a> on 2020-11-02 08:43:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Does you first Programm run without the ROS code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22870">duck-development</a> on 2020-11-02 08:46:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, before merging this code with the rosserial stuff for sending messages of data, I implemented the same code but using a simple UART serial protocol (using Mbed Serial library), and I encountered no issues.</p>
+
+<p>The error is a runtime error, nothing happens if I don&#39;t start the serial_node.py for bridging with rosserial, then after execution the connection is always immediate and successful and messages are exchanged at a constant rate for about 10 seconds, then the MCU encounter this runtime error and stops execution (breaking of course the connection with the serial node on the computer).</p>
+
+<p>The fact is that rosserial uses asynchronous UART, and without knowing when messages will arrive at some point one of them will interrupt the SPI read of the sensor causing the issue.</p>
+
+<p>I tried your  suggestion of using multi-threaded code with mutexes, but without any luck. Maybe I&#39;m just doing something stupid, I&#39;m new to ROS and Mbed development.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59474">Gualor</a> on 2020-11-02 09:19:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>you have to set the mutex in the ros thread arround the acces of you adc data.</p>
+
+<p>and set the adc data thread to high prio
+  Thread testSignal(outputSignal,0,osPriorityHigh);</p>
+
+<p>as described here <a href="https://os.mbed.com/questions/2313/Priorities-and-Threads/">https://os.mbed.com/questions/2313/Priorities-and-Threads/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22870">duck-development</a> on 2020-11-02 12:02:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I change the thread priority as you said, but I don&#39;t quite understand what you mean with &quot;you have to set the mutex in the ros thread arround the acces of you adc data.&quot;  The ROS thread only copies data already stored inside an array to the message payloads fields, and then publish the message. The actual data is read by the ads.updateChannelData() function. Can you be more specific about which line/s of code have to be locked by mutex? </p>
+
+<p>For now, by locking the mutexes as I show in the updated question, the ROS connection lasts for about 10/15 seconds before causing the issue i described.</p>
+
+<p>Sorry if I am wasting your time, you are very kind for taking the time to guide me through it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59474">Gualor</a> on 2020-11-02 14:52:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>you have to set the mutex erround the block</p>
+
+<pre><code>   mutex.lock();
+        // Insert data inside payload
+        ads_msg.ch1 = ads.channelData[0];
+        ads_msg.ch2 = ads.channelData[1];
+        ads_msg.ch3 = ads.channelData[2];
+        ads_msg.ch4 = ads.channelData[3];
+        ads_msg.ch5 = ads.channelData[4];
+        ads_msg.ch6 = ads.channelData[5];
+        ads_msg.ch7 = ads.channelData[6];
+        ads_msg.ch8 = ads.channelData[7];
+  mutex.unlock();
+</code></pre>
+
+<p>because those are changed in the other thread. </p>
+
+<p>and as log you have a singel core mcu you may add a sleep in the adc thread so the ros thread  get some compuation time. the questen is <code>osSignalWait(0x01, osWaitForever);</code> an task or thread blocking call. it it is task bloking then you have to add the sleeping insede the adc thred otherwise it could help. but now it is a ros time out and not spi arror?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22870">duck-development</a> on 2020-11-03 11:27:02 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

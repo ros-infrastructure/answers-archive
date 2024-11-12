@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Is this a bug in jacobian computation? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/220577">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Is this a bug in jacobian computation?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/70281/is-this-a-bug-in-jacobian-computation">https://robotics.stackexchange.com/questions/70281/is-this-a-bug-in-jacobian-computation</a>.</p>
+        <p>Hi All,</p>
+
+<p>I&#39;m using ROS/moveit to compute jacobian matrix (getJacobian as a function of RobotState class).
+I tested the jacobian using finite difference but the error is large, is this a bug in ROS or my code is wrong?</p>
+
+<pre><code>void Grasper::debugJacobian(const string&amp; groupName,const string linkName) const
+{
+  //test at random position
+  robot_state::RobotState&amp; state=_scene-&gt;getCurrentStateNonConst();
+  state.setToRandomPositions();
+  state.update();
+
+  //compute jacobian in quaternion mode
+  Eigen::MatrixXd J=getJacobian(groupName,linkName,true);
+  if(J.size() == 0)
+    return;
+
+  //get current position
+  const vector&lt;string&gt;&amp; names=state.getVariableNames();
+  map&lt;string,double&gt; positions;
+  for(size_t i=0;i&lt;names.size();i++)
+    positions[names[i]]=state.getVariablePosition(names[i]);
+
+  //get current group names
+  const robot_model::JointModelGroup* group=state.getRobotModel()-&gt;getJointModelGroup(groupName);
+  const vector&lt;string&gt;&amp; gnames=group-&gt;getVariableNames();
+
+  //debug
+#define DELTA 1E-8f
+  Eigen::Affine3d t0=state.getFrameTransform(linkName);
+  Eigen::Quaterniond q0(t0.rotation());
+  for(size_t i=0;i&lt;gnames.size();i++)
+  {
+    state.setVariablePosition(gnames[i],positions[gnames[i]]+DELTA);
+    state.update();
+
+    Eigen::Affine3d t1=state.getFrameTransform(linkName);
+    Eigen::Quaterniond q1(t1.rotation());
+
+    Eigen::VectorXd DN=Eigen::VectorXd::Zero(7),DA=J.col(i);
+    DN.block&lt;3,1&gt;(0,0)=(t1.translation()-t0.translation())/DELTA;
+    DN.block&lt;4,1&gt;(3,0)=Eigen::Vector4d(q1.w()-q0.w(),q1.x()-q0.x(),q1.y()-q0.y(),q1.z()-q0.z())/DELTA;
+    ROS_INFO_NOW(&quot;Jacobian col %ld: %f Err: %f!&quot;,i,DA.norm(),(DN-DA).norm())
+    state.setVariablePosition(gnames[i],positions[gnames[i]]);
+    state.update();
+  }
+#undef DELTA
+}
+</code></pre>
+
+<p>Zherong</p>
+
+        <div class="owner"><p>Asked by <a href="/users/24967">DamnItROS</a> on 2015-11-07 00:00:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Found the answer, a problem with my code. So the second part of the jacobian is against rotation axis.
+Here is the correct code:</p>
+
+<pre><code>void Grasper::debugJacobian(const string linkName) const
+{
+  //test at random position
+  robot_state::RobotState&amp; state=_scene-&gt;getCurrentStateNonConst();
+  state.setToRandomPositions();
+  state.update();
+
+  //compute jacobian in quaternion mode
+  vector&lt;string&gt; jointNames;
+  Eigen::MatrixXd J=getJacobian(linkName,jointNames);
+  if(J.size() == 0)
+    return;
+
+  //get current position
+  map&lt;string,double&gt; positions;
+  for(size_t i=0;i&lt;jointNames.size();i++)
+    positions[jointNames[i]]=state.getVariablePosition(jointNames[i]);
+
+  //debug
+#define DELTA 1E-8f
+  Eigen::Affine3d t0=state.getGlobalLinkTransform(linkName);
+  Eigen::Quaterniond q0(t0.rotation());
+  for(size_t i=0;i&lt;jointNames.size();i++)
+  {
+    state.setVariablePosition(jointNames[i],positions[jointNames[i]]+DELTA);
+    state.update();
+
+    Eigen::Affine3d t1=state.getGlobalLinkTransform(linkName);
+    Eigen::Quaterniond q1(t1.rotation());
+
+    //Jacobian for translation
+    Eigen::Vector3d DNT=(t1.translation()-t0.translation())/DELTA;
+    Eigen::Vector3d DAT=J.col(i).block&lt;3,1&gt;(0,0);
+    ROS_INFO_NOW(&quot;Jacobian for translation %ld: %f Err: %f!&quot;,i,DAT.norm(),(DNT-DAT).norm())
+
+    //Jacobian for rotation
+    Eigen::Matrix3d DNR=(t1.rotation()-t0.rotation())/DELTA;
+    Eigen::Matrix3d DAR=cross(J.col(i).block&lt;3,1&gt;(3,0))*t0.rotation();
+    ROS_INFO_NOW(&quot;Jacobian for rotation: %ld: %f Err: %f!&quot;,i,DAR.norm(),(DNR-DAR).norm())
+
+    state.setVariablePosition(jointNames[i],positions[jointNames[i]]);
+    state.update();
+  }
+#undef DELTA
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/24967">DamnItROS</a> on 2015-11-08 14:25:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

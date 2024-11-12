@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS Nodes and topics - are nodes really decoupled? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/203129">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS Nodes and topics - are nodes really decoupled?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/65822/ros-nodes-and-topics-are-nodes-really-decoupled">https://robotics.stackexchange.com/questions/65822/ros-nodes-and-topics-are-nodes-really-decoupled</a>.</p>
+        <p><a href="http://wiki.ros.org/ROS/Technical%20Overview">http://wiki.ros.org/ROS/Technical%20Overview</a></p>
+
+<blockquote>
+<p>Note how the two sides are decoupled.
+All the hokuyo_node node does is
+publish scans, without knowledge of
+whether anyone is subscribed. All the
+rviz does is subscribe to scans,
+without knowledge of whether anyone is
+publishing them. The two nodes can be
+started, killed, and restarted, in any
+order, without inducing any error
+conditions.</p>
+</blockquote>
+
+<p>We all know these statements that using topics, decouples ROS nodes. However reading the documentation on how the connection between the nodes established makes me question this statement. However in the transport section states the following:</p>
+
+<blockquote>
+<p>Given a publisher URI, a subscribing
+node negotiates a connection, using
+the appropriate transport, with that
+publisher, via XMLRPC. The result of
+the negotiation is that the two nodes
+are connected, with messages streaming
+from publisher to subscriber.</p>
+
+<p>Each transport has its own protocol
+for how the message data is exchanged.
+For example, using TCP, the
+negotiation would involve the
+publisher giving the subscriber the IP
+address and port on which to call
+connect. <strong>The subscriber then creates a
+TCP/IP socket to the specified address
+and port.</strong> The nodes exchange a
+Connection Header that includes
+information like the MD5 sum of the
+message type and the name of the
+topic, and then the publisher begins
+sending serialized message data
+directly over the socket.</p>
+</blockquote>
+
+<p>So my question is, are the publisher and the subscriber really decoupled? After all in order the subscriber to get a message it has to open TCP/IP connection the the publisher port. And if the publishers are <em>n</em> the subscriber needs to open <em>n</em> connections. This means that it&#39;s not completely true that the subscriber won&#39;t be bothered if one of the publishers fails. So what exactly is meant by that statement that the nodes are decoupled? </p>
+
+        <div class="owner"><p>Asked by <a href="/users/21381">Anton Belev</a> on 2015-02-14 11:21:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>tl;dr: yes, there are direct connections between nodes (so they need to know each others &#39;names&#39; (IP addresses)), but that is only for efficiency reasons, and any dropped TCP connections between nodes will be gracefully handled by the ROS middleware (and thus invisible to nodes at the application/user level of the API).</p>
+
+<hr>
+
+<p>While you are correct that there are TCP connections between nodes, I don&#39;t think that that is what the <em>decoupled</em> in the first quote you included refers to.</p>
+
+<p>The following is an excerpt from the paper <a href="http://dx.doi.org/10.1145/857076.857078">The Many Faces Of Publish/Subscribe</a> by Patrick Eugster, et al., which for me is the clearest description of <em>decoupling</em> I know (you can read <em>event service</em> here as being equivalent to a middleware):</p>
+
+<blockquote>
+<p>The decoupling that the event service provides between publishers and subscribers can be decomposed along the following three dimensions (Figure 2):</p>
+
+<ul>
+<li><strong>Space decoupling</strong>: The interacting parties do not need to know each other. The publishers publish events through an event service and the subscribers get these events indirectly through the event service. The publishers do not usually hold references to the subscribers, neither do they know how many of these subscribers are participating in the interaction. Similarly, subscribers do not usually hold references to the publishers, neither do they know how many of these publishers are participating in the interaction.</li>
+<li><strong>Time decoupling</strong>: The interacting parties do not need to be actively participating in the interaction at the same time. In particular, the publisher might publish some events while the subscriber is disconnected, and conversely, the subscriber might get notified about the occurrence of some event while the original publisher of the event is disconnected.</li>
+<li><strong>Synchronization decoupling</strong>: Publishers are not blocked while producing events, and subscribers can get asynchronously notified (through a callback) of the occurrence of an event while performing some concurrent activity. The production and consumption of events do not happen in the main flow of control of the publishers and subscribers, and do not therefore happen in a synchronous manner.</li>
+</ul>
+</blockquote>
+
+<p>It appears that the ROS middleware does not implement these aspects on all levels, as you mentioned. At the application level (where you interact with the ROS C++/Python/X API), nodes do not care about the names of other nodes, only about topics. There we have <em>space decoupling</em>.</p>
+
+<p>But the data will have to get to subscribers in some way. <code>ros_comm</code> uses TCP for that (in the case where <a href="http://wiki.ros.org/ROS/TCPROS">TCPROS</a> is used) and for efficiency reasons does that by direct connections between nodes (otherwise data would have to be copied from publisher to intermediate entity, then to each subscriber). So at the <em>message transport</em> level in ROS, there is no space decoupling (with the default <code>TCPROS</code>).</p>
+
+<p>ROS does not currently seem to support <em>time decoupling</em>, as subscribers and publishers need to be running for messages to be exchanged. This seems a consequence of the direct TCP connections between nodes: if one of the endpoints of those connections isn&#39;t &quot;up&quot;, messages will not flow. For <a href="http://design.ros2.org/">ROSv2.0</a> however, the <a href="http://design.ros2.org/articles/ros_on_dds.html">DDS middleware</a> could potentially fix this.</p>
+
+<p>As to <em>synchronization decoupling</em>: the <code>ros_comm</code> middleware and <code>roscpp</code> use <a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning">threading and multiple event queues</a> to avoid blocking the publisher while his messages are being transmitted to subscribers, so nodes seem to be decoupled in this dimension.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2015-02-14 12:43:22 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Fabulous answer, much appreciated, @gvdhoorn!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21381">Anton Belev</a> on 2015-02-14 13:27:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The only question that arise in your answer is - since nodes are establishing TCP/IP Connection to each other to improve efficiency, this implies that a given subscriber has to open <em>n</em> TCP/IP connections in order to get messages from <em>n</em> publishers. Then the Space decoupling is also questionable.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21381">Anton Belev</a> on 2015-02-14 13:34:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Well yes, it implies that you need <em>n</em> connections if you have <em>n</em> subscriptions to different publishers. But as I wrote: you need to get the data across somehow.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-02-15 02:53:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>There have been experiments with other message transports (ROS terminology), such as UDP multicast and shared memory (see <a href="http://wiki.ros.org/ethzasl_message_transport">ethzasl_message_transport</a> fi), and although these don&#39;t use <em>n</em> connections, they have their own drawbacks (routability, etc).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-02-15 02:57:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn If they need to make direct connection, it means that they will know about each other info/reference, so it is not space decoupling? Also, when making/opening connections, the publisher will know how many subscribers by the number of connections. Please explain , thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27685">alienmon</a> on 2016-08-09 20:31:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn you wrote &quot;Space decoupling: The interacting parties do not need to know each other&quot;, but if they make connection then they know each other. I&#39;m new to ROS, so I&#39;m a bit confused here. pls explain :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27685">alienmon</a> on 2016-08-09 20:35:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I believed I had explained that in my answer (did you click <em>(more)</em>?) but: yes, at <em>some level</em>, there is <em>some</em> space coupling in ROS, as the TCP/IP connections will need to be established somehow. At the abstraction level where it matters though (user code), there is <em>none</em>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-08-10 00:55:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>And: the Eugster et al. article (that I only quoted from) is not specific to ROS, and the dimensions of decoupling proposed in it work for all (?) middlewares making use of the considered interaction styles. So you&#39;ll find (some of) the same &#39;problems&#39; in OROCOS, YARP, etc. Also in DDS and OPC-UA.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-08-10 00:58:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn Okay I think I understand more now. So as far as the concern is the high level coding (e.g. trough roscpp) they don&#39;t need to know each others&#39; name, but at the lower level they actually know (do couple) to send info. right? Btw can u explain what does it mean by &quot;publishers not blocked&quot;?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27685">alienmon</a> on 2016-08-10 02:08:29 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>the high level coding (e.g. trough roscpp) they don&#39;t need to know each others&#39; name, but at the lower level they actually know (do couple) to send info</p>
+</blockquote>
+
+<p>correct.</p>
+
+<p>re: not blocked: <code>Publisher::publish(..)</code> returns immediately, and does not wait for all recipients to have received the msg.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-08-10 02:27:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sorry for re-opening such an old post. On what factors is the communication protocol selected ? be it TCP or UDP. Are there some other protocols supported as well ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34222">aks</a> on 2018-04-16 07:19:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It would perhaps be better to open a new post. Your question is only tangentially related to this one.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-04-16 09:30:54 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>base_local_planner simplest navigation (no curve lines) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/240385">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>base_local_planner simplest navigation (no curve lines)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/75440/base-local-planner-simplest-navigation-no-curve-lines">https://robotics.stackexchange.com/questions/75440/base-local-planner-simplest-navigation-no-curve-lines</a>.</p>
+        <p>hi there,
+i&#39;m pretty new to ros world and i want my robot to navigate only straight+inplace rotation. I noticed that with base<em>local</em>planner the robot start to go navigate forward before finishing the orientation. How can i accomplish this goal? 
+thanks in advance</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27607">aerydna</a> on 2016-07-26 04:00:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Not sure what you want, but try <a href="http://wiki.ros.org/carrot_planner?distro=kinetic">the carrot planner</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21851">Humpelstilzchen</a> on 2016-07-27 09:27:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>you mean that is not possible with base_local_planner or dwa to navigate the robot only on straight lines? anyway i&#39;ll try it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27607">aerydna</a> on 2016-07-28 03:19:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Humpelstilzchen  what i&#39;m searching is a local planner that navigate the robot in a full-in-place-rotation-first-then-go-ahead way. with the robot path that  always looks like a polygon</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27607">aerydna</a> on 2016-07-28 03:23:55 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p><strong>TL;DR:</strong> Use a <a href="http://wiki.ros.org/actionlib_tutorials/Tutorials/SimpleActionClient">SimpleActionClient</a> to send a <a href="http://docs.ros.org/api/move_base_msgs/html/action/MoveBase.html">MoveBaseGoal</a> to an instance of the <a href="http://wiki.ros.org/move_base">move_base</a> node. There&#39;s a tutorial that shows you how to do this in C++ <a href="http://wiki.ros.org/navigation/Tutorials/SendingSimpleGoals">here</a> or look below for the python equivalent. In the target pose you can specify a pose <em>and</em> an orientation. What you want to do is calculate the heading between &quot;goalN&quot; and &quot;goalN+1&quot; then send your robot to goalN with that heading. So that when the robot successfully gets to goalN it will automatically rotate on the spot to face goalN+1. </p>
+
+<p>Of course, MoveBase goals work with any heading you provide, so your robot doesn&#39;t <em>have</em> to rotate to face anything specifically. But if your robot is already facing the next goal, that usually ensures that the path-planner will plot a straight line directly to it.</p>
+
+<hr>
+
+<h1>Full explanation:</h1>
+
+<p>So you want to achieve a trajectory that looks something like this?</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/14699381876035632.png" alt="square_odom"></p>
+
+<p>I&#39;ve just managed to achieve this myself, and there isn&#39;t really a good explanation anywhere of how to do all this so I&#39;ll try to quickly run you through it. </p>
+
+<h3>What you will need</h3>
+
+<ol>
+<li>A <strong>navigation stack</strong> for your robot. Doesn&#39;t really matter how you do it as long as you have a map, an odometry stream for your robot in that map, and an instance of the move_base node. I&#39;m personally using the <a href="http://wiki.ros.org/robot_localization">robot_localization</a> package and a pre-made launch file for the move_base node that came with the robot I&#39;m using.</li>
+<li>A node which acts as a <strong>SimpleActionClient</strong>. You will have to write this yourself, but it&#39;s relatively straight forward as long as your navigation stack works properly.</li>
+</ol>
+
+<h3>Writing the SimpleActionClient</h3>
+
+<p>There is already a tutorial on how to do this in C++ <a href="http://wiki.ros.org/navigation/Tutorials/SendingSimpleGoals">here</a>, but I&#39;m using Python so that&#39;s what my explanation will be in.</p>
+
+<p>Essentially the actionlib package is a framework for writing your own goal and feedback system. The client sends the goal (usually from your laptop) and the server typically runs on the robot, executes the goal and provides feedback. The goal can be anything from moving the robot base to moving an arm. There is already a simplified version of this package with a few basic goals built in, and this is what we will be using. More specifically, we want to use the &#39;MoveBaseAction&#39; goal that tells the move_base node where to send the robot in the world.</p>
+
+<p>The code I use (roughly para-phrased) is here:</p>
+
+<pre><code># Important modules to import
+import rospy
+import actionlib
+from move_base_msgs.msg import *
+
+# Create your SimpleActionClient and boot a default version of the SimpleActionServer
+client = actionlib.SimpleActionClient(&#39;move_base&#39;, MoveBaseAction) 
+client.wait_for_server()
+
+def send_robot_to_goal(X, Y, heading):
+    # Cancel any pre-existing goals (don&#39;t want them to conflict)
+    self.client.cancel_all_goals()    
+
+    # Convert to a heading (yaw) to quaternion
+    yaw = heading
+    roll = 0.0
+    pitch = 0.0
+    quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+
+    # Create a new goal
+    goal = MoveBaseGoal()
+    goal.target_pose.header.frame_id = &#39;map&#39;          # The frame you want to navigate in
+    goal.target_pose.header.stamp = rospy.Time.now()
+    goal.target_pose.pose.position.x = float(X)        # X coordinate to travel to
+    goal.target_pose.pose.position.y = float(Y)        # Y coordinate to travel to
+    goal.target_pose.pose.orientation.x = quaternion[0]
+    goal.target_pose.pose.orientation.y = quaternion[1]
+    goal.target_pose.pose.orientation.z = quaternion[2]
+    goal.target_pose.pose.orientation.w = quaternion[3]
+
+    # Send goal to move_base node
+    self.client.send_goal(goal)
+</code></pre>
+
+<p>The heading can be whatever you want, and you can calculate it however you want. I think from memory ROS expects roll/pitch/yaw to be of the format +0 &gt;&gt; +180 &gt;&gt; -180 &gt;&gt; -0 instead of 0 &gt;&gt; 360 degrees. I prefer to work with 0 &gt;&gt; 360 so I&#39;ve written a lot of my own functions for the heading/quaternion calculations. </p>
+
+<p>X,Y are the points you want the robot to move to in the &#39;map&#39; frame. This should be the same frame created by your navigation stack, and the one that all your odometry data is reported in.</p>
+
+<p>Also, something to be mindful of, the heading the robot will rotate to is it&#39;s heading <em>in the map frame</em>, which may be different from magnetic heading depending on how you set up your navigation stack </p>
+
+<h3>Making  move_base plot straight paths</h3>
+
+<p>All this by itself won&#39;t achieve anything unless you understand a little bit about how move_base works. If move_base is ordered to move the robot to a point it isn&#39;t currently facing, it will bring the robot around in a sweeping arc before heading towards the goal - as I&#39;m sure you&#39;ve already seen. </p>
+
+<p>However, if the robot is already facing the goal, then it will (usually) just plot a path straight to the goal, resulting in odometry similar to the image above. </p>
+
+<p>So, we can force the robot to travel everywhere in straight lines by making it face the next point your&#39;re going to send it to. For every point you want to send the robot to - say &quot;goalN&quot;, calculate the heading between &quot;goalN&quot; and &#39;goalN+1&quot; and send your robot to the X,Y position of &quot;goalN&#39; with that heading. <strong>When the robot gets to the X,Y coordinate, it will rotate on the spot to face the heading you specified</strong>. But the key part being that it will only rotate on the spot <strong>after</strong> you&#39;ve already arrived at X,Y. </p>
+
+<p>What I&#39;ve described uses a single move goal to execute a translation (forward movement) and <em>then</em> a rotation. In theory of course, you can break this down into two separate goals  and reverse the order, i.e. a rotation and then a translation. The rotation is just a move goal where X,Y are the current X,Y coordinates of the robot in the &#39;map&#39; frame. However, personally I&#39;ve found this doesn&#39;t work most of the time (if told to rotate on the spot the robot simply doesn&#39;t move), and it&#39;s something I&#39;m still working on so hopefully I&#39;ll be able to update this again soon.</p>
+
+<p>Hope this explanation helps.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26592">M@t</a> on 2016-07-31 05:11:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>first of all, thank you for the answer. what you describe seems to work only with multiple goal so i presume i have to (by writing a simple action client) split a single goal in two sub-goal the first for the rotation and the second for the linear movement.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27607">aerydna</a> on 2016-08-01 03:56:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i&#39;m a bit disappointed for base_local_planner (and the other local planner too) not to having a simple flag to work in this way though</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27607">aerydna</a> on 2016-08-01 03:56:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You&#39;re welcome, and you&#39;re absolutely right. You can issue a goal where X,Y is the current position and only the heading is different. But for reasons I don&#39;t quite understand, this doesn&#39;t seem to work for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2016-08-01 16:24:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@M@t Hi, did you manage to accomplish this?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2018-10-26 05:26:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi @stevemartin, are you asking if I have achieved &quot;in-place&quot; rotation using <code>move_base</code>? I haven&#39;t actually tried to do that in a while, but I know it is possible because you can do it with the simulated jackal in  <a href="http://www.clearpathrobotics.com/assets/guides/jackal/">these Clearpath tutorials.</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2018-10-29 18:16:42 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

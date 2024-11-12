@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to use pcl_ros::transformPointCloud in ROS 2? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407827">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to use pcl_ros::transformPointCloud in ROS 2?</h2>
+      <div class="question">
+        <p>I am currently working on a porting a package in ROS 1 Noetic to ROS 2 Foxy which involves transforming the point clouds for that part there is a function <code>pcl_ros::transformPointCloud</code>  in <code>pcl_ros</code> package in ROS 1.  I want to use it in ROS 2. </p>
+
+<p>I tried using <code>pcl_ros::transformPointCloud</code>, but it throws error in <code>pcl::fromROSMsg</code> and <code>pcl::toROSMsg</code>. In ROS 2, I am converting between sensor<em>msgs and point cloud which requires `pcl</em>conversions` package. Please help me what should I do here ? </p>
+
+<p>Below is my node : </p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+#include &lt;map&gt;
+#include &lt;vector&gt;
+
+#include &quot;sensor_msgs/msg/point_cloud2.hpp&quot;
+#include &quot;builtin_interfaces/msg/time.hpp&quot;
+#include &quot;builtin_interfaces/msg/duration.hpp&quot;
+
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl_ros/transforms.h&gt;
+
+#include &quot;tf2/exceptions.h&quot;
+#include &quot;tf2_ros/transform_listener.h&quot;
+#include &quot;tf2_ros/buffer.h&quot;
+#include &quot;tf2/convert.h&quot;
+
+#include &quot;geometry_msgs/msg/transform_stamped.hpp&quot;
+#include &quot;geometry_msgs/msg/twist.hpp&quot;
+
+using namespace std;
+
+// Combine Clouds Class : To combine point cloud from two ifm3d sensors
+class ROS2CombineClouds : public rclcpp::Node
+{
+public:
+  ROS2CombineClouds() : Node(&quot;ros2_combine_clouds&quot;)
+  {
+    // Publishing and subscribing topics
+    cloud_topic = &quot;/ifm3d/leftcam_d/cloud&quot;;
+    cloud_topic1 = &quot;/ifm3d/rightcam_d/cloud&quot;;
+    out_topic = &quot;/cloud&quot;;
+    target_frame = &quot;base_link&quot;;
+
+    tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+
+    cloudSubs = {};
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Subscribing to %s&quot;, s.c_str());
+    cloud_sub = this-&gt;create_subscription&lt;sensor_msgs::msg::PointCloud2&gt;(
+        cloud_topic, 10, std::bind(&amp;ROS2CombineClouds::topic_callback, this, std::placeholders::_1));
+    cloudSubs.push_back(cloud_sub);
+
+    cloud_sub = this-&gt;create_subscription&lt;sensor_msgs::msg::PointCloud2&gt;(
+        cloud_topic1, 10, std::bind(&amp;ROS2CombineClouds::topic_callback, this, std::placeholders::_1));
+    cloudSubs.push_back(cloud_sub);
+
+    cloud_pub = this-&gt;create_publisher&lt;sensor_msgs::msg::PointCloud2&gt;(out_topic, 10);
+  }
+
+private:
+  void topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr input) const
+  {
+    // Check if rgb in message fields
+    auto color_cloud = false;
+    for (const auto&amp; element : input-&gt;fields)
+    {
+      if (element.name == &quot;rgb&quot;)
+      {
+        color_cloud = true;
+      }
+    }
+
+    // Call combine with appropriate pointcloud type
+    if (!color_cloud)
+    {
+      static std::map&lt;std::string, pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr&gt; clouds;
+
+      // Defining different types of point cloud
+      pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+      pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud_t(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+
+      // convert from ros msg to point cloud
+      pcl::fromROSMsg(*input, *cloud);
+
+      // geometry msgs
+      geometry_msgs::msg::TransformStamped tr;
+      sensor_msgs::msg::PointCloud2::SharedPtr output;
+
+      try
+      {
+        tr = tf_buffer_-&gt;lookupTransform((*input).header.frame_id, target_frame,
+                                         tf2_ros::fromMsg((*input).header.stamp));
+      }
+
+      catch (tf2::LookupException&amp; e)
+      {
+        RCLCPP_ERROR(rclcpp::get_logger(&quot;pcl_ros&quot;), &quot;%s&quot;, e.what());
+        return;
+      }
+
+      if (pcl_ros::transformPointCloud(target_frame, *cloud, *cloud_t, *tf_buffer_))
+      {
+        clouds[(*input).header.frame_id] = (cloud_t);
+      }
+
+      else
+      {
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Cloud Transform error!&quot;);
+        return;
+      }
+
+      // Wait until all clouds have been received to publish
+      if (clouds.size() != cloudSubs.size())
+        return;
+
+      pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr summed_cloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+      for (auto i = clouds.begin(); i != clouds.end(); i++)
+        *summed_cloud += *(i-&gt;second);
+
+      // Publish sensor_msgs::msg::PointCloud2 with summed cloud
+      sensor_msgs::msg::PointCloud2 sum_msg;
+      pcl::toROSMsg(*summed_cloud, sum_msg);
+      sum_msg.header.frame_id = target_frame;
+      sum_msg.fields = input-&gt;fields;
+      cloud_pub-&gt;publish(sum_msg);
+
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;Publishing combined clouds&quot;);
+      // clouds.clear();
+    }
+  }
+
+  std::istringstream f;
+  std::string s;
+
+  // Vector to store all the subscribers
+  std::vector&lt;rclcpp::Subscription&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr&gt; cloudSubs;
+
+  // Publisher
+  rclcpp::Publisher&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr cloud_pub;
+
+  // Subscriber
+  rclcpp::Subscription&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr cloud_sub;
+
+  // tf2 listener
+  std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_{ nullptr };
+  std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+  std::string cloud_topic, out_topic, target_frame, cloud_topic1;
+};
+
+int main(int argc, char* argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;ROS2CombineClouds&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/120390">advaitpatole@gmail.com</a> on 2022-10-12 13:26:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <ol>
+<li>There has been minor changes in the API of <a href="https://github.com/ros-perception/perception_pcl/blob/755f566356a1d34d4b914f477cdf3820aa1a6b07/pcl_ros/src/transforms.cpp#L61-L64">pcl_ros::transformPointCloud</a>. Now, you should use <code>sensor_msgs::msg::PointCloud2</code> instead of <code>pcl::PointCloud</code>. An example can be found <a href="https://github.com/ros-perception/perception_pcl/blob/bd7a060e98d2bb6720b3bc30794fd25c5ef43241/pcl_ros/tools/bag_to_pcd.cpp#L131">perception_pcl/pcl_ros/tools/bag_to_pcd.cpp#L131</a>.</li>
+<li>Please avoid posting the complete code. Instead, create a minimal reproducible example. It not only helps you to dig deeper into the issue but also increases the chances of receiving a response from the community.</li>
+</ol>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-10-14 06:24:52 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

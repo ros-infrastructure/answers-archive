@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why does my quadrotor becomes unstable after turning? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/383999">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why does my quadrotor becomes unstable after turning?</h2>
+      <div class="question">
+        <p>Hello everyone, hope you are all having a great time.<br>
+I&#39;m trying to write a simple test mavros program where my quadrotor is expected to go in a straight line and then have 180-degree turn and come back and land on where it initially took off.<br>
+The issue is that I noticed, if I suddenly change the yaw, it shocks the quadrotor(creates quiet a bit of turbulence) and thus I want to have as smooth of a turn as possible. So for this I thought, maybe hovering in the last position for a couple of iterations would do the trick, 
+however, I noticed after adding this snippet, the drone flies unstably, it shakes badly! and also the last turn before landing, seems to not to take place properly as well!<br>
+What am I missing here? any help is greatly appreciated.<br>
+Here are two video clips I recorded 1 shows the quadrotor with my loiter_fn, and the other without it.   </p>
+
+<p>Clip1 : <a href="https://files.fm/f/4ts4b4kdv">https://files.fm/f/4ts4b4kdv</a><br>
+Clip2: <a href="https://files.fm/f/687gmhj6d">https://files.fm/f/687gmhj6d</a><br>
+and here is my code : </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+#include &lt;mavros_msgs/CommandBool.h&gt;
+#include &lt;mavros_msgs/SetMode.h&gt;
+#include &lt;mavros_msgs/State.h&gt;
+#include &lt;tf/LinearMath/Quaternion.h&gt;
+
+// https://docs.px4.io/master/en/simulation/ros_interface.html
+
+mavros_msgs::State current_state;
+
+void state_cb(const mavros_msgs::State::ConstPtr &amp;msg)
+{
+    current_state = *msg;
+}
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;offb_node&quot;);
+    ros::NodeHandle nh;
+
+    ros::Subscriber state_sub = nh.subscribe&lt;mavros_msgs::State&gt;(&quot;mavros/state&quot;, 10, state_cb);
+    ros::Publisher local_pos_pub = nh.advertise&lt;geometry_msgs::PoseStamped&gt;(&quot;mavros/setpoint_position/local&quot;, 10);
+    ros::ServiceClient arming_client = nh.serviceClient&lt;mavros_msgs::CommandBool&gt;(&quot;mavros/cmd/arming&quot;);
+    ros::ServiceClient set_mode_client = nh.serviceClient&lt;mavros_msgs::SetMode&gt;(&quot;mavros/set_mode&quot;);
+
+    // The setpoint publishing rate MUST be faster than 2Hz
+    ros::Rate rate(20.0);
+
+    // Wait for FCU connection
+    while (ros::ok() &amp;&amp; !current_state.connected)
+    {
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    geometry_msgs::PoseStamped pose;
+    pose.pose.position.x = 0; 
+    pose.pose.position.y = 0;
+    pose.pose.position.z = 0;
+
+    auto to_degree = [](const double &amp;radian_angle)
+    {
+        return radian_angle * (180 / 3.14);
+    };
+    auto to_radian = [](const double &amp;degree_angle)
+    {
+        return (degree_angle * 3.14) / 180;
+    };
+
+    tf::Quaternion qtr;
+    float yaw = to_radian(180.0);
+    qtr.setRPY(0, 0, yaw);
+    pose.pose.orientation.w = qtr.getW();
+    pose.pose.orientation.x = qtr.getX();
+    pose.pose.orientation.y = qtr.getY();
+    pose.pose.orientation.z = qtr.getZ();
+
+    // Send a few setpoints before starting
+    for (int i = 100; ros::ok() &amp;&amp; i &gt; 0; --i)
+    {
+        local_pos_pub.publish(pose);
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    mavros_msgs::SetMode offb_set_mode;
+    offb_set_mode.request.custom_mode = &quot;OFFBOARD&quot;;
+
+    mavros_msgs::CommandBool arm_cmd;
+    arm_cmd.request.value = true;
+
+    ros::Time last_request = ros::Time::now();
+
+    bool land = false;
+    int i = 0;
+    int starting_point = 0;
+    float angles[] = {180.0, 360.0};
+
+    // Hovers inplace for &#39;counter&#39; iterations
+    auto loiter_fn = [&amp;](const int&amp; wait_counter)
+    {
+        pose.pose.orientation.x = 1;
+        for (size_t i = 0; i &lt; wait_counter; i++)
+        {
+            local_pos_pub.publish(pose);
+        }
+    };
+
+     // Changes the yaw
+    auto change_yaw_angle = [&amp;](const float &amp;angle_degree, const int&amp; wait_counter=5)
+    {
+        loiter_fn(wait_counter);
+        qtr.setRPY(0, 0, to_radian(angle_degree));
+        pose.pose.orientation.w = qtr.getW();
+        pose.pose.orientation.x = qtr.getX();
+        pose.pose.orientation.y = qtr.getY();
+        pose.pose.orientation.z = qtr.getZ();
+    };
+
+
+    while (ros::ok())
+    {
+        if (current_state.mode != &quot;OFFBOARD&quot; &amp;&amp; (ros::Time::now() - last_request &gt; ros::Duration(5.0))) 
+        {
+            if (set_mode_client.call(offb_set_mode) &amp;&amp; offb_set_mode.response.mode_sent)
+            {
+                ROS_INFO(&quot;Offboard enabled&quot;);
+                std::cout &lt;&lt; &quot;Offboard enabled!\n&quot;;
+                starting_point = i;
+            }
+
+            std::cout &lt;&lt; &quot;current_state.mode: &quot; &lt;&lt; current_state.mode &lt;&lt; std::endl;
+
+            last_request = ros::Time::now();
+        }
+        else
+        {
+            if (!current_state.armed &amp;&amp; (ros::Time::now() - last_request &gt; ros::Duration(5.0))) //5
+            {
+                if (arming_client.call(arm_cmd) &amp;&amp; arm_cmd.response.success)
+                {
+                    ROS_INFO(&quot;Vehicle armed&quot;);
+                    std::cout &lt;&lt; &quot;Vehicle armed!\n&quot;;
+                }
+                last_request = ros::Time::now();
+            }
+        }
+
+        std::cout &lt;&lt; &quot;status: &quot; &lt;&lt; current_state.mode &lt;&lt; &quot; &quot; &lt;&lt; i &lt;&lt; &quot;\n&quot;;
+        if (current_state.mode == &quot;OFFBOARD&quot;)
+        {
+            pose.pose.position.x = i;
+            pose.pose.position.y = 0;
+            auto z = pose.pose.position.z;
+            pose.pose.position.z = z &lt; 30 ? 0.5 * i : 30;
+            pose.pose.orientation.x = 5;
+
+            if (i &gt; starting_point + 400)
+            {
+                change_yaw_angle(180);
+                // since counter is not a good measure, we have to manually set an 
+                // offset that resembles home
+                pose.pose.position.x = -(i - (starting_point + 552));
+                std::cout &lt;&lt; &quot;status(returning): &quot; &lt;&lt; current_state.mode &lt;&lt; &quot; x: &quot; &lt;&lt; pose.pose.position.x &lt;&lt; &quot;\n&quot;;
+                if (i == 800)
+                {
+                    change_yaw_angle(360);
+                    land = true;
+                }
+            }
+        }
+
+        i++;
+        // Important Note
+        // This line is a must have, before switching to offboard, we must have already sent
+        // a queue of positions. here we are already in a loop. so we can publish the previous location
+        // what ever it is (it will hover on that specific location) until the pose is updated.
+        local_pos_pub.publish(pose);
+
+        ros::spinOnce();
+        rate.sleep();
+
+        if (land)
+        {
+            break;
+        }
+    }
+
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/75014">Rika</a> on 2021-08-07 21:36:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

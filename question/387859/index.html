@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publisher and subscriber in one ROS node error - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387859">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publisher and subscriber in one ROS node error</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100230/publisher-and-subscriber-in-one-ros-node-error">https://robotics.stackexchange.com/questions/100230/publisher-and-subscriber-in-one-ros-node-error</a>.</p>
+        <p>I`m doing some underwater UUV Gazebo simulation and would like to use the</p>
+
+<pre><code>hector_pose_estimation
+</code></pre>
+
+<p>package to fuse IMU and Fluid pressure sensors input for pose estimation.</p>
+
+<p>So my Pressure Sensor has <code>sensor_msgs/FluidPressure</code> but the package wants <code>pressure_height (geometry_msgs/PointStamped)</code> as input. So I created a ROS C++ node to republish sensor<em>msgs/FluidPressure as the geometry</em>msgs/PointStamped. The code compiled with no error, but when run it I got error. Firstly, this is the code</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &lt;sensor_msgs/FluidPressure.h&gt;
+#include &lt;std_msgs/Float64.h&gt;
+#include &lt;geometry_msgs/PointStamped.h&gt;
+
+
+double current_pressure;
+double depth;
+ros::Publisher pub;
+geometry_msgs::PointStamped pressure_height;
+void pressureCallback(const sensor_msgs::FluidPressure::ConstPtr&amp; msg)
+{
+
+     current_pressure= msg-&gt;fluid_pressure;
+
+     depth=current_pressure / (997.04 * 9.8);
+
+     //geometry_msgs::PointStamped::ConstPtr&amp; output;
+
+     pressure_height.point.z = depth;
+     //positions_pub.publish(output_msg); 
+
+     std::cout &lt;&lt; &quot;Pressure: &quot; &lt;&lt; pressure_height &lt;&lt; std::endl;
+
+      //pressure_height = output.point.z;
+      pub.publish(pressure_height);
+
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;pressure_republisher&quot;);
+  ros::NodeHandle n;
+  ros::Subscriber sub = n.subscribe(&quot;/rexrov2/pressure&quot;, 10, pressureCallback);
+  ros::Publisher pub = n.advertise&lt;geometry_msgs::PointStamped&gt;(&quot;pressure_height&quot;, 100);
+  ros::spin();
+  return 0;
+}
+</code></pre>
+
+<p>And when run it this it the ERROR:</p>
+
+<pre><code>[FATAL] [1633258406.824329181, 173.610000000]: ASSERTION FAILED
+    file = /opt/ros/melodic/include/ros/publisher.h
+    line = 106
+    cond = false
+    message = 
+[FATAL] [1633258406.826511155, 173.612000000]: Call to publish() on an invalid Publisher
+[FATAL] [1633258406.826551511, 173.612000000]: 
+</code></pre>
+
+<p>Any help?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2021-10-03 07:25:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This is a C++ problem.</p>
+
+<p>You have:</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+...
+
+ros::Publisher pub;
+
+...
+
+int main(int argc, char **argv)
+{
+  ...
+  ros::Publisher pub = n.advertise&lt;geometry_msgs::PointStamped&gt;(&quot;pressure_height&quot;, 100);
+  ...
+}
+</code></pre>
+
+<p>The <code>pub</code> outside your <code>main(..)</code> (ie: in the global scope) is not the same <code>ros::Publisher</code> as the one you create and initialise inside <code>main(..)</code>. The latter is a new variable, which happens to have the same name (it <em>shadows</em> the <code>pub</code> in the global scope).</p>
+
+<p>In your <code>pressureCallback(..)</code> you then try to use the <code>pub</code> in the global scope, which hasn&#39;t been initialised yet. This is an error, as you can&#39;t use a <code>ros::Publisher</code> which hasn&#39;t been initialised, hence the fatal error message .</p>
+
+<p>You should be able to do this:</p>
+
+<pre><code>int main(int argc, char **argv)
+{
+  ...
+  pub = n.advertise&lt;geometry_msgs::PointStamped&gt;(&quot;pressure_height&quot;, 100);
+  ...
+}
+</code></pre>
+
+<p>Having written that, the following might be easier, and still results in the conversion being performed:</p>
+
+<pre><code>rosrun topic_tools transform /rexrov2/pressure /pressure_height geometry_msgs/PointStamped \
+  &#39;geometry_msgs.msg.PointStamped( \
+    header=m.header, \
+    point=geometry_msgs.msg.Point( \
+      x=0.0, \
+      y=0.0, \
+      z=(m.fluid_pressure / (997.04 * 9.8)) \
+    )&#39; \
+   --import geometry_msgs
+</code></pre>
+
+<p>This uses <code>topic_tools/transform</code>, which avoids the need to write your own node entirely.</p>
+
+<p>Note 1: this ignores the variance in the <code>FluidPressure</code> message.</p>
+
+<p>Note 2: I haven&#39;t tested this, so there may be a syntax error hidden there.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-10-03 08:37:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

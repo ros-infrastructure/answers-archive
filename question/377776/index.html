@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2 foxy] Python launch argument scope when nesting launch files - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377776">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2 foxy] Python launch argument scope when nesting launch files</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98997/ros2-foxy-python-launch-argument-scope-when-nesting-launch-files">https://robotics.stackexchange.com/questions/98997/ros2-foxy-python-launch-argument-scope-when-nesting-launch-files</a>.</p>
+        <p>The tldr is can you scope launch arguments in the python launch system when using <code>IncludeLaunchDescription</code>?</p>
+
+<p>Assume we have a base python launch file (<code>base_launch.py</code>, referred to as <em>base</em>) that includes another python launch file (<code>ext_launch.py</code>, referred to as <em>ext</em>). The <em>base</em> has an argument <code>arg1</code> that it may use and pass on to one or more included launch files. <em>Ext</em> also has an argument of the same name. I print the <em>base</em> argument, include <em>ext</em> which also print its argument, and then again print the argument in <em>base</em>. The output from this shows that changes to the arguments value in <em>ext</em> also changes the arguments value in <em>base</em>. </p>
+
+<p>Is there any way to not overwrite arguments of the same name (i.e. assign arguments with scope)? Or is there a different design pattern that should be followed?</p>
+
+<p><strong>base_launch.py</strong></p>
+
+<pre><code>#!/usr/bin/env python3
+from launch import LaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, LogInfo, IncludeLaunchDescription
+from launch.substitutions import LaunchConfiguration, ThisLaunchFileDir
+
+def generate_launch_description():
+  arg1 = LaunchConfiguration(&#39;arg1&#39;)
+
+  return LaunchDescription([
+    DeclareLaunchArgument(
+      &#39;arg1&#39;,
+      default_value=&#39;Internal_Arg&#39;,
+      description=&#39;Argument&#39;
+    ),
+
+    LogInfo(msg=[&#39;Internal Arg (before): &#39;, arg1]),
+
+    IncludeLaunchDescription(
+      PythonLaunchDescriptionSource([ThisLaunchFileDir(),&#39;/ext_launch.py&#39;]),
+      launch_arguments={
+        &#39;arg1&#39;: &#39;External_Arg_Mod&#39;
+      }.items()
+    ),
+
+    LogInfo(msg=[&#39;Internal Arg (after): &#39;, arg1]),
+
+  ])
+</code></pre>
+
+<p><strong>ext_launch.py</strong></p>
+
+<pre><code>#!/usr/bin/env python3
+
+from launch import LaunchDescription
+from launch.actions import LogInfo, DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+
+def generate_launch_description():
+  arg1 = LaunchConfiguration(&#39;arg1&#39;)
+
+  return LaunchDescription([
+    DeclareLaunchArgument(
+      &#39;arg1&#39;,
+      default_value=&#39;External_Arg&#39;,
+      description=&#39;Argument&#39;
+    ),
+
+    LogInfo(msg=[&#39;External Arg: &#39;, arg1])
+  ])
+</code></pre>
+
+<p><strong>Output:</strong></p>
+
+<pre><code>[INFO] [launch.user]: Internal Arg (before): Internal_Arg
+[INFO] [launch.user]: External Arg: External_Arg_Mod
+[INFO] [launch.user]: Internal Arg (after): External_Arg_Mod
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/74140">djchopp</a> on 2021-05-05 14:52:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You can use <a href="https://github.com/ros2/launch/blob/master/launch/launch/actions/group_action.py">the <code>GroupAction</code> action</a>. From its docstring:</p>
+
+<blockquote>
+<p>Action that yields other actions, optionally scoping launch configurations.</p>
+
+<p>This action is used to nest other actions without including a separate
+    launch description, while also optionally having a condition (like all
+    other actions), scoping launch configurations, and/or declaring launch
+    configurations for just the group and its yielded actions.</p>
+</blockquote>
+
+<p>You can wrap the inclusion of  <em>ext</em> in a group action to achieve the scoping you want:</p>
+
+<pre><code>GroupAction([
+    IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([ThisLaunchFileDir(),&#39;/ext_launch.py&#39;]),
+        launch_arguments={
+            &#39;arg1&#39;: &#39;External_Arg_Mod&#39;
+        }.items()
+    )
+]),
+</code></pre>
+
+<p>With that, running <code>ros2 launch launch_test base_launch.py</code> gives:</p>
+
+<pre><code>[INFO] [launch.user]: Internal Arg (before): Internal_Arg
+[INFO] [launch.user]: External Arg: External_Arg_Mod
+[INFO] [launch.user]: Internal Arg (after): Internal_Arg
+</code></pre>
+
+<p><a href="https://github.com/ros2/launch/blob/3a5c9df2e384271637ac029f48f020b7916498d6/launch/launch/actions/group_action.py#L81-L86">Internally the scoping works</a> by using the <code>PushLaunchConfigurations</code> and <code>PopLaunchConfigurations</code> actions:</p>
+
+<pre><code>        if self.__scoped:
+            self.__actions_to_return = [
+                PushLaunchConfigurations(),
+                *self.__actions_to_return,
+                PopLaunchConfigurations()
+            ]
+</code></pre>
+
+<p>So you may also be able to surround the include with those in your own launch file if you feel that using <code>GroupAction</code> around a single action is less nice.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/72841">sgvandijk</a> on 2021-05-07 05:25:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

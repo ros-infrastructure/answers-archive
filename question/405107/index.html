@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>turtlebot_arm_block_manipulation block_manipulation_moveit (Phantom X Pincher) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/405107">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>turtlebot_arm_block_manipulation block_manipulation_moveit (Phantom X Pincher)</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am testing the turtlebot package for my robot phantom x pincher. Using the config file, I could move the robot with Motion Planning on Rviz. Furthermore, I want to make the robot move to the desired position (with coordinate), so I found this package turtlebot<em>arm</em>block_manipulation, but I need a 3d Camera to test it. So the question is, how can I test it without a camera? In other words, how can I just put the input position manually and make the robot move to this position?</p>
+
+<p>I found the <a href="https://github.com/turtlebot/turtlebot_arm/blob/fd6aa08575c19f930a7ac1a0619ebb9a97406340/turtlebot_arm_block_manipulation/src/pick_and_place_action_server.cpp">pick<em>and</em>place<em>action</em>server.cpp</a> file, which takes command from the camera. I am a beginner in ROS. I want to know how I can manually put the goal coordinates.</p>
+
+<p>Below is the code from turtlebot<em>arm</em>block_manipulation package:</p>
+
+<pre><code>// license removed for brevity    
+#include &lt;ros/ros.h&gt;
+#include &lt;tf/tf.h&gt;
+
+#include &lt;actionlib/server/simple_action_server.h&gt;
+#include &lt;turtlebot_arm_block_manipulation/PickAndPlaceAction.h&gt;
+
+#include &lt;moveit/move_group_interface/move_group_interface.h&gt;
+
+#include &lt;geometry_msgs/PoseArray.h&gt;
+
+namespace turtlebot_arm_block_manipulation
+{
+
+class PickAndPlaceServer
+{
+private:
+
+  ros::NodeHandle nh_;
+  actionlib::SimpleActionServer&lt;turtlebot_arm_block_manipulation::PickAndPlaceAction&gt; as_;
+  std::string action_name_;
+
+  turtlebot_arm_block_manipulation::PickAndPlaceFeedback     feedback_;
+  turtlebot_arm_block_manipulation::PickAndPlaceResult       result_;
+  turtlebot_arm_block_manipulation::PickAndPlaceGoalConstPtr goal_;
+
+  ros::Publisher target_pose_pub_;
+  ros::Subscriber pick_and_place_sub_;
+
+  // Move groups to control arm and gripper with MoveIt!
+  moveit::planning_interface::MoveGroupInterface arm_;
+  moveit::planning_interface::MoveGroupInterface gripper_;
+
+  // Pick and place parameters
+  std::string arm_link;
+  double gripper_open;
+  double gripper_closed;
+  double attach_time;
+  double detach_time;
+  double z_up;
+
+public:
+  PickAndPlaceServer(const std::string name) :
+    nh_(&quot;~&quot;), as_(name, false), action_name_(name), arm_(&quot;arm&quot;), gripper_(&quot;gripper&quot;)
+  {
+    // Read specific pick and place parameters
+    nh_.param(&quot;grasp_attach_time&quot;, attach_time, 0.8);
+    nh_.param(&quot;grasp_detach_time&quot;, detach_time, 0.6);
+
+    // Register the goal and feedback callbacks
+    as_.registerGoalCallback(boost::bind(&amp;PickAndPlaceServer::goalCB, this));
+    as_.registerPreemptCallback(boost::bind(&amp;PickAndPlaceServer::preemptCB, this));
+
+    as_.start();
+
+    target_pose_pub_ = nh_.advertise&lt;geometry_msgs::PoseStamped&gt;(&quot;/target_pose&quot;, 1, true);
+  }
+
+  void goalCB()
+  {
+    ROS_INFO(&quot;[pick and place] Received goal!&quot;);
+    goal_ = as_.acceptNewGoal();
+    arm_link = goal_-&gt;frame;
+    gripper_open = goal_-&gt;gripper_open;
+    gripper_closed = goal_-&gt;gripper_closed;
+    z_up = goal_-&gt;z_up;
+
+    arm_.setPoseReferenceFrame(arm_link);
+
+    // Allow some leeway in position (meters) and orientation (radians)
+    arm_.setGoalPositionTolerance(0.001);
+    arm_.setGoalOrientationTolerance(0.1);
+
+    // Allow replanning to increase the odds of a solution
+    arm_.allowReplanning(true);
+
+    if (goal_-&gt;topic.length() &lt; 1)
+      pickAndPlace(goal_-&gt;pickup_pose, goal_-&gt;place_pose);
+    else
+      pick_and_place_sub_ = nh_.subscribe(goal_-&gt;topic, 1, &amp;PickAndPlaceServer::sendGoalFromTopic, this);
+  }
+
+  void sendGoalFromTopic(const geometry_msgs::PoseArrayConstPtr&amp; msg)
+  {
+    ROS_INFO(&quot;[pick and place] Got goal from topic! %s&quot;, goal_-&gt;topic.c_str());
+    pickAndPlace(msg-&gt;poses[0], msg-&gt;poses[1]);
+    pick_and_place_sub_.shutdown();
+  }
+
+  void preemptCB()
+  {
+    ROS_INFO(&quot;%s: Preempted&quot;, action_name_.c_str());
+    // set the action state to preempted
+    as_.setPreempted();
+  }
+
+  void pickAndPlace(const geometry_msgs::Pose&amp; start_pose, const geometry_msgs::Pose&amp; end_pose)
+  {
+    ROS_INFO(&quot;[pick and place] Picking. Also placing.&quot;);
+
+    geometry_msgs::Pose target;
+
+    /* open gripper */
+    if (setGripper(gripper_open) == false)
+      return;
+
+    /* hover over */
+    target = start_pose;
+    target.position.z = z_up;
+    if (moveArmTo(target) == false)
+      return;
+
+    /* go down */
+    target.position.z = start_pose.position.z;
+    if (moveArmTo(target) == false)
+      return;
+
+    /* close gripper */
+    if (setGripper(gripper_closed) == false)
+      return;
+    ros::Duration(attach_time).sleep(); // ensure that gripper properly grasp the cube before lifting the arm
+
+    /* go up */
+    target.position.z = z_up;
+    if (moveArmTo(target) == false)
+      return;
+
+    /* hover over */
+    target = end_pose;
+    target.position.z = z_up;
+    if (moveArmTo(target) == false)
+      return;
+
+    /* go down */
+    target.position.z = end_pose.position.z;
+    if (moveArmTo(target) == false)
+      return;
+
+    /* open gripper */
+    if (setGripper(gripper_open) == false)
+      return;
+    ros::Duration(detach_time).sleep(); // ensure that gripper properly release the cube before lifting the arm
+
+    /* go up */
+    target.position.z = z_up;
+    if (moveArmTo(target) == false)
+      return;
+
+    as_.setSucceeded(result_);
+  }
+
+private:
+  bool moveArmTo(const std::string&amp; target)
+  {
+    ROS_DEBUG(&quot;[pick and place] Move arm to &#39;%s&#39; position&quot;, target.c_str());
+    if (arm_.setNamedTarget(target) == false)
+    {
+      ROS_ERROR(&quot;[pick and place] Set named target &#39;%s&#39; failed&quot;, target.c_str());
+      return false;
+    }
+
+    moveit::planning_interface::MoveItErrorCode result = arm_.move();
+    if (bool(result) == true)
+    {
+      return true;
+    }
+    else
+    {
+      ROS_ERROR(&quot;[pick and place] Move to target failed (error %d)&quot;, result.val);
+      as_.setAborted(result_);
+      return false;
+    }
+  }
+
+  bool moveArmTo(const geometry_msgs::Pose&amp; target)
+  {
+    int attempts = 0;
+    ROS_DEBUG(&quot;[pick and place] Move arm to [%.2f, %.2f, %.2f, %.2f]&quot;,
+             target.position.x, target.position.y, target.position.z, tf::getYaw(target.orientation));
+    while (attempts &lt; 5)
+    {
+      geometry_msgs::PoseStamped modiff_target;
+      modiff_target.header.frame_id = arm_link;
+      modiff_target.pose = target;
+
+      double x = modiff_target.pose.position.x;
+      double y = modiff_target.pose.position.y;
+      double z = modiff_target.pose.position.z;
+      double d = sqrt(x*x + y*y);
+      if (d &gt; 0.3)
+      {
+        // Maximum reachable distance by the turtlebot arm is 30 cm
+        ROS_ERROR(&quot;Target pose out of reach [%f &gt; %f]&quot;, d, 0.3);
+        as_.setAborted(result_);
+        return false;
+      }
+      // Pitch is 90 (vertical) at 10 cm from the arm base; the farther the target is, the closer to horizontal
+      // we point the gripper (0.205 = arm&#39;s max reach - vertical pitch distance + ε). Yaw is the direction to
+      // the target. We also try some random variations of both to increase the chances of successful planning.
+      // Roll is simply ignored, as our arm lacks the proper dof.
+      double rp = M_PI_2 - std::asin((d - 0.1)/0.205) + attempts*fRand(-0.05, +0.05);
+      double ry = std::atan2(y, x) + attempts*fRand(-0.05, +0.05);
+      double rr = 0.0;
+
+      tf::Quaternion q = tf::createQuaternionFromRPY(rr, rp, ry);
+      tf::quaternionTFToMsg(q, modiff_target.pose.orientation);
+
+      // Slightly increase z proportionally to pitch to avoid hitting the table with the lower gripper corner
+      ROS_DEBUG(&quot;z increase:  %f  +  %f&quot;, modiff_target.pose.position.z, std::abs(std::cos(rp))/50.0);
+      modiff_target.pose.position.z += std::abs(std::cos(rp))/50.0;
+
+      ROS_DEBUG(&quot;Set pose target [%.2f, %.2f, %.2f] [d: %.2f, r: %.2f, p: %.2f, y: %.2f]&quot;, x, y, z, d, rr, rp, ry);
+      target_pose_pub_.publish(modiff_target);
+
+      if (arm_.setPoseTarget(modiff_target) == false)
+      {
+        ROS_ERROR(&quot;Set pose target [%.2f, %.2f, %.2f, %.2f] failed&quot;,
+                  modiff_target.pose.position.x, modiff_target.pose.position.y, modiff_target.pose.position.z,
+                  tf::getYaw(modiff_target.pose.orientation));
+        as_.setAborted(result_);
+        return false;
+      }
+
+      moveit::planning_interface::MoveItErrorCode result = arm_.move();
+      if (bool(result) == true)
+      {
+        return true;
+      }
+      else
+      {
+        ROS_ERROR(&quot;[pick and place] Move to target failed (error %d) at attempt %d&quot;,
+                  result.val, attempts + 1);
+      }
+      attempts++;
+    }
+
+    ROS_ERROR(&quot;[pick and place] Move to target failed after %d attempts&quot;, attempts);
+    as_.setAborted(result_);
+    return false;
+  }
+
+  bool setGripper(float opening)
+  {
+    ROS_DEBUG(&quot;[pick and place] Set gripper opening to %f&quot;, opening);
+    if (gripper_.setJointValueTarget(&quot;gripper_joint&quot;, opening) == false)
+    {
+      ROS_ERROR(&quot;[pick and place] Set gripper opening to %f failed&quot;, opening);
+      return false;
+    }
+
+    moveit::planning_interface::MoveItErrorCode result = gripper_.move();
+    if (bool(result) == true)
+    {
+      return true;
+    }
+    else
+    {
+      ROS_ERROR(&quot;[pick and place] Set gripper opening failed (error %d)&quot;, result.val);
+      as_.setAborted(result_);
+      return false;
+    }
+  }
+
+  float fRand(float min, float max)
+  {
+    return ((float(rand()) / float(RAND_MAX)) * (max - min)) + min;
+  }
+};
+
+};
+
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;pick_and_place_action_server&quot;);
+
+  turtlebot_arm_block_manipulation::PickAndPlaceServer server(&quot;pick_and_place&quot;);
+  ros::MultiThreadedSpinner spinner(2);
+  spinner.spin();
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/108281">atef008</a> on 2022-08-16 11:33:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just call <code>moveArmTo</code> with the target pose.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-08-18 05:24:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Ravi Joschi thank your for replying.
+Can you please explain more how can i do it ? 
+should i just call moveArmTo(Target) ? and how should be the target ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108281">atef008</a> on 2022-08-18 06:16:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>May I request you to remove the copyright and format the code properly first? If this code is available online, please also share the reference. It is really hard to see the code as it is too long to read and not well formatted.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-08-18 21:29:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you @Ravi Joshi  for replying. Yeah the code is available online. 
+This is the link <a href="https://github.com/turtlebot/turtlebot_arm/blob/melodic-devel/turtlebot_arm_block_manipulation/src/pick_and_place_action_server.cpp">https://github.com/turtlebot/turtlebot_arm/blob/melodic-devel/turtlebot_arm_block_manipulation/src/pick_and_place_action_server.cpp</a></p>
+
+<p>I will try also to format the code properly.  i am just a beginner and i really don&#39;t know what should i do? i did the  moveit robot configuration and i need now to write a code to pich and place objects. I want to write the input (The goal) manually then the robot will move to the desired positon and pick the object.
+Thank you a lot for helping me :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108281">atef008</a> on 2022-08-26 17:53:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The code looks straightforward. I think it is a good exercise to review the source code you provided. Not only will it help you to understand the ROS action server, but also it will eventually lead to finding the answer to your question. Please give it a try. Anyway, I do not see any image-related info on the code you have shared. Please see <a href="https://github.com/turtlebot/turtlebot_arm/blob/fd6aa08575c19f930a7ac1a0619ebb9a97406340/turtlebot_arm_block_manipulation/src/pick_and_place_action_server.cpp#L190-L196">pick_and_place_action_server.cpp#L190-L196</a>. This is where the actual magic happens. It uses the <a href="https://moveit.ros.org/">moveit</a> package to set the target pose using <code>arm_.setNamedTarget(target)</code> and then commands the arm to move using <code>arm_.move()</code>. You need to configure <a href="https://moveit.ros.org/">moveit</a> before calling these functions. This is why I suggested going through the source code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-08-27 09:13:29 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>async/await in subscriber callback - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/362598">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>async/await in subscriber callback</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97212/async-await-in-subscriber-callback">https://robotics.stackexchange.com/questions/97212/async-await-in-subscriber-callback</a>.</p>
+        <p>I have a ros node that needs to communicate with a non-ros over a tcp asynchronous socket connection. This node will be subscribed to a variety of topics and needs to send data over the socket connection when a message is received (by calling the socket writer within the subscriber callback). </p>
+
+<p>My issue is that I cannot use async/await syntax for a subscriber callback since <code>rospy.Subscriber()</code> does not allow the callback to be awaited.</p>
+
+<p>Ubuntu20
+Ros Noetic
+Python 3.8.2</p>
+
+<p>Here&#39;s a MWE:</p>
+
+<p>A generic publisher, representing one of several nodes generating data I eventually want to send over the socket:</p>
+
+<pre><code> #!/usr/bin/env python3
+
+import rospy 
+from std_msgs.msg import String
+
+def sample_publisher():
+    rospy.init_node(&#39;question_pub&#39;)
+    pub = rospy.Publisher(&#39;topic_name&#39;, String, queue_size=10)
+    rate = rospy.Rate(1)
+    msg = String(data=&quot;sample message&quot;)
+
+    rospy.loginfo(&quot;starting publish loop&quot;)
+    while not rospy.is_shutdown():
+        pub.publish(msg)
+        rospy.loginfo(&quot;finished pub&#39;in&quot;)
+        rate.sleep()
+
+if __name__ == &#39;__main__&#39;:
+    sample_publisher()
+</code></pre>
+
+<p>The subscriber in question:</p>
+
+<pre><code>#!/usr/bin/env python3
+
+
+import rospy
+from std_msgs.msg import String
+import asyncio
+
+class listener_handle:
+    def __init__(self):
+        rospy.init_node(&#39;question_sub&#39;)
+        self.server_address = &#39;127.0.0.1&#39;
+        self.port = 51222
+
+    def activate_subscribers(self):
+        #separated to ensure async writer is defined before first message
+        rospy.Subscriber(&quot;topic_name&quot;, String, self.callback)
+
+    async def connect2server(self):
+        self.reader, self.writer = await asyncio.open_connection(self.server_address, self.port)
+
+    async def async_spin(self):
+        rospy.loginfo(&quot;beginning node spin&quot;)
+        while not rospy.is_shutdown():
+            #want bidirectional messages
+            recvData = await self.reader.read(100)
+            rospy.loginfo(&quot;got {} from socket server&quot;.format(recvData.decode()))
+
+    async def callback(self, data):
+        rospy.loginfo(&quot;callback received value of {}&quot;.format(data.data))
+        self.writer.write(data.data.encode())
+        await self.writer.drain()
+
+
+async def main():
+    h = listener_handle()
+    await h.connect2server()
+    h.activate_subscribers()
+    await h.async_spin()
+
+if __name__ == &#39;__main__&#39;:
+    asyncio.run(main())
+</code></pre>
+
+<p>which errors on startup with </p>
+
+<pre><code>/opt/ros/noetic/lib/python3/dist-packages/rospy/topics.py:750: RuntimeWarning: coroutine &#39;listener_handle.callback&#39; was never awaited
+  cb(msg)
+</code></pre>
+
+<p>and, for reference, the socket server I&#39;m trying to connect to:</p>
+
+<pre><code>#!/usr/bin/env python3
+
+import asyncio
+
+async def handle_echo(reader, writer):
+    print(&quot;client connected, waiting for msg&quot;)
+    data = await reader.read(100)
+    message = data.decode()
+
+    print(&quot;Received {}&quot;.format(message))
+
+    writer.write(data)
+    #immediately send back to subscriber client
+    await writer.drain()
+    print(&quot;Close the connection&quot;)
+    writer.close()
+
+async def main():
+    server = await asyncio.start_server(
+        handle_echo, &#39;127.0.0.1&#39;, 51222)
+
+    print(&quot;server started up&quot;)
+    async with server:
+        await server.serve_forever()
+
+asyncio.run(main())
+</code></pre>
+
+<p>I&#39;ve attempted to make the subscriber asynchronous but it is not awaitable.</p>
+
+<p>I know the subscribers themselves work asynchronously, but I looked for a few hours and was unable to find any examples using the asyncio library like this.</p>
+
+<p>How can I use await within a rospy subscriber callback?
+Thanks in advance!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/39292">chives_onion</a> on 2020-09-30 17:57:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You can&#39;t define the callback with <code>async</code> because <code>rospy</code> isn&#39;t set up to call callbacks as coroutines. What you can do instead is manually create an asynchronous task with <code>create_task</code> instead of <code>await</code> inside the callback. Importantly, callbacks are invoked by rospy in a new thread, so you will need to explicitly access the main event loop created by <code>asyncio.run</code> in the main thread. Probably in your object constructor you can store the output of <code>asyncio.get_running_loop()</code> as a member variable (e.g., <code>self._event_loop</code>). Then in your callback, use <code>self._event_loop.create_task(self.writer.drain())</code> instead of <code>await</code>. This will be slightly different because the <code>callback</code> function won&#39;t wait for <code>drain</code> to complete before returning itself. I was unable to find a simple way to wait for a task to complete when not inside a coroutine, but there is probably some way.</p>
+
+<p>Alternatively, because <code>callback</code> is running in a separate thread, you can actually just run <code>asyncio.run(drain())</code>, since there isn&#39;t an event loop yet running in that thread. This is probably not advisable though since you don&#39;t need to be creating a new event loop for every callback and there may be race issues with other coroutines running in the main event loop. But maybe it would work fine for your situation.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2128"></a> on 2020-10-01 12:27:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This approach appears to be working well with my full application (multiple callbacks with high data throughput). Thank you for the help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/39292">chives_onion</a> on 2020-10-02 12:29:17 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>In the call back you should use <code>run_coroutine_threadsafe</code> See: <a href="https://docs.python.org/3/library/asyncio-task.html#scheduling-from-other-threads">https://docs.python.org/3/library/asyncio-task.html#scheduling-from-other-threads</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/27997">mmoerdijk</a> on 2021-10-20 13:27:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

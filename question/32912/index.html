@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Stereo Camera syncronization - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/32912">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Stereo Camera syncronization</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/40011/stereo-camera-syncronization">https://robotics.stackexchange.com/questions/40011/stereo-camera-syncronization</a>.</p>
+        <p>Hi all,
+I&#39;m using the uvc<em>camera package and its stereo</em>node to grab frames from my 2 webcams.
+Now I&#39;m trying to have a measure of the sync error of the 2 frames doing the following:
+1) write informations about left and right camera in 2 files</p>
+
+<pre><code>rostopic echo -p /left/camera_info &gt; left.csv
+rostopic echo -p /right/camera_info &gt; right.csv
+</code></pre>
+
+<p>2) compare timestamps field inside left.csv and right.csv</p>
+
+<p>With my big surprise, timestamps are always the same for all frames couples (30000+ couples, 15fps), saying that there&#39;s no sync error. I think that this result is quite impossible because timestamps are taken with a precision of 1 nanosecond.</p>
+
+<p>Now the question is: does uvc_camera has some magical power that I don&#39;t know or something else happened?</p>
+
+<p>Is there another way to have a precise mesure of the sync error?</p>
+
+<p>Thanks,
+Fabio.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2184">oleo80</a> on 2012-04-29 03:38:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Interesting question. Although timestamps are represented using nanosecond precision, actual clocks are not that accurate. I would not expect USB cameras to be synchronized.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25">joq</a> on 2012-04-29 04:52:11 UTC</p></div>
+</div>
+<div class="comment">
+              <p>On a 1394 bus, some camera models support &quot;bus synchronization&quot; with accuracy of about 125 microseconds. Does USB have any comparable feature?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25">joq</a> on 2012-04-29 04:52:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think that &quot;bus synchronization&quot; is a special feature of IEEE1394 and probably it&#39;s not available with USB.
+The uvc_camera &quot;includes a two-camera node that provides rough synchronization for stereo vision&quot; so the frame synchronization is done through software.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2184">oleo80</a> on 2012-04-30 02:29:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Looking at the frames I can&#39;t say that they aren&#39;t synchronized... by the way I&#39;m expecting a sync error about some microseconds.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2184">oleo80</a> on 2012-04-30 02:30:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@joq USB Video Class doesn&#39;t have that feature, nor does it have triggering.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/13">Ken</a> on 2012-04-30 06:20:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>stereo_node grabs the latest image from each camera and then stamps both images with the current ROS time. That timestamp won&#39;t be all that close to the true capture time for either camera, as it&#39;s generated after the camera-to-computer transfer and the images may be delayed due to buffering or other processes.</p>
+
+<p>I don&#39;t think there was any way to extract better timestamps from the Video4Linux driver; I&#39;d like to at least get a timestamp that indicates when the computer finished receiving the image. The USB camera protocol does define some timing information, though, so I believe the information is there on some level.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/13">Ken</a> on 2012-04-30 06:18:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I&#39;ve looked at the code and I&#39;ve seen that frames are grabbed sequentially but timestamps are taken only after the overall grab operation. I think that should be better to set left timestamp just after the left frame grab and the right one after the right grab.
+This can cause a small overhead because timestams are set also for discarded frames.</p>
+
+<hr>
+
+<p>UPDATE:
+I&#39;m going on studying the synchronization error. I&#39;ve modified the code of the stereo_node in order to take and publish real timestamps for the left and the right frame grabbing.
+Let&#39;s look at the code of /uvc_camera/src/stereo.cpp</p>
+
+<pre><code>void StereoCamera::sendInfo(ros::Time time) {
+  CameraInfoPtr info_left(new CameraInfo(left_info_mgr.getCameraInfo()));
+  CameraInfoPtr info_right(new CameraInfo(right_info_mgr.getCameraInfo()));
+
+  info_left-&gt;header.stamp = time;
+  info_right-&gt;header.stamp = time;
+  info_left-&gt;header.frame_id = frame;
+  info_right-&gt;header.frame_id = frame;
+
+  left_info_pub.publish(info_left);
+  right_info_pub.publish(info_right);
+}
+
+
+void StereoCamera::feedImages() {
+  unsigned int pair_id = 0;
+  while (ok) {
+    unsigned char *frame_left = NULL, *frame_right = NULL;
+    uint32_t bytes_used_left, bytes_used_right;
+
+    ros::Time capture_time = ros::Time::now();
+
+    int left_idx = cam_left-&gt;grab(&amp;frame_left, bytes_used_left);
+    int right_idx = cam_right-&gt;grab(&amp;frame_right, bytes_used_right);
+
+    /* Read in every frame the camera generates, but only send each
+     * (skip_frames + 1)th frame. This reduces effective frame
+     * rate, processing time and network usage while keeping the
+     * images synchronized within the true framerate.
+     */
+    if (skip_frames == 0 || frames_to_skip == 0) {
+      if (frame_left &amp;&amp; frame_right) {
+    ImagePtr image_left(new Image);
+    ImagePtr image_right(new Image);
+
+    image_left-&gt;height = height;
+    image_left-&gt;width = width;
+    image_left-&gt;step = 3 * width;
+    image_left-&gt;encoding = image_encodings::RGB8;
+    image_left-&gt;header.stamp = capture_time;
+    image_left-&gt;header.seq = pair_id;
+
+    image_right-&gt;height = height;
+    image_right-&gt;width = width;
+    image_right-&gt;step = 3 * width;
+    image_right-&gt;encoding = image_encodings::RGB8;
+    image_right-&gt;header.stamp = capture_time;
+    image_right-&gt;header.seq = pair_id;
+
+    image_left-&gt;header.frame_id = frame;
+    image_right-&gt;header.frame_id = frame;
+
+    image_left-&gt;data.resize(image_left-&gt;step * image_left-&gt;height);
+    image_right-&gt;data.resize(image_right-&gt;step * image_right-&gt;height);
+
+    if (rotate_left)
+      rotate(&amp;image_left-&gt;data[0], frame_left, width * height);
+    else
+      memcpy(&amp;image_left-&gt;data[0], frame_left, width * height * 3);
+
+    if (rotate_right)
+      rotate(&amp;image_right-&gt;data[0], frame_right, width * height);
+    else
+      memcpy(&amp;image_right-&gt;data[0], frame_right, width * height * 3);
+
+    left_pub.publish(image_left);
+    right_pub.publish(image_right);
+
+    sendInfo(capture_time);
+
+    ++pair_id;
+      }
+
+      frames_to_skip = skip_frames;
+    } else {
+      frames_to_skip--;
+    }
+
+    if (frame_left)
+      cam_left-&gt;release(left_idx);
+    if (frame_right)
+      cam_right-&gt;release(right_idx);
+  }
+}
+</code></pre>
+
+<p>I&#39;ve modified it setting two different timestamps getting very strange results. I&#39;m using the following code:</p>
+
+<pre><code>void StereoCamera::sendInfo(ros::Time time_left, ros::Time time_right) {
+  CameraInfoPtr info_left(new CameraInfo(left_info_mgr.getCameraInfo()));
+  CameraInfoPtr info_right(new CameraInfo(right_info_mgr.getCameraInfo()));
+
+  info_left-&gt;header.stamp = time_left;
+  info_right-&gt;header.stamp = time_right;
+  info_left-&gt;header.frame_id = frame;
+  info_right-&gt;header.frame_id = frame;
+
+  left_info_pub.publish(info_left);
+  right_info_pub.publish(info_right);
+}
+
+
+void StereoCamera::feedImages() {
+  unsigned int pair_id = 0;
+  while (ok) {
+    unsigned char *frame_left = NULL, *frame_right = NULL;
+    uint32_t bytes_used_left, bytes_used_right;
+
+
+    ros::Time capture_time_left = ros::Time::now();
+    int left_idx = cam_left-&gt;grab(&amp;frame_left, bytes_used_left);
+
+
+    ros::Time capture_time_right = ros::Time::now();
+    int right_idx = cam_right-&gt;grab(&amp;frame_right, bytes_used_right);
+
+    /* Read in every frame the camera generates, but only send each
+     * (skip_frames + 1)th frame. This reduces effective frame
+     * rate, processing time and network usage while keeping the
+     * images synchronized within the true framerate.
+     */
+    if (skip_frames == 0 || frames_to_skip == 0) {
+      if (frame_left &amp;&amp; frame_right) {
+    ImagePtr image_left(new Image);
+    ImagePtr image_right(new Image);
+
+    image_left-&gt;height = height;
+    image_left-&gt;width = width;
+    image_left-&gt;step = 3 * width;
+    image_left-&gt;encoding = image_encodings::RGB8;
+    image_left-&gt;header.stamp = capture_time_left;
+    image_left-&gt;header.seq = pair_id;
+
+    image_right-&gt;height = height;
+    image_right-&gt;width = width;
+    image_right-&gt;step = 3 * width;
+    image_right-&gt;encoding = image_encodings::RGB8;
+    image_right-&gt;header.stamp = capture_time_right;
+    image_right-&gt;header.seq = pair_id;
+
+    image_left-&gt;header.frame_id = frame;
+    image_right-&gt;header.frame_id = frame;
+
+    image_left-&gt;data.resize(image_left-&gt;step * image_left-&gt;height);
+    image_right-&gt;data.resize(image_right-&gt;step * image_right-&gt;height);
+
+    if (rotate_left)
+      rotate(&amp;image_left-&gt;data[0], frame_left, width * height);
+    else
+      memcpy(&amp;image_left-&gt;data[0], frame_left, width * height * 3);
+
+    if (rotate_right)
+      rotate(&amp;image_right-&gt;data[0], frame_right, width * height);
+    else
+      memcpy(&amp;image_right-&gt;data[0], frame_right, width * height * 3);
+
+    left_pub.publish(image_left);
+    right_pub.publish(image_right);
+
+    sendInfo(capture_time_left, capture_time_right);
+
+    ++pair_id;
+      }
+
+      frames_to_skip = skip_frames;
+    } else {
+      frames_to_skip--;
+    }
+
+    if (frame_left)
+      cam_left-&gt;release(left_idx);
+    if (frame_right)
+      cam_right-&gt;release(right_idx);
+  }
+}
+</code></pre>
+
+<p>Results are very strange because more the framerate is high, more the frames are synchronized.
+Moreover, the difference between time_right and time_left corresponds to the left frame grabbing time: with slow framerates the grab time becomes very bigger (more than x2 factor)... it seems like you tell the camera to go slowly so it doesn&#39;t harry up on taking every frame :-)
+Now I&#39;m going to organize data and tomorrow I&#39;ll write them here.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2184">oleo80</a> on 2012-05-01 20:46:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>&quot;Now I&#39;m going to organize data and tomorrow I&#39;ll write them here.&quot; Do you have some results already?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19858">Kozuch</a> on 2014-08-04 11:36:58 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>custom stereo camera publisher fails mysteriously - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/293040">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>custom stereo camera publisher fails mysteriously</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87242/custom-stereo-camera-publisher-fails-mysteriously">https://robotics.stackexchange.com/questions/87242/custom-stereo-camera-publisher-fails-mysteriously</a>.</p>
+        <p>I&#39;m trying to make a stereo camera for visual odometry. My Python script to publish the images consistently stops after ~500 images, with no errors.</p>
+
+<p>I have cameras plugged into the 2 CSI ports on the standard Raspberry Pi Compute Module breakout board. 
+I&#39;m using Kinetic on Raspian. I&#39;m using the picamera library so I can access the cameras as if I was using raspivid. This brings in both cameras as one image with good sync (better than 1/60 sec anyway) which i then split up and publish using sensor<em>msgs.
+I <em>think</em> sensor</em>msgs is the only way to do it as I need to set identical timestamps, but I&#39;m a novice.</p>
+
+<p>Also the publish rate is pretty slow. When I ask for 20 FPS I get about 5. message queue is set to 10. Would that be a problem? 
+I suspect I&#39;m going to have to redo it in C++ but I&#39;d rather avoid that because python is quick to use.</p>
+
+<p>Can someone tell me what I&#39;m doing wrong, or a better way? </p>
+
+<pre><code>#!/usr/bin/env python
+
+# picamera stereo ROS node using dual CSI Pi CS3 board
+# Wes Freeman 2018
+# modified from code by Adrian Rosebrock, pyimagesearch.com
+# and jensenb, https://gist.github.com/jensenb/7303362
+
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import time
+import numpy as np
+import cv2
+import rospy
+from sensor_msgs.msg import CameraInfo, Image
+import yaml
+
+# cam resolution
+# x must be multiple of 128: 640, 512, 384
+res_x = 384 # per camera
+res_y = 288
+
+# initialize the camera
+print(&quot;Init camera...&quot;)
+camera = PiCamera(stereo_mode = &#39;side-by-side&#39;,stereo_decimate=False)
+camera.resolution = (res_x*2, res_y)
+camera.framerate = 5
+#camera.exposure_mode = &#39;sports&#39;
+camera.exposure_mode = &#39;antishake&#39;
+camera.video_stabilization = True
+camera.awb_mode = &#39;tungsten&#39;
+
+rawCapture = PiRGBArray(camera, size=(res_x*2, res_y)) # picamera struct, a numpy array?
+
+#setup the publishers
+print(&quot;init publishers&quot;)
+# queue_size should be roughly equal to FPS?
+left_img_pub = rospy.Publisher(&#39;left_camera/image_color&#39;, Image, queue_size=10)
+right_img_pub = rospy.Publisher(&#39;right_camera/image_color&#39;, Image, queue_size=10)
+rospy.init_node(&#39;stereo_pub&#39;)
+
+print(&quot;Setup done, entering main loop&quot;)
+framecount=0
+# capture frames from the camera
+try:
+    for frame in camera.capture_continuous(rawCapture, format=&quot;rgb&quot;, use_video_port=True):
+        framecount +=1
+        # grab the raw NumPy array representing the image and split it
+        left_image = frame.array[:, :res_x, :]
+        right_image = frame.array[:, res_x+1:, :]
+
+        # clear the stream in preparation for the next frame
+        rawCapture.truncate(0)
+
+        stamp = rospy.Time.now()
+
+        left_img_msg = Image()
+        left_img_msg.height = res_y
+        left_img_msg.width = res_x
+        left_img_msg.step = res_x*3 # bytes per row: pixels * channels * bytes per channel (1 normally)
+        left_img_msg.encoding = &#39;rgb8&#39;
+        left_img_msg.header.frame_id = &#39;image_raw&#39;
+        left_img_msg.header.stamp = stamp
+        left_img_msg.data = left_image.flatten().tolist()
+
+        right_img_msg = Image()
+        right_img_msg.height = res_y
+        right_img_msg.width = res_x
+        right_img_msg.step = res_x*3
+        right_img_msg.encoding = &#39;rgb8&#39;
+        right_img_msg.header.frame_id = &#39;image_raw&#39;
+        right_img_msg.header.stamp = stamp
+        right_img_msg.data = right_image.flatten().tolist()
+
+        #publish the image pair
+        left_img_pub.publish(left_img_msg)
+        right_img_pub.publish(right_img_msg)
+
+        print(&quot;published frame: &quot;, framecount)           
+
+
+
+except rospy.ROSInterruptException:
+    camera.close()
+    pass
+</code></pre>
+
+<hr>
+
+<p>Revised code after advice in this thread:</p>
+
+<pre><code>#!/usr/bin/env python
+
+# picamera stereo ROS node using dual CSI Pi CS3 board
+# Wes Freeman 2018
+# modified from code by Adrian Rosebrock, pyimagesearch.com
+# and jensenb, https://gist.github.com/jensenb/7303362
+
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import time
+import numpy as np
+import cv2
+import rospy
+from sensor_msgs.msg import CameraInfo, Image
+import yaml
+
+# cam resolution
+# x must be multiple of 128: 640, 512, 384
+res_x = 384 # per camera
+res_y = 288
+target_FPS = 20
+
+# initialize the camera
+print(&quot;Init camera...&quot;)
+camera = PiCamera(stereo_mode = &#39;side-by-side&#39;,stereo_decimate=False)
+camera.resolution = (res_x*2, res_y)
+camera.framerate = target_FPS
+# one of these camera options causes instability, hangs:
+#camera.exposure_mode = &#39;sports&#39;
+#camera.exposure_mode = &#39;antishake&#39;
+#camera.video_stabilization = True
+#camera.awb_mode = &#39;tungsten&#39;
+
+rawCapture = PiRGBArray(camera, size=(res_x*2, res_y)) # picamera struct, a numpy array?
+
+#setup the publishers
+print(&quot;init publishers&quot;)
+# queue_size should be roughly equal to FPS?
+left_img_pub = rospy.Publisher(&#39;left_camera/image_color&#39;, Image, queue_size=10)
+right_img_pub = rospy.Publisher(&#39;right_camera/image_color&#39;, Image, queue_size=10)
+rospy.init_node(&#39;stereo_pub&#39;)
+
+# init messages
+left_img_msg = Image()
+left_img_msg.height = res_y
+left_img_msg.width = res_x
+left_img_msg.step = res_x*3 # bytes per row: pixels * channels * bytes per channel (1 normally)
+left_img_msg.encoding = &#39;rgb8&#39;
+left_img_msg.header.frame_id = &#39;stereo_camera&#39; # TF frame
+
+right_img_msg = Image()
+right_img_msg.height = res_y
+right_img_msg.width = res_x
+right_img_msg.step = res_x*3
+right_img_msg.encoding = &#39;rgb8&#39;
+right_img_msg.header.frame_id = &#39;stereo_camera&#39;
+
+print(&quot;Setup done, entering main loop&quot;)
+framecount=0
+frametimer=time.clock()
+# capture frames from the camera
+try:
+    for frame in camera.capture_continuous(rawCapture, format=&quot;rgb&quot;, use_video_port=True):
+        framecount +=1
+        # grab the raw NumPy array representing the image and split it
+        left_image = frame.array[:, :res_x, :]
+        right_image = frame.array[:, res_x:, :]
+
+        # clear the stream in preparation for the next frame
+        rawCapture.truncate(0)
+
+        stamp = rospy.Time.now()
+
+        left_img_msg.header.stamp = stamp
+        left_img_msg.data = left_image.flatten().tolist()
+
+        right_img_msg.header.stamp = stamp
+        right_img_msg.data = right_image.flatten().tolist()
+
+        #publish the image pair
+        left_img_pub.publish(left_img_msg)
+        right_img_pub.publish(right_img_msg)
+
+        if time.clock() &gt; frametimer +1:
+            print(&quot;approx FPS: &quot;, framecount, &quot;target FPS: &quot;, target_FPS)
+            frametimer=time.clock()
+            framecount=0
+
+
+
+
+except rospy.ROSInterruptException:
+    camera.close()
+    pass             
+</code></pre>
+
+<p>This works reliably but it&#39;s really slow. The publishing framerate is 10 when it should be 20. It&#39;s only using about 66% of one core. When i subscribe using rqt<em>image</em>view on my laptop, the rate drops to 5 FPS. What&#39;s going on?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35617">Wezzoid</a> on 2018-06-02 06:00:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is it just the publishing that stops, or the rest as well (ie: if you remove all publishing related code, does it still stop after ~500 iterations)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-02 10:28:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Also:</p>
+
+<blockquote>
+<pre><code>right_img_msg.header.frame_id = &#39;image_raw&#39;
+</code></pre>
+</blockquote>
+
+<p>this makes no sense to me: <code>frame_id</code> is supposed to contain a ref to a TF frame. <code>image_raw</code> is typically a topic name.</p>
+
+<p>Additionally: why recreate the msg each time instead of just updating the contents (ie: <code>data</code>, <code>stamp</code>)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-02 10:30:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks gvdhoorn! You&#39;re right it&#39;s happening earlier than the publisher. One of the camera options must have caused it. I don&#39;t know which one and I&#39;m not going to investigate further right now, I need to push on and do the calibration and camera_info publishing! I adjusted the code (updated OP)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35617">Wezzoid</a> on 2018-06-02 12:26:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It now works reliably but it&#39;s really slow. The publishing framerate is 10 when it should be 20. It&#39;s only using about 66% of one core. When i subscribe using rqt_image_view on my laptop, the rate drops to 5 FPS. What&#39;s going on there?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35617">Wezzoid</a> on 2018-06-02 18:04:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p>fixed the speed issue. will put an answer in</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35617">Wezzoid</a> on 2018-06-03 12:23:03 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Doing antishake, video stabilisation and AWB all at once makes it unstable for some reason. As for the speed issues, it&#39;s reading the stream into a 3d array then laboriously flattening it again, which is pointless unless I need to do OpenCV stuff with the image in this node. Bypassing this speeds it up. This works quite well, though it doesn&#39;t have the camera_info incorporated yet:</p>
+
+<pre><code>#!/usr/bin/env python
+
+# picamera stereo ROS node using dual CSI Pi CS3 board
+# Wes Freeman 2018
+# modified from code by Adrian Rosebrock, pyimagesearch.com
+# and jensenb, https://gist.github.com/jensenb/7303362
+
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import time
+import rospy
+from sensor_msgs.msg import CameraInfo, Image
+import yaml
+import io
+import signal # for ctrl-C handling
+import sys
+
+
+# cam resolution
+res_x = 320 #320 # per camera
+res_y = 240 #240 
+target_FPS = 15
+
+# initialize the camera
+print &quot;Init camera...&quot;
+camera = PiCamera(stereo_mode = &#39;top-bottom&#39;,stereo_decimate=False)
+camera.resolution = (res_x, res_y*2) # top-bottom stereo
+camera.framerate = target_FPS
+# using several camera options can cause instability, hangs after a while
+camera.exposure_mode = &#39;antishake&#39;
+#camera.video_stabilization = True # fussy about res?
+
+stream = io.BytesIO()
+
+# ----------------------------------------------------------
+#setup the publishers
+print &quot;init publishers&quot;
+# queue_size should be roughly equal to FPS?
+left_img_pub = rospy.Publisher(&#39;left_camera/image_color&#39;, Image, queue_size=1)
+right_img_pub = rospy.Publisher(&#39;right_camera/image_color&#39;, Image, queue_size=1)
+rospy.init_node(&#39;stereo_pub&#39;)
+
+# init messages
+left_img_msg = Image()
+left_img_msg.height = res_y
+left_img_msg.width = res_x
+left_img_msg.step = res_x*3 # bytes per row: pixels * channels * bytes per channel (1 normally)
+left_img_msg.encoding = &#39;rgb8&#39;
+left_img_msg.header.frame_id = &#39;stereo_camera&#39; # TF frame
+
+right_img_msg = Image()
+right_img_msg.height = res_y
+right_img_msg.width = res_x
+right_img_msg.step = res_x*3
+right_img_msg.encoding = &#39;rgb8&#39;
+right_img_msg.header.frame_id = &#39;stereo_camera&#39;
+
+imageBytes = res_x*res_y*3
+
+# ---------------------------------------------------------------
+# this is supposed to shut down gracefully on CTRL-C but doesn&#39;t quite work:
+def signal_handler(signal, frame):
+    print &#39;CTRL-C caught&#39;
+    print &#39;closing camera&#39;
+    camera.close()
+    time.sleep(1)
+    print &#39;camera closed&#39;    
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+
+#-----------------------------------------------------------
+
+print &quot;Setup done, entering main loop&quot;
+framecount=0
+frametimer=time.time()
+toggle = True
+# capture frames from the camera
+for frame in camera.capture_continuous(stream, format=&quot;rgb&quot;, use_video_port=True):
+    framecount +=1
+
+    stamp = rospy.Time.now()
+    left_img_msg.header.stamp = stamp
+    right_img_msg.header.stamp = stamp
+
+    frameBytes = stream.getvalue()    
+    left_img_msg.data = frameBytes[:imageBytes]
+    right_img_msg.data = frameBytes[imageBytes:]      
+
+    #publish the image pair
+    left_img_pub.publish(left_img_msg)
+    right_img_pub.publish(right_img_msg)
+
+    # console info
+    if time.time() &gt; frametimer +1.0:
+        if toggle: 
+            indicator = &#39;  o&#39; # just so it&#39;s obviously alive if values aren&#39;t changing
+        else:
+            indicator = &#39;  -&#39;
+        toggle = not toggle        
+        print &#39;approx publish rate:&#39;, framecount, &#39;target FPS:&#39;, target_FPS, indicator
+        frametimer=time.time()
+        framecount=0
+
+    # clear the stream ready for next frame
+    stream.truncate(0)
+    stream.seek(0)
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35617">Wezzoid</a> on 2018-06-03 12:27:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Nodes are takin 100% cpu on any computer - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/270910">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Nodes are takin 100% cpu on any computer</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/82828/nodes-are-takin-100-cpu-on-any-computer">https://robotics.stackexchange.com/questions/82828/nodes-are-takin-100-cpu-on-any-computer</a>.</p>
+        <p>Hi,</p>
+
+<p>I am using couple callback queues in my nodes with asyncSpinner. It does not matter on which computer I&#39;m placing it (Odroid XU4, NUC) it does consume 100% CPU. Can anyone point o what I&#39;m missing in these?</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;ros/spinner.h&quot;
+#include &quot;ros/callback_queue.h&quot;
+#include &quot;sensor_msgs/LaserScan.h&quot;
+#include &quot;mavros_msgs/State.h&quot;
+#include &quot;std_msgs/Bool.h&quot;
+
+
+class SubscribeAndPublish
+{
+  private :
+
+    ros::NodeHandle nh_1;
+    ros::NodeHandle nh_2;
+
+    // Subscribers and publishers
+    ros::Subscriber sub_range;
+    ros::Subscriber sub_system_state;
+    ros::Publisher pub_block_state;
+
+    bool is_armed; // parameter check that vehicle is armed
+    bool on_hold = false; // parameter, stating that hold sequence initiated
+    std::string flight_mode;
+    float range;
+    float range_threshold = 1.2;
+    float range_min = 0.011;
+    double time_start; // parameter for checking, when hold sequence initiated
+    double time_end = 0.0; // parameter for checking, when hold sequence ended
+    uint16_t range_count = 0;
+    uint16_t last_obstacle_before = 0;
+    bool last_on_hold = false;
+    bool avoidance_active = false;
+
+  public :
+    SubscribeAndPublish(ros::NodeHandle &amp;nh_simple, ros::NodeHandle &amp;nh_state);
+    void system_state_callback(const mavros_msgs::State::ConstPtr&amp; state_msg);
+    void range_callback(const sensor_msgs::LaserScan::ConstPtr&amp; range_msg);
+    bool run();
+};
+
+
+
+SubscribeAndPublish::SubscribeAndPublish(ros::NodeHandle &amp;nh_simple, ros::NodeHandle &amp;nh_state)
+{
+    nh_1 = nh_simple;
+    nh_2 = nh_state;
+
+    sub_system_state = nh_2.subscribe(&quot;mavros/state&quot;, 2, &amp;SubscribeAndPublish::system_state_callback, this);
+    pub_block_state = nh_1.advertise&lt; std_msgs::Bool &gt;(&quot;/block_state&quot;, 10);
+    sub_range = nh_1.subscribe(&quot;/scan&quot;, 10, &amp;SubscribeAndPublish::range_callback, this);
+}
+
+
+
+// Callback Handling 
+void SubscribeAndPublish::range_callback(const sensor_msgs::LaserScan::ConstPtr&amp; range_msg)
+{
+  std_msgs::Bool msg_block;
+
+  avoidance_active = ((is_armed) &amp;&amp; ((flight_mode == &quot;LEARNING&quot;) || (flight_mode == &quot;AUTO&quot;) || (flight_mode == &quot;GUIDED&quot;) )); 
+
+  //ROS_INFO(&quot;Got mode of: %s&quot;, flight_mode.c_str());
+
+  for (unsigned int i = 0; i &lt; range_msg-&gt;ranges.size(); i++) {
+
+    range = range_msg-&gt;ranges[i];
+
+    if (std::isinf(range_msg-&gt;ranges[i])) {
+      continue;
+    }
+
+    if (!avoidance_active) {
+      last_obstacle_before = 1000;
+    } else {
+      if (range &gt; range_threshold || range &lt; range_min) {
+          last_obstacle_before++;
+      } else {
+        last_obstacle_before = 0;
+        range_count ++;
+      }
+    }
+
+    if (last_obstacle_before %100 == 0) {
+      //ROS_INFO(&quot;Last %d&quot;, last_obstacle_before);  
+      //ROS_INFO(&quot;Avoidance_active %d&quot;, avoidance_active);  
+    }
+
+    last_on_hold = on_hold;
+
+    on_hold = last_obstacle_before &lt; 250 and avoidance_active;
+
+    if (last_obstacle_before &gt; 15000) {
+        last_obstacle_before = 1000;
+
+        if (!ros::ok()) {
+            return;
+        }
+
+        if (avoidance_active) {
+          //ROS_INFO(&quot;RELEASE NMESSAGE 1500&quot;);
+          on_hold = false;
+
+          msg_block.data = false;
+          pub_block_state.publish(msg_block);
+        }
+    }
+
+    if (on_hold != last_on_hold) {
+
+      if (!(ros::ok())) {
+        return;
+      }
+
+      if (on_hold) {
+        //ROS_INFO(&quot;ON HOLD NMESSAGE&quot;);
+        on_hold = true;
+
+        msg_block.data = true;
+        pub_block_state.publish(msg_block);
+      } else {
+        //ROS_INFO(&quot;RELEASE MESSAGE&quot;);
+        on_hold = false;
+
+        msg_block.data = false;
+        pub_block_state.publish(msg_block);
+      }
+    }
+  }
+  return;
+}
+
+
+
+void SubscribeAndPublish::system_state_callback(const mavros_msgs::State::ConstPtr&amp; state_msg)
+{
+  is_armed = state_msg-&gt;armed;
+  flight_mode = state_msg-&gt;mode.c_str();
+
+  //ROS_INFO(&quot;(state callback) Got mode of: %s&quot;, flight_mode.c_str());
+  //ROS_INFO(&quot;Got arming state of: %d&quot;, is_armed;
+}
+
+
+
+bool SubscribeAndPublish::run()
+{
+    while((nh_1.ok()) &amp;&amp; (nh_2.ok()))
+    {
+        ros::spinOnce();
+    }
+
+    return true;
+}
+
+
+
+
+int main(int argc, char **argv)
+{
+
+  ros::init(argc, argv, &quot;listener&quot;);
+
+  ROS_INFO(&quot;Starting MIO node&quot;);
+
+  usleep(5000000);
+  ros::NodeHandle nh;
+  ros::CallbackQueue my_callback_queue0;
+  ros::AsyncSpinner spinner0(1, &amp;my_callback_queue0);
+  nh.setCallbackQueue(&amp;my_callback_queue0);
+  spinner0.start();
+
+  usleep(5000000);
+  ros::NodeHandle nh_state;
+  ros::CallbackQueue my_callback_queue1;
+  ros::AsyncSpinner spinner1(1, &amp;my_callback_queue1);
+  nh_state.setCallbackQueue(&amp;my_callback_queue1);
+  spinner1.start();
+
+
+  SubscribeAndPublish mysupernode(nh, nh_state);
+  mysupernode.run();
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/30159">matislovas</a> on 2017-09-14 15:36:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p><code>ros::spinOnce();</code> does not have any delays or locks, so calling it repeatedly will use 100% of your CPU time (it&#39;s effectively busy-waiting for incoming messages).</p>
+
+<p>Since you&#39;re not doing anything else in that loop, you can replace that with <code>ros::spin()</code>.</p>
+
+<p>If you want to add other things to that loop, you could add a <code>ros::Rate()</code> object to call <code>ros::spinOnce()</code> at a fixed rate and sleep for the remainder of the loop.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2017-09-14 20:00:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Cool, thanks, will try it now!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30159">matislovas</a> on 2017-09-15 01:12:01 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

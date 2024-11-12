@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS1 vs ROS2 serialization - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/371866">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS1 vs ROS2 serialization</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I am serializing the following <code>msg</code>:</p>
+
+<pre><code>string a
+uint8 b
+uint8[] c
+</code></pre>
+
+<p>I am comparing the serialization between <code>ROS1</code> and <code>ROS2</code> and I don&#39;t know what are the &quot;extra&quot; bytes I get with <code>ROS2</code>:</p>
+
+<pre><code>Serialized ROS1 message: 11 00 00 00 03 00 00 00 41 42 43 0A 05 00 00 00 0B 0C 0D 0E 0F
+Serialized ROS2 message: 19 00 00 00 00 01 00 00 04 00 00 00 41 42 43 00 0A 7f 00 00 05 00 00 00 0B 0C 0D 0E 0E 
+</code></pre>
+
+<p>I am also printing the length of the messages (first 4 bytes). Some differences I see:</p>
+
+<ol>
+<li><code>ROS2</code> adds <code>00 01 00 00</code> at the beginning of the message. What are these 4 bytes represent? Are they related to the message?</li>
+<li>For mytype.a it ends with 00 in <code>ROS2</code>, is it something related to it or I made a mistake somewhere?</li>
+<li>What are the 3 bytes before the length of mytype.c ? (<code>7f 00 00</code>)?</li>
+</ol>
+
+<p>Here is the code for <code>ROS1</code>:</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;serialization/mytypes.h&quot;
+
+#include &lt;sstream&gt;
+#include &lt;iostream&gt;
+#include &lt;fstream&gt;
+#include &lt;boost/format.hpp&gt;
+
+namespace ser = ros::serialization;
+using namespace std;
+
+serialization::mytypes create_serialization_mytypes();
+
+serialization::mytypes create_serialization_mytypes() {
+    serialization::mytypes result;
+
+    result.a = &quot;ABC&quot;;
+    result.b = 10;
+    for(int i=0; i&lt;5; i++){
+        result.c.push_back(11+i);
+    }
+    return result;
+}
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;node_publisher&quot;);
+    ros::NodeHandle n;
+
+    serialization::mytypes mytypes;
+    mytypes=create_serialization_mytypes();
+
+    uint32_t serial_size = ros::serialization::serializationLength(mytypes);
+    boost::shared_array&lt;uint8_t&gt; buffer(new uint8_t[serial_size]);
+
+    ser::OStream stream(buffer.get(), serial_size);
+    ser::serialize(stream, mytypes);
+    std::cout &lt;&lt; &quot;Serialized ROS1 message: &quot;;
+    std::cout &lt;&lt; std::uppercase &lt;&lt; setfill(&#39;0&#39;) &lt;&lt; setw(2) &lt;&lt; hex &lt;&lt; +(serial_size&amp;0xFF) &lt;&lt; &quot; &quot;;
+    std::cout &lt;&lt; std::uppercase &lt;&lt; setfill(&#39;0&#39;) &lt;&lt; setw(2) &lt;&lt; hex &lt;&lt; +(serial_size&gt;&gt;8&amp;0xFF) &lt;&lt; &quot; &quot;;
+    std::cout &lt;&lt; std::uppercase &lt;&lt; setfill(&#39;0&#39;) &lt;&lt; setw(2) &lt;&lt; hex &lt;&lt; +(serial_size&gt;&gt;16&amp;0xFF) &lt;&lt; &quot; &quot;;
+    std::cout &lt;&lt; std::uppercase &lt;&lt; setfill(&#39;0&#39;) &lt;&lt; setw(2) &lt;&lt; hex &lt;&lt; +(serial_size&gt;&gt;24&amp;0xFF) &lt;&lt; &quot; &quot;;
+    for(int i=0; i&lt;serial_size; i++){
+        std::cout &lt;&lt; std::uppercase &lt;&lt; setfill(&#39;0&#39;) &lt;&lt; setw(2) &lt;&lt; hex &lt;&lt; +(buffer[i]) &lt;&lt; &quot; &quot;;
+    }
+    std::cout &lt;&lt; endl;
+
+  return 0;
+}
+</code></pre>
+
+<p>And the code for <code>ROS2</code>:</p>
+
+<pre><code>#include &lt;chrono&gt;
+#include &lt;memory&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+
+#include &quot;rclcpp/serialization.hpp&quot;
+#include &quot;serialization/msg/mytypes.hpp&quot;
+
+using namespace std::chrono_literals;
+
+class MinimalPublisher : public rclcpp::Node
+{
+public:
+
+    serialization::msg::Mytypes create_serialization_mytypes() {
+        serialization::msg::Mytypes result;
+
+        result.a = &quot;ABC&quot;;
+        result.b = 10;
+        for(int i=0; i&lt;5; i++){
+            result.c.push_back(11+i);
+        }
+        return result;
+    }
+  MinimalPublisher()
+  : Node(&quot;minimal_publisher&quot;), count_(0)
+  {
+    publisher_ = this-&gt;create_publisher&lt;serialization::msg::Mytypes&gt;(&quot;topic&quot;, 10);    // CHANGE
+
+    // printf(&quot;Finished\n&quot;);
+    timer_ = this-&gt;create_wall_timer(
+      500ms, std::bind(&amp;MinimalPublisher::timer_callback, this));
+  }
+
+private:
+  void timer_callback()
+  {
+    auto message = serialization::msg::Mytypes();
+    message = create_serialization_mytypes();
+
+    auto message_header_length = 8u;
+    auto message_payload_length = static_cast&lt;size_t&gt;(sizeof(message));
+    serialized_msg.reserve(message_header_length + message_payload_length);
+
+    static rclcpp::Serialization&lt;serialization::msg::Mytypes&gt; serializer;
+    //serializer.serialize_message(message.get(), &amp;serialized_msg);
+    serializer.serialize_message(&amp;message, &amp;serialized_msg);
+
+    printf(&quot;Serialized ROS2 message: &quot;);
+    printf(&quot;%02x &quot;, (serialized_msg.size()&amp;0xFF));
+    printf(&quot;%02x &quot;, (serialized_msg.size()&gt;&gt;8&amp;0xFF));
+    printf(&quot;%02x &quot;, (serialized_msg.size()&gt;&gt;16&amp;0xFF));
+    printf(&quot;%02x &quot;, (serialized_msg.size()&gt;&gt;24&amp;0xFF));
+    for (size_t i = 0; i &lt; serialized_msg.size(); ++i) {
+      printf(&quot;%02x &quot;, serialized_msg.get_rcl_serialized_message().buffer[i]);
+    }
+    printf(&quot;\n&quot;);
+
+    publisher_-&gt;publish(message);
+  }
+  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Publisher&lt;serialization::msg::Mytypes&gt;::SharedPtr publisher_;
+  size_t count_;
+  rclcpp::SerializedMessage serialized_msg;
+};
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;MinimalPublisher&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>Thanks for the help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/23277">Ariel</a> on 2021-02-15 15:18:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>As discussed in #q371410, ROS 2 uses DDS as the default middleware. DDS implementations typically use CDR (<em>Common Data Representation</em>) as the serialisation format.</p>
+
+<p>You probably want to look into the relevant standards. The OMG standardises just about everything to do with DDS.</p>
+
+<p>For ROS 2 specifically, in Foxy, the default middleware is Fast-DDS, which uses <a href="https://github.com/eProsima/Fast-CDR">Fast-CDR</a>.</p>
+
+<p>Wireshark should be able to dissect the common RTPS implementations as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-15 15:26:38 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It is possible to dissect it with wireshark. However, I haven&#39;t seen something like <a href="http://wiki.ros.org/ROS/Connection%20Header">http://wiki.ros.org/ROS/Connection%20Header</a> with a similar, simple and straight forward explanation so far</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23277">Ariel</a> on 2021-02-15 16:09:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Could you describe what it is you&#39;re trying to do? Are you writing a custom client library and want/need to deserialise message payload yourself, or is this purely academic interest? If the former, reusing an existing implementation may be more efficient. If the latter, you may want to refer to the standards surrounding CDR, XCDR(2) and dynamic datatypes et al.</p>
+
+<blockquote>
+<p>However, I haven&#39;t seen something like <a href="http://wiki.ros.org/ROS/Connection%20Header">http://wiki.ros.org/ROS/Connection%20Header</a> with a similar, simple and straight forward explanation so far</p>
+</blockquote>
+
+<p>that&#39;s probably because it&#39;s not so simple and it&#39;s not ROS 2 specific any more, in contrast to the ROS 1 implementations. Part of the reason to rely on a standardised middleware is to be able to delegate the work of implementing, maintaining and documenting everything yourself.</p>
+
+<p>Perhaps <a href="https://github.com/eProsima/Micro-CDR">eProsima/Micro-CDR</a> could help as well. It&#39;s a fairly low-level and small implementation of the CDR standard.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-16 03:47:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Pedantic, but:</p>
+
+<blockquote>
+<p>Some differences I see:</p>
+
+<ol>
+<li><code>ROS2</code> adds <code>00 01 00 00</code> at the beginning of the message. </li>
+</ol>
+</blockquote>
+
+<p>actually, that&#39;s not &quot;ROS 2&quot;, but whichever middleware you have configured for your particular installation.</p>
+
+<p>by default, that&#39;ll be Fast-DDS with Fast-RTPS and their implementation of CDR.</p>
+
+<p>But it could be Intel&#39;s DPS, or Continental&#39;s eCAL.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-16 03:52:05 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Could you describe what it is you&#39;re trying to do? Are you writing a custom client library and want/need to deserialise message payload yourself, or is this purely academic interest?</p>
+</blockquote>
+
+<p>Yes, it is a sort of custom client library and I need to serialize/deseralize so that is why I am using the provided functions. It is not a completely client library. I am only concern about the serialization/deserialization. So, how it is being done already as the code I have it is perfect. My issue is to understand the &quot;extra&quot; bytes generated by the &quot;ROS2&quot; code vs the ROS1 one.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23277">Ariel</a> on 2021-02-16 04:02:09 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Yes, it is a sort of custom client library and I need to serialize/deseralize </p>
+</blockquote>
+
+<p>then I would suggest using an existing CDR implementation instead of trying to reverse engineer it yourself.</p>
+
+<blockquote>
+<p>So, how it is being done already as the code I have it is perfect</p>
+</blockquote>
+
+<p>well, you seem to be going in the direction of implementing a CDR (de)serialisation library yourself. I wouldn&#39;t call that perfect. Personally I&#39;d reuse an existing implementation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-16 04:06:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I also don&#39;t believe you can assume DDS (with CDR) will be used necessarily.</p>
+
+<p>I haven&#39;t checked, but it could well be that other middlewares will use a different serialisation scheme altogether.</p>
+
+<p>See #q369220 for a Q&amp;A with links to a few different RMW implementations. As you can see there are quite a few.</p>
+
+<p>And see <a href="https://design.ros2.org/articles/ros_middleware_interface.html">design/ROS 2 middleware interface</a> for information on how the RMW abstraction layer works.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-16 04:07:53 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

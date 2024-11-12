@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>launch file wont load my wont load my own controller - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/410672">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>launch file wont load my wont load my own controller</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I have created my own basic controller and my goal is to load it into a 2 links robot that I created too. I have created the configuration files using moveit and then created my .yawl and .launch in order to run this. My problem is that whenever I launch the launch script this warning appears and my controllers are missing. I did </p>
+
+<pre><code>rosservice list | grep controller_manager
+</code></pre>
+
+<p>to see if controllers are loaded but nothing... could someone help me to find my problem? I have doubts about if this can be done using only rviz or do I need to use gazebo to test my controller?</p>
+
+<p>my scripts, yaml:</p>
+
+<pre><code>    # Publish joint_states
+joint_state_controller:
+  type: joint_state_controller/JointStateController
+  publish_rate: 50
+
+controller_list:
+  name: rob_arm_controller
+  type: my_controller/MyPositionController
+  default: true
+  joints:
+    - joint1
+    - joint2
+  gains:
+    joint1:
+      gain: 0.1
+    joint2:
+      gain: 0.1
+</code></pre>
+
+<p>my controller: </p>
+
+<pre><code>#include &lt;controller_interface/controller.h&gt;
+#include &lt;hardware_interface/joint_command_interface.h&gt;
+#include &lt;/opt/ros/noetic/include/pluginlib/class_list_macros.h&gt;
+#include &lt;std_msgs/Float64.h&gt;
+
+namespace my_controller_ns
+{
+    class MyPositionController : public controller_interface::Controller&lt;hardware_interface::PositionJointInterface&gt;
+    {
+        bool init(hardware_interface::PositionJointInterface* hw, ros::NodeHandle &amp;n)
+        {
+            // get the joint to control specified in the config file
+            // load the name of the joint of the config file into the parameter server
+            std::string my_joint;
+            if (!n.getParam(&quot;joint&quot;, my_joint))
+            {
+                ROS_ERROR(&quot;Could not find joint name&quot;);
+                return false;
+
+            }
+            //once having the joints go to hardware interface and say which joint is asociated with which hardware
+            joint_ = hw-&gt;getHandle(my_joint); // throws on failure
+
+            //get the current position of the joint from controller and pass next command
+            command_ = joint_.getPosition(); //set current joint goal
+
+            //load gain using gains set on parameter server
+            if( !n.getParam(&quot;gain&quot;, gain_))
+            {
+                ROS_ERROR(&quot;Could not find the gain parameter value&quot;);
+                return false;
+
+            }
+
+            //start command suscriber with command topic, setcommand is a callback function that gets the topic data
+            sub_command_ = n.subscribe&lt;std_msgs::Float64&gt;(&quot;command&quot;, 1 , &amp;MyPositionController::setCommandCallBack, this);
+            return true;
+
+        }
+
+    private:
+        hardware_interface::JointHandle joint_;
+        double gain_;
+        double command_;
+        ros::Subscriber sub_command_;
+
+
+    //CONTROL!!!!
+    void update(const ros::Time&amp; time, const ros::Duration&amp; period)
+    {
+            double error = command_ - joint_.getPosition();
+            double commanded_pos= error*gain_;
+            joint_.setCommand(commanded_pos);
+
+    }
+
+    //callback para pasar la posicion siguiente del robot
+    void setCommandCallBack(const std_msgs::Float64ConstPtr&amp; msg)
+    {
+            command_ = msg-&gt;data;
+    }
+
+    void starting(const ros::Time&amp; time) {}
+    void stopping(const ros::Time&amp; time) {}
+
+};
+
+PLUGINLIB_EXPORT_CLASS(my_controller_ns::MyPositionController, controller_interface::ControllerBase);
+
+}
+</code></pre>
+
+<p>and my launch file:</p>
+
+<p><launch></p>
+
+<pre><code>&lt;!--  static tf for robot root --&gt;
+&lt;node pkg=&quot;tf2_ros&quot; type=&quot;static_transform_publisher&quot; name=&quot;virtual_joint_broadcaster_0&quot; args=&quot;0 0 0 0 0 0 world base_link&quot; /&gt;
+
+&lt;!-- robot description--&gt;
+&lt;param name=&quot;robot_description&quot; command=&quot;cat $(find planar_control)/urdf/rob.urdf&quot;/&gt;
+
+&lt;node name=&quot;rviz&quot; pkg=&quot;rviz&quot; type=&quot;rviz&quot; args=&quot;-d $(find planar_moveit_config)/launch/moveit.rviz &quot;/&gt;
+
+&lt;!-- specify the planning pipeline --&gt;
+&lt;arg name=&quot;pipeline&quot; default=&quot;ompl&quot; /&gt;
+
+&lt;!-- robot_description --&gt;
+ &lt;arg name=&quot;load_robot_description&quot; default=&quot;true&quot;/&gt;
+
+&lt;!-- Set the param that trajectory_execution_manager needs to find the controller plugin --&gt;
+&lt;arg name=&quot;moveit_controller_manager&quot; default=&quot;moveit_simple_controller_manager/MoveItSimpleControllerManager&quot; /&gt;
+&lt;param name=&quot;moveit_controller_manager&quot; value=&quot;$(arg moveit_controller_manager)&quot;/&gt;
+&lt;!-- load controller_list --&gt;
+&lt;rosparam file=&quot;$(find planar_moveit_config)/config/my_controller.yaml&quot;/&gt;
+
+&lt;!-- Run the main MoveIt executable without trajectory execution --&gt;
+&lt;include file=&quot;$(dirname)/move_group.launch&quot;&gt;
+    &lt;arg name=&quot;allow_trajectory_execution&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;info&quot; value=&quot;true&quot;/&gt;
+    &lt;arg name=&quot;pipeline&quot; value=&quot;$(arg pipeline)&quot;/&gt;
+    &lt;arg name=&quot;load_robot_description&quot; value=&quot;$(arg load_robot_description) &quot;/&gt;
+&lt;/include&gt;
+
+&lt;!-- load controller_list --&gt;
+&lt;rosparam file=&quot;$(find planar_moveit_config)/config/my_controller.yaml&quot;/&gt;
+</code></pre>
+
+<p></launch></p>
+
+<p>If more information is needed, ask me! I&#39;m having a hard time here with this controller issues</p>
+
+<p>Thanks in advance!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/128165">mikell</a> on 2022-12-19 11:39:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

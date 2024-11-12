@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Remotely connect to docker network - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/353322">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Remotely connect to docker network</h2>
+      <div class="question">
+        <p>Hi all,</p>
+
+<p>I have a feasibility question about remotely connecting to ROS nodes inside of a single docker container, where that container is part of a docker network. Specifically, from my local machine I want to subscribe to nodes that are running inside of a docker network on a remote machine. The need for the docker network is that multiple developers are using the remote server simultaneously, and their ROS nodes need to be isolated (hence why we are using docker).</p>
+
+<p>When I run the docker container in which I am launching the nodes from, I can map the master&#39;s port (11311) to an arbitrary port (e.g. 10023) on the remote host, and then set ROS<em>MASTER</em>URI=<a href="http://remote_ip:10023">http://remote_ip:10023</a> on my local. This allows me to communicate with the master, e.g. do rostopic list. However, the problem arises when I launch a new node in the container, and it is assigned a new random port number in the docker network, one that I have not mapped, and thus isn&#39;t visible to the remote host &amp; my local connection. </p>
+
+<p>I cannot think of a way to make this work, hence me asking the community! People have looked into host &lt;-&gt; container communication, e.g. @ruffsl in <a href="https://answers.ros.org/question/228292/exposing-ros-containers-to-host-machine/">https://answers.ros.org/question/228292/exposing-ros-containers-to-host-machine/</a>, but in those solutions each node launched needs to be configured beforehand with it&#39;s networking environment variables explicitly set. I want to launch arbitrary nodes in the same container, and be able to subscribe to them outside of the docker network.</p>
+
+<p>Thanks,
+Rowan</p>
+
+<p>Relevant part of the docker script:</p>
+
+<pre><code>docker network create ${NETWORK_NAME}
+docker run --name ${DEV_NAME} \
+           -t \
+           -d \
+           -v &quot;$WS_DIR&quot;:/usr/src/catkin_ws \
+           -p ${DEV_PORT}:8080 \
+           -p ${ROSBRIDGE_PORT}:9090 \
+           -p ${VNC_PORT}:5900 \
+           -p 10023:11311 \ # Map ROS master port to arbitrary host port
+           --network=${NETWORK_NAME} \
+           ${ADDITIONAL_DEV_FLAGS} \
+           $IMAGE \
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/55268">rowan.dempster</a> on 2020-05-26 16:20:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>(posting this as a comment, as it&#39;s not an answer to the question, but an alternative)</p>
+
+<p>Personally, I would not use Docker&#39;s NAT networking for this, but would setup a Docker network which assigns IPs to each container which get bridged into your regular network (note: this is not the regular configuration of a Docker <em>bridged network</em>). Those IPs can be -- with some routing -- accessed like regular hosts on your network.</p>
+
+<p>After you do that, you don&#39;t have to use <code>-p</code> any more (but you could still do it), and can treat the container <em>almost</em> like a regular remote ROS host (ie: set <code>ROS_IP</code> etc as if it was just another computer on the network).</p>
+
+<p>As the NAT is then out of the way, you don&#39;t run into any of the issues with ephemeral ports being used by nodes or other such challenges.</p>
+
+<p>I&#39;ve done this on multiple occasions, and I find it far superiour to the &quot;normal&quot; approach with Docker containers and Docker&#39;s NAT.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-27 03:40:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yep, using port mapping with ROS is a non starter given the use of ephemeral ports by the middleware protocol. As suggested, using software defined networks would be better. If you can be sure to set the <code>ROS_MASTER_URI</code> to a unique port, as not to collide/cross-talk with other containers on the same host, using the <code>host</code> network driver would also be an simple alternative to reaching the node remotely.</p>
+
+<p>Using IP aliasing on the host may be another alternative, but it still uses port mapping.</p>
+
+<p><a href="https://www.edureka.co/community/13036/expose-docker-container-port-outside-docker-without-mapping">https://www.edureka.co/community/13036/expose-docker-container-port-outside-docker-without-mapping</a></p>
+
+<p>There may be a more ergonomic method of using virtual interfaces via alternative network drivers by now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2020-05-27 13:23:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I can&#39;t find the article(s) I used last time, but you can essentially configure a custom Docker network which takes it&#39;s IPs from a pre-allocated range. Then setup static routes for the other hosts on your (real) network and you can access Docker containers like they were real hosts.</p>
+
+<p>This is all doable with standard Linux networking configuration. No need for any other software, nor special NIC drivers. Docker is also not really involved, other than making it use the network config which makes this possible (ie: disable its NAT, etc).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-27 13:27:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your advice guys! I agree that those alternatives make sense, I am a Docker newbie who was given this setup, so I&#39;m all for changing it :). However, a couple of things that might have impact your comments:</p>
+
+<ul>
+<li><p>@gvdhoorn Assigning an IP to the container running the nodes would be ideal. However the server is part of my University&#39;s network, I have no dynamic control over it. I can request IST to put static IPs for specific hardware interfaces, but I can&#39;t re-configure the network on the fly.</p></li>
+<li><p>@ruffsl Using the host network in the containers I think would solve my problem, but it isn&#39;t possible under my requirement of providing ROS isolation for multiple users on the server, right? Is it possible to isolate multiple ROS masters running on the same host network?</p></li>
+</ul>
+
+
+  <div class="owner"><p>Asked by <a href="/users/55268">rowan.dempster</a> on 2020-05-27 14:28:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If you have a willing admin, you could ask them to do this for you: <a href="https://serverfault.com/a/958374">https://serverfault.com/a/958374</a>.</p>
+
+<p>In a nutshell this documents what I describe in my first comment.</p>
+
+<p>Note: Docker purists will probably not like this too much.</p>
+
+<blockquote>
+<p>I have no dynamic control over it. I can request IST to put static IPs for specific hardware interfaces, but I can&#39;t re-configure the network on the fly.</p>
+</blockquote>
+
+<p>that&#39;s not how this works. In essence the Docker containers are treated like a VM almost, with their own private IP. Any &#39;dynamism&#39; would be &quot;behind&quot; the bridge added to the machine running your Docker containers. Only hosts on the regular network with the appropriate routes would be able to route traffic to the containers.</p>
+
+<p>For icing on the cake: setup a Docker aware (reverse) DNS and you can use descriptive hostnames for containers running certain nodes (and don&#39;t have to remember IPs).</p>
+
+<p>IP aliasing as mentioned by @ruffsl is similar, but still requires mapping ports.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-27 14:53:39 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Using the host network in the containers I think would solve my problem, but it isn&#39;t possible under my requirement of providing ROS isolation for multiple users on the server, right? Is it possible to isolate multiple ROS masters running on the same host network?</p>
+</blockquote>
+
+<p>This is possible, but in my experience brittle: <em>any</em> user &#39;forgetting&#39; to map their Master to a free port will cause conflicts. I&#39;ve had it more often than not that &quot;strange objects&quot; started appearing in Gazebo simulations because someone forgot to configure their <code>.launch</code> files with the correct ports for Gazebo and the Master.</p>
+
+<p>Note: I&#39;m not saying default Docker networking with NAT and isolation can&#39;t work. What I&#39;ve noticed however is that it takes a good amount of effort to get it working reliably and -- almost more importantly -- transparently enough for users to not be bothered by it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-27 14:55:42 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

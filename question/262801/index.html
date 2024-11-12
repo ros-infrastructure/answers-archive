@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rospy callback subscribe to topics in parallel - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/262801">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rospy callback subscribe to topics in parallel</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/81062/rospy-callback-subscribe-to-topics-in-parallel">https://robotics.stackexchange.com/questions/81062/rospy-callback-subscribe-to-topics-in-parallel</a>.</p>
+        <p>I am trying to run a system where my ROS code subscribes to &#39;n&#39; different topics, each representing one agent. For each agent I need to run a series of calculations (based on the callback function) which I then publish later for a different node to handle. 
+The problem is that the calculations I need to do take some time, and I need the system to run as quickly as possible. What I would like to have happen is for my script to subscribe to each agent and run this calculation parallel (or pretty close to parallel). Here is my pseudo-code:</p>
+
+<pre><code>#!/usr/bin/env python
+import numpy as np
+from numpy import linalg as LA
+from multi_agent_simulation.msg import IndividualPositions, Contains, EntOcc
+import rospy
+from occupancy_entropy_plot import Aggent_Occupancy_Entropy
+import sys
+import time
+from matplotlib import path
+import matplotlib.pyplot as plt
+
+class contains:
+    def __init__(self):
+
+        &#39;&#39;&#39;
+        Initalize Data
+        &#39;&#39;&#39;
+
+        self.AOE = Aggent_Occupancy_Entropy()
+        self.agents = self.AOE.agents
+        self.x_min_dist = self.AOE.x_min_dist #distribtuion limits
+        self.x_max_dist = self.AOE.x_max_dist
+        self.y_min_dist = self.AOE.y_min_dist
+        self.y_max_dist = self.AOE.y_max_dist
+        self.delta = self.AOE.delta
+        self.all_positions_tuple = self.AOE.all_positions_tuple
+        self.center_dict = {}
+        self.dim_x = 0
+        self.dim_y = 0
+        self.ent_list = [0]*self.agents
+        for i in range(0, self.agents):
+            name = &#39;agent%s&#39; % (i + 1)
+            self.center_dict[name] = 0.0
+        &#39;&#39;&#39;
+        Subscribers and publisher
+        &#39;&#39;&#39;
+        self.agent_dictionary = {}
+        self.contains_dict = {}
+        for i in range(0, self.agents):
+            name = &#39;agent%s&#39; % (i + 1)
+            self.agent_dictionary[name] = [0, 0]
+            rospy.Subscriber(&#39;/&#39; + name, IndividualPositions, self.individual_callback, queue_size=1, buff_size=2**24)             
+
+    def individual_callback(self, msg):
+        &#39;&#39;&#39;
+        DO CALCULATION
+        &#39;&#39;&#39;
+
+
+
+
+def main():
+    while not rospy.is_shutdown():
+         &#39;&#39;&#39;
+         DO STUFF/PUBLISH DATA
+         &#39;&#39;&#39;
+
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;contains&#39;)
+    C = contains()
+    C.main()
+</code></pre>
+
+<p>So the idea  is that the each agent&#39;s information would pass through the individual_callback function where I do my calculations, and then the function main() actually publishes it. If I use this code for 1 agent, I can run my calculation at ~20Hz which is perfectly acceptable. But with more agents, say around 20, the speed drops to ~1Hz which is too slow. How can I reorganize my code so that the processing is more parallel? Is that even possible?</p>
+
+<p>Note: I have looked at Python multiprocessing, that was my initial idea. But there seems to be issues using multiprocessing and ROS to calculate and publish data. That was the case for me, anyway. </p>
+
+<p>EDIT:
+Based on maxsvetlik&#39;s suggestion I rewrote the node so that each topic was passed through it&#39;s own callback function. Unfortantely, this did not work. Updated code is:</p>
+
+<pre><code>#!/usr/bin/env python
+
+import numpy as np
+from numpy import linalg as LA
+from multi_agent_simulation.msg import IndividualPositions, Contains, EntOcc
+import rospy
+from occupancy_entropy_plot import Aggent_Occupancy_Entropy
+import sys
+import time
+from matplotlib import path
+import matplotlib.pyplot as plt
+
+class contains:
+    def __init__(self):
+
+        &#39;&#39;&#39;
+        Initalize Data
+        &#39;&#39;&#39;
+        #self.fig1 = plt.figure(1)
+        #self.fig1.show()
+        self.ent_time = 0.0
+        self.dim_x = 0
+        self.dim_y = 0
+        self.dim_x = 0
+        self.dim_y = 0
+        for i in range(0, self.agents):
+            name = &#39;agent%s&#39; % (i + 1)
+            self.center_dict[name] = 0.0
+
+
+
+        &#39;&#39;&#39;
+        Generate functions
+        &#39;&#39;&#39;  
+        self.function_dictionary = {}          
+        for i in range(0, self.agents):
+            def individual_callback(msg):
+                &quot;&quot;&quot;
+                DO CALCULATION
+                &quot;&quot;&quot;
+            name_dict = &#39;agent%s&#39; % (i +1)
+
+            self.function_dictionary[name_dict] = individual_callback
+
+        &#39;&#39;&#39;
+        Subscribers and publisher
+        &#39;&#39;&#39;
+        self.agent_dictionary = {}
+        self.contains_dict = {}
+        for i in range(0, self.agents):
+            name = &#39;agent%s&#39; % (i + 1)
+            self.agent_dictionary[name] = [0, 0]
+            self.contains_dict[name] = [[0],[0]]
+            rospy.Subscriber(&#39;/&#39; + name, IndividualPositions, self.function_dictionary[name], queue_size = 1)      
+
+
+
+
+
+    def main(self):
+         &#39;&#39;&#39;
+         DO STUFF/PUBLISH DATA
+         &#39;&#39;&#39;
+
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;contains&#39;)
+    C = contains()
+    C.main()
+</code></pre>
+
+<p>So the goal was to generate as many functions as needed, store them in a dictionary, and then call the unique function later for callback purposes. Like I mentioned, this did not work... is it possible the way I&#39;m defining my functions is still wrong? Thanks in advance.</p>
+
+<p>EDIT 2:
+So I tried implementing the code from NEngelhard and that still did not increase speed. This is my code now (Edited slightly, I&#39;m using string instead of empty so I can pass actual information):</p>
+
+<pre><code>#! /usr/bin/python
+
+import rospy
+from std_msgs.msg import UInt16, String
+import Queue
+from occupancy_entropy_plot import Aggent_Occupancy_Entropy
+from thread import start_new_thread
+from threading import Lock
+from matplotlib import path
+import time
+
+class ThreadClient:
+    def __init__(self):
+        self.q = Queue.Queue() # input queue for jobs
+
+        self.new_job_id = 0
+        self.job_id_lock = Lock()
+        self.pub = rospy.Publisher(&quot;/processed&quot;, UInt16, queue_size=100)
+        self.AOE = Aggent_Occupancy_Entropy()
+        self.all_positions_tuple = self.AOE.all_positions_tuple
+        self.dim_x = 0
+        self.dim_y = 0
+        # collect several input topics in single callback
+        self.agent_dictionary = {}
+        for i in range(3):
+            self.sub = rospy.Subscriber(&quot;/data&quot;+str(i), String, self.collect_cb)
+
+        # create some worker thread that process in incoming data in parallel
+        for thread_name in range(10):
+            start_new_thread(self.worker, (thread_name, ))
+
+
+    def worker(self, thread_id):
+        rospy.loginfo(&quot;Starting thread %i&quot;, thread_id)
+        while not rospy.is_shutdown():
+            try:
+                task = self.q.get(block=False)  # Queue is already thread safe
+                #rospy.loginfo(&quot;Thread %i is Processing Task %i&quot;, thread_id, task)
+                rospy.sleep(1) # do some fancy computation...
+                self.pub.publish(UInt16(data=task))  # uses internal queue of publisher
+            except Queue.Empty:
+                rospy.sleep(0.1)
+
+    def collect_cb(self, msg):  # create a new ID for this task
+        assert isinstance(msg, String)
+        with self.job_id_lock:
+            current_id = self.new_job_id
+            vert_tup = [(142.6929649672458, -7.574622614639708), (1239.063531790756, -495.39793099903306), (1162.7761297559962, 1468.7628175046418), (320.3391304347826, 614.1869565217391), (142.6929649672458, -7.574622614639708)]
+            p = path.Path(vert_tup)
+            contains = p.contains_points(self.all_positions_tuple)            
+            self.new_job_id += 1
+            zip_list = zip(contains, self.all_positions_tuple)
+            true_list = [j[1] for j in zip_list if j[0] == True] 
+            x_list = [i[0] for i in true_list]
+            y_list = [i[1] for i in true_list]
+        self.q.put(current_id)
+        #rospy.loginfo(&quot;Added task %i to the queue&quot;, current_id)
+
+
+if __name__ == &quot;__main__&quot;:
+    rospy.init_node(&quot;subs&quot;)
+    tc = ThreadClient()
+    rospy.spin()
+</code></pre>
+
+<p>The rate of the callback function collect<em>cb decreases linearly with the number of strings that I subscribe to. What really needs to happen for my code to work is that the x</em>list and y<em>list values need to be added to a dictionary which will then be published on worker. With the above code, the x</em>list and y<em>list values update at ~12 Hz for 1 subscriber, ~6 hz for 2, ~4 Hz for 3, ect (eventually that value vert</em>tup is going to be a variable depending on the message I&#39;m subscribed to, and the value self.all<em>positions</em>tuple is a very large constant-valued list defined previously. The &#39;contains = p.contains<em>points(self.all</em>positions_tuple)&#39; line is the line that takes a long time to compute, it involves finding points within an &#39;n&#39; dimensional polygon.).</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-05-29 15:47:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>When you subscribe to a topic with <code>rospy</code> the callback is given its own thread automatically to process the data from the topic. What seems to be happening here is that all threads are given a single method to do their computation (<code>individual_callback()</code>), forcing each thread to compete for time. This is why you see the roughly linear relationship between calculation speed and number of subscribed agents.</p>
+
+<p>So the parallelism is already happening, but its being counter acted by having only a single processing callback. The solution is to use a unique callback for each subscriber. E.g.</p>
+
+<pre><code>class contains:
+def __init__(self):
+
+    self.agent_msgs = [ ] #for speed, this should by a numpy array
+    for i in range(0, self.agents):
+        name = &#39;agent%s&#39; % (i + 1)
+        self.center_dict[name] = 0.0
+
+def agent_cb0(msg):
+      self.agent_msgs[0] = msg
+
+def agent_cb1(msg):
+      self.agent_msgs[1] = msg
+
+ ....
+
+ def setup():
+    &#39;&#39;&#39;
+    Subscribers and publisher
+    &#39;&#39;&#39;
+    self.agent_dictionary = {}
+    self.contains_dict = {}
+    rospy.Subscriber(&#39;/agent0&#39;, IndividualPositions, self.agent_cb0, queue_size=1)
+    rospy.Subscriber(&#39;/agent1&#39;, IndividualPositions, self.agent_cb1, queue_size=1)
+    ...
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/28419">maxsvetlik</a> on 2017-05-30 11:11:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for responding. Unfortunately, that did not work for me. I edited the question above with how I re-wrote the node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-05-30 12:44:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m unfamiliar with how you&#39;re generating functions here, and it seems possible to me that the function is just being overwritten, mapping every agent to the same callback (as before). I&#39;ve updated my answer with code using standalone callbacks. Please try this out and see if it scales</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28419">maxsvetlik</a> on 2017-05-31 10:39:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Oh yeah I&#39;ve tried it this way before, the performance is identical.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-06-01 16:14:22 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>You should separate the callback from the processing. You could for example just let the callback fill a queue with the jobs that are received on the different topics and have a number of threads look for jobs that they can process. I wrote a small example, that receives tasks on data%i-topics, and has a number of threads that do some processing. New tasks can be created via</p>
+
+<pre><code>rostopic pub /data2 std_msgs/Empty &quot;{}&quot; --rate 20
+</code></pre>
+
+<p>and the result will be shown on <em>/processed</em></p>
+
+<pre><code>#! /usr/bin/python
+
+import rospy
+from std_msgs.msg import UInt16, Empty
+import Queue
+from thread import start_new_thread
+from threading import Lock
+
+class ThreadClient:
+    def __init__(self):
+        self.q = Queue.Queue() # input queue for jobs
+
+        self.new_job_id = 0
+        self.job_id_lock = Lock()
+        self.pub = rospy.Publisher(&quot;/processed&quot;, UInt16, queue_size=100)
+
+        # collect several input topics in single callback
+        for i in range(3):
+            self.sub = rospy.Subscriber(&quot;/data&quot;+str(i), Empty, self.collect_cb)
+
+        # create some worker thread that process in incoming data in parallel
+        for thread_name in range(10):
+            start_new_thread(self.worker, (thread_name, ))
+
+
+    def worker(self, thread_id):
+        rospy.loginfo(&quot;Starting thread %i&quot;, thread_id)
+        while not rospy.is_shutdown():
+            try:
+                task = self.q.get(block=False)  # Queue is already thread safe
+                rospy.loginfo(&quot;Thread %i is Processing Task %i&quot;, thread_id, task)
+                rospy.sleep(1) # do some fancy computation...
+                self.pub.publish(UInt16(data=task))  # uses internal queue of publisher
+            except Queue.Empty:
+                rospy.sleep(0.1)
+
+    def collect_cb(self, msg):  # create a new ID for this task
+        assert isinstance(msg, Empty)
+        with self.job_id_lock:
+            self.new_job_id += 1
+            current_id = self.new_job_id
+
+        self.q.put(current_id)
+        rospy.loginfo(&quot;Added task %i to the queue&quot;, current_id)
+
+
+if __name__ == &quot;__main__&quot;:
+    rospy.init_node(&quot;subs&quot;)
+    tc = ThreadClient()
+    rospy.spin()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/18581">NEngelhard</a> on 2017-05-31 14:34:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for answering, but that unfortunately has not worked for me yet. See Edit2.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-06-01 13:00:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You of course have to adapt the worker-function. In the callback, you only(!) put the task in the queue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18581">NEngelhard</a> on 2017-06-01 13:23:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes I know, this is just a practice code. What I am talking about is simply how fast the callback can actually run. So the process of grabbing the String message and running those commands shown in collect_cb decreases with the number of subscribers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-06-01 14:12:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>But why do run any calculation in the callback?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18581">NEngelhard</a> on 2017-06-01 14:17:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I guess I was thinking that it would be better to run the calculation within the callback. I adjusted my code and ran the computation in the worker, but this still results in slowed frequencies.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-06-01 14:28:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So the reason this method is not working for me is the computational time gets added per topic used. The rate of the &#39;/processed&#39; topic does not vary when more topics are added, but the rate of each worker thread decreases, and that is the problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30555">Mitchell</a> on 2017-06-01 17:41:11 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

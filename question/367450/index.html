@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publish one message without while infinite loop - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/367450">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publish one message without while infinite loop</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97804/publish-one-message-without-while-infinite-loop">https://robotics.stackexchange.com/questions/97804/publish-one-message-without-while-infinite-loop</a>.</p>
+        <p>Hi all,
+I am using ROS Noetic. I tried to publish one message without &quot;while infinite loop&quot; in the node that I created.
+In fact, I need just to publish one message from the topic to socketCAN but it doesn&#39;t work. I know that the node will be killed but it should publish one message?!! Anybody know why ? 
+Thank you.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/58785">mros</a> on 2020-12-10 11:39:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>We don&#39;t know what your code looks like and what message you are trying to publish and where. Please post your code, at least a snippet, so we can get context. Also, please be more detailed in your question. What have you tried so far and what errors you are facing (if any)!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63962">Akhil Kurup</a> on 2020-12-10 12:44:51 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>This is probably because the publisher will publish the msg asynchronously and forget about it. What the while loop does is keep publishing the msg again and again so the subscribers can listen in on these msgs and get most (if not all) of the msgs. You can circumvent this by asking the publisher to <a href="https://wiki.ros.org/roscpp/Overview/Publishers%20and%20Subscribers#line-51">latch</a> the msg. This will ensure the msg gets read in your case. </p>
+
+<p>Your code will look something like this: <code>(notice the &#39;1&#39; after the queue size in the publisher)</code></p>
+
+<pre><code>int main(int argc, char **argv)
+{
+    ros::init(argc,argv, &quot;caninterface_node&quot;);
+    ros::NodeHandle nh;
+
+    ros::Publisher publishertocan = nh.advertise&lt;can_msgs::Frame&gt;(&quot;sent_messages&quot;, 100, 1);
+
+    ros::Rate loop_rate(10);
+    int count = 0;
+
+    std::string can_device;
+    nh.param&lt;std::string&gt;(&quot;can_device&quot;, can_device, &quot;can0&quot;);
+
+    // Form can msg
+    can_msgs::Frame message;
+    message.header.frame_id = &quot;0&quot;;  // &quot;0&quot; for no frame.
+    message.header.stamp = ros::Time::now();
+    message.is_extended = false;
+    message.is_rtr = false;
+    message.is_error = false;
+    message.id = 0x222;
+    message.dlc = 8;
+    for (uint8_t i=0; i &lt; message.dlc; i++)
+    {
+      message.data[i] = i;
+    }
+    // send the can_frame::Frame message to the sent_messages topic.
+    publishertocan.publish(message);
+    ROS_INFO_STREAM(&quot;sent &quot; &lt;&lt; message.id );
+
+    ros::spinOnce();
+    loop_rate.sleep();
+    count++;
+
+return 0;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/63962">Akhil Kurup</a> on 2020-12-10 15:18:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for your reply.
+By the way, I tried also to send the message 100 or 300 times... but it does not work. It works only with while infinite loop.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/58785">mros</a> on 2020-12-10 15:35:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Please test the code I have posted above. It has worked in my tests.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63962">Akhil Kurup</a> on 2020-12-10 15:38:36 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>It most likely is the case that your publisher is publishing your message before any subscribers to that message have been connected. It takes a &quot;non-zero&quot; amount of time for the &quot;hand-shaking&quot; to occur through the ROS master and between the publisher/subscriber nodes. You can write a section of code that will wait for a subscriber, publish the message (to that subscriber) then shut down the node. If you immediately shutdown a node after calling publish on a publisher it is <strong>not</strong> guaranteed that the message was sent and received by the subscriber.</p>
+
+<p>A convenient overload to the <code>advertise</code> function provided by the <code>NodeHandle</code> class allows a client to specify a <code>SubscriberStatusCallback</code> function pointer that gets called when a new subscriber connects to the publisher see the <a href="http://docs.ros.org/en/noetic/api/roscpp/html/classros_1_1NodeHandle.html#ae4711ef282892176ba145d02f8f45f8d">rosdocs</a>.</p>
+
+<p>Here is a simple code example with a <code>std_msgs/String</code> topic:</p>
+
+<pre><code>#include &lt;std_msgs/String.h&gt;
+
+#include &lt;ros/ros.h&gt;
+
+void subscriberConnectCallback(const ros::SingleSubscriberPublisher&amp; publisher)
+{
+  ROS_INFO(&quot;Super cool I got a new subscriber [%s] on the %s topic!&quot;, publisher.getSubscriberName().c_str(),
+           publisher.getTopic().c_str());
+
+  // Build the message and publish
+  std_msgs::String msg;
+  msg.data = &quot;super cool&quot;;
+  publisher.publish(msg);
+
+  // Signal shutdown
+  ros::shutdown();
+}
+
+int main(int argc, char* argv[])
+{
+  ros::init(argc, argv, &quot;test_node&quot;);
+
+  // Create publisher with private node handle and bind callback to handle subscriber connection
+  ros::NodeHandle pnh(&quot;~&quot;);
+  ros::Publisher publisher =
+      pnh.advertise&lt;std_msgs::String&gt;(&quot;chatter&quot;, 1, (ros::SubscriberStatusCallback)subscriberConnectCallback);
+
+  // Spin this node until a shutdown is triggered
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/64471">danambrosio</a> on 2020-12-10 18:33:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hello, Thank you so much for your help, it works well but I had to remove  (&quot;~&quot;).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/58785">mros</a> on 2020-12-11 11:40:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@mros If this is the correct answer and it solved your issue, please mark this answer as correct.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1272">jarvisschultz</a> on 2020-12-11 12:33:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Just for your information, the private node handle is commonly used for publishers and would require a <code>rosrun</code> <a href="http://wiki.ros.org/Remapping%20Arguments">argument remap</a> or <a href="http://wiki.ros.org/roslaunch/XML/remap">launch remap</a>.</p>
+
+<p>The ability to remap topics/services/actions is useful to prevent hardcoded topics/service names in a node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2020-12-11 12:34:46 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

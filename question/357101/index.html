@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rospy Subscriber callback threading test - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/357101">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rospy Subscriber callback threading test</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/96538/rospy-subscriber-callback-threading-test">https://robotics.stackexchange.com/questions/96538/rospy-subscriber-callback-threading-test</a>.</p>
+        <p>I try to use rospy Subscriber callback handler to manipulate some object but it doesn&#39;t work like i would like to.</p>
+
+<p>In,subscriber handler is look like this :</p>
+
+<pre><code>import rospy from std_msgs.msg import String import time
+
+verboser = True
+
+def counter() :
+    counter = 0
+    while(verboser and counter &lt; 20 ):
+        counter += 1
+        time.sleep(1)
+        print(counter)
+
+def callback(data):
+    print(&quot;data INcoming : &quot;,data.data)
+    if int(data.data) == 1:
+        counter()
+    else :
+        global verboser
+        verboser = False
+
+def main():
+    rospy.init_node(&#39;listener&#39;)
+    sub = rospy.Subscriber(&#39;chatter&#39;, String,callback)
+
+if __name__ == &#39;__main__&#39;:
+    main()
+    rospy.spin()
+</code></pre>
+
+<p>if i try to command  counter() function with code like this : </p>
+
+<pre><code>import rospy
+from std_msgs.msg import String
+import time
+
+def talker():
+    pub = rospy.Publisher(&#39;chatter&#39;, String, queue_size=10)
+    rospy.init_node(&#39;talker&#39;, anonymous=True)
+    hello_str = &quot;1&quot;
+    pub.publish(hello_str)
+    time.sleep(5)
+    hello_str = &quot;0&quot;
+    pub.publish(hello_str)
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        talker()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>it produce this output :</p>
+
+<pre><code>data INcoming :  1
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+data INcoming :  0
+</code></pre>
+
+<p>but if i change talker to publish only one and re-run it with change variable &#39;hello_str&#39; it seem counter() function does stop after run the process</p>
+
+<pre><code>import rospy
+from std_msgs.msg import String
+import time
+
+def talker():
+    pub = rospy.Publisher(&#39;chatter&#39;, String, queue_size=10)
+    rospy.init_node(&#39;talker&#39;, anonymous=True)
+    hello_str = &quot;1&quot;
+    pub.publish(hello_str)
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        talker()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>ouput :</p>
+
+<pre><code>data INcoming :  1
+1
+2
+3
+4
+5
+6
+data INcoming :  0
+7
+</code></pre>
+
+<p>and i try to check if publisher publish after sleep 5 second via &#39;rostopic echo /chatter&#39; and it seem it does send.
+so i think the rospy.Subscriber() is refuse to new threading callback that have been publish from the same process until it finish.
+Is there anyway to config rospy to accept this ?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/56597">Cry-A-Lot</a> on 2020-07-14 05:25:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I think the main problem is that you are not giving the callback enough time to perform its task. The callback, counter funtion will take at least 20 sec to be executed, but if you are publishing again at max rate the callback will be executed again while the other one is still producing.</p>
+
+<p>So in your set up, 1 is published and callback start the loop until a 0 is again published. Then the flag <code>verboser</code> is set to False forcing the other thread loop to stop right after receiveng the 0.</p>
+
+<p>As a comment:
+<em>Callbacks in rospy are not threadsafe. You should use locks in any rospy node where multiple callbacks of any kind might interact.</em></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34184">Weasfas</a> on 2020-07-14 13:44:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>the point in this test is  i try to start then stop it by using the same subscriber,but it doesn&#39;t work out when i  using the same node to publishing to a topic and it work when  i run it separately which run one node to publish 1 to start a counter() function and another node to publish 0 the set the <code>verboser</code> to stop it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56597">Cry-A-Lot</a> on 2020-07-16 06:32:29 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi @Cry-A-Lot,</p>
+
+<p>The main problem here is that you want to use <code>rospy</code> beyond its limitations. I will explain myself:</p>
+
+<p>In <code>rospy</code>, for a particular topic, there is only one thread that all the subscribers share. Hence, when your node publish 1 and after 5 sec publish 0, it is the same connection/subscriber and the thread is blocked, thus not setting the verbose flag to False.</p>
+
+<p>Your other method works exactly for this reason, when you publish 1 and then exits the program and relaunch again publishing 0, the subscriber connection is new and the callback is called in another thread changing the value of the flag and stopping the other loop thread.</p>
+
+<p>For this reason why you want to do cannot be done if not using tricks to be able to not block your processing, and one of those tricks is unregistering the subscriber for each callback called. It will look something like:</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from std_msgs.msg import String
+import time
+
+verboser = True
+sub = None
+
+def counter() :
+    counter = 0
+    while(verboser and counter &lt; 20 ):
+        counter += 1
+        time.sleep(1)
+        print(str(counter) + &quot;. Verbose is: &quot; + str(verboser))
+
+def callback(data):
+    global sub
+    sub.unregister()
+    sub = rospy.Subscriber(&#39;chatter&#39;, String, callback)
+    print(&quot;data INcoming : &quot;,data.data)
+    if int(data.data) == 1:
+        counter()
+    else:
+        global verboser
+        verboser = False
+
+def main():
+    global sub
+    rospy.init_node(&#39;listener&#39;)
+    sub = rospy.Subscriber(&#39;chatter&#39;, String, callback)
+
+if __name__ == &#39;__main__&#39;:
+    main()
+    rospy.spin()
+</code></pre>
+
+<p>If someone came up with a more elegant solution rather than this I would glad to discuss it here, however, and that is my opinion, if you want to have more control about threats and synchronization I will try to use <code>roscpp</code>. But as I said that is my personal preference to deal with this kind of things.</p>
+
+<p>Hope that helps you.</p>
+
+<p>Regards!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/34184">Weasfas</a> on 2020-07-16 08:51:01 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>so, even though ros publisher is asynchronous, pyros still has it own limitation that  there is only one thread that all the subscribers share. then, if i want to call my callback function again i need to use unregister() function to unsubscribe/disconnect to the topic and do registering to new connection by re-implement() Subscriber() function again that will  wait for a  new publishing.
+Your answer helps a lot. THANK!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56597">Cry-A-Lot</a> on 2020-07-17 05:45:47 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Latency on camera in ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/290908">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Latency on camera in ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/86917/latency-on-camera-in-ros">https://robotics.stackexchange.com/questions/86917/latency-on-camera-in-ros</a>.</p>
+        <p>For my project I need to analyse the vision of a robot, I attached a camera to it and I can view the videostream in ROS. 
+I measure the latency by pointing the camera at a stopwatch on my screen and then take a screenshot. I can see the current time on the stopwatch and the current time on the stream, the difference between those is the latency. </p>
+
+<p>Outside ROS, just by using a simple C++ program and openCV I measure a latency of 120ms. In ROS the (almost exact) same code gives me a latency of 230ms.</p>
+
+<pre><code>        while (ros::ok()) {
+        thetaCapture.read(frame);
+        if (frame.empty()) {
+            ROS_ERROR(&quot;Empty frame read from camera stream&quot;);
+            break;
+        }
+
+        cv::imshow(&quot;Theta Vision&quot;, frame);
+        // Stop program on any key press
+        if (cv::waitKey(1) &gt; 1) break; 
+
+        sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), &quot;bgr8&quot;, frame).toImageMsg();
+        imagePub.publish(msg);
+        //  ros::spinOnce();
+        //  rate.sleep();
+    }
+</code></pre>
+
+<p>Basically all this node does is send the camera output to another node. <strong>Are there any techniques or ways to lower the camera latency in ROS?</strong> I experimented with Ros.Rate() etc. but that didn&#39;t change much so far.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/33995">HaroldVD</a> on 2018-05-11 08:27:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Where do you get &#39;current time on the stream&#39;?  Is that time <code>now()</code> when the message arrives in a callback in a subscribing node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-05-11 09:36:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes, I take the time in the callback func.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33995">HaroldVD</a> on 2018-05-14 08:23:27 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It looks like you are using a usb camera with opencv VideoCapture, you could try replacing that with a variant of <code>usb_cam</code> with nodelet support <a href="https://github.com/ros-drivers/usb_cam/pulls?q=is%3Apr+nodelet+is%3Aopen">https://github.com/ros-drivers/usb_cam/pulls?q=is%3Apr+nodelet+is%3Aopen</a> .</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-05-14 11:27:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p><a href="https://github.com/ros-drivers/usb_cam/pull/76">https://github.com/ros-drivers/usb_cam/pull/76</a> may be of interest also, the v4l timestamp may be close enough to the stopwatch time that you won&#39;t need it to characterize latency.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2018-05-14 11:28:37 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>tl;dr: yes, there is one &#39;trick&#39;, which would be using <a href="http://wiki.ros.org/nodelet">nodelets</a>. That is however a compile/development time decision, so if you&#39;re driver doesn&#39;t support it, it either will be unavailable to you, or you have to change the nodes you want to use.</p>
+
+<p>Additionally, nodelets will introduce other restrictions, such as loss of location transparency (need to run on the same machine), introduction of single point of failure (single process hosting multiple nodelets) and introduction of synchronisation coupling.</p>
+
+<p>Finally: not sending msgs at all is of course also one way to greatly reduce latency, but that has other implications.</p>
+
+<hr>
+
+<p>longer: this is not specific to ROS, but is something that will always be the case when you start using networked middlewares: overhead in communication (there are other factors, such as process scheduling, but I have a hunch that those factors will not contribute significantly to the latency you&#39;ve observed. I&#39;ll also assume that the driver you&#39;re using interfaces in the proper way with the hardware, and is not doing &#39;strange&#39; things internally, such as introducing artificial delays).</p>
+
+<p>Unfortunately this is a consequence of the desire to decouple nodes (ie: programs). In order to guarantee that a receiving node has a correct and coherent representation of the in-memory image of a message sent by a transmitting node, the transmission process will need to use an intermediate representation that leaves no room for ambiguity. This in turn will require a decomposition and recomposition step in the communication (ie: serialisation and deserialisation).</p>
+
+<p>Especially for larger messages the time this step needs dominates the total time it takes to exchange a message (provided both sides are not so far apart (both geographically as well as in terms of networking) that actual transmission of data also takes significant time (ie: from Amsterdam to Tokyo takes around 250 msec fi)).</p>
+
+<blockquote>
+<p>Are there any techniques or ways to lower the camera latency in ROS?</p>
+</blockquote>
+
+<p>So the basic (or honest) answer would be: no (provided you&#39;d want to keep total decoupling between participants in tact, both <a href="https://answers.ros.org/question/203129">in time as well as in space</a>).</p>
+
+<p>However, there are some tricks that you can use. These will however lead to a (partial) loss of some of the advantages of using a networked middleware, but that is a trade-off you can make yourself.</p>
+
+<p>The most commonly used approach is to use a piece of shared memory (or: sharing an address space) between transmitter and receiver: this will allow to skip (de)serialisation entirely, effectively making a message exchange equal to an exchange of pointers. Advantage: in cases where (de)serialisation dominates communication overhead, you can skip that completely. Disadvantage: both receiver and transmitter need to be running on the same system, so loss of location transparency is one disadvantage. Depending on implementation, others could be loss of synchronisation decoupling and introduction of a single point of failure.</p>
+
+<p>Sharing an address space is supported in ROS, but you&#39;ll need to use <a href="http://wiki.ros.org/nodelet">nodelets</a>, not nodes (processes don&#39;t share address spaces). Whether something is a node or a nodelet is a compile / development time decision though, so not something that can be changed easily. Using nodelets introduces some other restrictions, but those are explained on the linked wiki page.</p>
+
+<p>An alternative would be to not transmit images in the first place, but keep them local to your node. Advantage: no overhead whatsoever. Disadvantage: very tight coupling, essentially using a monolithic program. Probably not something you should consider when working with a networked middleware such as ROS.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2018-05-11 10:26:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Note that qualification &#39;the camera&#39; does most likely not actually matter here, it&#39;s a basic consequence of process isolation and network transmission of data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-05-11 10:28:43 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

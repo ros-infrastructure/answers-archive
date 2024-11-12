@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>microROS - rclc add subscription does not execute always the callback - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377634">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>microROS - rclc add subscription does not execute always the callback</h2>
+      <div class="question">
+        <p>Hi community,
+I am using microROS on a raspberry pi pico with ROS Dashing. I written a very small code for controlling a Stepper motor. I would like to achieve that the motor does not move when the message is null (not received message). 
+The method: <code>rclc_executor_add_subscription(&amp;executor, &amp;sub, &amp;msg, &amp;sub_cb, ALWAYS);</code> should call always the callback and when no messages are sent, the message loaded into the subscriber function should be <code>NULL</code> as documented in <a href="https://micro.ros.org/docs/tutorials/core/programming_rcl_rclc/">rcl_rclc programming</a>. The issue is that it seems not.</p>
+
+<p>The full code that I have written is:</p>
+
+<pre><code>#include &lt;stdio.h&gt;
+
+#include &lt;hardware/gpio.h&gt;
+#include &lt;hardware/pwm.h&gt;
+#include &lt;hardware/clocks.h&gt;
+#include &lt;pico/binary_info.h&gt;
+
+#include &lt;rcl/rcl.h&gt;
+#include &lt;rcl/error_handling.h&gt;
+#include &lt;rclc/rclc.h&gt;
+#include &lt;rclc/subscription.h&gt;
+#include &lt;rclc/executor.h&gt;
+#include &lt;std_msgs/msg/int16.h&gt;
+#include &lt;rmw_uros/options.h&gt;
+
+#include &quot;pico/stdlib.h&quot;
+#include &quot;pico_uart_transports.h&quot;
+
+const uint STEP_IN = 14;      // Pin GPIO14
+const uint DIRECTION_IN = 15; // Pin GPIO15
+
+const uint steps_per_revolution = 200; // 360°/1.8°/step
+
+// dichiaro qui slice come global
+uint slice;
+uint16_t dutycycle = 60; // 60%
+
+// rcl_subscription_t sub
+std_msgs__msg__Int16 msg;
+
+rcl_ret_t rc;
+
+void sub_cb(const void *msgin)
+{
+    const std_msgs__msg__Int16 *message = (const std_msgs__msg__Int16 *)msgin;
+    if (message == NULL || message-&gt;data == 0)
+    {
+        // Ferma il PWM
+        pwm_set_enabled(slice, false);
+        // Accendo il led
+        for (int i = 0; i &lt; 4; i++)
+        {
+            gpio_put(PICO_DEFAULT_LED_PIN, 1);
+            sleep_ms(250);
+            gpio_put(PICO_DEFAULT_LED_PIN, 0);
+            sleep_ms(250);
+        }
+    }
+    else
+    {
+        uint32_t f_pwm = (uint32_t)(message-&gt;data);
+        // uint16_t dutycycle = (uint16_t)(message-&gt;data);
+        // TOP is u16 has a max of 65535, being 65536 cycles
+        uint32_t top = 1000000UL / f_pwm - 1;
+        pwm_set_wrap(slice, top);
+
+        // Set duty-cycle
+        uint16_t level = (top + 1) * dutycycle / 100 - 1;
+        pwm_set_chan_level(slice, 0, level);
+        pwm_set_enabled(slice, true);
+    }
+}
+
+int main()
+{
+    // Inizializzo il transport della comunicazione
+    rmw_uros_set_custom_transport(
+        true,                        // Transport framing
+        NULL,                        // Argument for open functions
+        pico_serial_transport_open,  // Open transport callback
+        pico_serial_transport_close, // close transport callback
+        pico_serial_transport_write, // write transport callback
+        pico_serial_transport_read); // read transport callback
+
+    gpio_init(PICO_DEFAULT_LED_PIN); // Led initializing
+    // Set the Pin 14 come funzione PWM
+    gpio_set_function(STEP_IN, GPIO_FUNC_PWM);
+    // Setto il pin 15 come standard input output
+    gpio_init(DIRECTION_IN);
+    // Setto i due pin come output
+    gpio_set_dir(DIRECTION_IN, GPIO_OUT);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT); // led
+
+    // Trova quale PWM slide è connesso al pin 14
+    slice = pwm_gpio_to_slice_num(STEP_IN);
+
+    // pwm_set_clkdiv_mode(slice, PWM_DIV_FREE_RUNNING);
+    u_int32_t f_sys = clock_get_hz(clk_sys); // frequenza del clock 125MHz
+    // let&#39;s arbitrarily choose to run pwm clock at 1MHz
+    float divider = f_sys / 1000000UL;
+    // impongo il clock del pwm ad 1MHz
+    pwm_set_clkdiv(slice, divider);
+    // Set no Phase correct
+    pwm_set_phase_correct(slice, false);
+    // Inizializzo oggetti ROS
+    // rcl_timer_t timer;
+    rcl_node_t node;
+    rcl_allocator_t allocator;
+    rclc_support_t support;
+    rclc_executor_t executor; // pointer executor
+
+    rcl_subscription_t sub = rcl_get_zero_initialized_subscription();
+    rcl_subscription_options_t sub_opts = rcl_subscription_get_default_options();
+    sub_opts.qos.depth = 0; // qos: last is best
+
+    // Inizializzo il messaggio per il subscriber
+    std_msgs__msg__Int16__init(&amp;msg);
+
+    allocator = rcl_get_default_allocator();
+
+    // Aspetto il ROS agent dal PC per 2minuti
+    const int timeout_ms = 1000;
+    const uint8_t attempts = 120;
+    // Controllo se l&#39;agent è attivo
+    rcl_ret_t ret = rmw_uros_ping_agent(timeout_ms, attempts);
+
+    if (ret != RCL_RET_OK)
+    {
+        // Agent non raggiungibile, esce.
+        return ret;
+    }
+
+    rclc_support_init(&amp;support, 0, NULL, &amp;allocator);
+
+    // Inizializzo il nodo:
+    rclc_node_init_default(&amp;node, &quot;stepper_node&quot;, &quot;/pico&quot;, &amp;support);
+
+    // Alternativa per settare il qos sui messaggi
+    rc = rcl_subscription_init(
+        &amp;sub,
+        &amp;node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16),
+        &quot;pico_stepper&quot;,
+        &amp;sub_opts);
+    // Easy alternative
+    // rclc_subscription_init_default(
+    //     &amp;sub,
+    //     &amp;node,
+    //     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16),
+    //     &quot;pico_stepper&quot;);
+
+    executor = rclc_executor_get_zero_initialized_executor();
+    rclc_executor_init(
+        &amp;executor,
+        &amp;support.context,
+        1, // numbero of handles: numero totale di subscriptions, timers, services
+        &amp;allocator);
+
+    rclc_executor_add_subscription(&amp;executor, &amp;sub, &amp;msg, &amp;sub_cb, ALWAYS);
+    // eseguo la callback sui nuovi dati
+    // Decido quando eseguire il subscribing
+    // Può essere anche ALWAYS: subscription callback
+    // è sempre eseguito. Se non ci son dati ritorna NULL
+
+    rclc_executor_spin(&amp;executor);
+
+    // clean up
+    rc = rclc_executor_fini(&amp;executor);
+    rc += rcl_subscription_fini(&amp;sub, &amp;node);
+    rc += rcl_node_fini(&amp;node);
+    rc += rclc_support_fini(&amp;support);
+    std_msgs__msg__Int16__fini(&amp;msg);
+
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/61250">Kappa95</a> on 2021-05-04 06:31:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi, microros is only to be use with ROS2 Foxy and latest. As far I know, microros is not compatible with ROS2 Dashing.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40035">dual-swordsman</a> on 2022-07-28 08:14:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

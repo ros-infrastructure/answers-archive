@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gathering Wheel Encoder data and publishing on the /odom topic - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/11973">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gathering Wheel Encoder data and publishing on the /odom topic</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/35765/gathering-wheel-encoder-data-and-publishing-on-the-odom-topic">https://robotics.stackexchange.com/questions/35765/gathering-wheel-encoder-data-and-publishing-on-the-odom-topic</a>.</p>
+        <p>So far I have rosserial up and running.  It&#39;s feeding Vector3&#39;s back to my main computer where Vector3.x = right encoder ticks and Vector3.y is left encoder ticks.  I&#39;m getting the data back on that topic and I can view it using &quot;rostopic echo /wheel_encoder&quot; it seems to be sending data back perfectly fine.  Now I have created the node below to receive the data and translate the ticks into x,y translation and /odom data using the guide from the navigation stack.  For some reason my /odom data is not changing at all.  I&#39;m assuming it has to do with the global variables I have and the callback function but I can&#39;t seem to track it down.  Any insight would be helpful.</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &lt;geometry_msgs/Vector3.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+
+long _PreviousLeftEncoderCounts = 0;
+long _PreviousRightEncoderCounts = 0;
+ros::Time current_time_encoder, last_time_encoder;
+double DistancePerCount = (3.14159265 * 0.1524) / 64000;
+
+double x;
+double y;
+double th;
+
+double vx;
+double vy;
+double vth;
+double deltaLeft;
+double deltaRight;
+
+void WheelCallback(const geometry_msgs::Vector3::ConstPtr&amp; ticks)
+{
+
+  current_time_encoder = ros::Time::now();
+
+  deltaLeft = ticks-&gt;x - _PreviousLeftEncoderCounts;
+  deltaRight = ticks-&gt;y - _PreviousRightEncoderCounts;
+
+  vx = deltaLeft * DistancePerCount; // (current_time_encoder - last_time_encoder).toSec();
+  vy = deltaRight * DistancePerCount; // (current_time_encoder - last_time_encoder).toSec();
+
+
+  _PreviousLeftEncoderCounts = ticks-&gt;x;
+  _PreviousRightEncoderCounts = ticks-&gt;y;
+  last_time_encoder = current_time_encoder;
+}
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;odometry_publisher&quot;);
+  ros::NodeHandle n;
+  ros::Subscriber sub = n.subscribe(&quot;wheel_encoder&quot;, 100, WheelCallback);
+  ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 50);   
+  tf::TransformBroadcaster odom_broadcaster;
+
+
+  ros::Time current_time, last_time;
+  current_time = ros::Time::now();
+  last_time = ros::Time::now();
+
+
+  ros::Rate r(1.0);
+  while(n.ok()){
+
+    current_time = ros::Time::now();
+
+    //compute odometry in a typical way given the velocities of the robot
+    double dt = (current_time - last_time).toSec();
+    double delta_x = (vx * cos(th) - vy * sin(th)) * dt;
+    double delta_y = (vx * sin(th) + vy * cos(th)) * dt;
+    double delta_th = vth * dt;
+
+    x += delta_x;
+    y += delta_y;
+    th += delta_th;
+
+    //since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+
+    //first, we&#39;ll publish the transform over tf
+    geometry_msgs::TransformStamped odom_trans;
+    odom_trans.header.stamp = current_time;
+    odom_trans.header.frame_id = &quot;odom&quot;;
+    odom_trans.child_frame_id = &quot;base_link&quot;;
+
+    odom_trans.transform.translation.x = x;
+    odom_trans.transform.translation.y = y;
+    odom_trans.transform.translation.z = 0.0;
+    odom_trans.transform.rotation = odom_quat;
+
+    //send the transform
+    odom_broadcaster.sendTransform(odom_trans);
+
+    //next, we&#39;ll publish the odometry message over ROS
+    nav_msgs::Odometry odom;
+    odom.header.stamp = current_time;
+    odom.header.frame_id = &quot;odom&quot;;
+
+    //set the position
+    odom.pose.pose.position.x = x;
+    odom.pose.pose.position.y = y;
+    odom.pose.pose.position.z = 0.0;
+    odom.pose.pose.orientation = odom_quat;
+
+    //set the velocity
+    odom.child_frame_id = &quot;base_link&quot;;
+    odom.twist.twist.linear.x = vx;
+    odom.twist.twist.linear.y = vy;
+    odom.twist.twist.angular.z = vth;
+
+    //publish the message
+    odom_pub.publish(odom);
+
+    last_time = current_time;
+    r.sleep();
+  }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/617">D_mangus</a> on 2011-11-16 09:37:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hello I am trying to do something similar,I am using US digital encoders and its giving out hexa decimal values. I would like to know what tick means in your post?. Is it just the change in value of the encoder or one complete cycle?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1575">metal</a> on 2012-07-26 10:01:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Your <code>vth</code> component is undefined.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2186">Cerin</a> on 2016-12-11 18:28:55 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Your wheel callback is not going to be called because you are not letting ROS spin.  See the <a href="http://www.ros.org/wiki/roscpp/Overview/Callbacks%20and%20Spinning">roscpp overview</a> for more details.  </p>
+
+<p>The simple solution is to add ros::SpinOnce(); before your r.sleep().  </p>
+
+<p>I also highly suggest that you review the <a href="http://www.ros.org/wiki/roscpp/Tutorials">roscpp tutorials</a> which covers this sort of thing closely.    </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2011-11-16 09:56:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

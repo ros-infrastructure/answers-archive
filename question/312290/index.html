@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to fuse encoder ticks + IMU for odometry? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/312290">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to fuse encoder ticks + IMU for odometry?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/90020/how-to-fuse-encoder-ticks-imu-for-odometry">https://robotics.stackexchange.com/questions/90020/how-to-fuse-encoder-ticks-imu-for-odometry</a>.</p>
+        <p>Hi,</p>
+
+<p>I have an IMU which shows the orientation perfectly and also installed some optical encoders.
+When I move the robot straight, the encoders will show the movement more or less correctly. However, when I turn and then move, IMU first displays orientation then when I move after the turn suddenly my robot gets drifted back and then move. I guess that this is because encoders do their job separately but how can I fuse them together?</p>
+
+<p>This is my encoder tick callback (one of them, second will be similar):</p>
+
+<pre><code>void Odometry::leftencoderCb(const std_msgs::Int64::ConstPtr&amp; left_ticks)
+{
+    double enc = left_ticks-&gt;data;
+
+    if((enc &lt; encoder_low_wrap) &amp;&amp; (prev_lencoder &gt; encoder_high_wrap))
+    {
+        lmult = lmult + 1;
+    }
+
+    if((enc &gt; encoder_high_wrap) &amp;&amp; (prev_lencoder &lt; encoder_low_wrap))
+    {
+        lmult = lmult + 1;
+    }
+
+    left = 1.0 * (enc + lmult * (encoder_max - encoder_min));
+    prev_lencoder = enc;
+}
+</code></pre>
+
+<p>Here is my IMU callback:</p>
+
+<pre><code>void Odometry::ImuCb(const sensor_msgs::Imu::ConstPtr&amp; data)
+{
+    orient_x = data-&gt;orientation.x;
+    orient_t = data-&gt;orientation.y;
+    orient_z = data-&gt;orientation.z;
+    orient_w = data-&gt;orientation.w;
+
+}
+</code></pre>
+
+<p>And finally, here is my update code which updates odometry periodically:</p>
+
+<pre><code>void Odometry::update()
+{
+
+    ros::Time now = ros::Time::now();
+    double elapsed;
+    double d_left, d_right, d, th,x,y;
+
+    elapsed = now.toSec() - then.toSec();
+
+    if(enc_left == 0)
+    {
+        d_left = 0;
+        d_right = 0;
+    }
+        else
+        {
+            d_left = (left - enc_left) / ( ticks_meter);
+            d_right = (right - enc_right) / ( ticks_meter);
+        }
+
+        enc_left = left;
+        enc_right = right;
+
+        d = (d_left + d_right ) / 2.0;
+        th = ( d_right - d_left ) / base_width;
+
+        dx = d / elapsed;
+        dr = th / elapsed;
+
+        if (d != 0)
+        {
+            ROS_INFO(&quot;Distance has been changed!&quot;);
+            x = cos(th) * d;
+            y = -sin(th) * d;
+            x_final += (cos(theta_final) * x - sin(theta_final) * y);
+            y_final += (sin(theta_final) * x + cos(theta_final) * y);
+        }
+
+
+        theta_final += th;
+
+        geometry_msgs::Quaternion odom_quat ;
+
+        odom_quat.x = this-&gt;orient_x;
+        odom_quat.y = this-&gt;orient_y;
+        odom_quat.z = this-&gt;orient_z;
+        odom_quat.w = this-&gt;orient_w;
+
+        geometry_msgs::TransformStamped odom_trans;
+        odom_trans.header.stamp = now;
+        odom_trans.header.frame_id = &quot;odom&quot;;
+        odom_trans.child_frame_id = &quot;base_footprint&quot;;
+
+        odom_trans.transform.translation.x = x_final;
+        odom_trans.transform.translation.y = y_final;
+        odom_trans.transform.translation.z = 0.0;
+        odom_trans.transform.rotation = odom_quat;
+
+        odom_broadcaster.sendTransform(odom_trans);
+
+            // Odometry values:
+        nav_msgs::Odometry odom;
+        odom.header.stamp = now;
+        odom.header.frame_id = &quot;odom&quot;;
+
+        odom.pose.pose.position.x = x_final;
+        odom.pose.pose.position.y = y_final;
+        odom.pose.pose.position.z = 0.0;
+        odom.pose.pose.orientation = odom_quat;
+
+        odom.child_frame_id = &quot;base_footprint&quot;;
+        odom.twist.twist.linear.x = dx;
+        odom.twist.twist.linear.y = 0.0; //dy;
+        odom.twist.twist.angular.z = 0.0; //dr;
+
+        odom_pub.publish(odom);
+
+        then = now;
+
+        ros::spinOnce();
+
+
+
+    else ROS_INFO_STREAM(&quot;Not in a loop&quot;);
+}
+</code></pre>
+
+<p>Can someone suggest me how can I write odometry code more correctly?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2019-01-09 06:12:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The short answer to this is to not write your own odometry fusion algorithm from scratch, unless you have to do this as part of an assignment or for research. The existing <a href="http://docs.ros.org/melodic/api/robot_localization/html/index.html">robot localization package</a> is very powerful and is designed for doing exactly this.</p>
+
+<p>You will need to modify your code so that your encoder information is published in a twist message so that it can be sent to the robot localization node, then you can follow the guide on their website to configure the sensor fusion. There is a bit of a learning curve when it comes to using this node, but it&#39;s worth the effort when it&#39;s setup properly.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2019-01-09 07:04:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <blockquote>
+<p>You will need to modify your code so that your encoder information is published in a twist message</p>
+</blockquote>
+
+<p>shouldn&#39;t that be <code>nav_msgs/Odometry</code> for a mobile base?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-01-09 07:34:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Okay I get it, so basically I need to remove the IMU callback and let IMU be a separate thing from odometry, am I right? As without IMU, the orientation is terrible in Odometry.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2019-01-09 07:38:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>And then use odometry (which estimates the position based on encoder ticks) and IMU as two separate things and fuse them both to robot_localization package to get the filtered odometry?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2019-01-09 07:54:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn yes that&#39;s correct. A twist message would not be able to represent the absolute orientation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2019-01-09 08:34:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@stevemartin yes the robot localization package will take in the odometry and imu messages and fuse them for you into a new odometry estimate. When correctly setup it will use an EKF to take the best of each sensor.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2019-01-09 08:35:57 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>If there are two statistically independent IMUs, say IMU A, and IMU B. Then one IMU can be used to create the odometry message.</p>
+
+<p>For example, use IMU A and encoders to construct the odometry message. Then use EKF to fuse the odometry with IMU B, the final localization would perform better than only use encoders to construct the odometry message.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50555">sentry5588</a> on 2020-02-17 22:10:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

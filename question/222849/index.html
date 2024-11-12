@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ardunio IMU  (mpu6050) interfacing with ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/222849">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ardunio IMU  (mpu6050) interfacing with ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/70989/ardunio-imu-mpu6050-interfacing-with-ros">https://robotics.stackexchange.com/questions/70989/ardunio-imu-mpu6050-interfacing-with-ros</a>.</p>
+        <p>I tried to interface IMU  (mpu6050) which is controlled by Ardunio and it should send ROS messages  (Publishing the coordinates) I tried the following code </p>
+
+<pre><code>#include &lt;ros.h&gt;
+#include &lt;std_msgs/Int8.h&gt;
+#include &quot;I2Cdev.h&quot;
+#include &quot;MPU6050_6Axis_MotionApps20.h&quot;
+#include &quot;Wire.h&quot;
+std_msgs::Int8 ul_msg;
+ros::Publisher pub_ul(&quot;temperature&quot;, &amp;ul_msg);
+
+
+MPU6050 mpu;
+//MPU6050 mpu(0x69); // &lt;-- use for AD0 high
+
+#define LED_PIN 13 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
+bool blinkState = false;
+// MPU control/status vars
+bool dmpReady = false;  // set true if DMP init was successful
+uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount;     // count of all bytes currently in FIFO
+uint8_t fifoBuffer[64]; // FIFO storage buffer
+// orientation/motion vars
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorInt16 aa;         // [x, y, z]            accel sensor measurements
+VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float euler[3];         // [psi, theta, phi]    Euler angle container
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
+// packet structure for InvenSense teapot demo
+uint8_t teapotPacket[14] = { &#39;$&#39;, 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, &#39;\r&#39;, &#39;\n&#39; };
+// ================================================================
+// ===               INTERRUPT DETECTION ROUTINE                ===
+// ================================================================
+
+volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+void dmpDataReady() {
+    mpuInterrupt = true;
+}
+// ================================================================
+// ===                      INITIAL SETUP                       ===
+// ================================================================
+
+void setup() {
+
+
+        Wire.begin();
+       // TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz). Comment this line if having compilation difficulties with TWBR.
+        Serial.begin(57600);
+        while (!Serial);
+        Serial.println(&quot;Initializing I2C devices...&quot;);
+        mpu.initialize();
+        // verify connection
+        Serial.println(F(&quot;Testing device connections...&quot;));
+        Serial.println(mpu.testConnection() ? F(&quot;MPU6050 connection successful&quot;) : F(&quot;MPU6050 connection failed&quot;));
+        // wait for ready
+        Serial.println(F(&quot;\nSend any character to begin DMP programming and demo: &quot;));
+        while (Serial.available() &amp;&amp; Serial.read()); // empty buffer
+        while (!Serial.available());                 // wait for data
+        while (Serial.available() &amp;&amp; Serial.read()); // empty buffer again
+        // load and configure the DMP
+        Serial.println(F(&quot;Initializing DMP...&quot;));
+       devStatus = mpu.dmpInitialize();
+
+    // supply your own gyro offsets here, scaled for min sensitivity
+    mpu.setXGyroOffset(220);
+    mpu.setYGyroOffset(76);
+    mpu.setZGyroOffset(-85);
+    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
+
+    // make sure it worked (returns 0 if so)
+    if (devStatus == 0) {
+        // turn on the DMP, now that it&#39;s ready
+        Serial.println(F(&quot;Enabling DMP...&quot;));
+        mpu.setDMPEnabled(true);
+
+        // enable Arduino interrupt detection
+        Serial.println(F(&quot;Enabling interrupt detection (Arduino external interrupt 0)...&quot;));
+        attachInterrupt(0, dmpDataReady, RISING);
+        mpuIntStatus = mpu.getIntStatus();
+
+        // set our DMP Ready flag so the main loop() function knows it&#39;s okay to use it
+        Serial.println(F(&quot;DMP ready! Waiting for first interrupt...&quot;));
+        dmpReady = true;
+
+        // get expected DMP packet size for later comparison
+        packetSize = mpu.dmpGetFIFOPacketSize();
+    } else {
+        // ERROR!
+        // 1 = initial memory load failed
+        // 2 = DMP configuration updates failed
+        // (if it&#39;s going to break, usually the code will be 1)
+        Serial.print(F(&quot;DMP Initialization failed (code &quot;));
+        Serial.print(devStatus);
+        Serial.println(F(&quot;)&quot;));
+    }
+
+    // configure LED for output
+    pinMode(LED_PIN, OUTPUT);
+    ros::NodeHandle nh;
+     nh.initNode();
+  nh.advertise(pub_ul);
+}
+
+ros::NodeHandle nh;
+
+// ================================================================
+// ===                    MAIN PROGRAM LOOP                     ===
+// ================================================================
+
+void loop() {
+
+    // if programming failed, don&#39;t try to do anything
+    if (!dmpReady) return;
+
+    // wait for MPU interrupt or extra packet(s) available
+    while (!mpuInterrupt &amp;&amp; fifoCount &lt; packetSize) {
+        // other program behavior stuff here
+        // .
+        // .
+        // .
+        // if you are really paranoid you can frequently test in between other
+        // stuff to see if mpuInterrupt is true, and if so, &quot;break;&quot; from the
+        // while() loop to immediately process the MPU data
+        // .
+        // .
+        // .
+    }
+
+    // reset interrupt flag and get INT_STATUS byte
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+
+    // get current FIFO count
+    fifoCount = mpu.getFIFOCount();
+
+    // check for overflow (this should never happen unless our code is too inefficient)
+    if ((mpuIntStatus &amp; 0x10) || fifoCount == 1024) {
+        // reset so we can continue cleanly
+        mpu.resetFIFO();
+        Serial.println(F(&quot;FIFO overflow!&quot;));
+    }
+    // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    else if (mpuIntStatus &amp; 0x02) {
+        // wait for correct available data length, should be a VERY short wait
+        while (fifoCount &lt; packetSize) fifoCount = mpu.getFIFOCount();
+
+        // read a packet from FIFO
+        mpu.getFIFOBytes(fifoBuffer, packetSize);
+
+        // track FIFO count here in case there is &gt; 1 packet available
+        // (this lets us immediately read more without waiting for an interrupt)
+        fifoCount -= packetSize;
+            // display Euler angles in degrees
+            mpu.dmpGetQuaternion(&amp;q, fifoBuffer);
+            mpu.dmpGetGravity(&amp;gravity, &amp;q);
+            mpu.dmpGetYawPitchRoll(ypr, &amp;q, &amp;gravity);
+            Serial.print(&quot;ypr\t&quot;);
+            Serial.print(ypr[0] * 180/M_PI);
+                  ul_msg.data = int(ypr[0]);
+      pub_ul.publish(&amp;ul_msg);
+            Serial.print(&quot;\t&quot;);
+            Serial.print(ypr[1] * 180/M_PI);
+                  ul_msg.data = int(ypr[1]);
+      pub_ul.publish(&amp;ul_msg);
+            Serial.print(&quot;\t&quot;);
+            Serial.println(ypr[2] * 180/M_PI);
+                  ul_msg.data = int(ypr[2]);
+      pub_ul.publish(&amp;ul_msg);
+
+        // blink LED to indicate activity
+        blinkState = !blinkState;
+        digitalWrite(LED_PIN, blinkState);
+    }
+    nh.spinOnce();
+}
+</code></pre>
+
+<p>It uploads on to the ardunio board . But than it does not show the output in seial moitor. And when I try to echo the topic in ros it shows version mismatch between audrino ROS and the node
+I am using ROS Indigo</p>
+
+        <div class="owner"><p>Asked by <a href="/users/25377">ganesh</a> on 2015-12-20 12:07:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>did you try the code without the ROS part? so you can confirm that the arduino is in fact communicating with the IMU.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10481">Gary Servin</a> on 2015-12-20 17:47:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>does it show any output in serial monitor at all ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4160">nickw</a> on 2015-12-21 04:32:13 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>when I compile that on my computer for an arduino uno I get </p>
+
+<pre><code>Sketch uses 22,598 bytes (70%) of program storage space. Maximum is 32,256 bytes.
+Global variables use 1,746 bytes (85%) of dynamic memory, leaving 302 bytes for local variables. Maximum is 2,048 bytes.
+Low memory available, stability problems may occur.
+</code></pre>
+
+<p>I would suspect that is your issue. If your code works without the ROS code in you could try removing all references to Serial to free up memory as the code runs, or try using a board with more memory on it.</p>
+
+<p>When I compile it for a mega board I get</p>
+
+<pre><code>Sketch uses 23,604 bytes (9%) of program storage space. Maximum is 253,952 bytes.
+Global variables use 2,222 bytes (27%) of dynamic memory, leaving 5,970 bytes for local variables. Maximum is 8,192 bytes.
+</code></pre>
+
+<p>I haven&#39;t got you IMU so can&#39;t test whether that is the case.</p>
+
+<p>Running it on an arduino uno without the imu I get</p>
+
+<pre><code>Initializing I2C devices...
+Testing device connections...
+MPU6050 connection failed
+
+Send any character to begin DMP programming and demo: 
+</code></pre>
+
+<p>I just had a face palm moment too. You need to remove all the Serial prints you have anyway, as they will interfere with the node trying to make sense of the messages that are being sent to it by the ROS library over the serial port</p>
+
+<p>You also have </p>
+
+<pre><code>ros::NodeHandle nh;
+</code></pre>
+
+<p>twice - inside setup, and outside between setup and loop.</p>
+
+<p>You need to have it once, with global scope so put that up near the top like the examples they provide</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4160"></a> on 2015-12-21 04:46:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I tried to putting it in the global scope .But it still does not show the output in the serial monitor. If I remove all the</p>
+
+<p>ros::NodeHandle nh; and nh from the code it shows output in serial monitor but the ros does publich the data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25377">ganesh</a> on 2015-12-21 23:02:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>[ERROR] [WallTime: 1450757476.810495] Unable to sync with device; possible link problem or link software version mismatch such as hydro rosserial_python with groovy Arduino</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25377">ganesh</a> on 2015-12-21 23:12:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>when I tried to remove all the serial print and tried to  run this:&quot;rosrun rosserial_python serial_node.py /dev/ttyUSB0&quot; then it gave the above error</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25377">ganesh</a> on 2015-12-21 23:15:37 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I also played around with the mpu6050 connected to an arduino and wrote myself a small ROS node which connects to an example script from i2cdevlib. You can find this node here:</p>
+
+<p><a href="https://github.com/fsteinhardt/mpu6050_serial_to_imu">https://github.com/fsteinhardt/mpu6050_serial_to_imu</a></p>
+
+<p>Updated: now it reads the orientation, the accelerations and the rotational velocities .</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4889">fsteinhardt</a> on 2015-12-21 18:27:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I tried to putting it in the global scope .But it still does not show the output in the serial monitor. If I remove all the</p>
+
+<p>ros::NodeHandle nh; and nh from the code it shows output in serial monitor but the ros does publich the data.</p>
+
+<p>I also tried removing all serial prints it shows this error:
+[ERROR] [WallTime: 1450757476.810495] Unable to sync with device; possible link problem or link software version mismatch such as hydro rosserial_python with groovy Arduino</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25377">ganesh</a> on 2015-12-21 23:02:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

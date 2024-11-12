@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unable to see Rviz movement from odometry - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/250543">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Unable to see Rviz movement from odometry</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/77959/unable-to-see-rviz-movement-from-odometry">https://robotics.stackexchange.com/questions/77959/unable-to-see-rviz-movement-from-odometry</a>.</p>
+        <p>How do you diagnose why Rviz isn&#39;t showing any movement from when your robot publishes odometry messages?</p>
+
+<p>I have a simple Python node collecting encoder counts and converting them to odometry messages, which I adapted from <a href="http://answers.ros.org/question/11973/gathering-wheel-encoder-data-and-publishing-on-the-odom-topic/">this example</a>:</p>
+
+<pre><code>class WheelTrackerNode(object):
+
+    def __init__(self):
+
+        self._PreviousLeftEncoderCounts = None
+        self._PreviousRightEncoderCounts = None
+
+        self.x = 0.
+        self.y = 0.
+        self.th = 0.
+
+        self.vx = 0.
+        self.vy = 0.
+        self.vth = 0.
+
+        self.deltaLeft = 0
+        self.deltaRight = 0
+
+        self.odom_pub = rospy.Publisher(&#39;odom&#39;, Odometry, queue_size=10)
+
+        #self.odom_broadcaster = tf.TransformBroadcaster()
+        self.odom_broadcaster = tf2_ros.TransformBroadcaster()
+
+        self.last_time = None
+
+    def update_left(self, count):
+        &quot;&quot;&quot;
+        Called when the left encoder generates a tick.
+        &quot;&quot;&quot;
+        if self._PreviousLeftEncoderCounts is not None:
+            self.deltaLeft = count - self._PreviousLeftEncoderCounts
+            self.vx = self.deltaLeft * DistancePerCount
+            self.update()
+        self._PreviousLeftEncoderCounts = count
+
+    def update_right(self, count):
+        &quot;&quot;&quot;
+        Called when the right encoder generates a tick.
+        &quot;&quot;&quot;
+        if self._PreviousRightEncoderCounts is not None:
+            self.deltaRight = count - self._PreviousRightEncoderCounts
+            self.vy = self.deltaRight * DistancePerCount
+            self.update()
+        self._PreviousRightEncoderCounts = count
+
+    def update(self):
+
+        self.current_time = rospy.Time.now()
+        if self.last_time is not None:
+
+            # compute odometry in a typical way given the velocities of the robot
+            dt = (self.current_time - self.last_time).to_sec()
+            delta_x = (self.vx * cos(self.th) - self.vy * sin(self.th)) * dt
+            delta_y = (self.vx * sin(self.th) + self.vy * cos(self.th)) * dt
+            delta_th = self.vth * dt
+
+            self.x += delta_x
+            self.y += delta_y
+            self.th += delta_th
+
+            # since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+            #geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+            odom_quat = Quaternion(*tf.transformations.quaternion_from_euler(0, 0, self.th))
+
+            # first, we&#39;ll publish the transform over tf
+            #geometry_msgs::TransformStamped odom_trans;
+            odom_trans = TransformStamped()
+            odom_trans.header.stamp = self.current_time
+            odom_trans.header.frame_id = &quot;odom&quot;
+            odom_trans.child_frame_id = &quot;base_link&quot;
+            odom_trans.transform.translation.x = self.x
+            odom_trans.transform.translation.y = self.y
+            odom_trans.transform.translation.z = 0.0
+            odom_trans.transform.rotation = odom_quat
+
+            # send the transform
+            self.odom_broadcaster.sendTransform(odom_trans)
+
+            # next, we&#39;ll publish the odometry message over ROS
+            #nav_msgs::Odometry odom
+            odom = Odometry()
+            odom.header.stamp = self.current_time
+            odom.header.frame_id = &quot;odom&quot;
+
+            # set the position
+            odom.pose.pose.position.x = self.x
+            odom.pose.pose.position.y = self.y
+            odom.pose.pose.position.z = 0.0
+            odom.pose.pose.orientation = odom_quat
+
+            # set the velocity
+            odom.child_frame_id = &quot;base_link&quot;
+            odom.twist.twist.linear.x = self.vx
+            odom.twist.twist.linear.y = self.vy
+            odom.twist.twist.angular.z = self.vth
+
+            # publish the message
+            self.odom_pub.publish(odom)
+
+        self.last_time = self.current_time
+</code></pre>
+
+<p>I&#39;ve confirmed this works by running <code>rostopic echo /odom</code> when my encoders are turning and seeing messages like:</p>
+
+<pre><code>header: 
+  seq: 600
+  stamp: 
+    secs: 1481599927
+    nsecs: 382975101
+  frame_id: odom
+child_frame_id: base_link
+pose: 
+  pose: 
+    position: 
+      x: -345.517481299
+      y: -529.732867745
+      z: 0.0
+    orientation: 
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+twist: 
+  twist: 
+    linear: 
+      x: 3.40801269352
+      y: 3.78668077058
+      z: 0.0
+    angular: 
+      x: 0.0
+      y: 0.0
+      z: 0.0
+  covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+</code></pre>
+
+<p>However, when I view my robot in Rviz with:</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;arg name=&quot;model&quot; default=&quot;$(find mybot_description)/urdf/mybot.urdf.xacro&quot;/&gt;
+  &lt;arg name=&quot;gui&quot; default=&quot;true&quot; /&gt;
+  &lt;arg name=&quot;rvizconfig&quot; default=&quot;$(find mybot_description)/rviz/urdf.rviz&quot; /&gt;
+
+  &lt;param name=&quot;robot_description&quot; command=&quot;$(find xacro)/xacro --inorder $(arg model)&quot; /&gt;
+  &lt;param name=&quot;use_gui&quot; value=&quot;$(arg gui)&quot;/&gt;
+
+  &lt;node name=&quot;robot_state_publisher&quot; pkg=&quot;robot_state_publisher&quot; type=&quot;state_publisher&quot; /&gt;
+  &lt;node name=&quot;rviz&quot; pkg=&quot;rviz&quot; type=&quot;rviz&quot; args=&quot;-d $(arg rvizconfig)&quot; required=&quot;true&quot; /&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>the model stays fixed at the origin. My robot has a pan/tilt head, and if I move that, then that change is displayed, so I know Rviz is able to perceive TF messages. Why isn&#39;t Rviz perceiving TF messages involving the base_link?</p>
+
+<p>This is a screengrab of my Rviz setup:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/14823312107386274.png" alt="image description"></p>
+
+<p>The only issue I see is that there&#39;s an error with base<em>footprint, &quot;No transform from [base</em>footprint] to [base_link]&quot;. Would that be causing this problem? My URDF contains this link, so I&#39;m unsure why I&#39;m getting this error. How would I fix this error?</p>
+
+<p>My URDF:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;robot xmlns:xacro=&quot;http://www.ros.org/wiki/xacro&quot; name=&quot;mybot&quot;&gt;
+    &lt;xacro:include filename=&quot;$(find mybot_description)/urdf/materials.urdf.xacro&quot; /&gt;
+    &lt;!-- dimensions in meters --&gt;
+    &lt;xacro:property name=&quot;torso_radius&quot; value=&quot;0.075&quot; /&gt;&lt;!-- 150 mm diameter = 75 mm radius --&gt;
+    &lt;xacro:property name=&quot;torso_height&quot; value=&quot;0.16&quot; /&gt;&lt;!-- 160 mm height --&gt;
+    &lt;xacro:property name=&quot;neck_height&quot; value=&quot;0.015&quot; /&gt;
+    &lt;xacro:property name=&quot;camera_radius&quot; value=&quot;0.008&quot; /&gt;
+    &lt;xacro:property name=&quot;camera_thickness&quot; value=&quot;0.005&quot; /&gt;
+    &lt;xacro:property name=&quot;M_PI&quot; value=&quot;3.141592653589793&quot; /&gt;
+
+    &lt;link name=&quot;base_footprint&quot;&gt;
+        &lt;visual&gt;
+            &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 0 0&quot; /&gt;
+            &lt;geometry&gt;
+                &lt;box size=&quot;0.001 0.001 0.001&quot; /&gt;
+            &lt;/geometry&gt;
+        &lt;/visual&gt;
+        &lt;inertial&gt;
+            &lt;mass value=&quot;0.0001&quot; /&gt;
+            &lt;origin xyz=&quot;0 0 0&quot; /&gt;
+            &lt;inertia ixx=&quot;0.0001&quot; ixy=&quot;0.0&quot; ixz=&quot;0.0&quot; iyy=&quot;0.0001&quot; iyz=&quot;0.0&quot; izz=&quot;0.0001&quot; /&gt;
+        &lt;/inertial&gt;
+    &lt;/link&gt;
+
+    &lt;link name=&quot;base_link&quot;&gt;
+        &lt;visual&gt;
+            &lt;geometry&gt;
+                &lt;cylinder length=&quot;${torso_height}&quot; radius=&quot;${torso_radius}&quot; /&gt;
+            &lt;/geometry&gt;
+            &lt;origin xyz=&quot;0 0 ${torso_height/2}&quot; rpy=&quot;0 0 0&quot; /&gt;
+            &lt;material name=&quot;red&quot; /&gt;
+        &lt;/visual&gt;
+    &lt;/link&gt;
+
+    &lt;link name=&quot;neck&quot;&gt;
+        &lt;visual&gt;
+            &lt;geometry&gt;
+                &lt;cylinder length=&quot;${neck_height}&quot; radius=&quot;${torso_radius}&quot; /&gt;
+            &lt;/geometry&gt;
+            &lt;origin xyz=&quot;0 0 ${neck_height/2}&quot; rpy=&quot;0 0 0&quot; /&gt;
+            &lt;material name=&quot;green&quot; /&gt;
+        &lt;/visual&gt;
+    &lt;/link&gt;
+
+    &lt;link name=&quot;head&quot;&gt;
+        &lt;visual&gt;
+            &lt;geometry&gt;
+                &lt;sphere radius=&quot;${torso_radius}&quot; /&gt;
+            &lt;/geometry&gt;
+            &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 0 0&quot; /&gt;
+            &lt;material name=&quot;blue&quot; /&gt;
+        &lt;/visual&gt;
+    &lt;/link&gt;
+
+    &lt;link name=&quot;camera&quot;&gt;
+        &lt;visual&gt;
+            &lt;geometry&gt;
+                &lt;cylinder length=&quot;${camera_thickness}&quot; radius=&quot;${camera_radius}&quot; /&gt;
+            &lt;/geometry&gt;
+            &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 90 0&quot; /&gt;
+            &lt;material name=&quot;black&quot; /&gt;
+        &lt;/visual&gt;
+    &lt;/link&gt;
+
+    &lt;joint name=&quot;footprint_to_base_link_joint&quot; type=&quot;fixed&quot;&gt;
+        &lt;parent link=&quot;base_footprint&quot; /&gt;
+        &lt;child link=&quot;base_link&quot; /&gt;
+        &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 0 0&quot; /&gt;
+    &lt;/joint&gt;
+
+    &lt;joint name=&quot;base_link_to_neck_joint&quot; type=&quot;continuous&quot;&gt;
+        &lt;parent link=&quot;base_link&quot; /&gt;
+        &lt;child link=&quot;neck&quot; /&gt;
+        &lt;origin xyz=&quot;0 0 ${torso_height+neck_height}&quot; rpy=&quot;0 ${M_PI} 0&quot; /&gt;
+        &lt;axis xyz=&quot;0 0 1&quot; /&gt;
+    &lt;/joint&gt;
+
+    &lt;joint name=&quot;neck_to_head_joint&quot; type=&quot;revolute&quot;&gt;
+        &lt;parent link=&quot;neck&quot; /&gt;
+        &lt;child link=&quot;head&quot; /&gt;
+        &lt;origin xyz=&quot;0 0 ${-(torso_radius)}&quot; rpy=&quot;${M_PI/2} 0 ${M_PI}&quot; /&gt;
+        &lt;axis xyz=&quot;1 0 0&quot; /&gt;
+        &lt;limit lower=&quot;${(90-65)*M_PI/180}&quot; upper=&quot;${(90+65)*M_PI/180}&quot; effort=&quot;50&quot; velocity=&quot;1&quot;/&gt;
+    &lt;/joint&gt;
+
+    &lt;joint name=&quot;head_to_camera_joint&quot; type=&quot;fixed&quot;&gt;
+        &lt;parent link=&quot;head&quot; /&gt;
+        &lt;child link=&quot;camera&quot; /&gt;
+        &lt;origin xyz=&quot;0 ${torso_radius} 0&quot; rpy=&quot;0 0 0&quot; /&gt;
+    &lt;/joint&gt;
+
+&lt;/robot&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2186">Cerin</a> on 2016-12-21 09:49:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<pre><code>position: 
+  x: -345.517481299
+  y: -529.732867745
+</code></pre>
+</blockquote>
+
+<p>Not an answer, but just something to check: translations are always in meters in ROS, so this robot is over 300m away in X, and over half a kilometre in Y. Probably just test data, but perhaps check your scaling?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2016-12-21 10:23:14 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Try <code>odom</code> as your fixed frame in rviz. It seems like it is set as <code>base_link</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/23527">Akif</a> on 2016-12-22 04:13:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This was the issue. After I switched it, I couldn&#39;t tell at first, since the line from odom to base_link wasn&#39;t showing due to an incorrect scale, but after I fixed the scaling, the base_link was in view, clearly showing the link change as odometry updated.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2186">Cerin</a> on 2016-12-25 00:14:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Cerin Hi, I have the same problem. What does the scale mean if I have values like this
+ seq: 2084
+  stamp: 
+    secs: 1581670360
+    nsecs: 559353710
+  frame_id: odom
+child_frame_id: base_link
+pose: 
+  pose: 
+    position: 
+      x: 0.00172806205228
+      y: 7.86562370791e-09
+      z: 0.0
+    orientation: 
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+twist: 
+  twist:</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40531">arifle</a> on 2020-02-14 03:52:58 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

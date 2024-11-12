@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Constant Velocity for moving along the path - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402744">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Constant Velocity for moving along the path</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I have a Yaskawa Motoman GP50 working with ROS (noetic) and ubuntu 20.04, using packages Moveit and Descartes.</p>
+
+<p>When I create trajectories made by several waypoints, I can use time parameter for fixing the movement speed, but the problem is that doing so the robot almost stop in everypoint (making aceleration and deceleration ramps). Is there any way around for setting constant speed and make the robot move fly the points instead of move from one point to the next one?</p>
+
+<p>Thank you!</p>
+
+<hr>
+
+<p>CODE:</p>
+
+<p>pathtest.cpp</p>
+
+<pre><code>// Core ros functionality like ros::init and spin
+#include &lt;ros/ros.h&gt;
+// ROS Trajectory Action server definition
+#include &lt;control_msgs/FollowJointTrajectoryAction.h&gt;
+// Means by which we communicate with above action-server
+#include &lt;actionlib/client/simple_action_client.h&gt;
+
+// Includes the descartes robot model we will be using
+#include &lt;descartes_moveit/ikfast_moveit_state_adapter.h&gt;
+
+// Includes the descartes trajectory type we will be using
+#include &lt;descartes_trajectory/axial_symmetric_pt.h&gt;
+#include &lt;descartes_trajectory/cart_trajectory_pt.h&gt;
+
+// Includes the planner we will be using
+#include &lt;descartes_planner/dense_planner.h&gt;
+
+// Includes the utility function for converting to trajectory_msgs::JointTrajectory&#39;s
+#include &lt;descartes_utilities/ros_conversions.h&gt;
+#include &lt;eigen_conversions/eigen_msg.h&gt;
+
+// Includes Moveit Planning Interface
+#include &lt;moveit/move_group_interface/move_group_interface.h&gt;
+
+// READING INCLUDES
+#include &lt;iostream&gt;
+#include &lt;fstream&gt;
+#include &lt;vector&gt;
+#include &lt;cstring&gt;
+#include &lt;string&gt;
+#include &lt;algorithm&gt;
+#include &lt;iterator&gt;
+#include &lt;cassert&gt;
+#include &lt;sstream&gt;
+
+// Initialize 
+std::vector&lt;descartes_core::TrajectoryPtPtr&gt; makePath(const std::vector&lt;std::vector&lt;float&gt;&gt;&amp; trajectoryPath);
+std::vector&lt;std::vector&lt;float&gt;&gt;  readPath();
+
+// Create subscriber for first point
+std::vector&lt;double&gt; getCurrentJointState(const std::string&amp; topic)
+{
+  sensor_msgs::JointStateConstPtr state = ros::topic::waitForMessage&lt;sensor_msgs::JointState&gt;(topic, ros::Duration(0.0));
+  if (!state) throw std::runtime_error(&quot;Joint state message capture failed&quot;);
+  return state-&gt;position;
+}
+
+// Sends a ROS trajectory to the robot controller
+bool executeTrajectory(const trajectory_msgs::JointTrajectory&amp; trajectory);
+
+int main(int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init(argc, argv, &quot;descartes_tutorials&quot;);
+  ros::NodeHandle nh;
+
+  ros::AsyncSpinner spinner (1);
+  spinner.start();
+
+
+  descartes_core::RobotModelPtr model (new descartes_moveit::IkFastMoveitStateAdapter());
+
+  // Name of description on parameter server
+  const std::string robot_description = &quot;robot_description&quot;;
+
+  // kinematic group
+  const std::string group_name = &quot;acroba_robot&quot;;
+
+  // Base frame
+  const std::string world_frame = &quot;base_link&quot;;
+
+  // tool center point frame 
+  const std::string tcp_frame = &quot;link_6_t&quot;;
+
+
+  // model initializes
+  if (!model-&gt;initialize(robot_description, group_name, world_frame, tcp_frame))
+  {
+    ROS_INFO(&quot;Could not initialize robot model&quot;);
+    return -1;
+  }
+
+  model-&gt;setCheckCollisions(true); // turn on collision checking.
+
+
+  // read path from test.pto
+  std::vector&lt;std::vector&lt;float&gt;&gt;  points_test = readPath();
+
+  // convert path to TrajectoryPtPtr
+  std::vector&lt;descartes_core::TrajectoryPtPtr&gt; points = makePath(points_test);
+
+  // create a planner
+  descartes_planner::DensePlanner planner;
+
+  // initialize planner
+  if (!planner.initialize(model))
+  {
+    ROS_ERROR(&quot;Failed to initialize planner&quot;);
+    return -2;
+  }
+
+  if (!planner.planPath(points))
+  {
+    ROS_ERROR(&quot;Could not solve for a valid path&quot;);
+    return -3;
+  }
+
+  std::vector&lt;descartes_core::TrajectoryPtPtr&gt; result;
+  if (!planner.getPath(result))
+  {
+    ROS_ERROR(&quot;Could not retrieve path&quot;);
+    return -4;
+  }
+
+  // get joint names
+  std::vector&lt;std::string&gt; names;
+  nh.getParam(&quot;controller_joint_names&quot;, names);
+
+  // Create a JointTrajectory
+  trajectory_msgs::JointTrajectory joint_solution;
+  joint_solution.joint_names = names;
+
+  // Define a default velocity
+  const static double default_joint_vel = 0.3; // rad/s
+  if (!descartes_utilities::toRosJointPoints(*model, result, default_joint_vel, joint_solution.points))
+  {
+    ROS_ERROR(&quot;Unable to convert Descartes trajectory to joint points&quot;);
+    return -5;
+  }
+
+  // Send the ROS trajectory to the robot for execution
+  if (!executeTrajectory(joint_solution))
+  {
+    ROS_ERROR(&quot;Could not execute trajectory!&quot;);
+    return -6;
+  }
+
+  // Wait till user kills the process (Control-C)
+  ROS_INFO(&quot;Done!&quot;);
+  return 0;
+}
+
+
+descartes_core::TrajectoryPtPtr makeCartesianPoint(const Eigen::Isometry3d&amp; pose, double dt)
+{
+  using namespace descartes_core;
+  using namespace descartes_trajectory;
+
+  return TrajectoryPtPtr( new CartTrajectoryPt( TolerancedFrame(pose), TimingConstraint(dt)) );
+}
+
+descartes_core::TrajectoryPtPtr makeTolerancedCartesianPoint(const Eigen::Isometry3d&amp; pose, double dt)
+{
+  using namespace descartes_core;
+  using namespace descartes_trajectory;
+  return TrajectoryPtPtr( new AxialSymmetricPt(pose, M_PI / 12.0, AxialSymmetricPt::Z_AXIS, TimingConstraint(dt)) );
+}
+
+// Function for reading points from file 
+std::vector&lt;std::vector&lt;float&gt;&gt; readPath()
+{
+  // Lee el fichero de puntos
+  std::ifstream file(&quot;/home/ubuntu/ws_acroba/src/descartes/descartes_tutorial1/src/test.pto&quot;);
+  std::vector&lt;std::vector&lt;float&gt;&gt; result;
+
+  std::string line;
+
+  // Read points file
+  if(file.is_open())
+  {
+    while (getline (file, line))
+    {
+      std::vector&lt;float&gt; point6D;
+      std::istringstream iss(line);
+
+      std::copy(std::istream_iterator&lt;float&gt;(iss),
+        std::istream_iterator&lt;float&gt;(),
+        std::back_inserter(point6D));
+
+    if ((point6D.size() == 3) || (point6D.size() == 6))
+    {
+      while (point6D.size() &lt; 6)
+        point6D.push_back(0);   
+        }
+
+    }
+
+    file.close();
+
+  }
+  else std::cerr&lt;&lt;&quot;File not found !&quot;&lt;&lt;std::endl;
+
+
+  return result;
+}
+
+std::vector&lt;descartes_core::TrajectoryPtPtr&gt; makePath(const std::vector&lt;std::vector&lt;float&gt;&gt;&amp; trajectoryPath)
+{
+
+  // Inicialize output variable
+  std::vector&lt;descartes_core::TrajectoryPtPtr&gt; result; 
+  // Time between points
+  const static double time_between_points = 3;
+
+  // Getting current pos and tranform to joints
+  std::vector&lt;double&gt; start_joints = getCurrentJointState(&quot;joint_states&quot;);
+  descartes_core::TrajectoryPtPtr pt (new descartes_trajectory::JointTrajectoryPt(start_joints));
+
+  // First point will be current pos
+  result.push_back(pt);
+
+  // Create a pose facing down
+  Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+  pose *= Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX());
+
+  // Moving to the input trajectory
+  for (const auto&amp; point6D : trajectoryPath)
+  {
+    Eigen::Isometry3d pattern_pt = Eigen::Isometry3d::Identity();
+    pattern_pt.translation() = Eigen::Vector3d(point6D[0], point6D[1], point6D[2]);
+    descartes_core::TrajectoryPtPtr pt = makeTolerancedCartesianPoint(pattern_pt * pose, time_between_points);
+    result.push_back(pt);
+  }
+
+  // Coming back to initial pos
+  result.push_back(pt);   
+
+  return result;
+}
+
+bool executeTrajectory(const trajectory_msgs::JointTrajectory&amp; trajectory)
+{
+  // Create a Follow Joint Trajectory Action Client
+  actionlib::SimpleActionClient&lt;control_msgs::FollowJointTrajectoryAction&gt; ac (&quot;joint_trajectory_action&quot;, true);
+  if (!ac.waitForServer(ros::Duration(2.0)))
+  {
+    ROS_ERROR(&quot;Could not connect to action server&quot;);
+    return false;
+  }
+
+  control_msgs::FollowJointTrajectoryGoal goal;
+  goal.trajectory = trajectory;
+  goal.goal_time_tolerance = ros::Duration(0.1);
+
+  return ac.sendGoalAndWait(goal) == actionlib::SimpleClientGoalState::SUCCEEDED;
+}
+</code></pre>
+
+<p>test.pto</p>
+
+<pre><code>1.0 0.5 1.0
+1.2 0.5 1.0
+1.5 0.5 1.0
+1.2 -0.3 1.0
+1.2 -0.5 1.0
+1.0 -0.5 1.0
+1.0 0 1.0
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/108937">Monzon</a> on 2022-06-23 01:50:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I am not familiar with this particular robot arm, but it sounds like you are using a <code>position_controller</code> plugin in the <code>ros_control</code> subsystem. There exist more sophisticated trajectory controller plugins which generate smoother movement, but they require that your arm support velocity or effort input. Start here:</p>
+
+<p><a href="http://wiki.ros.org/ros_control#Controllers">http://wiki.ros.org/ros_control#Controllers</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-06-26 09:59:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Mike,
+No, I am using <code>JointTrajectoryController</code>, but anyway I guess that JointTrajectoryController is driven the path that Moveit generate between two points. My problem comes with path generated with several points (more than two), then the robot slow down to the point and speed up again for going to the next one.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108937">Monzon</a> on 2022-06-27 01:20:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The majority of <code>JointTrajectory</code> have more than 2 points, and (in general) an arm can move smoothly if you provide the necessary information. Have you set the <code>velocities[]</code> field in the message?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-06-27 07:09:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have added the code I am using to the Question. 
+Right now, I am adding the velocity parameter through the &quot;timing constraint&quot; in the <code>AxialSymmetricPt</code> funcion. 
+The only velocity msg that I can found is the one in the <code>/joint_states</code> topic, but I guess that it is a only reading field.
+How could I set the <code>velocities[]</code> field you comment?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108937">Monzon</a> on 2022-06-27 11:23:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The velocity arrays are inside the <code>trajectory_msgs/JointTrajectory</code> message. The value specifies a joint&#39;s target velocity (radians/second) just as it reaches the waypoint position.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-06-28 06:53:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>But that is a problem Mike, I need a cartesian constant speed. If I command the speed in joints the velocity will depend on the position.
+Well, maybe I could use the inverse kinematic for calculate the joint speed from the cartesian speed if there is no easier way.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108937">Monzon</a> on 2022-06-29 02:35:50 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

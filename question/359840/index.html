@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>controller_manager behaviour when a hardware error occurs - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/359840">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>controller_manager behaviour when a hardware error occurs</h2>
+      <div class="question">
+        <p>I&#39;m integrating ros<em>control and thus controller</em>manager with a new robot, but I can&#39;t really figure out the best way to handle robot hardware errors.</p>
+
+<p>Let&#39;s say a robot goes into an error state while a joint<em>trajectory</em>controller is running and the joints stop servoing, right now I call update() with reset_controllers == true which aborts any active action goal, but the controller is restarted and will accept new goals. If another action is sent to the controller, it tries to run happily but it actually isn&#39;t moving the arm because the arm has stopped servoing!</p>
+
+<p>It seems like I almost need a stop<em>controllers flag in the update function, or otherwise an interface in controller</em>manager to stop the controllers without having to call the switch_controllers service which seems messy.</p>
+
+<p>I tried completely destroying the controller<em>manager while the arm is disabled but I&#39;d quite like to keep passive controllers like the joint</em>state_controller running.</p>
+
+<p>What&#39;s the recommended way to deal with this?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/53506">grouchy</a> on 2020-08-18 13:05:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I&#39;m not sure whether they&#39;re <em>recommended</em>, but I&#39;ve seen two approaches:</p>
+
+<ol>
+<li>use an external node which monitors your robot (make your <code>hardware_interface</code> publish some sort of robot state which includes whether it&#39;s errored or not) and then have the external node call the <code>switch_controllers</code> service of the <code>controller_manager</code>. An example of this approach would be <code>Universal_Robots_ROS_Driver</code> (<a href="https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/tree/2e44f8629f6332c1a88361e7a202fad8d99dff00#contents">overview in readme</a>, <a href="https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/tree/2e44f8629f6332c1a88361e7a202fad8d99dff00/controller_stopper">controller_stopper</a> node).</li>
+<li>as part of your <code>hardware_interface</code>, check the state of your robot, and whenever you encounter an error, use <code>ControllerManager::getControllerByName(..)</code> to retrieve all controllers you&#39;d like/need to stop, and when any of them <code>isRunning()</code>, call <code>stopRequest(..)</code>. I&#39;ve seen this approach used in a proprietary component, so I can&#39;t link you to it.</li>
+</ol>
+
+<p>Both approaches result in the same thing: a set of controllers, preconfigured by you (or your user), will be stopped upon the occurence/detection of an error (either in the remote system, or your own <code>hardware_interface</code>).</p>
+
+<blockquote>
+<p>an interface in controller_manager to stop the controllers without having to call the switch_controllers service which seems messy</p>
+</blockquote>
+
+<p>It is, but on the other hand, you do use the interfaces as they were intended to be used.</p>
+
+<p>At least the first approach removes the responsiblity of managing controller runtime state from the <code>hardware_interface</code>, and places it in a separate node. That seems cleaner than embedding the logic in it (at the very least the separate node allows to relatively easily change the <em>policy</em>).</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<blockquote>
+<p>As you say, the controllers are not the responsibility of the hardware interface, they were owned by whatever client is using the controllers, </p>
+</blockquote>
+
+<p>If you understood it that way, that&#39;s not what I meant to say.</p>
+
+<p>I agree the controllers are not the responsibility of the <code>hardware_interface</code>, but I don&#39;t agree they are owned by the &quot;client&quot;. They are managed by the <code>controller_manager</code>, which in the end is owned by the node which wraps the entire <code>hardware_interface</code>.</p>
+
+<blockquote>
+<p>thus the client should decide when to stop controllers when things go wrong, which is closer in concept to option 1.</p>
+</blockquote>
+
+<p>It would be a different client, but yes: keeping that separate from the <code>hardware_interface</code> itself seems like an OK idea to me.</p>
+
+<blockquote>
+<p>I think a good compromise would be a dynamic resource based approach where the joint resources could be made unavailable at any time by the hardware interface (e.g. position interfaces made unavailable, but joint states still available when the arm goes into disabled mode), and controllers can react accordingly by cancelling actions and refusing to start new ones until their resources are returned.</p>
+</blockquote>
+
+<p>I would have to reason about it a bit more, but I&#39;m not sure I like the idea of removing command handles upon error. Semantically, it would seem like it &quot;gives the wrong message&quot;: it&#39;s not the command facilities of your robot suddenly don&#39;t exist any more, it&#39;s the state of those resources has changed (ie: command handles can&#39;t actually command the joint they represent).</p>
+
+<p>Seeing as this is a state-based limitation, using a state-machine to keep track of this and then stop (and reset) controllers based on the state of the <code>hardware_interface</code> doesn&#39;t seem like a bad thing.</p>
+
+<p>A related discussion on the <code>ros_controllers</code> issue tracker: <a href="https://github.com/ros-controls/ros_controllers/issues/429">ros-controls/ros_controllers#429</a>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-08-18 13:58:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I reckon option 2 fits best my understanding of how ros_control works, though most likely its my understanding that&#39;s wrong in the first place. As you say, the controllers are not the responsibility of the hardware interface, they were owned by whatever client is using the controllers, and thus the client should decide when to stop controllers when things go wrong, which is closer in concept to option 1.</p>
+
+<p>I think a good compromise would be a dynamic resource based approach where the joint resources could be made unavailable at any time by the hardware interface (e.g. position interfaces made unavailable, but joint states still available when the arm goes into disabled mode), and controllers can react accordingly by cancelling actions and refusing to start new ones until their resources are returned.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53506">grouchy</a> on 2020-08-18 16:41:15 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros2 subscriber to allow a single publisher - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/378858">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros2 subscriber to allow a single publisher</h2>
+      <div class="question">
+        <p>Hi, </p>
+
+<p>I understand that ros was not meant to have a single publisher to a topic or maintain a relation ship with a particular publisher. Kindly understand that our setup requires at-most single publisher to a given topic because of its safety critical application and other constraints and the frequency of publishing is 2 ms. Hence we chose publisher/subscriber mode. </p>
+
+<p>Our example node registers its publisher by calling a service with publisher&#39;s gid as a payload.  Once the client node receives success, publisher should start publishing in the topic (register and then publish). Although other publishers can publish into the same topic but the subscriber handler discards the message based on the registered publisher gid.  </p>
+
+<p>It couldn&#39;t come with a better way of dealing with this, if you have some suggestions kindly let me know and the node2 side code looks also bit complicated.</p>
+
+<p><strong>RegisterFTSensor.srv</strong></p>
+
+<pre><code># Note: &#39;fun&#39; is short for function of the service to be performed
+bool FUN_UNREGISTER = 0
+bool FUN_REGISTER = 1
+
+# maximum size of the unique id.
+uint8  PUBLISHER_GUID_SIZE = 24
+
+# request fields
+bool fun
+uint8[24] wrench_publisher_gid
+---
+bool success
+</code></pre>
+
+<p><strong>Node 1 Server</strong></p>
+
+<pre><code>class FTServer : public rclcpp::Node 
+{  
+std::unique_ptr&lt;std::array&lt;uint8_t&gt;[]&gt; registered_gid;
+rclcpp::Service&lt;RegisterFTSensor&gt;::SharedPtr externalFTSensorRegistrationSrv;
+rclcpp::Subscription&lt;geometry_msgs::msg::WrenchStamped&gt;::SharedPtr externalFTSensorSub;
+
+// service handler
+void handleExternalFTSensorRegistrationSrv(const std::shared_ptr&lt;rmw_request_id_t&gt; requestHeader,
+      const std::shared_ptr&lt;RegisterFTSensor::Request&gt; request,
+      std::shared_ptr&lt;RegisterFTSensor::Response&gt; response)
+{
+     // pseudo code
+     if (!registered_gid) {
+     registered_gid = std::make_unique(std::experimental::make_array(request-&gt;wrench_publisher_gid));
+     .....
+    }
+}
+
+// subscription handler
+void handleExternalFTSensorSub(const geometry_msgs::msg::WrenchStamped::SharedPtr wrenchStamped,
+                                 const rclcpp::MessageInfo&amp; message_info)
+{
+    // pseudo code
+    if (info.publisher_gid.data == registered_gid) {
+        // then process
+     }
+}
+</code></pre>
+
+<p>}</p>
+
+<p><strong>Node 2 Client</strong></p>
+
+<pre><code>using namespace std::chrono_literals;
+
+RegisterFTSensor::Response::SharedPtr send_request(
+    rclcpp::Node::SharedPtr node,
+    rclcpp::Client&lt;RegisterFTSensor&gt;::SharedPtr client,
+    RegisterFTSensor::Request::SharedPtr request) {
+  auto result = client-&gt;async_send_request(request);
+  // Wait for the result.
+
+  if (rclcpp::spin_until_future_complete(node, result) == rclcpp::FutureReturnCode::SUCCESS) {
+    return result.get();
+  } else {
+    return NULL;
+  }
+}
+
+int main(int argc, char** argv) {
+  // Force flush of the stdout buffer.
+  setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+
+  // Initialize ROS
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared(&quot;ft_talker&quot;);
+  auto publisher = node-&gt;create_publisher&lt;geometry_msgs::msg::WrenchStamped&gt;(&quot;external_wrench&quot;, 10);
+  auto client = node-&gt;create_client&lt;RegisterFTSensor&gt;(&quot;register_ft_sensor&quot;);
+
+// Obtain publisher gid
+  const rmw_gid_t&amp; publisher_rmw_gid = publisher-&gt;get_gid();
+
+  // Create a request using publisher gid
+  auto request = std::make_shared&lt;srv::RegisterFTSensor::Request&gt;();
+  request-&gt;fun = RegisterFTSensor::Request::FUN_REGISTER;
+  std::copy(std::begin(publisher_rmw_gid.data), std::end(publisher_rmw_gid.data),
+            (request-&gt;wrench_publisher_gid).begin());
+
+  // wait for service available
+  while (!client-&gt;wait_for_service(1s)) {
+    if (!rclcpp::ok()) {
+      RCLCPP_ERROR(node-&gt;get_logger(), &quot;Interrupted while waiting for the service. Exiting.&quot;);
+      return 0;
+    }
+    RCLCPP_INFO(node-&gt;get_logger(), &quot;service not available, waiting again...&quot;);
+  }
+
+  // send request and receive result
+  auto result = send_request(node, client, request);
+  if (result) {
+    RCLCPP_INFO_STREAM(node-&gt;get_logger(), &quot;FT Sensor is registered: &quot; &lt;&lt; result-&gt;success);
+  } else {
+    RCLCPP_ERROR(node-&gt;get_logger(), &quot;Interrupted while waiting for response. Exiting.&quot;);
+  }
+
+  // Publisher
+  bool registered = result-&gt;success;
+  if (registered) {
+    rclcpp::WallRate loop_rate(2ms);
+    while (rclcpp::ok()) {
+      auto message = std::make_unique&lt;geometry_msgs::msg::WrenchStamped&gt;();
+      // message-&gt;header.seq = 123;
+      message-&gt;header.stamp = node-&gt;get_clock()-&gt;now();
+      message-&gt;header.frame_id = &quot;tool&quot;;
+      // fill other values
+      try {
+      publisher-&gt;publish(std::move(message));
+      rclcpp::spin_some(node);
+      } catch (const rclcpp::exceptions::RCLError&amp; e) {
+       RCLCPP_ERROR(node-&gt;get_logger(), &quot;unexpectedly failed with %s&quot;, e.what());
+     }
+     loop_rate.sleep();
+    }
+  }
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/28829">BhanuKiran.Chaluvadi</a> on 2021-05-23 11:56:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Could you clarify what your question is exactly?</p>
+
+<p>Additionally: I&#39;m not sure exactly what your requirements are, but controlling <em>which</em> nodes are allowed to communicate seems like something SROS2&#39;s ACL support could be used for. I haven&#39;t tested just that part for something like this, but it could work.</p>
+
+<p>Refer to <a href="https://github.com/ros2/sros2/blob/e5e90f05c3d800c51648e02d48d30ed4d6158820/SROS2_Linux.md#access-control">SROS2: Access Control</a> for an example (you&#39;ll probably need to follow the instructions in the preceding sections as well).</p>
+
+<p>The code you show doesn&#39;t seem very safe, nor secure. Without encryption, there are various man-in-the-middle possibilities. Denial-of-service also seems possible, due to &quot;other publishers can publish, but msgs will be ignored&quot;.</p>
+
+<blockquote>
+<p>Kindly understand that our setup requires at-most single publisher to a given topic</p>
+</blockquote>
+
+<p>because of the <em>single point of control</em> requirement in the relevant safety standards?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-05-23 14:20:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn, We have multiple ft sensors  in our system.  Multiple Node 2 - each has a client to a service and a publisher to a topic. plz refer above code .  <strong>At any given session (can be minute/hour/days), single Node2 publisher messages should be processed by Node 1 discarding the messages from other publishers</strong>.  In order to achieve this,  we are using a publisher gid obtained from  message_info  of subscriber call back function.</p>
+
+<p><strong>Process :</strong> </p>
+
+<p>Node2 calls a service  <code>RegisterFTSensor.srv</code>  with its publishers gid as payload. Once the Node1 receives a service call back <code>handleExternalFTSensorRegistrationSrv</code>  it saves  <code>wrench_publisher_gid</code> as local variable.  After which subscriber callback function <code>handleExternalFTSensorSub</code> use this stored gid to filter messages from specific publisher.   After the a while (minutes/hours/days) the client unegister itself by calling the same service with publishers gid. After which any other ftsensor  Node 2 can register and repeat the same.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28829">BhanuKiran.Chaluvadi</a> on 2021-05-25 01:44:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn, </p>
+
+<pre><code>Kindly understand that our setup requires at-most single publisher to a given topic
+</code></pre>
+
+<p>Yes, this is a safety requirement.</p>
+
+<pre><code>The code you show doesn&#39;t seem very safe, nor secure. Without encryption, there are various man-in-the-middle possibilities. Denial-of-service also seems possible, due to &quot;other publishers can publish, but msgs will be ignored&quot;. 
+</code></pre>
+
+<p>Can you explain this a bit more ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28829">BhanuKiran.Chaluvadi</a> on 2021-05-25 01:46:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>DoS: just flood your subscriber with messages from multiple publishers. Even though the messages are ignored, your callback will still be called, requiring your executor to spend time processing incoming events, your callback to get at least through the <code>if ( not_a_registered_id )</code>, etc, etc. That&#39;s all processing time which you now can&#39;t spend on anything else. I believe if a sufficient amount of traffic is sent to your subscriber, it might get difficult for legitimate messages to be processed in time.</p>
+
+<p>MitM: your DDS traffic is not encrypted (or at least: you don&#39;t state so). So any attacker could sniff your gid, spoof traffic coming from a publisher with that gid and do whatever they want without your subscriber knowing.</p>
+
+<p>MitM2: attacker sniffs traffic during registration of your pub&lt;-&gt;sub pair, intercepts the gid, injects their own and now <em>they</em> control the session.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-05-25 02:02:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m not a security expert, nor do I claim to be able to do these things immediately, but if you&#39;re citing safety regulations and intend for the system you describe to help adhere to those regulations, I believe it&#39;s worthwhile to think about this.</p>
+
+<p>Personally I would still take a look at the ACLs supported by SROS2, as they seem to support what you&#39;re after, without adding a custom authentication layer at the application level. The main uncertainty I have right now would be whether they can be dynamically updated. But perhaps a question should be whether that should even be allowed.</p>
+
+<p>That would depend on your application, and I don&#39;t know what that is (neither do I need to).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-05-25 02:03:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

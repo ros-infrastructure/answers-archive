@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Controlling a quaternion with 6D controller - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/157626">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Controlling a quaternion with 6D controller</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/59014/controlling-a-quaternion-with-6d-controller">https://robotics.stackexchange.com/questions/59014/controlling-a-quaternion-with-6d-controller</a>.</p>
+        <p>To control a robotic arm, I am computing a geometry_msgs::Pose to send to the setFromIK method in ROS control. The Pose has a position and a quaternion. What I am trying to do is control the pose in realtime using a spacenav controller, which has 3 positional and 3 rotational axes.</p>
+
+<p>I am able to set the x, y, and z of the position part of the pose just fine. I am also able to set the quaternion just fine as well, but my current problem is that controlling the quaternion is extremely unintuitive, since rotation is not commutative. i.e., if I rotate 180 degrees about the x-axis, then the control of the rotation about the z-axis gets inverted.</p>
+
+<p>Is there any way that I can control the rotation from a sort of &quot;global reference frame,&quot; if that makes any sense? I would like it so that if I twist the joystick clockwise about z, the pose will rotate accordingly, instead of &quot;sometimes rotating clockwise, sometimes rotating counterclockwise.&quot;</p>
+
+<p>Here is what I&#39;m currently doing (I&#39;ve removed everything not related to the quaternion):</p>
+
+<pre><code>while (true) {
+  // ... Calculate position ...
+  double roll  =  joy_axes[3];
+  double pitch =  joy_axes[4];
+  double yaw   = -joy_axes[5];
+  current_quaternion = last_quaternion * tf::createQuaternionFromRPY(roll, pitch, yaw);
+  tf::quaternionTFToMsg(current_quaternion, current_pose.orientation);
+  // ... Compute inverse kinematics; convert pose to PoseStamped, publish resulting pose if a solution was found ...
+}
+</code></pre>
+
+<p>By the way, I am converting the pose to a PoseStamped, with frame<em>id of &quot;base</em>link.&quot; This may or may not have anything to do with how the quaternion is controlled.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4288">duffany1</a> on 2014-04-25 13:39:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I don&#39;t know if you&#39;ve resolved this or not, but I just came across the question. You just need to do some TF manipulation with the appropriate frames. Here&#39;s one way to do it; I&#39;m leaving the following in long form for clarity...sorry about the variable names, but I think they&#39;re distinguishable enough (and I <i>think</i> I kept &#39;em consistent).</p>
+
+<p>Let&#39;s say you want to rotate <code>left_hand</code> in the <code>map</code> frame:
+<pre><code>// set up, note that roll, pitch, and yaw are doubles you captured
+// you may need to manipulate the values to make sense in radians
+tf::TransformListener tf_;
+tf::Quaternion q_6d = tf::createQuaternionFromRPY(roll, pitch, yaw);
+tf::Stamped<a href="tf::Quaternion">tf::Quaternion</a> qs_6d(q_6d, ros::Time(0), &quot;/left_hand&quot;);</p>
+
+<p>// get the transform from source (map) to target (hand) frame
+tf::StampedTransform st_hand;
+try {
+    tf-&gt;lookupTransform(&quot;/left_hand&quot;, &quot;/map&quot;, ros::Time(0), st_hand);
+} catch (tf::TransformException &amp;e) {
+    ROS_ERROR(&quot;shift orientation frame: [%s]&quot;, e.what());
+    return;
+}
+// apply your 6d rotation to target (hand) orientation
+tf::Quaternion q_rot = qs_6d * st_hand.getRotation();
+tf::Stamped<a href="tf::Quaternion">tf::Quaternion</a> qs_rot(q_rot, ros::Time(0), &quot;/left_hand&quot;);</p>
+
+<p>// put rotated target (hand) quaternion back in source (map) frame
+tf::Stamped<a href="tf::Quaternion">tf::Quaternion</a> sq_map;
+try {
+    tf-&gt;transformQuaternion(&quot;/map&quot;, qs_rot, sq_map);
+} catch (tf::TransformException &amp;e) {
+    ROS_ERROR(&quot;shift orientation quat: [%s]&quot;, e.what());
+    return;
+}
+// convert to quaternion stamped message, can put that in pose...
+geometry_msgs::QuaternionStamped qs_msg;
+tf::quaternionStampedTFToMsg(sq_map, qs_msg);
+</code></pre></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2050">kramer</a> on 2014-08-26 22:50:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I actually did wind up solving this problem, and the solution was much simpler than I thought it would be (in my case, at least). I&#39;ll add it as an answer for future reference (something I should have done months ago).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4288">duffany1</a> on 2014-08-26 23:18:23 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I wound up solving this problem. The fix was simple, though I&#39;m not too familiar with the mathematical reasoning behind why this solution works, other than the non-commutativity of matrix multiplication. I needed to change</p>
+
+<pre><code>current_quaternion = last_quaternion * tf::createQuaternionFromRPY(roll, pitch, yaw);
+</code></pre>
+
+<p>to</p>
+
+<pre><code>current_quaternion = tf::createQuaternionFromRPY(roll, pitch, yaw) * last_quaternion;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4288">duffany1</a> on 2014-08-26 23:22:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

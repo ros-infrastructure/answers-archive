@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>computeCartesianPath() from MoveIt doesn't create a Trajectory - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/201210">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>computeCartesianPath() from MoveIt doesn't create a Trajectory</h2>
+      <div class="question">
+        <p>Hello, 
+I&#39;m trying to run the code bellow, but I the computeCartesianPath()-function (inside Solverfunction) won&#39;t create a Trajectory. I based this code on the <a href="https://github.com/ros-industrial-consortium/fermi/blob/hydro-devel/moveit_cartesian_plan_plugin/src/generate_cartesian_path.cpp">Moveit Cartesian Path Planner Plugin</a>. 
+Running the original code works fine.</p>
+
+<p>Anybody knows what&#39;s wrong?</p>
+
+<pre><code>#include &lt;moveit/move_group_interface/move_group.h&gt;
+#include &lt;moveit/robot_trajectory/robot_trajectory.h&gt;
+#include &lt;ros/ros.h&gt;
+
+#include &lt;moveit/robot_model_loader/robot_model_loader.h&gt;
+#include &lt;moveit/planning_interface/planning_interface.h&gt;
+#include &lt;moveit/planning_scene_interface/planning_scene_interface.h&gt;
+#include &lt;moveit/planning_scene/planning_scene.h&gt;
+#include &lt;moveit/kinematic_constraints/utils.h&gt;
+#include &lt;moveit_msgs/DisplayTrajectory.h&gt;
+#include &lt;moveit_msgs/PlanningScene.h&gt;
+
+#include &lt;boost/function.hpp&gt;
+#include &lt;boost/assign/list_of.hpp&gt;
+#include &lt;boost/assert.hpp&gt;
+#include &lt;math.h&gt;
+#include &lt;moveit/robot_state/conversions.h&gt;
+#include &lt;moveit/trajectory_processing/iterative_time_parameterization.h&gt;
+
+#include &lt;tf/tf.h&gt;
+#include &lt;tf/LinearMath/Matrix3x3.h&gt;
+#include &lt;Eigen/Geometry&gt;
+#include &lt;iostream&gt;
+#include &lt;stdio.h&gt;
+
+#include &lt;terminal_mocap/terminal_mocap_service.h&gt;
+#include &lt;vector&gt;
+
+typedef boost::shared_ptr&lt;move_group_interface::MoveGroup&gt; MoveGroupPtr;
+MoveGroupPtr moveit_group_;
+const moveit::core::JointModelGroup* joint_model_group;
+
+moveit::core::RobotStatePtr kinematic_state;
+bool insidecallback = false;
+std::vector&lt;geometry_msgs::Pose&gt; waypoints;
+std::vector&lt;double&gt; Trajectoryvector, Velocityvector;
+
+void Solverfunction(std::vector&lt;geometry_msgs::Pose&gt; waypoints_final);
+
+
+moveit_msgs::RobotTrajectory trajectory;
+
+
+bool CallBackMocap(terminal_mocap::terminal_mocap_service::Request &amp;req, terminal_mocap::terminal_mocap_service::Response &amp;res)
+{
+
+    std::vector&lt;tf::Transform&gt; vector_transform;
+    std::vector&lt;geometry_msgs::Pose&gt; waypoints;
+    geometry_msgs::Pose puntos;
+
+    printf(&quot;Inside bool \n&quot;);
+
+    for(int points = 0; points &lt; req.rx.size(); points++)
+    {
+        tf::Transform singlepoint = tf::Transform(tf::Quaternion(req.rx[points],req.ry[points],req.rz[points],req.rq[points]),tf::Vector3(req.x[points], req.y[points], req.z[points]));
+
+        vector_transform.push_back(singlepoint);
+    }
+
+    for (int x = 0; x &lt; vector_transform.size(); x++)
+    {
+        tf::poseTFToMsg(vector_transform[x], puntos);
+        waypoints.push_back(puntos);
+    }
+
+    insidecallback = true;
+    res.callOK = 1;
+
+}
+
+void Solverfunction(std::vector&lt;geometry_msgs::Pose&gt; waypoints_final)
+{
+    if (insidecallback)
+    {
+        double PLAN_TIME_ = 5.0;
+        double CART_STEP_SIZE_ = 0.1;
+        double CART_JUMP_THRESH_ = 0.1;
+        bool MOVEIT_REPLAN_ = true;
+        bool AVOID_COLLISIONS_ = false;
+
+        moveit_group_-&gt;setPlanningTime(PLAN_TIME_);
+        moveit_group_-&gt;allowReplanning (MOVEIT_REPLAN_);
+
+        move_group_interface::MoveGroup::Plan plan;
+        moveit_msgs::RobotTrajectory trajectory_;
+        double fraction = moveit_group_-&gt;computeCartesianPath(waypoints,CART_STEP_SIZE_,CART_JUMP_THRESH_,trajectory_,AVOID_COLLISIONS_);
+        printf(&quot;Calculated %.2f%% \n&quot;, fraction * 100);
+        sleep(15);
+        robot_trajectory::RobotTrajectory rt(kinematic_state-&gt;getRobotModel(), &quot;manipulator&quot;);
+
+        rt.setRobotTrajectoryMsg(*kinematic_state, trajectory_);
+
+        ROS_INFO_STREAM(&quot;Pose reference frame: &quot; &lt;&lt; moveit_group_-&gt;getPoseReferenceFrame());
+
+        trajectory_processing::IterativeParabolicTimeParameterization iptp;
+        bool success = iptp.computeTimeStamps(rt);
+        ROS_INFO(&quot;Computed time stamp %s \n&quot;,success?&quot;SUCCEDED&quot;:&quot;FAILED&quot;);
+
+
+        // Get RobotTrajectory_msg from RobotTrajectory
+        rt.getRobotTrajectoryMsg(trajectory_);
+        // Finally plan and execute the trajectory
+        plan.trajectory_ = trajectory_;
+
+
+        trajectory = trajectory_;
+
+
+        moveit_group_-&gt;execute(plan);
+
+        kinematic_state = moveit_group_-&gt;getCurrentState();
+    }
+
+}
+
+
+int main(int argc,char* argv[])
+{
+    ros::init(argc,argv,&quot;terminal_mocap_node&quot;);
+    ros::NodeHandle node;
+    printf(&quot;The node terminal_mocap_node started satisfactorily! \n&quot;);
+
+    ros::ServiceServer TerminalMocapService = node.advertiseService(&quot;terminal_mocap_service&quot;, CallBackMocap);
+
+    moveit_group_ = MoveGroupPtr(new move_group_interface::MoveGroup(&quot;manipulator&quot;));
+    kinematic_state = moveit::core::RobotStatePtr(moveit_group_-&gt;getCurrentState());
+    kinematic_state-&gt;setToDefaultValues();
+
+    const robot_model::RobotModelConstPtr &amp;kmodel = kinematic_state-&gt;getRobotModel();
+    joint_model_group = kmodel-&gt;getJointModelGroup(&quot;manipulator&quot;);
+
+
+    while(ros::ok())
+    {
+
+        Solverfunction(waypoints);
+        sleep(1);
+
+    ros::spinOnce();
+    }
+
+
+    ros::shutdown();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/12796">Bastbeat</a> on 2015-01-18 08:30:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Have  you solve the problem?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20629">sansherlock</a> on 2015-09-25 05:04:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hello, I found there <a href="https://github.com/sinaiaranda-CIDESI/motoman_mh6-10/blob/master/test.cpp">https://github.com/sinaiaranda-CIDESI/motoman_mh6-10/blob/master/test.cpp</a>, and i was surprised by the execute method computed by computeCartesianPath, he just executed the trajectory as following:
+my_plan.trajectory_ = trajectory;
+group.execute(my_plan);
+sleep(t);
+WTF!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27899">Hanker_SIA</a> on 2018-06-21 03:46:03 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

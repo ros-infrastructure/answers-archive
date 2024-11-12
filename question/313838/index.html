@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>MultiThreadedExecutor thread affinity for certain callbacks? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/313838">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>MultiThreadedExecutor thread affinity for certain callbacks?</h2>
+      <div class="question">
+        <p>I&#39;d like have certain callbacks have thread affinity and others get whatever they are handed from the pool.  There is some related affinity discussion here from a few years ago: <a href="https://github.com/ros2/rclcpp/issues/108">https://github.com/ros2/rclcpp/issues/108</a> </p>
+
+<p>In my current case it is a timer update that needs to run on the same thread id, while service and topic callbacks ought to run concurrently on any thread available (subject to lock guards where needed within them).</p>
+
+<p>I&#39;d like to do something expedient in the short term but also make progress towards a better and longer term solution (if in discussion only).</p>
+
+<p>Some ideas come to mind:</p>
+
+<ul>
+<li><p>Very quick and very dirty solution:  Have the timer callback check the thread id and the time since it last complete update, return immediately if on wrong thread, otherwise do a regular update.  Set the callback rate to the number of threads times an extra margin factor times the original desired update rate.  The callback could sleep until the next proper update time, and this would allow that large update rate to be smaller, combined with the MutuallyExclusive callback group type later scheduled same callbacks that can&#39;t be run just get dropped instead of wasting resources getting scheduled over and over on the wrong threads?</p></li>
+<li><p>One callback that is only run once and then has a while loop with a sleep doesn&#39;t sound too bad.  Is there a ros2 <code>rate</code>?  Does that mess with the Executor code to never return, at the least it&#39;ll never assign anything else to that one thread even if it is sleeping most of the time.</p></li>
+<li><p>Nest a single threaded node within a multi-threaded node (or the other way around), the outer node has a timer update which calls spin<em>once or spins</em>some on the inner node, and with proper mutexes sharing can be done between the two.  I&#39;ll likely try this first because the first option is so ugly.</p></li>
+<li><p>Inside the callback, somehow spawn a new job (&#39;future&#39;?) to only be run on a specific thread.  Would it have to interact with the Executor machinery, or could it be done with pure std::thread calls?  Haven&#39;t looked into this much.</p></li>
+<li><p>Figure out how to run current code with constantly changing thread id- the current issue is with OpenGL in combination with SDL- SDL<em>GL</em>CreateContext.  Maybe the context can be updated to the new thread id, maybe there is a large cost involved in doing that.  It wouldn&#39;t be hard to switch to glfw if that can to it more easily.  Off topic for this website. </p></li>
+<li><p>Create a hacked new executor type based off of <a href="https://github.com/ros2/rclcpp/blob/master/rclcpp/src/rclcpp/executors/multi_threaded_executor.cpp">https://github.com/ros2/rclcpp/blob/master/rclcpp/src/rclcpp/executors/multi_threaded_executor.cpp</a>, just make so all timer callbacks use just one thread id, don&#39;t worry about multi timers initially.  Digging into this better paves the way to a more proper solution even if the first thing that works is ugly.  But it may not work very easily, likelihood of breaking it and having trouble debugging it is high.</p></li>
+<li><p>Create a proper Executor type, or add features to MultiThreadedExecutor to support it- and this would also require a new callback group type also?  Try to pr this eventually if it can be done well.</p></li>
+</ul>
+
+        <div class="owner"><p>Asked by <a href="/users/120"></a> on 2019-01-25 19:28:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>It&#39;s looking like std::async and rclcpp::WallRate with the number 2 option will work for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/120">lucasw</a> on 2019-01-25 21:18:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Not an answer, but perhaps can be a(nother) source of inspiration/information: <a href="https://vimeo.com/292707644">Mixed Real-Time Criticality with ROS2 - the Callback-group-level Executor</a> (<a href="https://roscon.ros.org/2018/presentations/ROSCon2018_Lightning1_4.pdf">slides</a>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-01-27 04:11:18 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>In one case I had a couple of nodes, one which needed a single thread and the other which doesn&#39;t care about thread affinity but blocks for a long time (it needs to do something other than select() and block).</p>
+
+<p>Below I spin the one node in a regular std::thread and the other runs separate for that (maybe for symmetry it ought to be in another std thread also...):</p>
+
+<pre><code>void run_usb_cam(FooType foo)
+{
+  rclcpp::executors::SingleThreadedExecutor executor;
+  auto usb_cam = std::make_shared&lt;usb_cam::UsbCam&gt;(foo);
+  executor.add_node(usb_cam);
+  executor.spin();
+}
+...
+
+  rclcpp::executors::SingleThreadedExecutor single_executor;
+  // imgui_ros has to be single threaded for now to avoid context switches with opengl
+  auto imgui_ros = std::make_shared&lt;imgui_ros::ImguiRos&gt;(foo);
+  single_executor.add_node(imgui_ros);
+
+  std::thread cam_thread(std::bind(run_usb_cam, foo));
+  single_executor.spin();
+  cam_thread.join();
+</code></pre>
+
+<p><a href="https://github.com/lucasw/imgui_ros/blob/crystal/imgui_ros/src/nodes/usb_cam_viewer.cpp">https://github.com/lucasw/imgui_ros/blob/crystal/imgui_ros/src/nodes/usb_cam_viewer.cpp</a></p>
+
+<p>I initially tried a while loop with spin_some on both executors, but even if one of the executors is multi threaded spin_some doesn&#39;t return until all the jobs it was running (however concurrently) are complete, so it blocks the other executor.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2019-02-04 16:10:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

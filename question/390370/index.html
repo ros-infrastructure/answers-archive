@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Best practice for catching all exceptions for logging - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/390370">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Best practice for catching all exceptions for logging</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100491/ros2-best-practice-for-catching-all-exceptions-for-logging">https://robotics.stackexchange.com/questions/100491/ros2-best-practice-for-catching-all-exceptions-for-logging</a>.</p>
+        <p>I am creating a robot with ROS2 foxy that is in the field, and therefore not monitored all the time.<br>
+To help with debugging any eventual bugs/crashes that are unaccounted for, I was thinking of logging any tracebacks that occur.
+There are two approaches that I am considering:</p>
+
+<h2>Catch and except rclpy.spin</h2>
+
+<p><strong><em>original post code</em></strong></p>
+
+<pre><code>import rclpy
+import traceback
+from .example_node import NodeClass
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node_class = NodeClass()
+
+    try:
+        rclpy.spin(node_class)
+    except Exception:
+        node_class.get_logger().error(traceback.format_exc())
+    finally:
+        # Destroy the node explicitly
+        # (optional - otherwise it will be done automatically
+        # when the garbage collector destroys the node object)
+        node_class.destroy_node()
+        rclpy.shutdown()
+</code></pre>
+
+<p><strong><em>update post code after @geoff comment</em></strong></p>
+
+<pre><code>import rclpy
+import traceback
+from .example_node import NodeClass
+
+def main(args=None):
+    rclpy.init(args=args)
+    traceback_logger = rclpy.logging.get_logger(&#39;node_class_traceback_logger&#39;)
+
+    try:
+        node_class = NodeClass()
+        rclpy.spin(node_class)
+    except Exception as exception:  
+        traceback_logger.error(traceback.format_exc())
+        raise exception
+
+    finally:
+        # Destroy the node explicitly
+        # (optional - otherwise it will be done automatically
+        # when the garbage collector destroys the node object)
+        node_class.destroy_node()
+        rclpy.shutdown()
+</code></pre>
+
+<h2>Create a custom logger in launch file</h2>
+
+<p>from the example launch found <a href="https://github.com/ros2/launch/blob/master/launch/examples/launch_counters.py">here</a>, a custom event handler can be created. This could potentially catch tracebacks.</p>
+
+<pre><code># Setup a custom event handler for all stdout/stderr from processes.
+# Later, this will be a configurable, but always present, extension to the LaunchService.
+def on_output(event: launch.Event) -&gt; None:
+    for line in event.text.decode().splitlines():
+        print(&#39;[{}] {}&#39;.format(
+            cast(launch.events.process.ProcessIO, event).process_name, line))
+
+ld.add_action(launch.actions.RegisterEventHandler(launch.event_handlers.OnProcessIO(
+    # this is the action     ^              and this, the event handler ^
+    on_stdout=on_output,
+    on_stderr=on_output,
+)))
+</code></pre>
+
+<p>Which of these would be considered better practice? Or is there a better approach builtin ROS2?</p>
+
+<p>Thanks in advance!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/39746"></a> on 2021-11-08 11:43:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I don&#39;t think there is a &quot;best practice&quot; for what you&#39;re trying to do, but I do have a comment on your first option. Catching <em>any</em> exception that comes out of <code>rclpy.spin(node_class)</code> followed by using <code>node_class</code>&#39;s logger is potentially unsafe. It&#39;s possible (although fairly unlikely) that <code>node_class</code> or its logger is in an unknown state due to an error when you try to log the traceback.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20134"></a> on 2021-11-08 18:19:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>good point! I have updated the original post with an updated version of the code that uses a separate logger.</p>
+
+<p>In a more abstract sense, do you think that the idea of catching all exceptions in such a manner  is advisable, or is it symptomatic of bad code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/39746">bvaningen</a> on 2021-11-10 05:33:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>One drawback of the first method, is also that you can&#39;t log the exceptions if they occur in <strong>init</strong>, because the node&#39;s logger would not have been created</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36992">tnajjar</a> on 2023-02-14 08:34:29 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>After some time I think that my current approach is best, which I will explain here for anyone who else may need it!</p>
+
+<p>on the node side, the code is as followed:</p>
+
+<pre><code>import rclpy
+import traceback
+from .example_node import NodeClass
+from rclpy.node import Node
+
+def main(args=None):
+
+    rclpy.init(args=args)
+
+    try:
+        node_class = NodeClass()
+        rclpy.spin(node_class)
+
+    except Exception as exception:  
+        traceback_logger_node = Node(&#39;node_class_traceback_logger&#39;)
+        traceback_logger_node.get_logger().error(traceback.format_exc())  
+        raise exception
+
+    else:
+        # Destroy the node explicitly
+        # (optional - otherwise it will be done automatically
+        # when the garbage collector destroys the node object)
+        node_class.destroy_node()
+        rclpy.shutdown()
+</code></pre>
+
+<p>An import thing to note with this approach is that if you are using a launch file that you need to omit the name field, as shown below. Otherwise both nodes will be given the same name!</p>
+
+<pre><code>from launch_ros.actions import Node
+
+from launch import LaunchDescription
+
+
+def generate_launch_description():
+    return LaunchDescription(
+        [
+            Node(
+                package=&quot;system_monitor&quot;,
+                executable=&quot;system_monitor_node&quot;,
+                output={&#39;both&#39;: {&#39;screen&#39;, &#39;log&#39;, &#39;own_log&#39;}},
+            ),
+        ]
+    )
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/39746"></a> on 2022-01-27 09:56:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

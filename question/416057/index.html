@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS Subscriber and Publisher node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/416057">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS Subscriber and Publisher node</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103327/ros-subscriber-and-publisher-node">https://robotics.stackexchange.com/questions/103327/ros-subscriber-and-publisher-node</a>.</p>
+        <p>Hello ROS community,</p>
+
+<p>I want to implement a ROS node that is both subscriber and publisher. The idea is that each time the subscribed topic changes, the node will publish to another topic. The node takes a detection command and gives a door command controlling a USB latch. </p>
+
+<p>Here is the code :</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from std_msgs.msg import String
+import serial
+
+#Declaring USB port related to relay
+relayport = serial.Serial(port = &quot;/dev/ttyUSB0&quot;,
+baudrate = 9600,
+bytesize = serial.EIGHTBITS, 
+parity = serial.PARITY_NONE,
+stopbits = serial.STOPBITS_ONE, 
+timeout = 1,
+writeTimeout = 2)
+
+#Declaring open and close commands in bytes used to control relay
+open_cmd = b&#39;\xA0\x01\x01\xA2&#39;
+close_cmd = b&#39;\xA0\x01\x00\xA1&#39;
+
+door_state = &#39;&#39;
+
+def Lock_callback(detection): #Callback function to be used when receiving detection topic data
+    global door_state
+    rospy.loginfo(&quot;Command is %s&quot;, detection.data)
+    if detection.data == &#39;SH&#39; or detection.data == &#39;MH&#39; : #Close relay (ON) in Short High and Medium High states to lock door
+        relayport.write(close_cmd)
+        door_state = &#39;closed&#39;
+        rospy.loginfo(&quot;door_state %s&quot;, door_state)
+    else : #Open relay (OFF) in other detection states
+        relayport.write(open_cmd)
+        door_state = &#39;opened&#39;
+        rospy.loginfo(&quot;door_state %s&quot;, door_state)
+
+def Lock_decision(): #Lock decision function to subscribe to detection state topic and publish Lock topic
+    Lock_pub = rospy.Publisher(&#39;/doorcmd&#39;, String, queue_size=10)
+    rospy.init_node(&#39;Latch_decision&#39;, anonymous=True) #Create ROS node for relay
+    Lock_sub = rospy.Subscriber(&#39;/detection&#39;, String, Lock_callback) #Subscribe node to relay command topic
+    Lock_pub.publish(door_state)
+    rospy.spin()
+
+if __name__ == &#39;__main__&#39;:
+        Lock_decision()
+</code></pre>
+
+<p>The Lock_pub.publish only gives one value at the start and stops which is not what I want. I want to publish the /doorcmd topic everytime it is changed by the /detection topic.
+Any clues on how to do that ? What is the problem in my code ?</p>
+
+<p>Thanks and regards.
+Lilia.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/149103">Lilipop</a> on 2023-06-01 03:30:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi!</p>
+
+<p>The problem with your code is that you are actually calling <code>Lock_pub.publish()</code> once. This triggers the callback once. Then, the interpreter reaches <code>rospy.spin()</code> which keeps your program from stopping. When the callback receives a new detection, then <code>door_state</code> changes, but <code>Lock_pub.publish()</code> is not called anymore (you are &quot;stuck&quot; at <code>rospy.spin()</code>).</p>
+
+<p>To achieve the behavior you want, you could use a class as follows:</p>
+
+<pre><code>class LatchDecision():
+    def __init__(self):
+        #Declaring USB port related to relay
+        self.relayport = serial.Serial(port = &quot;/dev/ttyUSB0&quot;,
+            baudrate = 9600,
+            bytesize = serial.EIGHTBITS, 
+            parity = serial.PARITY_NONE,
+            stopbits = serial.STOPBITS_ONE, 
+            timeout = 1,
+            writeTimeout = 2)
+
+        #Declaring open and close commands in bytes used to control relay
+        self.OPEN_CMD = b&#39;\xA0\x01\x01\xA2&#39;
+        self.CLOSE_CMD = b&#39;\xA0\x01\x00\xA1&#39;
+
+        # Create the publisher and the subscriber
+        self.Lock_pub = rospy.Publisher(&#39;/doorcmd&#39;, String, queue_size=10)
+        self.Lock_sub = rospy.Subscriber(&#39;/detection&#39;, String, self.Lock_callback)
+
+    def Lock_callback(self, detection):
+        door_state
+        rospy.loginfo(&quot;Command is %s&quot;, detection.data)
+        if detection.data == &#39;SH&#39; or detection.data == &#39;MH&#39;: 
+            self.relayport.write(self.CLOSE_CMD)
+            door_state = &#39;closed&#39;
+        else :        
+            self.relayport.write(self.OPEN_CMD)
+            door_state = &#39;opened&#39;
+
+        rospy.loginfo(&quot;door_state %s&quot;, door_state)
+        self.Lock_pub.publish(door_state)
+
+
+if __name__ == &quot;__main__&quot;:
+        rospy.init_node(&#39;Latch_decision&#39;, anonymous=True)
+        ld = LatchDecision()
+        rospy.spin()
+</code></pre>
+
+<p>In this way, every time you have a new detection, you also publish a message on <code>/doorcmd</code>.</p>
+
+<p><strong>Note.</strong> I have made <code>OPEN/CLOSE_CMD</code> as they are constants. It is a good practice as it improves readability, but it does not affect the execution at all.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/69377">bluegiraffe-sc</a> on 2023-06-01 05:19:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi, I thought that with each function call the publisher would execute too. Your explanation is very clear, I just tested your changes and it works perfectly. </p>
+
+<p>Thank you so much for the help !</p>
+
+<p>Lilia.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/149103">Lilipop</a> on 2023-06-01 07:26:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Great!</p>
+
+<p>If it actually solved your problem, would you mind marking the answer as <em>correct</em>?</p>
+
+<p>Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69377">bluegiraffe-sc</a> on 2023-06-01 09:57:02 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

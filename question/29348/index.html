@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Better trajectory types in ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/29348">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Better trajectory types in ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/38549/better-trajectory-types-in-ros">https://robotics.stackexchange.com/questions/38549/better-trajectory-types-in-ros</a>.</p>
+        <p>I was wondering if anyone has any experience regarding trajectory definition in ROS
+with other types that nav_msgs/Path.</p>
+
+<p>In particular, I would be interested in a way to:</p>
+
+<p>a. stream trajectories,</p>
+
+<p>b. define a trajectory using a spline any other parametric curve.</p>
+
+<p>Does any package have already implemented this features?
+Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/87"></a> on 2012-03-08 02:19:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@Thomas that will be a very generic approach to navigation, I have no solution but I follow this question eagerly </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/198">Arkapravo</a> on 2012-03-11 06:16:03 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Thomas,</p>
+
+<p>I am not sure what kind of path planning algorithm ROS has. But
+if your goal is a path following (without time specified), how about checking the guidance algorithm, LOS (Line of Sight)? I have been testing the LOS guidance law on the 2D hovercraft with the backstepping controller: Given a set of way points, make the 2D hovercraft follow the way points.  I have tested it over Matlab, it works very well. But I have not got the same level of performance in gazebo simulation due to my knowledge in ROS/gazebo environment.</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/Wrench.h&gt;
+#include &lt;algorithm&gt;
+#include &lt;eigen3/Eigen/Core&gt;
+#include &lt;eigen3/Eigen/LU&gt;
+#include &lt;gazebo/Simulator.hh&gt;
+#include &lt;gazebo/gazebo.h&gt;
+
+//!Global Variables
+nav_msgs::Odometry odom;
+
+void vehicleVelocityCallback(const nav_msgs::Odometry::ConstPtr&amp; data)
+{
+     odom = *data;
+}
+
+int main(int argc,char **argv)
+{
+    //! Constant Variables
+    const double m = 15.67;   // mass [kg]
+        const double Izz = 0.952; // mass moment of inertia [kg*m^2]
+        const double L = 1;     // length [m]
+        const double dv = 4.5;   // translational friction coeff.
+        const double dw = 0.41;   // rotational friction coeff
+        const double ud = 0.2;   // desired speed [m/s]
+
+    const double Delta = 1*L;  // lookahead length [m/s]
+    const double Rwpt = 1*L;   // Radius of circle for waypoints
+
+    //! Variables
+    int kk = 0;
+    int jj = 0;
+    double psi = 0 ;
+    double Chi_d  ;
+    double Chi_d_old = 0 ;
+    double alpha_1_old = 0;
+    double alpha_3_old = 0;
+        double alpha_1 ;
+        double alpha_3 ;
+    double alpha_dot_1 ;
+    double alpha_dot_3 ;
+
+    double rd  ;
+    double Xu  ;
+    double Xu_old = 0;
+    double Xr  ;
+    double Xr_old = 0;
+    double Xrd  ;
+    double Xrd_old = 0;
+    double Chi_d_dot  ;
+
+    //! Local Variables
+    double wpt_x[8] = {0.372, -0.628, 0.372, 1.872, 6.872,  8.372, 9.372, 8.372}; 
+    double wpt_y[8] = {-0.181+1, 1.32+1,  2.82+1,  3.32+1, -0.681+1, -0.181+1, 1.32+1,  2.82+1};
+    double ak[7];
+    double wpt_x_dis[7];
+    double wpt_y_dis[7];
+    double s_leng[7];
+        // for low-pass filter
+    //  double zeta_u = 0.7;
+    double omega_u = 0.1*2*3.14159265;
+    //  double zeta_r = 0.5;
+    double omega_r = 0.2*2*3.14159265;
+
+
+    for (jj=0; jj&lt;7; jj++)
+            {
+        ak[jj] = atan2(wpt_y[jj+1]-wpt_y[jj], wpt_x[jj+1]-wpt_x[jj]);
+            wpt_x_dis[jj] = wpt_x[jj+1]-wpt_x[jj];
+            wpt_y_dis[jj] = wpt_y[jj+1]-wpt_y[jj];
+            s_leng[jj] = std::sqrt( wpt_x_dis[jj]*wpt_x_dis[jj] + wpt_y_dis[jj]*wpt_y_dis[jj] );
+            }
+
+        //! System Constants
+        const double dt = 0.01;
+    double time;
+
+    //! Ros Initialization
+    ros::init(argc,argv, &quot;hover_controller&quot;);
+    ros::NodeHandle nh_;
+
+    //! Ros Publisher
+//      ros::Publisher left_fan_force_pub_ = nh_.advertise&lt;geometry_msgs::Wrench&gt;(&quot;left_fan_force&quot;, 1);
+//      ros::Publisher right_fan_force_pub_ = nh_.advertise&lt;geometry_msgs::Wrench&gt;(&quot;right_fan_force&quot;, 1);
+    ros::Publisher box_force_pub_ = nh_.advertise&lt;geometry_msgs::Wrench&gt;(&quot;box_force&quot;, 1);
+//      geometry_msgs::Wrench left_fan_force_;
+//      geometry_msgs::Wrench right_fan_force_;
+    geometry_msgs::Wrench box_force_;
+
+    //! Ros Subscriber
+    ros::Subscriber odom_sub_ = nh_.subscribe&lt;nav_msgs::Odometry&gt;(&quot;base_pose_ground_truth&quot;, 1, vehicleVelocityCallback);
+
+
+    /*! ---------------------------------------------------------------------------------------------
+    *   CONTROLLER
+    *   Local Variables
+    */
+
+    ros::Rate r(100); //! 100 Hz
+    while(ros::ok())
+    {
+        r.sleep();
+        ros::spinOnce();
+
+        time = odom.header.stamp.toSec();
+        //time = ros::Time::now().toSec();
+
+        // Local Variables for LOS bs tuning parameters
+        double K1 = 10;  
+        double K3 = 5;  
+        double cc = 1;  
+
+        // inertial frame velocities
+        double vx = odom.twist.twist.linear.x;
+        double vy = odom.twist.twist.linear.x;
+        double omega = odom.twist.twist.angular.z;
+        // Rotation matrix from inertial to body
+        Eigen::Vector2d vel(vx, vy);
+        Eigen::Matrix2d R; // This R is actaully the transposed R.
+        R &lt;&lt; cos(psi), sin(psi),
+                    -sin(psi), cos(psi); 
+        // body frame velocities
+        Eigen::Vector2d nu = R*vel;
+        double u = nu[0];
+        double v = nu[1];
+
+
+
+        double delta_psi = omega*dt;
+        psi += delta_psi;
+        /*
+        double q0 = odom.pose.pose.orientation.w;
+        double q1 = odom.pose.pose.orientation.x;
+        double q2 = odom.pose.pose.orientation.y;
+        double q3 = odom.pose.pose.orientation.z;
+        psi = atan2(2*(q0*q3+q1*q2),1-2*(q2*q2+q3*q3));
+        */
+
+        Eigen::Vector2d P(odom.pose.pose.position.x, odom.pose.pose.position.y);
+
+        //! LOS guidance loop variables
+        Eigen::Matrix2d R_ak; // This R is actaully the transposed R_ak.
+        R_ak &lt;&lt; cos(ak[kk]), sin(ak[kk]),
+                       -sin(ak[kk]), cos(ak[kk]); 
+        Eigen::Vector2d Pk(wpt_x[kk], wpt_y[kk]);
+        Eigen::Vector2d epsilon = R_ak*(P-Pk);
+        double s = epsilon[0];
+        double e = epsilon[1];
+
+        double Chi_p = ak[kk];
+        double Chi_r = atan2(-e, Delta);
+        double Chi = Chi_p + Chi_r;
+
+        double critic = s_leng[kk] - s;
+        //double critic = std::sqrt( std::pow(wpt_x[kk]-P[0],2) + std::pow(wpt_y[kk]-P[1],2) );
+
+        if (std::abs(critic) &lt;= Rwpt) 
+               {
+                    kk = kk+1;
+           }
+        else { kk = kk; } 
+
+        //! BS controller loop
+
+
+        // low pass filter for Chi
+        /*
+        Xr = -pow(omega_r,2) * Xr_old + Chi;
+        Xr_old = Xr;
+        Chi_d = pow(omega_r,2) * Xr;
+        */
+
+        Xr = ( 1/omega_r/(1/omega_r+dt) ) * Xr_old + dt/(1/omega_r+dt) * Chi;
+        Xr_old = Xr;
+        Chi_d = Xr;
+
+        /*
+        Xr = std::exp(pow(omega_r,2)*dt) * Xr_old + ( 1 - std::exp(pow(omega_r,2)*dt) ) * Chi;
+        Xr_old = Xr;
+        Chi_d = Xr;
+        */  
+        //if (time &lt; 3)
+        //std::cout &lt;&lt; kk &lt;&lt; &quot; &quot; &lt;&lt; Chi_p &lt;&lt; &quot; &quot; &lt;&lt; Chi_r &lt;&lt; std::endl;
+
+        double z1 = psi - Chi_d;
+
+        Chi_d_dot = (Chi_d - Chi_d_old) / dt;
+        Chi_d_old = Chi_d;
+
+        // low pass filter for rd
+        /*
+        Xrd = -pow(omega_r,2) * Xrd_old + Chi_d_dot;
+        Xrd_old = Xrd;
+        rd = pow(omega_r,2) * Xrd;
+        */
+
+        Xrd = ( 1/omega_r/(1/omega_r+dt) ) * Xrd_old + dt/(1/omega_r+dt) * Chi_d_dot;
+        Xrd_old = Xrd;
+        rd = Xrd;
+        /*
+        Xrd = std::exp(pow(omega_r,2)*dt) * Xrd_old + ( 1 - std::exp(pow(omega_r,2)*dt) ) * Chi_d_dot;
+        Xrd_old = Xrd;
+        rd = Xrd;
+        */
+        //if (time &lt; 3)
+        //{std::cout &lt;&lt; rd &lt;&lt; &quot; &quot; &lt;&lt; time &lt;&lt; std::endl;}
+
+        // low pass filter for ud
+        /*
+        Xu = -pow(omega_u,2) * Xu_old + ud;
+        Xu_old = Xu;
+        //alpha_1 = pow(omega_u,2) * Xu;
+        alpha_1 = ud;
+        */
+
+        Xu = ( 1/omega_u/(1/omega_u+dt) ) * Xu_old + dt/(1/omega_u+dt) * ud;
+        Xu_old = Xu;
+        alpha_1 = Xu;
+        /*
+        Xu = std::exp(pow(omega_u,2)*dt) * Xu_old + ( 1 - std::exp(pow(omega_u,2)*dt) ) * ud;
+        Xu_old = Xu;
+        alpha_1 = Xu;
+        */
+
+        alpha_3 = -cc*z1 + rd;
+
+        alpha_dot_1 = (alpha_1 - alpha_1_old) / dt;
+        alpha_1_old = alpha_1;
+        alpha_dot_3 = (alpha_3 - alpha_3_old) / dt;
+        alpha_3_old = alpha_3;
+
+        double u1 = m*alpha_dot_1 + (dv - K1)*u -omega*v + K1*ud; // Force [N]
+        double u2 = Izz*alpha_dot_3 + (dw - K3)*omega + K3*alpha_3 - (psi - Chi_d); // Moment [N*m]
+
+        if (u1 &gt; 40.032)
+        { 
+        u1 = 40.032;
+        }
+        else if (u1 &lt; 0)
+        { 
+        u1 = 0;
+        }
+
+        if (u2 &gt; 5.0841)
+        { 
+        u2 = 5.0841;
+        }
+        else if (u2 &lt; -5.0841)
+        { 
+        u2 = -5.0841;
+        }
+
+        /*
+        // Actuator model 
+        double f1 = 0.5*(u1 - u2/d);
+        double f2 = 0.5*(u1 + u2/d);
+        double f_max = 4.5;
+        double thrust1 = f1/f_max*100;  // percent
+        double thrust2 = f2/f_max*100;  // percent
+
+        double f1_act = f_max/(1+std::exp(-0.1*(thrust1-50)))-0.134;
+        double f2_act = f_max/(1+std::exp(-0.1*(thrust2-50)))-0.134;
+
+        double u1_act = f1_act + f2_act;
+        double u2_act = d*(-f1_act + f2_act);
+        */
+
+        box_force_.force.x = u1;  //u1_act*cos(psi);
+        box_force_.force.y = 0;    //u1_act*sin(psi);  
+        box_force_.torque.z = u2; 
+        //! Publish the message
+        box_force_pub_.publish(box_force_);
+
+        // out to screen
+        //if (time &lt; 10)
+        std::cout &lt;&lt; critic &lt;&lt; &quot; &quot; &lt;&lt; kk &lt;&lt; &quot; &quot; &lt;&lt; Chi_d &lt;&lt; &quot; &quot; &lt;&lt; u1 &lt;&lt; &quot; &quot; &lt;&lt; u2 &lt;&lt; &quot; &quot; &lt;&lt; time &lt;&lt; std::endl;
+        //std::cout &lt;&lt; alpha_dot_1 &lt;&lt; &quot; &quot; &lt;&lt; alpha_1 &lt;&lt; &quot; &quot; &lt;&lt; u1 &lt;&lt; &quot; &quot; &lt;&lt; Xu &lt;&lt; &quot; &quot; &lt;&lt; time &lt;&lt; std::endl;
+
+    }
+    return 0;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1429">maruchi</a> on 2012-03-22 14:51:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

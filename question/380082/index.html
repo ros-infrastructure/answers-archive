@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS 1] ROS network latency - Image transport - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/380082">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS 1] ROS network latency - Image transport</h2>
+      <div class="question">
+        <p>I am now working on a ROS local network. For now, we have 2 computers: </p>
+
+<ol>
+<li>Simulation computer  is the HOST and publishes images from Gazebo (a depth camera model) to ROSTopics; </li>
+<li>Computation/offboard computer receives the image topics and does some machine learning. </li>
+</ol>
+
+<p>However I notice some issues concerning the network latency which depends on the physical configurations:</p>
+
+<ol>
+<li> Using a network switch (TPlink 10/100): I use the commande ping and find out an average delay of 1.5 ms. As a result, the  image<em>transport of cv</em>bridge cannot catch all frames (color rgb + depth 32fc1 generated together with same time stamp)  and it also blockes my code in the frame-searching loop due to time stamp condition. </li>
+<li>Using an ethernet crossover  cable: delay reduces to 0.3-0.4 ms and I dont have any problem to receive the image.</li>
+</ol>
+
+<p>So, there is any solution for first case ? The wire connection may lead to this problem ? In fact, we would like to expand the ROS network in the future, so there will be more topics with lots of data and of course latency has to be minimized to ensure all the computation.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/75898">Favorsight86</a> on 2021-06-11 05:42:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just a quick note:</p>
+
+<blockquote>
+<p>As a result, the image_transport of cv_bridge cannot catch all frames</p>
+</blockquote>
+
+<p>this is not necessarily a correct conclusion about the cause of what you observe.</p>
+
+<p>I don&#39;t know what would be right away, but jumping to conclusions is never good.</p>
+
+<p>Would you have some rationale for why you concluded that?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-06-12 04:09:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Indeed, I dont think problem coming from cv_bride but from the loss in the data transmission/ latency due to network physical configuration. In specific, my image callback function responded differently:</p>
+
+<ol>
+<li><p>No cable, on a same computer HOST, ROS node is called, the sequence of data: 
+32FC1 (Time stamp 1) -&gt; RGB8 (Time stamp 1) -&gt; 32FC1 (Time stamp 2) -&gt; RGB8 (Time stamp 2) .....<br>
+Always in a pair of data.</p></li>
+<li><p>With crossover cable: (HOST and offboard computers), the same sequence as first set up is obtained.</p></li>
+<li><p>With the switch: the sequence is not in order, but instead randomly:</p></li>
+</ol>
+
+<p>32FC1 (Time stamp 1) -&gt; RGB8 (Time stamp 1) --&gt; RGB8 (Time stamp 2) --&gt; RGB8 (Time stamp 3) --&gt; 32FC1 (Time stamp 4) -&gt; RGB8 (Time stamp 4) --&gt; ....</p>
+
+<p>Also, a typical test of ping command returns the delay in series: 0.3 , 0.4 , 1.5, 1.6, 0.5, 0, 4, 1.5 (ms) ... This delay can lead to the problem reading data, I supposed. Moreover, I changed the queue size for the callback but  same result</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75898">Favorsight86</a> on 2021-06-14 03:27:28 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Are you trying to use <em>message order</em> to find &quot;matching pairs&quot; in separate topics/message streams?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-06-14 03:41:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes. Indeed, both formats of image come from the same topic &quot;camera/depth/image_raw&quot; of plugin &quot;gazebo_ros_openni_kinect&quot;.</p>
+
+<p>The algo I used:</p>
+
+<pre><code>void ImageCallbackDepth(const sensor_msgs::ImageConstPtr&amp; msg){
+   if (sensor_msgs::image_encodings::isColor(msg-&gt;encoding)){
+      cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::BGR8);
+      if (count_depth == 1) ++count_color;       
+    }
+    else{
+      cv_depth_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::TYPE_32FC1);
+      ++count_depth; 
+    }
+    if (count_color ==  count_depth &amp;&amp; count_color == 1) {
+      flag_read = true;
+      count_color = 0;
+      count_depth = 0;
+    } 
+    if (count_depth&gt;1 &amp;&amp; count_color == 0) {
+      count_color = 0;
+      count_depth = 0;
+    }
+</code></pre>
+
+<p>&quot;flag_read&quot; is used to stop the while loop for ros::spinOnce()</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75898">Favorsight86</a> on 2021-06-14 03:58:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Don&#39;t do that. Ever. It&#39;s not reliable.</p>
+
+<p>Use <a href="http://wiki.ros.org/message_filters">message_filters</a>, specifically a <a href="http://wiki.ros.org/message_filters#Policy-Based_Synchronizer_.5BROS_1.1.2B-.5D">policy based Time Synchronizer</a>.</p>
+
+<p>The example shown there should show you how to use that.</p>
+
+<p>Your latest comment makes it seem like this was an <a href="https://xyproblem.info">xy-problem</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-06-14 03:59:56 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your solution. I will try that.
+Yep, XY-pb as you said, since I struggled to identify the source of problem</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75898">Favorsight86</a> on 2021-06-14 04:01:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If you&#39;d described what you wanted to achieve (ie: &quot;synchronise pairs of depth and rgb images&quot;), you would probably have gotten the suggestion to use <code>message_filters</code> immediately. It&#39;s a topic which is discussed <em>very</em> often here on ROS Answers, and there are also many previous Q&amp;As about this topic.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-06-14 04:22:37 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

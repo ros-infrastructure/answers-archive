@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 serialization ConnextStaticSerializedData - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/332560">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 serialization ConnextStaticSerializedData</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93226/ros2-serialization-connextstaticserializeddata">https://robotics.stackexchange.com/questions/93226/ros2-serialization-connextstaticserializeddata</a>.</p>
+        <p><strong>Environment</strong>:</p>
+
+<ul>
+<li>ROS2 Dashing Patch 2</li>
+<li>Windows 10</li>
+<li>messages based on msg files (no idl yet, since I can&#39;t seem that to get that operational)</li>
+<li>RTI Connext DDS 5.3.1</li>
+</ul>
+
+<p><strong>Reproduction</strong>:</p>
+
+<ul>
+<li>Create a custom message type and a Publisher &amp; Subscriber for it.</li>
+<li>Start your nodes</li>
+</ul>
+
+<p><strong>Expected behavior</strong>:</p>
+
+<ul>
+<li>They communicate - ok they do.</li>
+<li>Their type is observable through RTI&#39;s Admin Console</li>
+</ul>
+
+<p><strong>Observed behavior</strong>:</p>
+
+<ul>
+<li>The topic&#39;s type is not observable through RTI&#39;s Admin Console.   Instead, Admin Console reports the type as &quot;ConnextStaticSerializedData&quot;.</li>
+<li>Consequentially, the Admin Console shows shows only partial matches (conflicting data type).
+<img src="http://www.qtc.be/20190909RTIAdminConsole.png" alt="image description"></li>
+<li>Even loading data types from XML (supported by RTI Admin Console) is not accepted (could be my mistake).</li>
+</ul>
+
+<p><strong>Question(s)</strong>:</p>
+
+<ul>
+<li>Does this mean that ROS2 is using non-standard serialisation? Looking at the code it seems that serialisation happens independently in the ROS2 RMW layer and is then submitted as a serialized packet to a topic typed by ConnextStaticSerializedData, whatever the original type. This happens for custom types, but e.g. not for the rq/…/list_parametersRequest and other built-in types.</li>
+<li>Any way to avoid this behavior? It is quite annoying from an interoperability point of view (Admin console, but also other non ROS2 DDS-based applications).</li>
+<li>Does the behavior change when I would use IDL instead of msg files? I didn&#39;t find a way to get that working although it should work on Dashing.</li>
+</ul>
+
+<p>Thanks,
+Johan</p>
+
+        <div class="owner"><p>Asked by <a href="/users/42896">qootec</a> on 2019-09-09 03:49:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>tldr - Here are my answers to your questions, I&#39;ll go in a bit more details after</p>
+
+<blockquote>
+<p>Does this mean that ROS2 is using
+non-standard serialisation? Looking at
+the code it seems that serialisation
+happens independently in the ROS2 RMW
+layer and is then submitted as a
+serialized packet to a topic typed by
+ConnextStaticSerializedData, whatever
+the original type. This happens for
+custom types, but e.g. not for the
+rq/…/list_parametersRequest and other
+built-in types.</p>
+</blockquote>
+
+<p>We are using a workaround to access the serialized code directly without deserializing to write it e.g. in rosbags. RTI Connext doesn&#39;t provide this functionality out of the box. That&#39;s why we implemented a way of type masquerading to do so - it&#39;s not really that, but it&#39;s somewhat similar.
+It was only implemented for topics to make pub/sub work. Therefore, you don&#39;t see that on services.</p>
+
+<blockquote>
+<p>Any way to avoid this behavior? It is
+quite annoying from an
+interoperability point of view (Admin
+console, but also other non ROS2
+DDS-based applications).</p>
+</blockquote>
+
+<p>We are aware of the mismatch with RTI&#39;s Admin Console, but AFAICT there is no workaround. I am not quite sure if I understand your point on non ROS2 DDS-based applications. Our workaround is safe to use between multiple DDS vendors and is wire compatible (we run quite a few cross talking tests on the ROS2 buildfarm, e.g. Connext and FastRTPS).</p>
+
+<blockquote>
+<p>Does the behavior change when I would
+use IDL instead of msg files? I didn&#39;t
+find a way to get that working
+although it should work on Dashing.</p>
+</blockquote>
+
+<p>No. The message generation step is independent from the way we send it over the wire.</p>
+
+<hr>
+
+<p>The change got introduced as a prerequisite for having Connext support rosbags. In order to speed up the write process, it&#39;s kind of necessary to obtain an incoming message without deserializing it first, then re-serialize it and write it to disk. Whereas FastRTPS made it quite easy to get access to the buffer with the serialized (CDR) data, there was no straight forward way to do so in Connext.</p>
+
+<p>After discussing with RTI, we&#39;ve developed that workaround together which essentially publishes a sequence of octets (shown as <code>ConnextStaticSerializedData</code>) which holds the CDR data. We had to patch the API of Connext in order to support that. The changes and more patch files can be found here: <a href="https://github.com/ros2/rmw_connext/blob/master/rmw_connext_cpp/resources/patch_files/connext_static_serialized_dataPlugin.cxx.patch#L42-L51">https://github.com/ros2/rmw_connext/blob/master/rmw_connext_cpp/resources/patch_files/connext_static_serialized_dataPlugin.cxx.patch#L42-L51</a></p>
+
+<p>We declare the type of this message however as the actual data type of the message, e.g. <code>std_msgs::msg::String</code> to be wire compatible. <a href="https://github.com/ros2/rmw_connext/blob/master/rmw_connext_cpp/src/rmw_publisher.cpp#L141-L152">https://github.com/ros2/rmw_connext/blob/master/rmw_connext_cpp/src/rmw_publisher.cpp#L141-L152</a></p>
+
+<p>Needless to say, we did the same workaround for subscribers. </p>
+
+<p>The patch files applied are only compatible for Connext 5.3.1. These patch files have to be modified to match Connext 6.0.0, which we haven&#39;t done yet. The patched code is used for publishing in any case, whether you publish serialized code or ROS2 message instances. We could technically refactor the code to only apply the <code>ConnextStaticSerializedData</code> workaround when publishing serialized code. That would however introduce another level of inconsistency. </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/8211">Karsten</a> on 2019-09-09 14:04:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Karsten, thanks for your extensive answer.</p>
+
+<blockquote>
+<p>(from my question) It is quite annoying from an interoperability point of view (Admin console, but also other non ROS2 DDS-based applications).</p>
+</blockquote>
+
+<p>This was based on an assumption of mine, but I guess I assumed wrongly… I thought that if Admin Console has a problem, other pure DDS applications would also run into the same issue, certainly in case they would be based on DDS Dynamic Data.</p>
+
+<blockquote>
+<p>(from your reply) We declare the type of this message however as the actual data type of the message, e.g. std_msgs::msg::Stringto be wire compatible.</p>
+</blockquote>
+
+<p>It seems that my DDS knowledge is insufficient to understand that you can send the correct metadata through the (patched) RTI API, but that the receiving application can still get confused about the topic&#39;s type. I would expect that the metadata is the only truth about a topic&#39;s content. This shows a lack in my RTPS/CDR knowledge, but that goes beyond my needs.</p>
+
+<p>So I thank you for your clarifying reply.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/42896">qootec</a> on 2019-09-10 08:47:55 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Message-delivery guarantees in ROS1 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/341005">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Message-delivery guarantees in ROS1</h2>
+      <div class="question">
+        <p>Q: What are the message-delivery guarantees of ROS1? I could not find documentation on that. And corollary question assuming no guarantees are present, would be: are there mitigation strategies to be used for side-effecting messages like a trajectory joint action goal not being delivered?</p>
+
+<p>The context of question is that I have a long-running process (~10 hours), that makes use of the JointTrajectoryAction server of ROS-I, and sends a goal to the action server about 3000 times during that time. I use <code>rosbridge</code> to connect to ROS. </p>
+
+<p>The problem I see is that, in those 3000 action goals, sometimes, one goes missing, never goes through, then the robot doesn&#39;t move, the code will wait forever thinking the goal is sent, but it didn&#39;t even make it to the action server.
+I am trying to understand where the problem is. I have confirmed that when this happens, the goal message is never published to the goal topic of the action server, so, that explains most of the rest, but doesn&#39;t clarify WHY it was not published.</p>
+
+<p>As far as I can see, the are two potential sources of failure:</p>
+
+<p>1) rosbridge is dropping the message somewhere internally without notice (nothing in <code>~/.ros/log/latest/rosbridge_websocket-*.log</code> indicates this is the case thou); or...</p>
+
+<p>2) ROS1 message-delivery guarantees simply do not guarantee at-least-once, and then this is situation that is to be expected, and needs to be dealt with somehow.</p>
+
+<p>This question is specifically assuming the second scenario, because if it&#39;s a fact that there&#39;s no delivery guarantee (which I&#39;m leaning to believe due to the lack of docs), then a mitigation strategy is necessary in any case regardless of whether scenario one is also possible. But right now, I&#39;m failing to see any viable option to deal with it, a naive approach would involve something like: 1) send goal, 2) wait for status on the sent goal id, 3) if no status is received after a certain timespan (at least a few seconds) 4) declare the goal as unpublished and publish it again. I honestly don&#39;t feel very good about implementing such a thing, it doesn&#39;t feel like a safe or correct strategy to deal with this, so I&#39;m interested in hearing alternatives.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34021">gonzalocasas</a> on 2020-01-04 05:54:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Afaik, there are no guarantees other than what TCP gives you. That&#39;s partly why the QoS provided by DDS (and similar middlewares) are so valuable in ROS 2.</p>
+
+<p>re: publishing goal: this confuses me. Goals are part of <code>actionlib</code>, and you&#39;re not really supposed to be handling all of that yourself. I&#39;m guessing you&#39;re doing this because you&#39;re using a non-standard client-library and have <code>rosbridge</code> in there somewhere.</p>
+
+<p>re: using rosbridge: this adds a nr of additional points of failure, as messages are being transformed multiple times between different communication domains. All of that will not make it easier to provide any guarantees, if there were any.</p>
+
+<blockquote>
+<p>I honestly don&#39;t feel very good about implementing such a thing, it doesn&#39;t feel like a safe or correct strategy to deal with this</p>
+</blockquote>
+
+<p>could you expand on why the described approach is not &quot;safe or correct&quot;? The feedback and status topics in actionlib are exactly for monitoring the status of both the remote actionlib statemachine, ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-04 10:09:46 UTC</p></div>
+</div>
+<div class="comment">
+              <p>.. as well as the goal (ie: task) that is being processed. If you send a goal to a server, but don&#39;t see it acknowledging reception by giving you feedback it has accepted it, it would seem reasonable to assume it hasn&#39;t received it (or you haven&#39;t received the rejection feedback that was already sent).</p>
+
+<p>Rosbrige has been known to not be entirely stable when dealing with either long sessions or very busy / contentious sessions. I haven&#39;t used it extensively recently, so perhaps this has been improved. I would however recommend to run wireshark (fi) in parallel and monitor the websocket connection, as well as perhaps <code>rosbag</code> to record the action topics. That would give you an idea where messages could be lost.</p>
+
+<hr>
+
+<p>And I&#39;m posting this as a comment as I cannot give you an authoritative answer.</p>
+
+<p>I can say however that IIRC, all of the networking code in ROS 1 was written with the assumption of there being a &quot;perfect network&quot;, or at least something TCP/IP can deal with.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-04 10:14:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Finally, I would also say that it could well be there are (unknown) issues with the <code>joint_trajectory_action</code> from <code>industrial_robot_client</code> (I&#39;m guessing it is the node you refer to).</p>
+
+<p>I believe you have a network and system topology something like the following:</p>
+
+<pre><code>roslibpy &lt;-&gt; websocket &lt;-&gt; rosbridge &lt;-&gt; ROSTCP &lt;-&gt; JTA &lt;-&gt; ROSTCP &lt;-&gt; robot_driver &lt;-&gt; TCP/IP
+</code></pre>
+
+<p>there&#39;s quite some points where this could fail. Capturing the bare TCP/IP connection with wireshark and the rest with <code>rosbag</code> could provide you with information on where things fail.</p>
+
+<blockquote>
+<p>As far as I can see, the are two potential sources of failure</p>
+</blockquote>
+
+<p>what about your (custom?) client lib not actually publishing (ie: actually pushing out the bytes)?</p>
+
+<hr>
+
+<p>There is a way to use Services to host actions (see <a href="https://github.com/ros/actionlib/blob/c89e440519eeb88a5005065a32330655c9450b8e/include/actionlib/server/service_server.h">actionlib/server/service_server.h</a>), but it&#39;s not async any more.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-04 10:17:10 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks @gvdhoorn for the very complete answer (as usual)! I believe you should actually post is as an answer because it&#39;s exactly the confirmation I was looking for, you mention the two things that answer it: 1) <code>there are no guarantees other than what TCP gives you. That&#39;s partly why the QoS provided by DDS [..] are so valuable in ROS 2</code> and 2) <code>all of the networking code in ROS 1 was written with the assumption of there being a &quot;perfect network&quot; [..]</code></p>
+
+<p>Regarding your request for clarification:</p>
+
+<blockquote>
+<p>publishing goal</p>
+</blockquote>
+
+<p>I am not handling it myself, but I know that goals are effectively published to a topic, so I monitored this by recording a rosbag of all action topics and checking whether the goal is ever published.</p>
+
+<blockquote>
+<p>could you expand on why the described approach is not &quot;safe or correct&quot;?</p>
+</blockquote>
+
+<p>I was hoping for a more fundamental guarantee; but in the absence of one, and based on your comments, it is probably a good enough option.</p>
+
+<blockquote>
+<p>wireshark + rosbag</p>
+</blockquote>
+
+<p>good point, I will try that</p>
+
+<p>...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34021">gonzalocasas</a> on 2020-01-04 10:50:39 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>I believe you should actually post is as an answer because it&#39;s exactly the confirmation I was looking for</p>
+</blockquote>
+
+<p>Well, it&#39;s all based on my current understanding of the code involved. I was not around when this was written, so I cannot authoritatively answer your question. Hence the comment.</p>
+
+<p>As TCP/IP is pretty good at delivering data, even over lossy networks (note: not perfect, but good enough), I&#39;m not sure whether the message(s) is actually lost during transport. I would expect it to be somewhere inside a node, or perhaps there&#39;s even a logic error somewhere causing things just not to be published at all.</p>
+
+<blockquote>
+<p>I am not handling it myself</p>
+</blockquote>
+
+<p>If you could give a bit more information on what you are actually doing (ie: how are things connected, and who is sending what and when), perhaps we can provide some more (actual) insight.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-04 10:54:46 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Rosbrige has been known to not be entirely stable when dealing with either long sessions or very busy / contentious sessions.</p>
+</blockquote>
+
+<p>Yes, I noticed it. I initially tried to initialize the action client before every move, and that quickly failed in a myriad of ways.</p>
+
+<blockquote>
+<p>I believe you have a network and system topology something like the following:</p>
+</blockquote>
+
+<p>Indeed, that&#39;s exactly the system.</p>
+
+<blockquote>
+<p>what about your (custom?) client lib not actually publishing (ie: actually pushing out the bytes)?</p>
+</blockquote>
+
+<p>It could be. Wireshark will help there, as you suggest. It&#39;s not so custom thou, the library is <code>roslibpy</code>, I use the same released version, no customization there, and the actionlib code in <code>roslibpy</code> is a very literal port of <code>roslibjs</code>. However, there might be some weird edge cases based on the difference of the event loops of Javascript vs the one of Twisted/Autobahn used by <code>roslibpy</code>.</p>
+
+<blockquote>
+<p>There is a way to use Services to host actions [..]</p>
+</blockquote>
+
+<p>Didn&#39;t know that! Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34021">gonzalocasas</a> on 2020-01-04 10:59:37 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>It&#39;s not so custom thou, the library is <code>roslibpy</code>, I use the same released version, no customization there, and the actionlib code in <code>roslibpy</code> is a very literal port of <code>roslibjs</code>. However, there might be some weird edge cases based on the difference of the event loops of Javascript vs the one of Twisted/Autobahn used by <code>roslibpy</code>.</p>
+</blockquote>
+
+<p>neither roslibjs or any clients based on it come close to how well the behaviour of <code>roscpp</code> and <code>rospy</code> are known (note: <em>not</em> how good those client libraries are. They are far from faultless, but at least quite a nr of their failure modes are known: see the <code>ros_comm</code> issue tracker fi).</p>
+
+<p>Given the amount of time (10hrs) and the nr of requests (3000) it&#39;s most likely not going to be easy to reproduce this, so I&#39;d add as much logging and introspection capability to nodes and infrastructure under your control to help you pinpoint where message disappear (although again: it could be they&#39;re not published at all).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-01-04 11:11:32 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

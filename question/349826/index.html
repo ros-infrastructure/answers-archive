@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Odom frame is making the robot to lost its position - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/349826">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Odom frame is making the robot to lost its position</h2>
+      <div class="question">
+        <p>I am using the map frame as a fixed frame in Rviz
+I am also using DWA Local Planner and Base Local Planner.
+My robot has 4 wheels with 4 motors and I am using it as a differential drive robot. </p>
+
+<p>I am using the following code to generate the <code>Odom</code> frame from encoder readings of my robot. In order to test whether it works, I drive it forward, backward and I make it rotate in-place a few times. In this test, everything worked well. However, when the robot makes rotations with a rotation radius different than zero, it loses its location.</p>
+
+<p>Here are my observations:</p>
+
+<ul>
+<li>I make the frame id <code>map</code> and the child frame id <code>base_link</code>. The following code publishes the relation between them. After that, I used Rviz to visualize the laser_frame. The scanned objects move as the vehicle moves. </li>
+<li>I used AMCL and observe the base<em>link then I used move</em>base to make the vehicle move. The vehicle almost teleports out of the map, so I think there is something wrong. <code>map&gt;odom&gt;base_link</code> is the relation between the frames.</li>
+<li>Lastly, I used laser<em>scan</em>matcher to relate the map with base_link. This configuration works better, but it is not good enough. In some hallways, the robot is not moving but in reality, it moves.</li>
+</ul>
+
+<p>Here is the <code>TF Tree</code> that I used for testing the odom:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15872833709591519.jpg" alt="image description"></p>
+
+<p>Here is the <code>TF Tree</code> that I used normally:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15873277497632152.jpg" alt="image description"></p>
+
+<p>The TF Tree with <code>AMCL</code> and Odom:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15873881084377611.jpg" alt="image description"></p>
+
+<p>I also investigated the encoder data it seems fine. I couldn&#39;t find out the problem. I have a four-wheeled robot with four motors yet I am using differential drive algorithms. Can it be the problem?</p>
+
+<p>Here is a time vs speed graph. Red lines represent my encoder feedback and the blue line is the speed command from cmd_vel. As you can see graphs are almost identical with a delay. The units of the x-axis is sample and mm/s for the y-axis. I took 30 samples per second so 3.3 second passes for 100 samples. I calculated a delay of 0.3 seconds.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1587329540330498.jpg" alt="image description"></p>
+
+<pre><code>#!/usr/bin/python
+# This beautiful state of art publishes tf between odom and base_link
+import rospy
+import roslib
+import math 
+import numpy
+import tf2_ros
+import tf_conversions
+
+
+# Messages
+from std_msgs.msg import Float32
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Point, Quaternion, Twist, TransformStamped
+
+# Use left and right angular velocities to compute robot unicycle velocities
+# Publish the estimated velocity update
+class OdomPublisher:
+  def __init__(self):
+    rospy.init_node(&#39;diffdrive_odom&#39;)
+    self.lwheel_angular_vel_enc_sub = rospy.Subscriber(&#39;lwheel_angular_vel_enc&#39;, Float32, self.lwheel_angular_vel_enc_callback)    
+    self.rwheel_angular_vel_enc_sub = rospy.Subscriber(&#39;rwheel_angular_vel_enc&#39;, Float32, self.rwheel_angular_vel_enc_callback)    
+    self.lwheel_tangent_vel_enc_pub = rospy.Publisher(&#39;lwheel_tangent_vel_enc&#39;, Float32, queue_size=10)
+    self.rwheel_tangent_vel_enc_pub = rospy.Publisher(&#39;rwheel_tangent_vel_enc&#39;, Float32, queue_size=10)
+    self.cmd_vel_enc_pub = rospy.Publisher(&#39;cmd_vel_enc&#39;, Twist, queue_size=10)
+
+    self.odom_pub = rospy.Publisher(&#39;odom&#39;, Odometry, queue_size=10)
+    self.equalizer = 0.39
+    self.L = rospy.get_param(&#39;~robot_wheel_separation_distance&#39;, 0.86) 
+    self.R = rospy.get_param(&#39;~robot_wheel_radius&#39;, 0.075)
+    self.rate = rospy.get_param(&#39;~rate&#39;, 10)
+    self.N = rospy.get_param(&#39;~robot_wheel_ticks&#39;, 20)
+    self.frame_id = rospy.get_param(&#39;~frame_id&#39;,&#39;/odom&#39;)
+    self.child_frame_id = rospy.get_param(&#39;~child_frame_id&#39;,&#39;/base_link&#39;)
+
+    self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+
+    self.lwheel_angular_vel_enc = 0
+    self.rwheel_angular_vel_enc = 0
+    self.pose = {&#39;x&#39;:0, &#39;y&#39;: 0, &#39;th&#39;: 0}
+    self.time_prev_update = rospy.Time.now()
+
+  def lwheel_angular_vel_enc_callback(self, msg):
+    self.lwheel_angular_vel_enc = msg.data
+
+  def rwheel_angular_vel_enc_callback(self, msg):
+    self.rwheel_angular_vel_enc = msg.data
+
+  # Compute angular velocity target
+  def angularvel_2_tangentvel(self,angular_vel):
+    tangent_vel = angular_vel * self.R
+    return tangent_vel
+
+  def pose_next(self, lwheel_tangent_vel_enc, rwheel_tangent_vel_enc):
+    x = self.pose[&#39;x&#39;]; y = self.pose[&#39;y&#39;]; th = self.pose[&#39;th&#39;]
+    time_curr_update = rospy.Time.now()
+    dt = (time_curr_update - self.time_prev_update).to_sec()
+    self.time_prev_update = time_curr_update
+
+    # Special case where just moving straight
+    if rwheel_tangent_vel_enc == lwheel_tangent_vel_enc:
+      v = (lwheel_tangent_vel_enc + rwheel_tangent_vel_enc) / 2.0
+      w = 0
+      x = x + v*dt*numpy.cos(th)
+      y = y + v*dt*numpy.sin(th)
+
+    else:
+      # Compute the instantaneous center of curvature
+      v = (lwheel_tangent_vel_enc + rwheel_tangent_vel_enc) / 2.0
+      w = (rwheel_tangent_vel_enc - lwheel_tangent_vel_enc) / self.L * self.equalizer
+      R = ( self.L / 2.0 ) * (lwheel_tangent_vel_enc + rwheel_tangent_vel_enc) / (rwheel_tangent_vel_enc - lwheel_tangent_vel_enc)
+
+      # Update robot pose
+      translation = numpy.matrix([[x - R*numpy.sin(th)], [y + R*numpy.cos(th)], [w*dt]])
+      icc_pt = numpy.matrix([[R*numpy.sin(th)],[-R*numpy.cos(th)],[th]])
+      rotation = numpy.matrix([[numpy.cos(w*dt), -numpy.sin(w*dt), 0],[numpy.sin(w*dt), numpy.cos(w*dt), 0],[0,0,1]])
+      pose_next = rotation * icc_pt + translation
+
+      x = pose_next[0,0]
+      y = pose_next[1,0]
+      th = pose_next[2,0]
+    return {&#39;x&#39;:x, &#39;y&#39;:y, &#39;th&#39;:th,&#39;v&#39;:v,&#39;w&#39;:w}
+
+  def pose_update(self):
+    lwheel_tangent_vel_enc = self.angularvel_2_tangentvel(self.lwheel_angular_vel_enc)
+    rwheel_tangent_vel_enc = self.angularvel_2_tangentvel(self.rwheel_angular_vel_enc)
+    self.lwheel_tangent_vel_enc_pub.publish(lwheel_tangent_vel_enc)
+    self.rwheel_tangent_vel_enc_pub.publish(rwheel_tangent_vel_enc)
+
+    pose_next = self.pose_next(lwheel_tangent_vel_enc, rwheel_tangent_vel_enc)
+
+    cmd_vel_enc = Twist()
+    cmd_vel_enc.linear.x = pose_next[&#39;v&#39;]
+    cmd_vel_enc.angular.z = pose_next[&#39;w&#39;]
+    self.cmd_vel_enc_pub.publish(cmd_vel_enc)
+
+    return pose_next
+
+  def pub_odometry(self,pose):
+    # Construct odometry message
+    odom_msg = Odometry()
+    odom_msg.header.stamp = self.time_prev_update
+    odom_msg.header.frame_id = self.frame_id
+    odom_msg.child_frame_id = self.child_frame_id
+    odom_msg.pose.pose.position = Point(pose[&#39;x&#39;], pose[&#39;y&#39;], 0)
+    odom_msg.pose.pose.orientation = Quaternion(*tf_conversions.transformations.quaternion_from_euler(0,0,pose[&#39;th&#39;]))
+#    P = numpy.mat(numpy.diag([0.0]*3)) # Dummy covariance
+#    odom_msg.pose.covariance = tuple(P.ravel().tolist())
+    self.odom_pub.publish(odom_msg)
+
+  def pub_tf(self,pose):
+    transform = TransformStamped()
+    transform.header.stamp = self.time_prev_update
+    transform.header.frame_id = self.frame_id
+    transform.child_frame_id = self.child_frame_id
+    transform.transform.translation.x = pose[&#39;x&#39;]
+    transform.transform.translation.y = pose[&#39;y&#39;]
+    transform.transform.translation.z = 0.0
+    quaternion_form = tf_conversions.transformations.quaternion_from_euler(0, 0, pose[&#39;th&#39;])
+    transform.transform.rotation.x = quaternion_form[0]
+    transform.transform.rotation.y = quaternion_form[1]
+    transform.transform.rotation.z = quaternion_form[2]
+    transform.transform.rotation.w = quaternion_form[3]
+
+
+    self.tf_broadcaster.sendTransform(transform)
+
+  def update(self):
+    self.pose = self.pose_update()
+    self.pose[&#39;th&#39;] = math.atan2(math.sin(self.pose[&#39;th&#39;]),math.cos(self.pose[&#39;th&#39;])) # squash the orientation to between -pi,pi
+    self.pub_odometry(self.pose)
+    # self.pub_tf(self.pose)        
+
+
+  def spin(self):
+    rospy.loginfo(&quot;Start diffdrive_odom&quot;)
+    rate = rospy.Rate(self.rate)
+    rospy.on_shutdown(self.shutdown)
+    while not rospy.is_shutdown():
+      self.update()
+      rate.sleep()
+    rospy.spin()
+
+  def shutdown(self):
+    rospy.loginfo(&quot;Stop diffdrive_odom&quot;)
+    rospy.sleep(1)
+
+def main():
+  odom_publisher = OdomPublisher()
+  odom_publisher.spin()
+
+if __name__ == &#39;__main__&#39;:
+  main()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/46586">wallybeam</a> on 2020-04-18 11:22:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>How do you know it loses it location? What data do you get that makes you think so? You need to tell what is happening before we can help you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-04-18 14:07:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your feedback. I added some details. I am using <code>Rviz</code> to visualize base_link and laser scans. The laser scans move as the <code>base_link</code> moves. However, when I use <code>laser_scan_matcher</code> to locate my robot, laser scans stay stable. Also I am not able to use <code>AMCL</code> too. When I use it my robots motion makes no sense on the <code>Rviz</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46586">wallybeam</a> on 2020-04-18 14:35:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Can you upload your TF tree?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-04-18 22:28:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Of course, I uploaded the TF tree and the graph of encoder feedback vs cmd_vel.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46586">wallybeam</a> on 2020-04-19 03:10:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m not seeing a ODOM to BASE_LINK TF. Shouldn&#39;t there be one in there?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-04-19 13:53:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Normally, there is an <code>odom</code> to <code>base_link</code> TF. After I observed a shift in the position of the robot, I removed the <code>amcl</code> node and isolated my <code>odom</code> to see if the problem related to it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46586">wallybeam</a> on 2020-04-19 14:13:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>AMCL will publish the MAP --&gt; ODOM TF. Whatever node publishes ODOM is responsible for ODOM --&gt; BASE_LINK TF. I&#39;m not saying that is the current issue. I see you&#39;ve posted the python code that publishes the TF.  But always easiest to make things are set up properly first. </p>
+
+<p>Can you show the TF tree when using move_base and AMCL? </p>
+
+<p>Can you also verify what Fixed Frame you&#39;ve set in RVIZ?</p>
+
+<p>For the timing of CMD and encoder, what are units for time? mS? uS?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-04-19 14:44:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I will be able to upload the TF Tree that you requested tomorrow. For now, I uploaded the TF Tree that I got the best performance by using laser_scan_matcher. Actually it is a discrete graph, I sampled the data with a frequency of 30 HZ. I renewed the graph and the delay is around 0.3 seconds.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46586">wallybeam</a> on 2020-04-19 15:54:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I have uploaded the <code>tf-tree</code> with <code>AMCL</code>. When I try navigation stack with this combination, the robot makes jumps or really fast motions on rviz. I am using <code>dwa local planner</code> and <code>global planner</code>. Just in case my dwa params:</p>
+
+<pre><code>controller_frequency: 30.0
+planner_frequency: 5.0
+base_global_planner: global_planner/GlobalPlanner
+base_local_planner: dwa_local_planner/DWAPlannerROS
+conservative_reset_dist: 6.0
+
+clearing_rotation_allowed: false
+
+allow_unknown: true
+use_dijkstra: true
+use_quadratic: true
+use_grid_path: false
+old_navfn_behavior: false
+visualize_potential: false
+publish_potential: false
+
+cost_factor: 0.55
+neutral_cost: 66 #updated from 0.66 to 66.0
+lethal_cost: 253
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46586">wallybeam</a> on 2020-04-20 08:15:53 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

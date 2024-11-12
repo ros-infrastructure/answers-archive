@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>smach state transition latency - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/9780">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>smach state transition latency</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/31189/smach-state-transition-latency">https://robotics.stackexchange.com/questions/31189/smach-state-transition-latency</a>.</p>
+        <p>I&#39;ve run across some curious behavior within smach, and I was curious if others have observed similar issues.</p>
+
+<p>The issue arises when using a Concurrency container <em>and</em> the smach<em>viewer.  In essence, when running my state machine with smach</em>viewer and without concurrency, the state transitions are almost instantaneous.  The same applies when running without the smach<em>viewer and with the concurrency section.  However, when I run both the concurrency container and smach</em>viewer simultaneously, <em>all</em> state transitions take 7+ seconds.   If I start off without the viewer, the transitions are instantaneous, but degrade as soon as the viewer launches.</p>
+
+<p>Any thoughts or suggestions?</p>
+
+<p>PS -- Occasionally I get the following smach_viewer error (though I believe it is unrelated, as it occurs even when everything functions normally):</p>
+
+<pre>
+[ERROR] [WallTime: 1303127819.346248] bad callback: <bound method SmachViewerFrame._status_msg_update of <__main__.SmachViewerFrame; proxy of <Swig Object of type 'wxFrame *' at 0x953f420> >>
+Traceback (most recent call last):
+  File "/opt/ros/diamondback/stacks/ros_comm/clients/rospy/src/rospy/topics.py", line 563, in _invoke_callback
+    cb(msg)
+  File "/opt/ros/diamondback/stacks/executive_smach_visualization/smach_viewer/smach_viewer.py", line 659, in _status_msg_update
+    if container.update_status(msg):
+  File "/opt/ros/diamondback/stacks/executive_smach_visualization/smach_viewer/smach_viewer.py", line 146, in update_status
+    self._local_data._data = pickle.loads(msg.local_data)
+  File "/usr/lib/python2.6/pickle.py", line 1374, in loads
+    return Unpickler(file).load()
+  File "/usr/lib/python2.6/pickle.py", line 858, in load
+    dispatch[key](self)
+  File "/usr/lib/python2.6/pickle.py", line 1090, in load_global
+    klass = self.find_class(module, name)
+  File "/usr/lib/python2.6/pickle.py", line 1124, in find_class
+    __import__(module)
+ImportError: No module named geometry_msgs.msg._PoseStamped
+</pre>
+
+        <div class="owner"><p>Asked by <a href="/users/287">Travis Deyle</a> on 2011-04-20 05:27:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I generated a simple test program that uses concurrency in a manner similar to my problematic code (see below).  This test program has no latency issues whatsoever.  </p>
+
+<p>Regardless, I still see this issue in my large state machine.  Without the concurrency block, I never experience the latencies, but as soon as it is put in place the latencies jump to ~7 seconds.  The two preemptable nodes are both Python classes that inherit from Smach.State and both use tf and make extensive service calls.  My &quot;main&quot; state is a SimpleActionState.  I think I&#39;m just going to re-architect the code to avoid the problem.  Hopefully no one else runs into similar issues.</p>
+
+<pre>
+#! /usr/bin/python
+import roslib
+roslib.load_manifest('rfid_demos')
+import rospy
+
+import smach
+import tf
+from smach_ros import SimpleActionState, ServiceState, IntrospectionServer
+import actionlib
+
+class QuickTestPreempt( smach.State ):
+    def __init__( self, name, plus ):
+        smach.State.__init__( self, outcomes = ['preempted'] )
+        self.count = 0
+        self.plus = plus
+        self.name = name
+
+    def execute( self, userdata ):
+        r = rospy.Rate( 3 )
+        while not smach.State.preempt_requested( self ):
+            self.count += self.plus
+            rospy.logout( '%s at count %3.2f' % (self.name, self.count))
+            r.sleep()
+        return 'preempted'
+
+class QuickTestMain( smach.State ):
+    def __init__( self, name ):
+        smach.State.__init__( self, outcomes = ['succeeded','aborted','preempted'] )
+        self.count = 0
+        self.name = name
+
+    def execute( self, userdata ):
+        r = rospy.Rate( 1 )
+        for i in xrange( 5 ):
+            self.count += 1
+            rospy.logout( '%s at count %3.2f' % (self.name, self.count))
+            r.sleep()
+        return 'succeeded'
+
+class PrintStr(smach.State):
+    def __init__(self, ins = 'Hello'):
+        smach.State.__init__(self, outcomes=['succeeded', 'aborted', 'preempted'])
+        self.ins = ins
+
+    def execute(self, userdata):
+        rospy.logout( 'Executing PrintStr: %s' % self.ins )
+        return 'succeeded'
+
+
+def smc():
+    smc = smach.Concurrence( outcomes=['succeeded', 'aborted', 'preempted'],
+                            default_outcome = 'aborted',
+                            outcome_map = {'succeeded': {'MAIN':'succeeded'},
+                                           'aborted': {'MAIN':'aborted'},
+                                           'preempted': {'MAIN':'preempted'}},
+                            child_termination_cb = lambda arg: True )
+
+    # Open the container
+
+    with smc:
+        smach.Concurrence.add('MAIN', QuickTestMain('main'))
+        smach.Concurrence.add('ARG', QuickTestPreempt('arg',3.0))
+        smach.Concurrence.add('BAH', QuickTestPreempt('bah',2.4))
+
+    return smc
+
+if __name__ == '__main__':
+    rospy.init_node( 'tmp_test')
+
+    sm = smach.StateMachine(outcomes=['succeeded','aborted','preempted'])
+
+    with sm:
+        smach.StateMachine.add( 'PS1', PrintStr(), transitions={'succeeded':'SMC'})
+        smach.StateMachine.add( 'SMC', smc(), transitions={'succeeded':'PS2'})
+        smach.StateMachine.add( 'PS2', PrintStr(), transitions={'succeeded':'PS3'})
+        smach.StateMachine.add( 'PS3', PrintStr(), transitions={'succeeded':'succeeded'})
+
+    sis = IntrospectionServer( 'sm_test', sm, '/SM_TEST' )
+    sis.start()
+    rospy.sleep( 5 )
+
+    sm.execute()
+    sis.stop()
+</pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/287">Travis Deyle</a> on 2011-04-21 23:04:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>As Travis discovered, this problem occurs when you use large userdata structures in Smach. These userdata structures are sent to the smach_viewer over ROS, taking up a long of cycles to do the serialization and sending. Smach could be smarter about sending userdata to the smach_viewer. </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/38">Wim</a> on 2011-04-22 04:24:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

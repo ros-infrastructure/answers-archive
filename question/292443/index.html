@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros_canopen and Maxon EPOS2. Could not switch controller. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/292443">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros_canopen and Maxon EPOS2. Could not switch controller.</h2>
+      <div class="question">
+        <p>We are trying to setup ros<em>canopen with a Maxon&#39;s Epos2 controller. Our enviroment is Ubuntu 16.04 with ROS Kinetic, and 
+ros</em>canopen version: 0.7.9.</p>
+
+<p>We followed documentation described in <a href="http://wiki.ros.org/ros_canopen">ros_canopen</a>, and mostly these two <a href="https://answers.ros.org/question/250174/how-to-control-maxon-motor-by-using-ros_canopen/">answer</a> and <a href="https://answers.ros.org/question/250653/ros_canopen-with-lwa4d-initialization-fails/">answer</a> .Now we have a basic communication between ros_canopen and Epos2 controller.</p>
+
+<p>We had some issues when we setup the configuration. Maxon provides a tool for Windows called <code>EPOS Studio</code>, which allows to manage the controllers. </p>
+
+<p>First, we configured the controller with EPOS Studio to handle canopen protocol, and we exported the configuration to a EDS file for ros<em>canopen. We lost some time until we figured out that exported EDS file didn&#39;t contain the configuration that was using the controller and we overwrited the parameters within `dcf</em>overlay` section.</p>
+
+<p>Then, we tried to initialize the controller, but we had an issue with the Interpolated Position Mode. ros_canopen defines such modes input in 60c1sub1 register, but Epos2 controller doesn&#39;t. Despited it isn&#39;t the best solution, we changed that mode to accept 0x607A (Target Position) in <a href="https://github.com/ros-industrial/ros_canopen/blob/kinetic-devel/canopen_402/include/canopen_402/motor.h">motor.h</a>, but we do not use that mode.</p>
+
+<p>At this point we have another issue, when we power on the controller, by default it is in disabled state (control word 0xxx xx0x) and if we <code>rosservice call /driver/init</code> we get &quot;Transition timeout; Could not enable motor; Transition timeout&quot;. If we Enable the controller using EPOS Studio and call init service, then ros_canopen goes one step forward and makes Homing with it&#39;s default homing method (in this case actual position: 35). After that, the controller is set in disabled state.</p>
+
+<p>Finally we launch our controller with the following configuration:</p>
+
+<pre><code>joint_position_controller:
+  type: position_controllers/JointPositionController
+  joint: motor_1_joint
+  required_drive_mode: 1
+joint_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: motor_1_joint
+  required_drive_mode: 3
+</code></pre>
+
+<p>We set  PDO as:</p>
+
+<pre><code>can0  181   [2]  00 01        # Controlword
+can0  281   [2]  40 07        # Statusword
+can0  381   [1]  06           # Modes of Operation Display
+can0  481   [4]  FD FF FF FF  # Position Actual Value
+</code></pre>
+
+<p>When we load the joint<em>position</em>controller we get following error:</p>
+
+<pre><code>Could not switch to mode 1, reason: Mode switch timed out.
+[ERROR] [1527494153.154665304]: motor_1_jointcould not enter mode 1
+[ERROR] [1527494153.155116906]: Could not switch one joint for joint_position_controller, will stop all related joints     and the controller.
+[ERROR] [1527494153.928573312]: Could not switch one joint for joint_position_controller, will stop all related joints and the controller.
+</code></pre>
+
+<p>The same happens with joint<em>velocity</em>controller.</p>
+
+<p>Basically we have two questions:</p>
+
+<p>1) How can we init the driver without manually enabling from EPOS Studio?</p>
+
+<p>2) How can we proceed to success in loading the controllers?</p>
+
+<p>Thanks!</p>
+
+<hr>
+
+<p>Edit: Mathias thanks for your reply. As you said, I&#39;ve set <code>&quot;0x6060&quot;:&quot;1&quot;</code>in  dcf_overlay, but nothing changes. I can monitor controller&#39;s registers with EPOS Studio in &#39;realtime&#39; though USB. The value of <code>0x6060</code>only changes only if <code>rosservicell call .../init</code> is called after enabling the controller. The value <code>0x6060</code>is automatically set to 6 (homing method). I assume this is how it should work.</p>
+
+<p>I&#39;ve talked with Maxon&#39;s support and I think one step within the initialization is missing. <a href="https://www.maxonmotor.es/medias/sys_master/root/8828099231774/EPOS2-Application-Notes-Collection-En.pdf">Maxon Application Notes in section 8.4  Profile Position Mode</a> describes the 2 commands need to send to the EPOS2 controller&#39;s <code>controlword</code> register in order to set in &quot;Operation Enable&quot; state: 
+1) Shutdown command, reg: 0x6040-00 value: 0x0006
+2) Switch on &amp; Enabl,    reg: 0x6040-00 value: 0x000F</p>
+
+<p>Those two commands corresponds with the definition of the EPOS2 controller&#39;s state-machine, explained in the <a href="https://www.maxonmotor.es/medias/sys_master/root/8828099133470/EPOS2-Firmware-Specification-En.pdf">Firmware Specification Section 3.2 </a></p>
+
+<p>I&#39;ve sent those two commands using <a href="https://github.com/linux-can/can-utils">can-utils</a>, and it set the controller in <code>Operation Enable</code> state.</p>
+
+<p><code>cansend can0 601#2240600006000000</code></p>
+
+<p><code>cansend can0 601#224060000F000000</code></p>
+
+<p>I&#39;ve sniffed can packages with:</p>
+
+<p><code>candump -cae can0,0:0,#FFFFFFFF</code>  and I din&#39;t see any writing command in <code>Controlword 0x6040</code>, only readings.</p>
+
+<p>1) the question now is whether this additional initialization step is needed to properly work with EPOS2 controllers using ros_canopen.</p>
+
+<p>2) I can load the controller, setting <code>switching_state</code> to 4 </p>
+
+<p>thanks again!</p>
+
+<p>asier.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35514">asier.fernandez</a> on 2018-05-28 03:28:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi @asier.fernandez !</p>
+
+<p>How did you configured the EDS file to overwrite the dcf_overlay section. And how did you know that you have the wrong configuration?</p>
+
+<p>I have the same error but with 60c1sub0. Could you explain how did you change the mode in motor.h?</p>
+
+<p>Many thanks, 
+Jorge</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27207">jdeleon</a> on 2018-06-05 12:45:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You can manually edit EDS file, or create an overlay as it is explained in <a href="http://wiki.ros.org/canopen_chain_node?distro=lunar">canopen_chain_mode</a></p>
+
+<p>I&#39;ve edited <code>motor.h</code>replacing the mode
+typedef ModeForwardHelper<MotorBase::Interpolated_Position, int32_t, 0x607A, 0, 0> InterpolatedPositionMode</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35514">asier.fernandez</a> on 2018-06-05 15:22:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi @asier.fernandez
+I try to replace the typedef as you explain, but it fails when compiling the code:</p>
+
+<pre><code>error: an assignment cannot appear in a constant-expression
+ typedef ModeForwardHelper&lt;MotorBase::Interpolated_Position, int32_t,=&quot;&quot; 0x607A,=&quot;&quot; 0,=&quot;&quot; 0=&quot;&quot;&gt; InterpolatedPositionMode;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27207">jdeleon</a> on 2018-06-08 01:53:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>the second error:</p>
+
+<pre><code>/home/jorge/WS/epos_ws/src/ros_canopen/canopen_402/include/canopen_402/motor.h:209:94: error: wrong number of template arguments (3, should be 5)
+         typedef ModeForwardHelper&lt;MotorBase::Interpolated_Position, int32_t,=&quot;&quot; 0x607A,=&quot;&quot; 0,=&quot;&quot; 0=&quot;&quot;&gt; InterpolatedPositionMode;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27207">jdeleon</a> on 2018-06-08 01:53:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Sorry @jdeleon, I just copy/paste the command, and the format of the next was changes
+<code>
+typedef ModeForwardHelper&lt;MotorBase::Interpolated_Position, int32_t, 0x607A, 0, 0&gt; InterpolatedPositionMode;
+</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35514">asier.fernandez</a> on 2018-06-08 04:31:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi @asier.fernandez, I try that change before I commented the other errors. I can compile with that modification, but the error when I try to initialize the motors still.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27207">jdeleon</a> on 2018-06-08 04:51:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@asier.fernandez: please don&#39;t post updates as answers. Only use answers if you&#39;re answering your own question. For everything else, please edit your original post. Use the <code>edit</code> button/link for that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-12 09:07:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@asier.fernandez, how do you know that the motor has activated the PDO?
+I&#39;m monitoring the CAN with wireshark, but nothing happens... the motor receives the command but I don&#39;t know if it is correctly or not</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27207">jdeleon</a> on 2018-06-13 04:26:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi @asier.fernandez, did you managed to get your EPOS2 controller working with ros_canopen ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4040">Cyril Jourdan</a> on 2018-10-08 06:35:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I could&#39;t work more on that, and for the moment the work I started is stopped.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35514">asier.fernandez</a> on 2018-10-08 06:44:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <blockquote>
+<p>How can we init the driver without manually enabling from EPOS Studio?</p>
+</blockquote>
+
+<p>Please try to set a value for <code>0x6060</code> (e.g. 1) in dcf_overlay.
+Not all devices switch to &quot;Operation enabled&quot; without a mode.</p>
+
+<blockquote>
+<p>2) How can we proceed to success in loading the controllers?</p>
+</blockquote>
+
+<p>Does Maxon prohibit mode switching to certain motor states?
+You could try to set the <code>switching_state</code> param to 4 (&quot;Switched on&quot;).</p>
+
+<p>Update: You might need to set <code>switching_state</code> (&quot;Ready_To_Switch_On&quot;) to shutdown before switching.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4094">Mathias Lüdtke</a> on 2018-06-11 15:16:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

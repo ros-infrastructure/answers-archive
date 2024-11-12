@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to wait for completion when publishing JointState to /goal_dynamixel_position (dynamixel-workbench-controllers) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/392107">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to wait for completion when publishing JointState to /goal_dynamixel_position (dynamixel-workbench-controllers)</h2>
+      <div class="question">
+        <p>I am using dynamixel-workbench for a project and setting joint states manually by publishing directly to the topic /goal<em>dynamixel</em>position which is established in position<em>control.cpp. However, if I want to publish a series of joint states to be executed one after another, they will override each other unless manually waiting with rospy.sleep(), or in my case establishing some subscriber that checks to see if my motors are currently moving. I am doing that now by reading messages from /dynamixel</em>state. I think this is leading to issues where the program can&#39;t restart properly, and I&#39;m wondering if there is a better way to do this? </p>
+
+<p>Code for action server for control of dynamixel arm with an isMoving() function: </p>
+
+<pre><code>#! /usr/bin/env python
+
+import rospy
+import actionlib
+from open_manipulator_core.msg import ArmAction, ArmResult, ArduinoAction, ArduinoGoal
+import time
+import rospy
+from sensor_msgs.msg import JointState
+from dynamixel_workbench_msgs.msg import DynamixelStateList, DynamixelState
+from std_msgs.msg import Header
+import sys
+import tf
+
+class ArmServer:
+  def __init__(self):
+    self.server = actionlib.SimpleActionServer(&#39;arm_server&#39;, ArmAction, self.execute, False)
+    self.server.start()
+
+    self.pub = rospy.Publisher(&#39;/goal_dynamixel_position&#39;, JointState, queue_size=1)
+
+    self.listener = tf.TransformListener()
+
+    self.sub = rospy.Subscriber(&quot;/joint_states&quot;, JointState, self.js_callback)
+    self.tag_found = False
+    self.scan_complete = False
+
+    #self.jt_client = actionlib.SimpleActionClient(&#39;/arm/follow_joint_trajectory&#39;,FollowJointTrajectoryAction)
+
+    self.joint_state = rospy.wait_for_message(&#39;/joint_states&#39;, JointState, timeout=5.0)
+
+    self.joint_states = [[0,0,0,0,0,0,1],
+                        [0,-0.2,0.3,0.3,0,0,1],
+                        [0,-0.3,1,-0.8,0,0,1],
+                        [0,-1.15,1.62,-1.8,-1.55,-0.07,1],
+                        [0,-1.27,1.58,-1.75,-1.55,-0.13,1.75],
+                        [0,-1.44,1.67,-1.32,-1.56,-1.16,1.75],
+                        [0,-0.6,1,-1.1,0,0,1.75]]
+
+    self.ready_state = [0,0,0.4,-0.74,0,0,1]
+
+    self.scan_states = [[0,-0.3,1,-0.8,0,0,1],[2,-0.3,1,-0.8,0,0,1]] #NEED TO TEST THESE JOINT STATES
+
+    self.move_started = False
+
+    self.result = ArmResult()
+
+  def isMoving(self):
+    moving = False
+    self.dynamixel_state_list = rospy.wait_for_message(&#39;/dynamixel_state&#39;, DynamixelStateList, timeout=5.0)
+    for state in self.dynamixel_state_list.dynamixel_state:
+      if state.moving == 1:
+        moving = True
+    return moving
+
+  def js_callback(self,data):
+    if self.tag_found and not self.scan_complete:
+      rospy.loginfo(&quot;------ Tag Found at id_11:&quot;)
+      rospy.loginfo(data.position[0])
+      self.scan_angle = data.position[0]
+      self.result.result = data.position[0]
+      self.move_started = False
+      self.scan_complete = True
+
+  def setJointState(self,pos):
+    new_joint_state = self.joint_state
+
+    h = Header()
+    h.stamp = rospy.Time.now()
+    h.frame_id = self.joint_state.header.frame_id
+    new_joint_state.header = h
+    new_joint_state.position = pos
+
+    self.pub.publish(new_joint_state)
+
+    rospy.sleep(3)
+
+  def execute(self, goal):
+    rate = rospy.Rate(50)
+
+    if goal.sequence == 1: #Grab Anchor Sequence
+      for state in self.joint_states[2:7]:
+        self.setJointState(state)
+
+        while not self.move_started:
+          if self.isMoving():
+            self.move_started = True
+
+        while self.move_started:
+          if not self.isMoving():
+            self.move_started = False
+
+
+    if goal.sequence == 2: #Arm Ready Position
+      self.setJointState(self.ready_state)
+
+      while not self.move_started:
+        if self.isMoving():
+          self.move_started = True
+
+      while self.move_started:
+        if not self.isMoving():
+          self.move_started = False
+
+    if goal.sequence == 3: #Scan for marker location
+
+      for state in self.scan_states:
+        if not self.scan_complete:
+          self.setJointState(state) 
+
+          while not self.move_started:
+            if self.isMoving():
+              self.move_started = True
+
+          while self.move_started:
+            if not self.isMoving():
+              self.move_started = False
+              break
+
+            try:
+                (trans,rot) = self.listener.lookupTransform(&#39;/world&#39;, &#39;/ar_marker_21&#39;, rospy.Time(0))
+                self.tag_found = True
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                pass
+      self.setJointState(self.scan_states[0])
+      #self.setJointState([self.scan_angle,-0.3,1,-0.8,0,0,1])
+
+    rospy.loginfo(&quot;Sequence done&quot;)
+
+    #When complete:
+    self.server.set_succeeded(self.result)
+
+
+if __name__ == &#39;__main__&#39;:
+  rospy.init_node(&#39;arm_server&#39;)
+  server = ArmServer()
+  rospy.spin()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/90820">bluecolor2</a> on 2021-12-02 14:26:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Adjust turning ratio for skid-steer style robot? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/397058">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Adjust turning ratio for skid-steer style robot?</h2>
+      <div class="question">
+        <p>I have a differential steering 4 wheeled robot where the two left wheels are mechanically linked and the two right wheels are linked. This means that when it turns in place, all four wheels slip some amount (hence skid-steer), which unfortunately throws off wheel encoder odometry quite a bit. When driving straight, the odometry is spot on, I tell it to go one meter, it goes one meter. But if I tell it to rotate 1.6 radians, it only rotates 1, since the robot thinks it&#39;s gone 1.6 because the wheels skid so the ticks<em>per</em>meter value is thrown off.  I basically need to get it to spin 1.6x further than it wants to, either by reducing odometry reported spin amount, or by increasing the amount it tries to spin. Only problem being I have no idea how to do this. I&#39;m sure I could throw together some gross hack to make it work, but I feel like ROS must have a solution to this, since there are a lot of skid-steer type robotic vehicles in the world.
+I don&#39;t know what, if any, portions of the project would be helpful to attach here, so please let me know if I can provide any additional info on any portion of the project. I&#39;m using ros noetic btw.
+Here&#39;s the python file that subscribes to the /cmd_vel topic and spits out the speed commands to the motor driver over serial in the for &quot;V,leftVel,rightVel,**&quot;.  </p>
+
+<pre><code>#!/usr/bin/env/python
+
+from difflib import context_diff
+import rospy
+from geometry_msgs.msg import Twist
+from std_msgs.msg import String
+import yaml
+import serial
+
+class motor_driver():
+    def __init__(self):
+        rospy.init_node(&#39;motor_driver&#39;, anonymous=True)
+        rospy.Subscriber(&quot;cmd_vel&quot;, Twist, self.twistCallback)
+
+        self.serialPort = &quot;&quot;
+        with open(&quot;/home/ubuntu/chickies-robot/resources/comports.yaml&quot;, &quot;r&quot;) as stream:
+            try:
+                data = yaml.safe_load(stream)
+                self.serialPort=serial.Serial(data[&#39;TEENSY_MOTORS_PORT&#39;],data[&#39;TEENSY_MOTORS_BAUDRATE&#39;])
+            except yaml.YAMLError as exc:
+                print(exc)
+
+        self.leftVel = 0
+        self.rightVel = 0
+        self.xVal = 0
+        self.thetaVal = 0
+        self.rate = rospy.Rate(10)
+        self.maxVel = 0.25#1.0 #m/sec
+        self.velUnits = 1.0 #m/sec
+        self.maxRads = 0.5#2.4
+
+    def twistCallback(self,msg):
+        self.xVal = msg.linear.x * self.velUnits
+        self.thetaVal = -msg.angular.z
+
+    def spin(self):
+        while not rospy.is_shutdown():
+            self.spinOnce()
+            self.rate.sleep()
+
+    def limitThrottle(self, throttle, max):
+        if throttle &gt; max:
+            throttle = max
+            rospy.loginfo(String(&quot;throttle max: &quot; + str(max) + &quot; m/s&quot;))
+        elif throttle &lt; -max:
+            throttle = -max
+            rospy.loginfo(String(&quot;throttle min: -&quot; + str(max) + &quot; m/s&quot;))
+        return throttle
+
+    def limitTurn(self, turn, max):
+        if turn &gt; max:
+            turn = max
+            rospy.loginfo(String(&quot;angular max: &quot; + str(max) + &quot; rad/s&quot;))
+        elif turn &lt; -max:
+            turn = -max
+            rospy.loginfo(String(&quot;angular min: -&quot; + str(max) + &quot; rad/s&quot;))
+        return turn
+
+    def limitValsAfterTurn(self, val, opVal, max):
+        shift = 0
+        if val &gt; max:
+            shift = val - max
+            opVal = opVal - shift
+            val = max
+        elif val &lt; -max:
+            shift = abs(val) - max
+            opVal = opVal + shift
+            val = -max
+        return val, opVal
+
+    def limitRoundedVal(self, val, max):
+        if val &lt;= 0.03*self.velUnits and val &gt;= -0.03*self.velUnits:
+            val = 0
+        elif val &gt; 0.03*self.velUnits and val &lt; 0.05*self.velUnits:
+            val = 0.05*self.velUnits
+        elif val &lt; -0.03*self.velUnits and val &gt; -0.05*self.velUnits:
+            val = -0.05*self.velUnits
+        elif val &gt; max:
+            val = max
+        elif val &lt; -max:
+            val = -max
+        return val
+
+# Motor movement goals:
+#   Wheels should always be abs(steerLeft)*2 apart from each other
+#   Other than that, they should be moving at close to 
+    def spinOnce(self):
+
+        throttle = self.limitThrottle(self.xVal, self.maxVel)
+
+        turn = self.limitTurn(self.thetaVal, self.maxRads)
+        # recall that turn, here, is directly proportional to right velocity and inversely so to left velocity
+        # Ccw and all that
+        left = throttle + turn/self.maxRads*self.maxVel
+        right = throttle - turn/self.maxRads*self.maxVel
+
+        left, right = self.limitValsAfterTurn(left, right, self.maxVel)
+        right, left = self.limitValsAfterTurn(right, left, self.maxVel)
+
+        left = round(left, 3)
+        right = round(right, 3)
+
+        self.leftVel = self.limitRoundedVal(left, self.maxVel)
+        self.rightVel = self.limitRoundedVal(right, self.maxVel)
+
+        serialString = &quot;V,&quot; + str(self.leftVel) + &quot;,&quot; + str(self.rightVel) + &quot;,**&quot;
+        self.serialPort.write(bytes(serialString, &quot;utf-8&quot;))
+
+        logString = String(str(self.xVal) + &quot;, &quot; + str(self.thetaVal) + &quot;: &quot; + str(self.leftVel) + &quot;, &quot; + str(self.rightVel))
+        rospy.loginfo(logString)
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        motor_driver = motor_driver()
+        motor_driver.spin()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/97318">darkextratoasty</a> on 2022-03-03 20:17:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

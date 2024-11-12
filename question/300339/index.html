@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 C++ Re-Created Subscriber Not Listening - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/300339">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 C++ Re-Created Subscriber Not Listening</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88455/ros2-c-re-created-subscriber-not-listening">https://robotics.stackexchange.com/questions/88455/ros2-c-re-created-subscriber-not-listening</a>.</p>
+        <p>I&#39;d like to be able to disable a subscription temporarily, but as far as I know, the Subscription<T> type does not support that. Rather than use <code>if(!disabled)</code> in all of my message handlers, I&#39;ve taken the approach of destroying my subscriptions when they are not in use via <code>shared_ptr::reset()</code> and then calling <code>node::create_subscription()</code> again when I want to start listening.</p>
+
+<p>I&#39;ve been seeing a lot of cases of dropped communications, where I need to restart my C++ application to get it to start listening again, which kind of defeats the purpose of trying to do this.</p>
+
+<p>I&#39;ve put together a minimal test case, included below. The node subscribes to channel A and publishes every second on channel B. You can run two instances built with different topic names or run a python script to work in tandem with it, the result will be the same, as far as I can tell (I&#39;ve tried both). If any command line arguments are given, then after publishing, the node has a 20% chance of resetting its subscriber and creating a new one.</p>
+
+<p>Running this, against another node to publish and listen, this is what I find:</p>
+
+<ul>
+<li>If the subscription is never reset, either node can drop and restart and messaging continues</li>
+<li>If the subscription IS reset, it continues working, but only until the node publishing to it dies; if that node is started again, the subscription never reconnects</li>
+</ul>
+
+<p>I would expect that destroying and re-creating the subscription would reconnect and continue listening as it does in the case where it&#39;s never destroyed.</p>
+
+<p>So, is this an incorrect use of ROS, or is it a bug?
+If I am using subscriptions incorrectly, what is the correct way to achieve the effect I want? One of the things my application does is allow users to change the topics at runtime, so if they change to topic from A to B, and then back to A, isn&#39;t that going to yield the same behavior I am seeing here?</p>
+
+<p>System Details:</p>
+
+<ul>
+<li>Ubuntu 16.04 Kernel 4.15.0-30-generic</li>
+<li>ROS2 Ardent binaries installed through apt-get</li>
+<li>I have not set the RMW_IMPLEMENTATION environment variable, so my understanding is that FastRTPS will be used</li>
+</ul>
+
+<hr>
+
+<pre><code> int main(int argc, char** argv)
+ {
+    bool doResets = argc &gt; 1;
+
+    rclcpp::init(argc, argv);
+    shared_ptr&lt;rclcpp::Node&gt; node = make_shared&lt;rclcpp::Node&gt;(&quot;pub1&quot;);
+
+    auto publisher = node-&gt;create_publisher&lt;std_msgs::msg::String&gt;(&quot;world&quot;, 10);
+    auto msg = make_shared&lt;std_msgs::msg::String&gt;();
+
+    auto subFunc =
+    [](std_msgs::msg::String::ConstSharedPtr str)
+    {
+        cout &lt;&lt; &quot;I heard: &quot; &lt;&lt; str-&gt;data &lt;&lt; endl;
+    };
+
+    auto subscriber = node-&gt;create_subscription&lt;std_msgs::msg::String&gt;(&quot;hello&quot;, subFunc);
+
+    auto timer = node-&gt;create_wall_timer(1000ms,
+    [&amp;]()
+    {
+        cout &lt;&lt; &quot;Publish!&quot; &lt;&lt; endl;
+        msg-&gt;data = &quot;Hello World Pub3&quot;;
+        publisher-&gt;publish(msg);
+
+        if(doResets &amp;&amp; rand() % 100 &gt; 80)
+        {
+            cout &lt;&lt; &quot;Rebuild subscriber&quot; &lt;&lt; endl;
+            subscriber.reset();
+            subscriber = node-&gt;create_subscription&lt;std_msgs::msg::String&gt;(&quot;hello&quot;, subFunc);
+        }
+    });
+
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/33331">ipiano</a> on 2018-08-11 15:29:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I noticed that this didn&#39;t appear to be an issue on the Windows side of my machine. Sure enough, specifying OpenSplice for my RMW implementation solves the problem on Linux.</p>
+
+<p>However, I still don&#39;t know if this is a bug in FastRTPS or just a difference between the two that should be accounted for by using ROS differently.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/33331">ipiano</a> on 2018-08-11 22:52:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This sounds like something is not handled correctly in FastRTPS. I would suggest to report this with an issue on their tracker.</p>
+
+<p>Do please link back to the issue if/when you post it over there with a comment here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-08-12 01:33:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Done
+<a href="https://github.com/eProsima/Fast-RTPS/issues/246">https://github.com/eProsima/Fast-RTPS/issues/246</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33331">ipiano</a> on 2018-08-12 12:42:42 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

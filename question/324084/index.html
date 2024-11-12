@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Rospy: topic delays and asynchronous behavior - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/324084">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Rospy: topic delays and asynchronous behavior</h2>
+      <div class="question">
+        <p>Hi there! :)</p>
+
+<p><strong>My main goal/idea:</strong>
+I&#39;m trying to implement some basic formation flight for quadrotors with ROS in the V-REP simulator.</p>
+
+<p><strong>Problem:</strong>
+Before I even started with the formation flight dynamics or the formation itself I wanted to test if I can control two (or more) multicopters &#39;simultaneously&#39; (sequentially is acceptable if its nearly indistinguishable behavior for me).
+This is when I noticed strange delays which seemed to increase over time (see <a href="https://youtu.be/iKRSo5yZ3rg">https://youtu.be/iKRSo5yZ3rg</a>).
+Long bug hunting sessions and research brought me to this question (&amp; answer) on here: <a href="https://answers.ros.org/question/50112/unexpected-delay-in-rospy-subscriber/">answers.ros.org/[...]/unexpected-delay-in-rospy-subscriber/</a>
+After adding the mentioned buff_size to my subscribers I now have nearly eliminated the delay but face another problem (maybe it&#39;s still the same but not yet resolved) in which my quadrotors now fly more asynchronous and not at the same time or at least successively (1-2-1-2 etc.).
+Possibly this behavior existed before but was not noticeable with the delays.</p>
+
+<p><em>Examples:</em>
+<a href="https://youtu.be/0CCGFzQ9Jbg">https://youtu.be/0CCGFzQ9Jbg</a>
+and
+<a href="https://youtu.be/aQHChi48OUY">https://youtu.be/aQHChi48OUY</a>
+(higher rospy-rate)</p>
+
+<p><strong>The setup:</strong></p>
+
+<p><em>Version:</em> ROS Melodic</p>
+
+<p><em>Code:</em> Rospy-scripts and own &#39;msg&#39; &amp; launch files</p>
+
+<p><em>My platform:</em> Kubuntu 18.04 under Windows 10 host (VirtualBox)</p>
+
+<p><em>Node overview:</em>
+<img src="https://imgur.com/a/hexN3b2" alt="https://imgur.com/a/hexN3b2">
+(<a href="https://imgur.com/a/hexN3b2">https://imgur.com/a/hexN3b2</a>)</p>
+
+<p>Msg:</p>
+
+<p>&quot;Drone.msg&quot;</p>
+
+<pre><code>int8 number
+float32 x
+float32 y
+float32 z
+</code></pre>
+
+<p>Code (superfluous &#39;global&#39; declarations etc. omitted):</p>
+
+<p>&quot;simulation_connector&quot;</p>
+
+<pre><code>[...]
+queue_size_var = 1
+buff_size_var = 2**24
+tcp_nodelay_var = False
+
+def main():
+
+    [...]
+    sim_call_publisher = rospy.Publisher(&#39;calls_from_sim&#39;, Drone, queue_size=2)
+
+    rospy.init_node(&#39;Simulation Connector&#39;, anonymous=True)
+
+    get_get_names = rospy.Subscriber(&#39;topic_names_getTargetPos&#39;, String, callback_to_get_drone_target_position_topic_names)
+    get_set_names = rospy.Subscriber(&#39;topic_names_setTargetPos&#39;, String, callback_to_set_drone_target_position_topic_names)
+    rospy.Subscriber(&#39;commands_to_connector&#39;, Drone, callback_to_set_new_position, queue_size=queue_size_var, buff_size=buff_size_var, tcp_nodelay=tcp_nodelay_var)
+
+    targeted_run_rate = rospy.Rate(rate_frequency_in_hz)
+    targeted_run_rate.sleep()
+
+    while number_of_recognized_topics &lt; number_of_drones*2:
+        targeted_run_rate.sleep()
+
+    [...]
+
+    publisher_init()
+    subscriber_init()
+
+    while not rospy.is_shutdown():
+        targeted_run_rate.sleep()
+
+def callback_to_get_drone_target_position_topic_names(data):
+    [...]
+
+    if data.data not in get_drone_target_position_topic_names:
+        rospy.loginfo(rospy.get_caller_id() + &#39; New topic name for getTargetPos: %s&#39;, data.data)
+        get_drone_target_position_topic_names.append(data.data)    
+        number_of_recognized_topics += 1
+    else:
+        rospy.loginfo(rospy.get_caller_id() + &#39; Already have topic name for getTargetPos: %s&#39;, data.data)
+    targeted_run_rate.sleep()
+
+
+def callback_to_set_drone_target_position_topic_names(data):
+    [...]
+
+    if data.data not in set_drone_target_position_topic_names:
+        rospy.loginfo(rospy.get_caller_id() + &#39; New topic name for setTargetPos: %s&#39;, data.data)
+        set_drone_target_position_topic_names.append(data.data)    
+        number_of_recognized_topics += 1
+    else:
+        rospy.loginfo(rospy.get_caller_id() + &#39; Already have topic name for setTargetPos: %s&#39;, data.data)
+    targeted_run_rate.sleep()
+
+
+def callback_to_set_new_position(data):
+    [...]
+    new_pos = Point(float(data.x), float(data.y), float(data.z))
+
+    rospy.loginfo(rospy.get_caller_id() + &#39; New position for %d --&gt; x: %f y: %f z: %f&#39;, data.number, new_pos.x, new_pos.y, new_pos.z)
+
+    set_drone_target_position_publishers[data.number].publish(new_pos)
+
+
+def publisher_init():
+    [...]
+    for i in range(number_of_drones):
+        set_drone_target_position_publishers.append(rospy.Publisher(set_drone_target_position_topic_names[i], Point, queue_size=2))
+
+
+def subscriber_init():
+    [...]
+    for i in range(number_of_drones):
+        get_drone_target_position_subscribers.append(rospy.Subscriber(get_drone_target_position_topic_names[i], Point, forward_target_positions, i, queue_size=queue_size_var, buff_size=buff_size_var, tcp_nodelay=tcp_nodelay_var))
+
+
+def forward_target_positions(data, args):
+    rospy.loginfo(rospy.get_caller_id() + &#39; I got the position from %d --&gt; x: %f y: %f z: %f&#39;, args, data.x, data.y, data.z)
+    global sim_call_publisher
+    sim_call_publisher.publish(Drone(args, data.x, data.y, data.z))
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<hr>
+
+<p>&quot;connection<em>observation</em>module&quot;</p>
+
+<pre><code>[...]
+position_offset = 0.1
+queue_size_var = 1
+buff_size_var = 2**24
+tcp_nodelay_var = False
+
+def main():
+
+    [...]
+    observations_publisher = rospy.Publisher(&#39;observations&#39;, String, queue_size=queue_size_var)
+    connections_publisher = rospy.Publisher(&#39;commands_to_connector&#39;, Drone, queue_size=2)
+
+    rospy.init_node(&#39;Connection and Observation Module&#39;, anonymous=True)
+
+    [...]
+    rospy.Subscriber(&#39;calls_from_sim&#39;, Drone, callback_to_set_new_drone_target_position, queue_size=queue_size_var, buff_size=buff_size_var, tcp_nodelay=tcp_nodelay_var)
+
+    targeted_run_rate = rospy.Rate(rate_frequency_in_hz)
+
+    rospy.spin()
+
+
+def callback_to_set_new_drone_target_position(data):
+
+    [...]
+    new_drone_target_position = None
+
+    drone_number = data.number
+    x = float(data.x)
+    y = float(data.y)
+    z = float(data.z)
+
+    rospy.loginfo(&#39;----CallbackHandling:----&#39;)
+    rospy.loginfo(&#39;Old position of %d: %f, %f, %f&#39;, drone_number, x, y, z)
+
+    new_drone_target_position = Drone(drone_number, x + position_offset, y, z)
+
+
+    rospy.loginfo(&#39;Set position of %d to: %f, %f, %f&#39;, drone_number, new_drone_target_position.x, new_drone_target_position.y, new_drone_target_position.z)
+    rospy.loginfo(&#39;----&#39;)
+
+    connections_publisher.publish(new_drone_target_position)
+    targeted_run_rate.sleep()
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<hr>
+
+<p><strong>My attempts:</strong>
+I tried different rospy rates and buff_size sizes, but the 2**24 from the question mentioned above seems to work &#39;best&#39; and no other changes had noticeable effects...</p>
+
+<p><strong>Assumption:</strong>
+Has possibly something to do with multithreading or various topic parameters...or is maybe even something inherently to rospy.</p>
+
+<p>Hopefully you can help me or give me research/subject pointers get back on track ;)
+Thank you all very much for your time!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/41860">Vorkosig</a> on 2019-05-27 09:28:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2 Foxy] rclcpp_action &quot;no match for ‘operator=’ &quot; - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/373864">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2 Foxy] rclcpp_action &quot;no match for ‘operator=’ &quot;</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98544/ros2-foxy-rclcpp-action-no-match-for-operator">https://robotics.stackexchange.com/questions/98544/ros2-foxy-rclcpp-action-no-match-for-operator</a>.</p>
+        <p>Greetings,</p>
+
+<p>I&#39;m trying to write an action client that sends poses to the Navigation Stack 2, to the TurtleBot3. In doing so, I have tried to follow the tutorial in the documentation:
+<a href="https://docs.ros.org/en/foxy/Tutorials/Actions/Writing-a-Cpp-Action-Server-Client.html">https://docs.ros.org/en/foxy/Tutorials/Actions/Writing-a-Cpp-Action-Server-Client.html</a></p>
+
+<p>Meanwhile, the TurtleBot3&#39;s instructions can be found on this page.
+<a href="https://navigation.ros.org/getting_started/index.html">https://navigation.ros.org/getting_started/index.html</a></p>
+
+<p>Adapting the code however, poses a few problems. I think the core of it stems from this type mismatch:</p>
+
+<pre><code>error: no match for ‘operator=’ (operand types are ‘rclcpp_action::Client&lt;nav2_msgs::action::NavigateToPose&gt;::GoalResponseCallback’ {aka ‘std::function&lt;void(std::shared_future&lt;std::shared_ptr&lt;rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt; &gt; &gt;)&gt;’} and ‘std::_Bind_helper&lt;false, void (TurtleMover::*)(std::shared_future&lt;rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt; &gt;), TurtleMover*, const std::_Placeholder&lt;1&gt;&amp;&gt;::type’ {aka ‘std::_Bind&lt;void (TurtleMover::*(TurtleMover*, std::_Placeholder&lt;1&gt;))(std::shared_future&lt;rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt; &gt;)&gt;’}) 42 | send_goal_options.goal_response_callback = std::bind(&amp;TurtleMover::goal_response_callback, this, std::placeholders::_1);
+</code></pre>
+
+<p>This occurs for all the function callbacks that I send to the SendGoalOptions().</p>
+
+<p>Here is my attempted source code.</p>
+
+<pre><code>#include &lt;functional&gt;
+#include &lt;future&gt;
+#include &lt;memory&gt;
+#include &lt;thread&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_action/rclcpp_action.hpp&gt;
+#include &lt;rclcpp_components/register_node_macro.hpp&gt;
+
+#include &lt;std_msgs/msg/string.hpp&gt;
+#include &lt;nav2_msgs/action/navigate_to_pose.hpp&gt;
+
+class TurtleMover : public rclcpp::Node
+{
+public:
+  explicit TurtleMover(const rclcpp::NodeOptions &amp; options) : Node(&quot;Turtle_Mover&quot;, options)
+  {
+    this-&gt;client_ptr_ = rclcpp_action::create_client&lt;nav2_msgs::action::NavigateToPose&gt;(this, &quot;navigate_to_pose&quot;);
+    this-&gt;timer_ = this-&gt;create_wall_timer(std::chrono::milliseconds(500), std::bind(&amp;TurtleMover::send_goal, this));
+  }
+
+  void send_goal()
+  {
+    this-&gt;timer_-&gt;cancel();
+    if(!this-&gt;client_ptr_-&gt;wait_for_action_server())
+    {
+      RCLCPP_ERROR(this-&gt;get_logger(), &quot;Action server not available after waiting.&quot;);
+      rclcpp::shutdown();
+    }
+
+    auto goal_msg = nav2_msgs::action::NavigateToPose::Goal();
+    goal_msg.pose.header.frame_id = &quot;map&quot;;
+    //goal_msg.pose.header.stamp = rclcpp::Time::now();
+
+    goal_msg.pose.pose.position.x = 0.0;
+    goal_msg.pose.pose.position.y = 0.0;
+    goal_msg.pose.pose.orientation.w = 1.0;
+
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Sending goal&quot;);
+
+    auto send_goal_options = rclcpp_action::Client&lt;nav2_msgs::action::NavigateToPose&gt;::SendGoalOptions();
+    send_goal_options.goal_response_callback = std::bind(&amp;TurtleMover::goal_response_callback, this, std::placeholders::_1);
+    send_goal_options.feedback_callback = std::bind(&amp;TurtleMover::feedback_callback, this, std::placeholders::_1, std::placeholders::_2);
+    send_goal_options.result_callback = std::bind(&amp;TurtleMover::result_callback, this, std::placeholders::_1);
+
+    this-&gt;client_ptr_-&gt;async_send_goal(goal_msg, send_goal_options);
+  }
+
+private:
+  rclcpp_action::Client&lt;nav2_msgs::action::NavigateToPose&gt;::SharedPtr client_ptr_;
+  rclcpp::TimerBase::SharedPtr timer_;
+
+  void goal_response_callback(std::shared_future&lt; rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt; &gt; future)
+  {
+    auto goal_handle = future.get();
+    if(!goal_handle)
+    {
+      RCLCPP_ERROR(this-&gt;get_logger(), &quot;Goal was rejected by server&quot;);
+    }
+
+    else
+    {
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;Goal accepted by server, waiting for result&quot;);
+    }
+  }
+
+  void feedback_callback(rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt;::SharedPtr, const std::shared_ptr&lt;const nav2_msgs::action::NavigateToPose::Feedback&gt; feedback)
+  {
+    auto distance_feedback_msg = std_msgs::msg::String();
+    distance_feedback_msg.data = &quot;Remaining Distance from Destination: &quot; + std::to_string(feedback-&gt;distance_remaining);
+    RCLCPP_INFO(this-&gt;get_logger(), distance_feedback_msg.data);
+  }
+
+  void result_callback(rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt;::WrappedResult &amp;result)
+  {
+    switch (result.code) 
+    {
+      case rclcpp_action::ResultCode::SUCCEEDED:
+        break;
+      case rclcpp_action::ResultCode::ABORTED:
+        RCLCPP_ERROR(this-&gt;get_logger(), &quot;Goal was aborted&quot;);
+        return;
+      case rclcpp_action::ResultCode::CANCELED:
+        RCLCPP_ERROR(this-&gt;get_logger(), &quot;Goal was canceled&quot;);
+        return;
+      default:
+        RCLCPP_ERROR(this-&gt;get_logger(), &quot;Unknown result code&quot;);
+        return;
+    }
+    rclcpp::shutdown();
+  }
+};
+
+
+RCLCPP_COMPONENTS_REGISTER_NODE(TurtleMover)
+</code></pre>
+
+<p>Here is my CMake list.</p>
+
+<pre><code>cmake_minimum_required(VERSION 3.5)
+project(nav2_demo)
+
+# Default to C99
+if(NOT CMAKE_C_STANDARD)
+  set(CMAKE_C_STANDARD 99)
+endif()
+
+# Default to C++14
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 14)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES &quot;Clang&quot;)
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+# find dependencies
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_components REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
+
+add_library(action_client SHARED
+  src/nav2_demo.cpp)
+target_include_directories(action_client PRIVATE
+  $&lt;BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include&gt;
+  $&lt;INSTALL_INTERFACE:include&gt;)
+target_compile_definitions(action_client
+  PRIVATE &quot;ACTION_TUTORIALS_CPP_BUILDING_DLL&quot;)
+ament_target_dependencies(action_client
+  &quot;nav2_msgs&quot;
+  &quot;rclcpp&quot;
+  &quot;rclcpp_action&quot;
+  &quot;rclcpp_components&quot;)
+rclcpp_components_register_node(action_client PLUGIN &quot;TurtleMover&quot; EXECUTABLE TurtleMover)
+install(TARGETS
+  action_client
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
+
+add_executable(mover src/nav2_demo.cpp)
+ament_target_dependencies(mover rclcpp rclcpp_action std_msgs nav2_msgs)
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  # the following line skips the linter which checks for copyrights
+  # uncomment the line when a copyright and license is not present in all source files
+  #set(ament_cmake_copyright_FOUND TRUE)
+  # the following line skips cpplint (only works in a git repo)
+  # uncomment the line when this package is not in a git repo
+  #set(ament_cmake_cpplint_FOUND TRUE)
+  ament_lint_auto_find_test_dependencies()
+endif()
+
+install(TARGETS
+  mover
+  DESTINATION lib/${PROJECT_NAME})
+
+ament_package()
+</code></pre>
+
+<p>Here is my package.xml</p>
+
+<pre><code>&lt;depend&gt;rclcpp&lt;/depend&gt;
+&lt;depend&gt;std_msgs&lt;/depend&gt;
+&lt;depend&gt;nav2_msgs&lt;/depend&gt;
+&lt;depend&gt;rclcpp_action&lt;/depend&gt;
+&lt;depend&gt;rclcpp_components&lt;/depend&gt;
+
+&lt;buildtool_depend&gt;rosidl_default_generators&lt;/buildtool_depend&gt;
+
+&lt;depend&gt;action_msgs&lt;/depend&gt;
+
+&lt;member_of_group&gt;rosidl_interface_packages&lt;/member_of_group&gt;
+
+&lt;buildtool_depend&gt;ament_cmake&lt;/buildtool_depend&gt;
+
+&lt;test_depend&gt;ament_lint_auto&lt;/test_depend&gt;
+&lt;test_depend&gt;ament_lint_common&lt;/test_depend&gt;
+
+&lt;export&gt;
+  &lt;build_type&gt;ament_cmake&lt;/build_type&gt;
+&lt;/export&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/60538">Hystersis</a> on 2021-03-12 02:26:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Figured it out,</p>
+
+<p>Turns out the argument in</p>
+
+<pre><code>void goal_response_callback(std::shared_future&lt; rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose&gt; &gt; future)
+</code></pre>
+
+<p>Has to be</p>
+
+<pre><code>void goal_response_callback(std::shared_future&lt; rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::NavigateToPose::SharedPtr&gt; &gt; future)
+</code></pre>
+
+<p>Where after the action name, <code>::SharedPtr</code> must be called.</p>
+
+<p>Also in the CMake file, I omitted </p>
+
+<pre><code>add_executable(mover src/nav2_demo.cpp)
+ament_target_dependencies(mover rclcpp rclcpp_action std_msgs nav2_msgs)
+</code></pre>
+
+<p>Otherwise, there is an undefined reference to main.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/60538">Hystersis</a> on 2021-03-19 22:25:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

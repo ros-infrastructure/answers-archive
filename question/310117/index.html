@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why the requests (python) in ros subscriber keeps posting the old messages? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/310117">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why the requests (python) in ros subscriber keeps posting the old messages?</h2>
+      <div class="question">
+        <p>I have a ROS subscriber which listens to the topic, creates some message and then uses python requests to post that data.
+I am using an OOP model, where I have created a class called MessageHolder with initial values x = 0.1 y = 0.1.</p>
+
+<p>Whenever the topic triggers a message, this class calls its own callback function, sets x and y to be the first message from the topic (which is a Path message, so it consists of multiple PoseStamped messages). For this particular example, x = 0.1 y = 6.1. Here is the callback function of that class:</p>
+
+<pre><code>def callback(self, msg):
+        if len(msg.poses) == 0:
+            return
+        rospy.loginfo(&quot;callback&quot;)
+        self.x = msg.poses[0].pose.position.x
+        self.y = msg.poses[1].pose.position.y
+        rospy.loginfo(&quot;X : %f, Y : %f&quot;, self.x, self.y)
+        for pose in msg.poses:
+            if not isClose(pose.pose.orientation.z, self.th_x) or not isClose(pose.pose.orientation.w, self.th_y):
+                self.th_x = pose.pose.orientation.z
+                self.th_y = pose.pose.orientation.w
+                self.distance_x = 100*abs(pose.pose.position.x - self.x)
+                self.distance_y = 100*abs(pose.pose.position.y - self.y)
+                self.distance = math.sqrt(self.distance_x**2 + self.distance_y**2)
+                self.send_to_socket(&quot;rotate_direction&quot;)
+                self.to_initial_orientation()
+                self.send_to_socket(&quot;move_direction&quot;)
+                rospy.loginfo(&quot;The distance is %f&quot;, self.distance)
+                self.to_zero()
+                self.x = pose.pose.position.x
+                self.y = pose.pose.position.y
+
+                time.sleep(2)
+        self.to_initial_orientation()
+        r = requests.post(path_url, json=self.path_msg)
+        self.path_msg[&quot;path&quot;] = []
+        r.close()
+</code></pre>
+
+<p>So for the first time, everything works great and it posts a 1 path message to the server. Then after few minutes, with no messages being posted to the topic the subscriber is subscribed, I can see another path message being posted on a server (please note, from the logs, I didn&#39;t see that the callback above being called). The message is exactly the same except the initial values being x = 0.1, y = 0.1 (like during the initialisation) but the object has not been reinitalized! What is going on? Why does the requests keep posting?</p>
+
+<p>Here is the full class and subscriber code:</p>
+
+<pre><code>#! /usr/bin/env python
+
+import sys
+import json
+import ast
+import time
+import requests
+from collections import OrderedDict
+import rospy
+import socketIO_client
+import math
+from nav_msgs.msg import Path
+from nav_msgs.srv import GetPlan
+from geometry_msgs.msg import PoseStamped 
+from rosbridge_library.rosbridge_protocol import RosbridgeProtocol
+import tf.transformations as T
+
+
+path_url = &quot;https://ros-bridge.herokuapp.com/p/&quot;
+host = &quot;https://havit-web.herokuapp.com&quot;
+email = &quot;edmund_@gmail.com&quot;
+wheelme_id = 4255
+socketio = socketIO_client.SocketIO(host, params={&quot;email&quot;: email})
+
+
+class MessageHolder:
+    x = -0.1
+    y = -0.1
+    th_x = 0.0
+    th_y = 0.0
+    last_x = 0.0
+    last_y = 0.0
+    last_yaw = 0.0
+    current_yaw = 0.0
+    wheelme_id = None
+    command = None
+    path_msg = {&quot;path&quot; : []}
+    distance = 0.0
+    distance_x = 0.0
+    distance_y = 0.0
+    start = None
+
+    def __init__(self, x, y, yaw, wheelme_id):
+        rospy.loginfo(&quot;%s&quot;,&quot;OBJECT HAS BEEN INITIALIZED&quot;)
+        self.x = x
+        self.y = y
+        self.last_yaw = yaw
+        self.current_yaw = yaw
+        self.wheelme_id = wheelme_id
+        self.command = &quot;&quot;
+        self.start = self.create_msg_params()
+
+
+    def prepare_message(self):
+        if self.command == &quot;move_direction&quot;:
+            return {&quot;wheelme_id&quot; : self.wheelme_id, &quot;arg&quot; : {&quot;direction&quot; : &quot;forward&quot;, &quot;distance&quot; : self.distance}}
+        return {&quot;wheelme_id&quot; : self.wheelme_id, &quot;arg&quot; : {&quot;direction&quot; : self.get_direction(), &quot;amount&quot; : self.current_yaw}}
+
+    def prepare_path_msg(self):
+        rospy.loginfo(&quot;PRepare oth msg&quot;)
+        return {&quot;position&quot; : {&quot;x&quot; :str(self.x), &quot;y&quot; : str(self.y)}, &quot;orientation&quot; : {&quot;x&quot; : str(self.last_yaw)}}
+
+    def on_response_state(self, msg):
+        battery = msg[&quot;state&quot;][&quot;raw&quot;][&quot;statuses&quot;][0][&quot;batt&quot;]
+        rospy.loginfo(&quot;The battery level is %f&quot;, battery)
+
+    def add_path(self):
+        msg = self.prepare_message()
+        self.path_msg[&quot;path&quot;].append(self.prepare_path_msg())
+
+    def post_path_url(self):
+        #socketIO.emit(&#39;receive_state_update&#39;, self.on_response_state())
+        msg = self.prepare_message()
+        return msg
+
+    def get_direction(self):
+        if self.current_yaw &lt; 0:
+            self.current_yaw *= -1
+            return &quot;RIGHT&quot;
+        return &quot;LEFT&quot;
+
+    def convert_degrees(self):
+        explicit_quat = [0,0,self.th_x,self.th_y]
+        self.current_yaw = T.euler_from_quaternion(explicit_quat)[2]
+        yaw = int(math.degrees(self.current_yaw))
+        self.current_yaw = yaw - self.last_yaw
+        self.last_yaw = yaw
+
+    def send_to_socket(self, command):
+        self.command = command
+        if command == &quot;rotate_direction&quot;:
+          self.convert_degrees()
+          self.add_path()
+        msg = self.post_path_url()
+        #socketio.emit(command, msg)
+
+    def to_initial_orientation(self):
+        msg = {&quot;wheelme_id&quot; : self.wheelme_id, &quot;arg&quot; : {&quot;direction&quot; : &quot;one_wheel&quot;, &quot;distance&quot; : 2}}
+        #socketio.emit(&quot;move_direction&quot;, msg)
+
+    def to_zero(self):
+        self.distance = 0.0
+        self.distance_x = 0.0
+        self.distance_y = 0.0
+
+    def create_msg_params(self, pos_x=0, pos_y=0, orient_x=0, orient_y=0, orient_z=0, orient_w=1, _id=0):
+        msg = PoseStamped()
+        msg.header.seq = _id
+        msg.header.stamp = rospy.get_time()
+        msg.header.frame_id = &#39;map&#39;
+        msg.pose.position.x = pos_x
+        msg.pose.position.y = pos_y
+        msg.pose.position.z = 0.0
+        msg.pose.orientation.x = orient_x
+        msg.pose.orientation.y = orient_y
+        msg.pose.orientation.z = orient_z
+        msg.pose.orientation.w = orient_w
+        return msg
+
+    def call_service(self, end):
+        rospy.wait_for_service(&#39;/move_base/make_plan&#39;)
+        gp_service = rospy.ServiceProxy(&#39;/move_base/make_plan&#39;, GetPlan)
+        try:
+          response = gp_service(self.start, end, 1.0)
+          #rospy.loginfo(&quot;The path is %s&quot;, response.plan.poses)
+          return response.plan
+        except rospy.ServiceException as e:
+          print(&quot;Service did not process request &quot; + str(e))
+
+
+    def callback(self, msg):
+        if len(msg.poses) == 0:
+            return
+        rospy.loginfo(&quot;callback&quot;)
+        self.x = msg.poses[0].pose.position.x
+        self.y = msg.poses[1].pose.position.y
+        rospy.loginfo(&quot;X : %f, Y : %f&quot;, self.x, self.y)
+        for pose in msg.poses:
+            if not isClose(pose.pose.orientation.z, self.th_x) or not isClose(pose.pose.orientation.w, self.th_y):
+                self.th_x = pose.pose.orientation.z
+                self.th_y = pose.pose.orientation.w
+                self.distance_x = 100*abs(pose.pose.position.x - self.x)
+                self.distance_y = 100*abs(pose.pose.position.y - self.y)
+                self.distance = math.sqrt(self.distance_x**2 + self.distance_y**2)
+                self.send_to_socket(&quot;rotate_direction&quot;)
+                self.to_initial_orientation()
+                self.send_to_socket(&quot;move_direction&quot;)
+                rospy.loginfo(&quot;The distance is %f&quot;, self.distance)
+                self.to_zero()
+                self.x = pose.pose.position.x
+                self.y = pose.pose.position.y
+
+                time.sleep(2)
+        self.to_initial_orientation()
+        #self.start = poses.poses[-1]
+        #rospy.loginfo(&quot;The starting X is : %f, starting Y : %f&quot;, self.start.pose.position.x, self.start.pose.position.y)
+        r = requests.post(path_url, json=self.path_msg)
+        r.close()
+        self.path_msg[&quot;path&quot;] = []
+
+
+def on_connect(*args):
+    rospy.loginfo(&quot;socket.io connected&quot;)
+
+def on_disconnect(*args):
+    rospy.loginfo(&quot;socket.io disconnected&quot;)
+
+def isClose(a, b):
+    return str(a) == str(b)
+
+def check_length(data):
+    return len(data) != 0
+
+def node_start():
+    #socketIO.on(&#39;connect&#39;, on_connect)
+    #socketIO.on(&#39;disconnect&#39;, on_disconnect)
+    global wheelme_id
+    rospy.init_node(&#39;heroku_socket&#39;)
+    msg_holder = MessageHolder(-0.1,-0.1,0.0,wheelme_id)
+    rospy.Subscriber(&#39;move_base/GlobalPlanner/plan&#39;, Path, msg_holder.callback)
+    rospy.spin()
+
+
+if __name__ == &quot;__main__&quot;:
+        node_start()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2018-12-06 05:55:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>If this callback is definitely not being called, then this looks like it is an issue with the http interface you&#39;ve made in your class so technically not a ROS problem. Without seeing the rest of the class there&#39;s not much we can do.</p>
+
+<p>Note, there&#39;s an unrelated minor bug in your code: Getting the initial point on the path should be:</p>
+
+<pre><code>    self.x = msg.poses[0].pose.position.x
+    self.y = msg.poses[0].pose.position.y
+</code></pre>
+
+<p>UPDATE:</p>
+
+<p>The only thing I can think is that several path messages are being received at the very start and several callbacks are being executed. The unusual thing about the callback has a <code>time.sleep(2)</code> inside the loop meaning that it could easily take minutes to finish executing for a path with 60+ way-points. Try removing the sleep call and see how it behaves then.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-12-06 06:31:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@PeteBlackerThe3rd Please see my edit, I have added the full code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2018-12-06 06:55:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Cheers, see my update.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-12-06 07:07:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@PeteBlackerThe3rd Yes, the issue still exists. Why do you think that the callback is being called several times instead of 1? I only read the rospy.loginfo(&quot;callback&quot;) only once.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37019">stevemartin</a> on 2018-12-06 07:48:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Simply because the only occurrence of <code>requests.post</code> is in the callback function, so it&#39;s the only explanation for another message being received on the server. Unless it&#39;s possible more than one instance of this node is running at the same time?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-12-06 08:27:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You could try adding a sequence number into the path message that is POSTed to your server to help work out where they&#39;re coming from.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-12-06 08:29:13 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

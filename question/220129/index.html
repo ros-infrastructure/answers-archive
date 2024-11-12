@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Message size of &gt;=520 bytes result in inconsistent publish timing - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/220129">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Message size of &gt;=520 bytes result in inconsistent publish timing</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/70137/message-size-of-520-bytes-result-in-inconsistent-publish-timing">https://robotics.stackexchange.com/questions/70137/message-size-of-520-bytes-result-in-inconsistent-publish-timing</a>.</p>
+        <p>Publishing a message of size 519 bytes at 100Hz results in this output for &#39;rostopic hz&#39;:</p>
+
+<p><em>average rate: 99.997
+    min: 0.010s max: 0.010s std dev: 0.00006s window: 996</em></p>
+
+<p>Increasing the message size by one byte to 520 bytes results in this output for &#39;rostopic hz&#39;:</p>
+
+<p><em>average rate: 99.985
+  min: 0.000s max: 0.044s std dev: 0.01651s window: 4908</em></p>
+
+<p>This is a custom message defined as an array of int8.  But the behavior is independent of message type.  Any message of size &gt;519bytes exhibits the same effect.   The behavior is also independent of Python/C++ and queue size.   The effect is dependent on publish rate, but starts to appear around a rate of 35Hz.  </p>
+
+<p>The much larger std. dev. is caused by a seeming buffer effect whereby the larger messages come in groups of 3-5 messages vs. the much more consistently timed publishing rate of the smaller message.</p>
+
+<p>Is this a known behavior?    It is surprising to me because 520 bytes isn&#39;t a terribly large message size.  The nav_msgs::Odometry message is larger. </p>
+
+<p>While I used a custom message to narrow down the precise behavior above, this code that simply uses the Odometry message (&gt;519 bytes) will replicate the issue:</p>
+
+<pre><code>#!/usr/bin/env python
+
+import rospy
+from nav_msgs.msg import Odometry
+
+
+def odomer():
+    pub=rospy.Publisher(&#39;odomer&#39;,Odometry,queue_size=100)
+    rospy.init_node(&#39;odomer&#39;,anonymous=True)
+    rate=rospy.Rate(40)
+    while not rospy.is_shutdown():
+        odom_msg = Odometry()
+        pub.publish(odom_msg)
+        rate.sleep()
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        odomer()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/1615">Kogut</a> on 2015-10-29 16:59:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please share your sample code which reproduces this issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2015-10-29 17:48:22 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Done.  also significantly edited the question to reflect my further isolation of the issue.  It has nothing to do with the Odometry message (other than its size), but kept use of Odometry in my code for its ease of use vs. the custom message I used to identify the precise size.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1615">Kogut</a> on 2015-10-29 21:37:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Is this all on a single machine, or is there a network involved?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-10-30 02:34:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I have also observed this behavior, and was also using Odometry messages at the time. Using tcpNoDelay solved the issue for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3384">Tom Moore</a> on 2016-06-16 03:16:32 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>We also noted this previously and it looks like this indeed generally starts showing up when exceeding a specific message size (apparently 519 bytes). When using the <code>ros::TransportHints().tcpNoDelay(true)</code> subscriber option, the problem disappeared for me in one crucial use case (<a href="https://github.com/team-vigir/pronto-distro/blob/vigir_config_lab/pronto-lcm-ros-translators/src/pronto_translators/src/ros2lcm.cpp#L202">example here</a>), suggesting that the observed symptoms are related to <a href="https://en.wikipedia.org/wiki/Nagle%27s_algorithm">Nagle&#39;s algorithm</a> at work. I don&#39;t completely understand how, however, as smaller sizes should be affected as well. I also seem to remember others reporting not seeing an improvement using the <code>tcpNoDelay</code> option, so I&#39;d also be interested in a explanation.</p>
+
+<p>The two options to try and reduce delays I see are using <code>tcpNoDelay</code> as mentioned or using <a href="http://wiki.ros.org/ROS/UDPROS">udpros</a> (which limits allowed message size and might has other caveats depending on use case).</p>
+
+<p>/edit: It might be the case that all instances of this issue I&#39;ve seen were ones where data was actually sent over the wire (Ethernet) as opposed to local loopback.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/57"></a> on 2015-10-30 02:53:37 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

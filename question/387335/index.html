@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>My robot starts to behave weird and doing meaningless rotations during autonomous navigation (local planner or odom problem I guess) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387335">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>My robot starts to behave weird and doing meaningless rotations during autonomous navigation (local planner or odom problem I guess)</h2>
+      <div class="question">
+        <p>I have assembled a simple mobile robot to accomplish autonomous navigation using the navigation stack. I am using Jetson Nano (Ubuntu 18.04 &amp; ROS Melodic), YD Lidar, and encoded dc motors. Basically following this documentation: <a href="https://www.youtube.com/watch?v=Uz_i_sjVhIM&t=665s&ab_channel=RoboticsandROSLearning">https://www.youtube.com/watch?v=Uz_i_sjVhIM&amp;t=665s&amp;ab_channel=RoboticsandROSLearning</a></p>
+
+<p>I have 2 Arduino Uno running my motor driver and communicating with Jetson Nano through two I2C buses to receive PID setpoint from ROS and to send the change in degrees of the motors in degrees back to ROS (supposed to take that change and compute odometry within ROS). Here is the code uploaded to each Arduino:</p>
+
+<pre><code>#include &lt;PinChangeInt.h&gt;
+#include &lt;Wire.h&gt;
+#include &lt;PID_v1.h&gt;
+#define encodPinA1      2                       // Quadrature encoder A pin
+#define encodPinB1      3                       // Quadrature encoder B pin
+#define M1              5                       // PWM outputs to L298N H-Bridge motor driver module
+#define dir             4
+
+double kp =1, ki =20 , kd =0;             // modify for optimal performance
+double input = 0, output = 0, setpoint = 0;
+unsigned long lastTime,now;
+volatile long encoderPos = 0,last_pos=0,lastpos=0;
+PID myPID(&amp;input, &amp;output, &amp;setpoint, kp, ki, kd,DIRECT);  
+void setup() {
+  pinMode(encodPinA1, INPUT_PULLUP);                  // quadrature encoder input A
+  pinMode(encodPinB1, INPUT_PULLUP);                  // quadrature encoder input B
+  pinMode(M1, OUTPUT);
+  pinMode(dir, OUTPUT);
+  attachInterrupt(0, ai1, FALLING);               // update encoder position
+
+  TCCR1B = TCCR1B &amp; 0b11111000 | 1;                   // To prevent Motor Noise
+
+  myPID.SetMode(AUTOMATIC);
+  myPID.SetSampleTime(1);
+  myPID.SetOutputLimits(-255, 255);
+
+  Wire.begin(9);                // join i2c bus with address #9 for Right Motor
+  Wire.onRequest(requestEvent); // register events
+  Wire.onReceive(receiveEvent);
+  Serial.begin (9600); 
+
+}
+
+void loop() {
+   now = millis();
+   int timeChange = (now - lastTime);
+   if(timeChange&gt;=500 )
+   {
+      input = (-360.0*1000*(encoderPos-last_pos)) /(1856.0*(now - lastTime));
+      lastTime=now;
+      last_pos=encoderPos;
+   }
+
+  myPID.Compute();                                    // calculate new output
+  pwmOut(output, setpoint);                                     // drive L298N H-Bridge module
+  delay(10);
+}
+
+void pwmOut(int out, int set) {                                // to H-Bridge board
+  if ((out &gt; 0) &amp;&amp; (set &gt; 0)) {
+    //myPID.SetOutputLimits(200, 255);
+    digitalWrite(dir, LOW);
+   // analogWrite(M1, 0);                             // drive motor CW
+    analogWrite(M1, out);
+  }
+  else if ((out &lt; 0) &amp;&amp; (set &lt; 0)) {
+    //myPID.SetOutputLimits(-200, -255);
+    digitalWrite(dir, HIGH);
+    analogWrite(M1, abs(out));
+  }
+  else {
+    analogWrite(M1, 0);  
+    output = 0;
+  }
+}
+
+void ai1() {
+  // ai0 is activated if DigitalPin nr 3 is going from LOW to HIGH
+  // Check with pin 2 to determine the direction
+  if(digitalRead(encodPinB1)==HIGH) {
+  encoderPos++;
+  }else{
+  encoderPos--;
+  }
+}
+
+void requestEvent() {
+  int8_t s;
+
+  s= (-360.0*(encoderPos-lastpos))/1856.0; //change in position in degrees of the wheel
+  lastpos=encoderPos;
+  Wire.write(s); // respond with message of 6 bytes
+  //Serial.println(s);
+}
+
+// function that executes whenever data is received from master
+// this function is registered as an event, see setup()
+void receiveEvent(int howMany)
+{
+  uint8_t a,b;
+  a = Wire.read();
+  b = Wire.read();
+  setpoint= (double)((b&lt;&lt;8)|a);
+  Serial.println((uint8_t)a);
+  Serial.println((uint8_t)b);
+
+  //Serial.println(setpoint);
+}
+</code></pre>
+
+<p>I have a doubt in the Arduino code in the request event fn where did that 1856.0 come from, I think it is related to the encoder PPR. My hardware interface node along with launch files and config files are given below:</p>
+
+<pre><code>#include &lt;mobile_robot_autonomous_navigation/robot_hardware_interface.h&gt;
+
+//namesapce i2c_ros
+
+ROBOTHardwareInterface::ROBOTHardwareInterface(ros::NodeHandle&amp; nh) : nh_(nh) {
+    init();
+
+    controller_manager_.reset(new controller_manager::ControllerManager(this, nh_));
+    loop_hz_=10;
+    ros::Duration update_freq = ros::Duration(1.0/loop_hz_);
+
+
+    non_realtime_loop_ = nh_.createTimer(update_freq, &amp;ROBOTHardwareInterface::update, this);
+}
+
+ROBOTHardwareInterface::~ROBOTHardwareInterface() {
+}
+
+void ROBOTHardwareInterface::init() {
+
+    for(int i=0; i&lt;2; i++)
+    {
+    // Create joint state interface
+        hardware_interface::JointStateHandle jointStateHandle(joint_name_[i], &amp;joint_position_[i], &amp;joint_velocity_[i], &amp;joint_effort_[i]);
+        joint_state_interface_.registerHandle(jointStateHandle);
+
+    // Create velocity joint interface
+        hardware_interface::JointHandle jointVelocityHandle(jointStateHandle, &amp;joint_velocity_command_[i]);
+        velocity_joint_interface_.registerHandle(jointVelocityHandle);
+
+    // Create Joint Limit interface   
+        joint_limits_interface::JointLimits limits;
+        joint_limits_interface::getJointLimits(joint_name_[i], nh_, limits);
+        joint_limits_interface::VelocityJointSaturationHandle jointLimitsHandle(jointVelocityHandle, limits);
+        velocityJointSaturationInterface.registerHandle(jointLimitsHandle);
+
+    }
+
+// Register all joints interfaces joint_limits   
+    registerInterface(&amp;joint_state_interface_);
+    registerInterface(&amp;velocity_joint_interface_);
+    registerInterface(&amp;velocityJointSaturationInterface);
+}
+
+void ROBOTHardwareInterface::update(const ros::TimerEvent&amp; e) {
+    elapsed_time_ = ros::Duration(e.current_real - e.last_real);
+    read();
+    controller_manager_-&gt;update(ros::Time::now(), elapsed_time_);
+    write(elapsed_time_);
+}
+
+void ROBOTHardwareInterface::read() {
+    uint8_t rbuff[1];
+    int x;
+
+    left_motor.readBytes(rbuff,1);
+    x=(int8_t)rbuff[0];
+    left_motor_pos+=angles::from_degrees((double)x);
+    joint_position_[0]=left_motor_pos;
+
+    right_motor.readBytes(rbuff,1);
+    x=(int8_t)rbuff[0];
+    right_motor_pos+=angles::from_degrees((double)x);
+    joint_position_[1]=right_motor_pos;
+
+    //ROS_INFO(&quot;pos=%.2f x=%d &quot;,pos,x);
+
+}
+
+void ROBOTHardwareInterface::write(ros::Duration elapsed_time) {
+
+    velocityJointSaturationInterface.enforceLimits(elapsed_time);   
+
+    uint8_t wbuff[2];
+
+    int velocity,result;
+
+
+    velocity=(int)angles::to_degrees(joint_velocity_command_[0]);
+    wbuff[0]=velocity;
+    wbuff[1]=velocity &gt;&gt; 8;
+    //ROS_INFO(&quot;joint_velocity_command_[0]=%.2f velocity=%d  B1=%d B2=%d&quot;, joint_velocity_command_[0],velocity,wbuff[0],wbuff[1]);
+
+    if(left_prev_cmd!=velocity)
+    {
+        result = left_motor.writeData(wbuff,2);
+        //ROS_INFO(&quot;Writen successfully result=%d&quot;, result);
+        left_prev_cmd=velocity;
+    }
+
+    velocity=(int)angles::to_degrees(joint_velocity_command_[1]);
+    wbuff[0]=velocity;
+    wbuff[1]=velocity &gt;&gt; 8;
+    //ROS_INFO(&quot;joint_velocity_command_[0]=%.2f velocity=%d  B1=%d B2=%d&quot;, joint_velocity_command_[0],velocity,wbuff[0],wbuff[1]);
+
+    if(right_prev_cmd!=velocity)
+    {
+        result = right_motor.writeData(wbuff,2);
+        //ROS_INFO(&quot;Writen successfully result=%d&quot;, result);
+        right_prev_cmd=velocity;
+    }
+
+
+
+}
+
+
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;mobile_robot_hardware_interface&quot;);
+    ros::NodeHandle nh;
+    //ros::AsyncSpinner spinner(4);  
+    ros::MultiThreadedSpinner spinner(2); // Multiple threads for controller service callback and for the Service client callback used to get the feedback from ardiuno
+    ROBOTHardwareInterface ROBOT(nh);
+    //spinner.start();
+    spinner.spin();
+    //ros::spin();
+    return 0;
+}
+</code></pre>
+
+<p>Autonomous Navigation launch file:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;launch&gt;
+
+  &lt;arg name=&quot;map_file&quot; default=&quot;$(find mobile_robot_autonomous_navigation)/maps/alexa_map.yaml&quot;/&gt;
+  &lt;arg name=&quot;model&quot; default=&quot;$(find kandb)/urdf/new_urdf.urdf.xacro&quot;/&gt;
+
+  &lt;rosparam file=&quot;$(find mobile_robot_autonomous_navigation)/config/controllers.yaml&quot; command=&quot;load&quot;/&gt;
+  &lt;rosparam file=&quot;$(find mobile_robot_autonomous_navigation)/config/joint_limits.yaml&quot; command=&quot;load&quot;/&gt;
+
+  &lt;param name=&quot;robot_description&quot; command=&quot;$(find xacro)/xacro.py $(arg model)&quot; /&gt;
+
+  &lt;node name=&quot;robot_hardware_interface&quot; pkg=&quot;mobile_robot_autonomous_navigation&quot; type=&quot;mobile_robot_hardware_interface&quot; output=&quot;screen&quot;&gt;
+    &lt;remap from=&quot;/mobile_robot/mobile_base_controller/cmd_vel&quot; to=&quot;/cmd_vel&quot;/&gt;
+   &lt;/node&gt;
+
+  &lt;node name=&quot;robot_state_publisher&quot; pkg=&quot;robot_state_publisher&quot; type=&quot;robot_state_publisher&quot; &gt;
+  &lt;/node&gt;
+
+  &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;map_to_base_footprint&quot; 
+  args=&quot;0.0 0.0 0.0 0.0 0.0 0.0 /base_footprint /base_link 10&quot; /&gt;
+
+  &lt;node name=&quot;rviz&quot; pkg=&quot;rviz&quot; type=&quot;rviz&quot; args=&quot;-d $(find mobile_robot_autonomous_navigation)/config/nav_config.rviz&quot;/&gt;
+
+  &lt;node name=&quot;controller_spawner&quot; pkg=&quot;controller_manager&quot; type=&quot;spawner&quot; respawn=&quot;false&quot; output=&quot;screen&quot;
+        args=&quot;
+            /mobile_robot/joints_update
+            /mobile_robot/mobile_base_controller&quot; &gt;
+  &lt;/node&gt;
+
+
+
+  &lt;node name=&quot;map_server&quot; pkg=&quot;map_server&quot; type=&quot;map_server&quot; args=&quot;$(arg map_file)&quot; &gt;
+  &lt;/node&gt;
+
+  &lt;include file=&quot;$(find ydlidar_ros)/launch/X4.launch&quot; /&gt;
+  &lt;include file=&quot;$(find mobile_robot_autonomous_navigation)/launch/amcl.launch&quot; /&gt;
+  &lt;include file=&quot;$(find mobile_robot_autonomous_navigation)/launch/move_base.launch&quot; /&gt; 
+ &lt;!-- &lt;include file=&quot;$(find rf2o_laser_odometry)/launch/rf2o_laser_odometry.launch&quot; /&gt; --&gt;
+
+    &lt;/launch&gt;
+</code></pre>
+
+<p>I am commenting the rf2o launch file because i am not trusting its odometry i feel it is shaking and not accurate but the amcl particles wont converge as long as it is commented and i rostopic echo the odom and the terminal does not show any odom.
+Here is my amcl launch file:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;launch&gt;
+
+  &lt;node pkg=&quot;amcl&quot; type=&quot;amcl&quot; name=&quot;amcl&quot;&gt;
+      &lt;param name=&quot;odom_model_type&quot; value=&quot;diff&quot;/&gt;
+
+&lt;!--Lowering transform_tolerance value may lead to Expolration Error. Adjust this value according to the processor capacity --&gt;
+      &lt;param name=&quot;transform_tolerance&quot; value=&quot;1.0&quot; /&gt; 
+
+      &lt;param name=&quot;gui_publish_rate&quot; value=&quot;10.0&quot;/&gt; 
+      &lt;param name=&quot;laser_max_beams&quot; value=&quot;32&quot;/&gt;
+      &lt;param name=&quot;laser_max_range&quot; value=&quot;10&quot;/&gt;
+      &lt;param name=&quot;min_particles&quot; value=&quot;200&quot;/&gt;
+      &lt;param name=&quot;max_particles&quot; value=&quot;2000&quot;/&gt;
+      &lt;param name=&quot;kld_err&quot; value=&quot;0.05&quot;/&gt;
+      &lt;param name=&quot;kld_z&quot; value=&quot;0.99&quot;/&gt;
+      &lt;param name=&quot;odom_alpha1&quot; value=&quot;0.2&quot;/&gt;
+      &lt;param name=&quot;odom_alpha2&quot; value=&quot;0.2&quot;/&gt; 
+      &lt;!-- translation std dev, m --&gt;
+      &lt;param name=&quot;odom_alpha3&quot; value=&quot;0.2&quot;/&gt;
+      &lt;param name=&quot;odom_alpha4&quot; value=&quot;0.2&quot;/&gt;
+      &lt;param name=&quot;laser_z_hit&quot; value=&quot;0.99&quot;/&gt;
+      &lt;param name=&quot;laser_z_rand&quot; value=&quot;0.01&quot;/&gt;
+      &lt;param name=&quot;laser_sigma_hit&quot; value=&quot;0.2&quot;/&gt;
+      &lt;param name=&quot;laser_lambda_short&quot; value=&quot;0.1&quot;/&gt;
+      &lt;param name=&quot;laser_model_type&quot; value=&quot;likelihood_field&quot;/&gt;
+      &lt;param name=&quot;laser_likelihood_max_dist&quot; value=&quot;2.0&quot;/&gt;
+      &lt;param name=&quot;update_min_d&quot; value=&quot;0.05&quot;/&gt;
+      &lt;param name=&quot;update_min_a&quot; value=&quot;0.125&quot;/&gt;
+      &lt;param name=&quot;odom_frame_id&quot; value=&quot;odom&quot;/&gt;
+      &lt;param name=&quot;resample_interval&quot; value=&quot;1&quot;/&gt;
+      &lt;param name=&quot;recovery_alpha_slow&quot; value=&quot;0&quot;/&gt;
+      &lt;param name=&quot;recovery_alpha_fast&quot; value=&quot;0&quot;/&gt; 
+  &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>I have reconfigured most of its parameters with reference to the following paper: <a href="https://www.researchgate.net/publication/349602009_An_Extended_Analysis_on_Tuning_The_Parameters_of_Adaptive_Monte_Carlo_Localization_ROS_Package_in_an_Automated_Guided_Vehicle">https://www.researchgate.net/publication/349602009_An_Extended_Analysis_on_Tuning_The_Parameters_of_Adaptive_Monte_Carlo_Localization_ROS_Package_in_an_Automated_Guided_Vehicle</a></p>
+
+<p>The costmap config files:</p>
+
+<p>1- common costmap</p>
+
+<pre><code>footprint: [[-0.12, -0.12], [-0.12, 0.12], [0.12, 0.12], [0.12, -0.12]]
+footprint_padding: 0.01
+
+robot_base_frame: base_footprint
+update_frequency: 5.0
+publish_frequency: 2.0
+transform_tolerance: 2.0
+
+resolution: 0.05
+
+obstacle_range: 5.0
+raytrace_range: 4.0
+
+#layer definitions
+static:
+    map_topic: /map
+    subscribe_to_updates: true
+
+obstacles_laser:
+    observation_sources: laser
+    laser: {data_type: LaserScan, clearing: true, marking: true, topic: scan, inf_is_valid: true}
+
+inflation_g:
+    inflation_radius: 0.2
+
+inflation_l:
+    inflation_radius: 0.2
+</code></pre>
+
+<p>2- global costmap</p>
+
+<pre><code>global_frame: map
+rolling_window: false
+track_unknown_space: true
+
+plugins:
+  - {name: static,                  type: &quot;costmap_2d::StaticLayer&quot;}
+  - {name: inflation_g,               type: &quot;costmap_2d::InflationLayer&quot;}
+</code></pre>
+
+<p>3- local costmap:</p>
+
+<pre><code>global_frame: odom
+rolling_window: true
+static_map: false
+width: 1.5
+height: 1.5
+
+plugins:
+  - {name: obstacles_laser,           type: &quot;costmap_2d::ObstacleLayer&quot;}
+  - {name: inflation_l,                 type: &quot;costmap_2d::InflationLayer&quot;}
+</code></pre>
+
+<p>lastly controllers.yaml and planner.yaml:</p>
+
+<pre><code>mobile_robot:
+
+    joints_update:
+      type: joint_state_controller/JointStateController
+      publish_rate: 50
+
+    mobile_base_controller:
+      type        : &quot;diff_drive_controller/DiffDriveController&quot;
+      left_wheel  : &#39;left_wheel_joint&#39;
+      right_wheel : &#39;right_wheel_joint&#39;
+      publish_rate: 50.0               # default: 50
+      pose_covariance_diagonal : [0.001, 0.001, 1000000.0, 1000000.0, 1000000.0, 1000.0]
+      twist_covariance_diagonal: [0.001, 0.001, 1000000.0, 1000000.0, 1000000.0, 1000.0]
+
+      # Wheel separation and diameter. These are both optional.
+      # diff_drive_controller will attempt to read either one or both from the
+      # URDF if not specified as a parameter
+      wheel_separation : 0.20
+      wheel_radius : 0.065
+
+      # Wheel separation and radius multipliers
+      wheel_separation_multiplier: 1.0 # default: 1.0
+      wheel_radius_multiplier    : 1.0 # default: 1.0
+
+      # Velocity commands timeout [s], default 0.5
+      cmd_vel_timeout: 0.1
+
+      # Base frame_id
+      base_frame_id: &quot;base_footprint&quot;
+
+      # Velocity and acceleration limits
+      # Whenever a min_* is unspecified, default to -max_*
+      linear:
+        x:
+          has_velocity_limits    : true
+          max_velocity           : 0.10  # m/s
+          min_velocity           : -0.10 # m/s
+          has_acceleration_limits: true
+          max_acceleration       : 0.025  # m/s^2
+          min_acceleration       : -0.025 # m/s^2
+          has_jerk_limits        : false
+          max_jerk               : 2.0  # m/s^3
+      angular:
+        z:
+          has_velocity_limits    : true
+          max_velocity           : 1.0  # rad/s
+          has_acceleration_limits: true
+          max_acceleration       : 0.3  # rad/s^2
+          has_jerk_limits        : true
+          max_jerk               : 1 # rad/s^3
+
+controller_frequency: 5.0
+recovery_behavior_enabled: true
+conservative_reset_dist: 0.2
+
+NavfnROS:
+  allow_unknown: false # Specifies whether or not to allow navfn to create plans that traverse unknown space.
+  default_tolerance: 0.1 # A tolerance on the goal point for the planner.
+
+DWAPlannerROS:
+  # Robot configuration parameters  
+  acc_lim_x: 1.0
+  acc_lim_y: 0.0
+  acc_lim_th: 2.0
+
+  max_vel_x: 0.2
+  min_vel_x: -0.2
+  max_vel_y: 0
+  min_vel_y: 0
+
+  max_trans_vel: 0.2
+  min_trans_vel: 0.05
+  max_rot_vel: 1.0
+  min_rot_vel: 0.2
+
+  # Goal Tolerance Parameters
+  yaw_goal_tolerance: 0.1
+  xy_goal_tolerance: 0.2
+  latch_xy_goal_tolerance: false
+
+  # # Forward Simulation Parameters
+  sim_time: 1.0
+  sim_granularity: 0.02
+  vx_samples: 6
+  vy_samples: 1
+  vtheta_samples: 20
+  # penalize_negative_x: true
+
+  # # Trajectory scoring parameters
+  path_distance_bias: 32.0 # The weighting for how much the controller should stay close to the path it was given
+  goal_distance_bias: 24.0 # The weighting for how much the controller should attempt to reach its local goal, also controls speed
+  occdist_scale: 0.5 # The weighting for how much the controller should attempt to avoid obstacles
+  forward_point_distance: 0.325 # The distance from the center point of the robot to place an additional scoring point, in meters
+  stop_time_buffer: 0.2  # The amount of time that the robot must stThe absolute value of the veolicty at which to start scaling the robot&#39;s footprint, in m/sop before a collision in order for a trajectory to be considered valid in seconds
+  scaling_speed: 0.25 # The absolute value of the veolicty at which to start scaling the robot&#39;s footprint, in m/s
+  max_scaling_factor: 0.2 # The maximum factor to scale the robot&#39;s footprint by
+
+  # # Oscillation Prevention Parameters
+ # oscillation_reset_dist: 0.25 #How far the robot must travel in meters before oscillation flags are reset (double, default: 0.05)
+</code></pre>
+
+<p>global and local planner parameters were also modified with reference to roswiki. I also have a minor problem which is that the robot&#39;s orientation is reversed (whenever i use teleop to move the robot, which is working perfectly by the way, i notice that the robot is moving in reverse [back is front and front is the back]). my robot has only 2 wheels and 1 castor wheel. I would appreciate it if you reached that far and decided to help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/85067">Kareem Magdy</a> on 2021-09-24 16:32:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi Kareem</p>
+
+<p>A lot of details in your question but it makes it hard to help. I suggest you start with a series of small tests, to narrow down the problem and raise questions on the specific problems you are facing. For example test your robot functionality of movement with teleoperation and make sure that with your control the robot is moving as expected, that way you may discard odometry issues, etc. Then do tests for the navigation, until you find what is not working as expected. From there you narrow it a little more down and make one change at the time to see that your hypothesis is correct. Too many changes at once make it very hard to troubleshoot and you might forget what did you change as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-09-27 09:05:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi Osilva, thanks for the reply.
+I already did these small test the conclusion are that the amcl, odom, global planner, teleoperation are working fine. The problem is either with the dwa local planner (tends to rotate in place instead of following the path) or my URDF please take a look at this question by me, maybe you would be able to help: <a href="https://answers.ros.org/question/387405/my-mobile-robot-orientation-is-reversed-with-teleop_twist_keyboard/">https://answers.ros.org/question/387405/my-mobile-robot-orientation-is-reversed-with-teleop_twist_keyboard/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/85067">Kareem Magdy</a> on 2021-09-27 09:44:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I added a comment to your prior question. Hope it helps.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-09-27 11:28:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

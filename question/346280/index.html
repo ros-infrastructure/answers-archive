@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ServiceServer declaration within a class - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/346280">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ServiceServer declaration within a class</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95018/serviceserver-declaration-within-a-class">https://robotics.stackexchange.com/questions/95018/serviceserver-declaration-within-a-class</a>.</p>
+        <p>I&#39;m running on Ubuntu 18.04LTS using ROS melodic and kernel 5.0.0-25-generic. I&#39;m currently trying to add a service server to my c++ class. Is this possible?
+Should I declare the service inside my class or in the main of the node?</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;boost/thread.hpp&gt;
+#include &lt;armadillo&gt;
+
+// #include &lt;std_msgs/Bool.h&gt;
+// #include &lt;std_msgs/String.h&gt;
+#include &lt;jog_controller/twist_to_jog_frame.h&gt;
+#include &quot;jog_msgs/JogFrame.h&quot;
+#include &quot;jog_msgs/ControllerStatus.h&quot;
+#include &quot;jog_msgs/GetTargetList.h&quot;
+#include &quot;jog_msgs/SetTarget.h&quot;
+
+namespace jog_controller
+{
+
+TwistToJogFrame::TwistToJogFrame()
+{
+  ros::NodeHandle nh, pnh(&quot;~&quot;);
+  jog_frame_pub_ = nh.advertise&lt;jog_msgs::JogFrame&gt;(&quot;jog_frame&quot;, 1);
+  // set_target_frame_srv_ = nh.advertiseService(&quot;set_target_frame&quot;, &amp;TwistToJogFrame::setTargetFrame);
+  // set_target_link_srv_ = nh.advertiseService(&quot;set_target_link&quot;, &amp;TwistToJogFrame::setTargetLink, this);
+  pnh.getParam(&quot;/jog_frame_node/group_names&quot;, group_names_);
+  pnh.getParam(&quot;/jog_frame_node/link_names&quot;, link_names_);
+  pnh.getParam(&quot;group_name&quot;, group_name_);
+  pnh.getParam(&quot;link_name&quot;, link_name_);
+  pnh.getParam(&quot;frame_id&quot;, frame_id_);
+  pnh.getParam(&quot;rotate_axes&quot;, rotate_axes_);
+  std::string str_rotation_matrix_;
+  pnh.getParam(&quot;rotation_matrix&quot;, str_rotation_matrix_); 
+  rotation_matrix_ = arma::mat(str_rotation_matrix_);
+  pnh.getParam(&quot;dominant_axis_mode&quot;, dominant_axis_mode_);
+  pnh.getParam(&quot;scale_linear&quot;, scale_linear_);
+  pnh.getParam(&quot;scale_angular&quot;, scale_angular_);
+  pnh.getParam(&quot;sub_topic&quot;, sub_topic_);
+  pnh.getParam(&quot;controller_enabled&quot;, controller_enabled_);
+  twist_sub_ = nh.subscribe(sub_topic_, 10, &amp;TwistToJogFrame::twist_cb, this);
+  ros::topic::waitForMessage&lt;geometry_msgs::Twist&gt;(sub_topic_);
+}
+
+void TwistToJogFrame::keepOnlyDominantAxis(arma::vec6 &amp;twist_p)
+{
+  double min = twist_p.min();
+  double max = twist_p.max();
+  double min_max = max + min;
+  if(min_max &gt; 0){
+    arma::uword i = twist_p.index_max();
+    twist_p.zeros();
+    twist_p.at(i) = max;
+  } else {
+    arma::uword i = twist_p.index_min();
+    twist_p.zeros();
+    twist_p.at(i) = min;
+  }
+}
+
+void TwistToJogFrame::rotateAxes(arma::vec6 &amp;twist_p)
+{
+  arma::vec linear = arma::vec3({twist_p.at(0), twist_p.at(1), twist_p.at(2)});
+  arma::vec angular = arma::vec3({twist_p.at(3), twist_p.at(4), twist_p.at(5)});
+
+  linear = rotation_matrix_ * linear;
+  angular = rotation_matrix_ * angular;
+
+  //Write in original vector
+  for(arma::uword i = 0; i &lt; 3; i++){ 
+    twist_p[i] = linear[i];
+    twist_p[i+3] = angular[i];
+  }
+}
+
+bool TwistToJogFrame::hasDuplicate(const arma::vec6 &amp;twist_p)
+{
+  arma::vec nz_tmp = arma::nonzeros(twist_p);
+  arma::vec unique_tmp = arma::unique(nz_tmp);
+  return size(unique_tmp) != size(nz_tmp);
+}
+
+void TwistToJogFrame::scaleCommand(arma::vec6 &amp;twist_p)
+{
+  for(arma::uword i = 0; i &lt; 3; i++)
+  {
+    twist_p.at(i) = twist_p.at(i) * scale_linear_;
+  }
+  for(arma::uword i = 3; i &lt; 6; i++)
+  {
+    twist_p.at(i) = twist_p.at(i) * scale_angular_;
+  }
+}
+
+void TwistToJogFrame::twist_cb(const geometry_msgs::TwistConstPtr &amp;twist)
+{
+  boost::mutex::scoped_lock lock(mutex_);
+
+  // publish
+  jog_msgs::JogFrame msg;
+  msg.header.stamp = ros::Time::now();
+  msg.header.frame_id = frame_id_;
+  msg.group_name = group_name_;
+  msg.link_name = link_name_;
+
+  arma::vec6 v_twist = arma::vec6({twist-&gt;linear.x, twist-&gt;linear.y, twist-&gt;linear.z, twist-&gt;angular.x, twist-&gt;angular.y, twist-&gt;angular.z});
+
+  if(dominant_axis_mode_)
+  {
+    if(hasDuplicate(v_twist))
+    {
+      v_twist.zeros(); //handling the edge case
+    } else {
+      keepOnlyDominantAxis(v_twist);
+    }
+  }
+
+  if(rotate_axes_)
+  {
+    rotateAxes(v_twist);
+  }
+
+  scaleCommand(v_twist);
+
+  msg.avoid_collisions = true;
+
+  // Publish if the button is enabled
+  if(controller_enabled_)
+  {
+    // Publish only if at least one of the commands is different from zero.
+    if(arma::any(v_twist))
+    {
+      //Adding linear and angular values to the msg.
+      msg.linear_delta.x = v_twist.at(0);
+      msg.linear_delta.y = v_twist.at(1);
+      msg.linear_delta.z = v_twist.at(2);
+      msg.angular_delta.x = v_twist.at(3);
+      msg.angular_delta.y = v_twist.at(4);
+      msg.angular_delta.z = v_twist.at(5);
+
+      jog_frame_pub_.publish(msg);
+    }
+  }  
+  }  
+
+bool TwistToJogFrame::getTargetFrameList(jog_msgs::GetTargetListRequest &amp;req, jog_msgs::GetTargetListResponse &amp;res){
+  res.target = link_names_;
+  return true;
+}
+
+// //callback for controller_enable service
+bool TwistToJogFrame::setControllerStatus(jog_msgs::ControllerStatusRequest &amp;req)
+{
+  controller_enabled_ = req.status;
+  return true;
+}
+
+bool TwistToJogFrame::setTargetFrame(jog_msgs::SetTargetRequest &amp;target_frame)
+{
+  frame_id_ = target_frame.name;
+  return true;
+}
+
+bool TwistToJogFrame::setTargetLink(jog_msgs::SetTargetRequest &amp;target_link)
+{
+  link_name_ = target_link.name;
+  return true;
+}
+
+}  // namespace jog_controller
+
+/**
+ * @brief Main function of the node
+ */
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;twist_to_jog_frame&quot;);
+  ros::NodeHandle nh;
+  jog_controller::TwistToJogFrame node;
+
+  ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+
+  ros::Rate loop_rate(10);
+  while ( ros::ok() )
+  {
+    ros::spinOnce();
+    loop_rate.sleep();
+  }
+  return 0;
+}
+</code></pre>
+
+<p>I get the following errors when I try to compile this I get the following errors:</p>
+
+<pre><code>/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp: In function ‘int main(int, char**)’:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: error: no matching function for call to ‘ros::NodeHandle::advertiseService(const char [17], bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest&amp;), jog_controller::TwistToJogFrame*)’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:879:17: note: candidate: template&lt;class T, class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, bool (T::*)(MReq&amp;, MRes&amp;), T*)
+   ServiceServer advertiseService(const std::string&amp; service, bool(T::*srv_func)(MReq &amp;, MRes &amp;), T *obj)
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:879:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   candidate expects 3 arguments, 2 provided
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:924:17: note: candidate: template&lt;class T, class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, bool (T::*)(ros::ServiceEvent&lt;MReq, MRes&gt;&amp;), T*)
+   ServiceServer advertiseService(const std::string&amp; service, bool(T::*srv_func)(ServiceEvent&lt;MReq, MRes&gt;&amp;), T *obj)
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:924:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   mismatched types ‘ros::ServiceEvent&lt;MReq, MRes&gt;’ and ‘jog_msgs::SetTargetRequest {aka jog_msgs::SetTargetRequest_&lt;std::allocator&lt;void&gt; &gt;}’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:970:17: note: candidate: template&lt;class T, class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, bool (T::*)(MReq&amp;, MRes&amp;), const boost::shared_ptr&lt;X&gt;&amp;)
+   ServiceServer advertiseService(const std::string&amp; service, bool(T::*srv_func)(MReq &amp;, MRes &amp;), const boost::shared_ptr&lt;T&gt;&amp; obj)
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:970:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   candidate expects 3 arguments, 2 provided
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:1017:17: note: candidate: template&lt;class T, class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, bool (T::*)(ros::ServiceEvent&lt;MReq, MRes&gt;&amp;), const boost::shared_ptr&lt;X&gt;&amp;)
+   ServiceServer advertiseService(const std::string&amp; service, bool(T::*srv_func)(ServiceEvent&lt;MReq, MRes&gt;&amp;), const boost::shared_ptr&lt;T&gt;&amp; obj)
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:1017:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   mismatched types ‘ros::ServiceEvent&lt;MReq, MRes&gt;’ and ‘jog_msgs::SetTargetRequest {aka jog_msgs::SetTargetRequest_&lt;std::allocator&lt;void&gt; &gt;}’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:1061:17: note: candidate: template&lt;class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, bool (*)(MReq&amp;, MRes&amp;))
+   ServiceServer advertiseService(const std::string&amp; service, bool(*srv_func)(MReq&amp;, MRes&amp;))
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:1061:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   mismatched types ‘bool (*)(MReq&amp;, MRes&amp;)’ and ‘bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest&amp;) {aka bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest_&lt;std::allocator&lt;void&gt; &gt;&amp;)}’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:1104:17: note: candidate: template&lt;class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, bool (*)(ros::ServiceEvent&lt;MReq, MRes&gt;&amp;))
+   ServiceServer advertiseService(const std::string&amp; service, bool(*srv_func)(ServiceEvent&lt;MReq, MRes&gt;&amp;))
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:1104:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   mismatched types ‘bool (*)(ros::ServiceEvent&lt;MReq, MRes&gt;&amp;)’ and ‘bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest&amp;) {aka bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest_&lt;std::allocator&lt;void&gt; &gt;&amp;)}’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:1145:17: note: candidate: template&lt;class MReq, class MRes&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, const boost::function&lt;bool(MReq&amp;, MRes&amp;)&gt;&amp;, const VoidConstPtr&amp;)
+   ServiceServer advertiseService(const std::string&amp; service, const boost::function&lt;bool(MReq&amp;, MRes&amp;)&gt;&amp; callback,
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:1145:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   mismatched types ‘const boost::function&lt;bool(MReq&amp;, MRes&amp;)&gt;’ and ‘bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest&amp;) {aka bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest_&lt;std::allocator&lt;void&gt; &gt;&amp;)}’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:1190:17: note: candidate: template&lt;class S&gt; ros::ServiceServer ros::NodeHandle::advertiseService(const string&amp;, const boost::function&lt;bool(S&amp;)&gt;&amp;, const VoidConstPtr&amp;)
+   ServiceServer advertiseService(const std::string&amp; service, const boost::function&lt;bool(S&amp;)&gt;&amp; callback,
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:1190:17: note:   template argument deduction/substitution failed:
+/home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:176:158: note:   mismatched types ‘const boost::function&lt;bool(S&amp;)&gt;’ and ‘bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest&amp;) {aka bool (jog_controller::TwistToJogFrame::*)(jog_msgs::SetTargetRequest_&lt;std::allocator&lt;void&gt; &gt;&amp;)}’
+   ros::ServiceServer srv = nh.advertiseService(&quot;set_target_frame&quot;, &amp;jog_controller::TwistToJogFrame::setTargetFrame, (jog_controller::TwistToJogFrame*) &amp;node);
+                                                                                                                                                              ^
+In file included from /opt/ros/melodic/include/ros/ros.h:45:0,
+                 from /home/alex/Code/ovis_ws/src/jog_control/jog_controller/src/twist_to_jog_frame.cpp:1:
+/opt/ros/melodic/include/ros/node_handle.h:1222:17: note: candidate: ros::ServiceServer ros::NodeHandle::advertiseService(ros::AdvertiseServiceOptions&amp;)
+   ServiceServer advertiseService(AdvertiseServiceOptions&amp; ops);
+                 ^~~~~~~~~~~~~~~~
+/opt/ros/melodic/include/ros/node_handle.h:1222:17: note:   candidate expects 1 argument, 3 provided
+jog_control/jog_controller/CMakeFiles/twist_to_jog_frame.dir/build.make:62: recipe for target &#39;jog_control/jog_controller/CMakeFiles/twist_to_jog_frame.dir/src/twist_to_jog_frame.cpp.o&#39; failed
+make[2]: *** [jog_control/jog_controller/CMakeFiles/twist_to_jog_frame.dir/src/twist_to_jog_frame.cpp.o] Error 1
+CMakeFiles/Makefile2:7300: recipe for target &#39;jog_control/jog_controller/CMakeFiles/twist_to_jog_frame.dir/all&#39; failed
+make[1]: *** [jog_control/jog_controller/CMakeFiles/twist_to_jog_frame.dir/all] Error 2
+Makefile:140: recipe for target &#39;all&#39; failed
+make: *** [all] Error 2
+Invoking &quot;make -j8 -l8&quot; failed
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/52359">LazyEngineerToBe</a> on 2020-03-09 15:40:00 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I found why I got this error. My service wasn&#39;t defined properly. The response parameter is required even if not used.</p>
+
+<pre><code>bool TwistToJogFrame::setTargetLink(jog_msgs::SetTargetRequest &amp;target_link, jog_msgs::SetTargetResponse &amp;res)
+{
+  link_name_ = target_link.name;
+  return true;
+}
+</code></pre>
+
+<p>I then added the service server to the class</p>
+
+<pre><code>TwistToJogFrame::TwistToJogFrame()
+{
+  ros::NodeHandle nh, pnh(&quot;~&quot;);
+  jog_frame_pub_ = nh.advertise&lt;jog_msgs::JogFrame&gt;(&quot;jog_frame&quot;, 1);
+  get_target_frame_list_srv_ = nh.advertiseService(&quot;get_target_frame_list&quot;, &amp;TwistToJogFrame::getTargetFrameList, this);
+  set_controller_status_srv_ = nh.advertiseService(&quot;set_controller_status&quot;, &amp;TwistToJogFrame::setControllerStatus, this);
+  set_target_frame_srv_ = nh.advertiseService(&quot;set_target_frame&quot;, &amp;TwistToJogFrame::setTargetFrame, this);
+  set_target_link_srv_ = nh.advertiseService(&quot;set_target_link&quot;, &amp;TwistToJogFrame::setTargetLink, this);
+  pnh.getParam(&quot;/jog_frame_node/group_names&quot;, group_names_);
+  pnh.getParam(&quot;/jog_frame_node/link_names&quot;, link_names_);
+  pnh.getParam(&quot;group_name&quot;, group_name_);
+  pnh.getParam(&quot;link_name&quot;, link_name_);
+  pnh.getParam(&quot;frame_id&quot;, frame_id_);
+  pnh.getParam(&quot;rotate_axes&quot;, rotate_axes_);
+  std::string str_rotation_matrix_;
+  pnh.getParam(&quot;rotation_matrix&quot;, str_rotation_matrix_); 
+  rotation_matrix_ = arma::mat(str_rotation_matrix_);
+  pnh.getParam(&quot;dominant_axis_mode&quot;, dominant_axis_mode_);
+  pnh.getParam(&quot;scale_linear&quot;, scale_linear_);
+  pnh.getParam(&quot;scale_angular&quot;, scale_angular_);
+  pnh.getParam(&quot;sub_topic&quot;, sub_topic_);
+  pnh.getParam(&quot;controller_enabled&quot;, controller_enabled_);
+  twist_sub_ = nh.subscribe(sub_topic_, 10, &amp;TwistToJogFrame::twist_cb, this);
+  ros::topic::waitForMessage&lt;geometry_msgs::Twist&gt;(sub_topic_);
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/52359">LazyEngineerToBe</a> on 2020-03-11 09:01:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

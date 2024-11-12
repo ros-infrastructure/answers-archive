@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Retrieving joint states from python script on demand without server - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/347122">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Retrieving joint states from python script on demand without server</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I&#39;m trying to use the joint_states topic to extract the joint angles at specific times of a python script, but the variable that stores the joint angles, though locked by mutex, is not updated correctly. I adapted the code from an action server found <a href="http://wiki.ros.org/pr2_controllers/Tutorials/Getting%20the%20current%20joint%20angles">here</a>. Why doesn&#39;t it work? I have added two comments on print&#39;s to show when the value stops being as it should.</p>
+
+<pre><code>#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import time
+import roslib; roslib.load_manifest(&#39;ur_driver&#39;)
+import rospy
+import actionlib
+from control_msgs.msg import *
+from trajectory_msgs.msg import *
+from sensor_msgs.msg import JointState
+import threading
+
+JOINT_NAMES = [&#39;shoulder_pan_joint&#39;, &#39;shoulder_lift_joint&#39;, &#39;elbow_joint&#39;,
+               &#39;wrist_1_joint&#39;, &#39;wrist_2_joint&#39;, &#39;wrist_3_joint&#39;]
+Q1 = [2.2,0,-1.57,0,0,0]
+Q2 = [1.5,0,-1.57,0,0,0]
+Q3 = [1.5,-0.2,-1.57,0,0,0]
+
+client = None #ROS driver client
+jointsMaxSpeed = 0.2 #rad, default value (will be settable)
+jointsAccel = 3 #rad/s², default value (will be settable)
+
+#For now, the speed is sufficiently low and the accel is sufficiently high to assume max speed is reached immediately
+def calcDur(orig, dest, maxSpeed, accel):
+    return abs(dest-orig)/maxSpeed
+
+class Robot:
+    def __init__(self):
+        #For joint states
+        self.lock = threading.Lock()
+        self.name = []
+        self.jointsAng = []
+        self.jointsVel = []
+        self.thread = threading.Thread(target=self.joint_states_listener)
+        self.thread.start()
+        #end for joint states
+
+    def joint_states_listener(self):
+        rospy.Subscriber(&#39;joint_states&#39;, JointState, self.joint_states_callback)
+        rospy.spin()
+
+    #callback function: when a joint_states message arrives, save the values
+    def joint_states_callback(self, msg):
+        self.lock.acquire()
+        self.name = msg.name
+        self.jointsAng = msg.position
+        #print self.jointsAng #This works
+        self.jointsVel = msg.velocity
+        self.lock.release()
+
+    #Joint values is a list of the angles of the joints, in the order set by JOINT_NAMES (in rad)
+    def moveJ(self, jointReqs):
+        self.lock.acquire()
+        jointsAngles = self.jointsAng
+        print self.jointsAng #Does not work (yields 0)
+        self.lock.release()
+
+        #Calculate minimum duration for the last joint to reach the specified location
+        if(len(jointReqs) == len(JOINT_NAMES) and len(jointsAngles) == len(JOINT_NAMES)):
+            #Then calculate the move duration
+            minDur = 9999
+            for i in range(len(jointReqs)):
+                minDur = min(minDur, calcDur(jointsAngles[i], jointReqs[i], jointsMaxSpeed, jointsAccel))
+
+
+            g = FollowJointTrajectoryGoal()
+            g.trajectory = JointTrajectory()
+            g.trajectory.joint_names = JOINT_NAMES
+            g.trajectory.points = [JointTrajectoryPoint(positions=jointReqs, velocities=[0]*6, time_from_start=minDur)]
+            client.send_goal(g)
+            client.wait_for_result()
+        else:
+            print &quot;Length mismatch between joint names, joint setpoints, and joint states&quot; #Is triggered because length jointAngles is zero
+
+#--- main loop
+
+def main():
+    global client
+    rospy.init_node(&quot;test_ur&quot;)
+    client = actionlib.SimpleActionClient(&#39;/scaled_pos_traj_controller/follow_joint_trajectory&#39;, FollowJointTrajectoryAction)
+    print &quot;Waiting for server...&quot;
+    client.wait_for_server()
+    print &quot;Connected to server&quot;
+
+    ur10 = Robot()
+    ur10.moveJ(Q1)
+    ur10.moveJ(Q2)
+    ur10.moveJ(Q3)
+
+if __name__ == &#39;__main__&#39;: main()
+</code></pre>
+
+<p>Thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/51154">argargreg</a> on 2020-03-19 15:11:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;m not entirely sure how you are trying to retrieve <code>JointStates</code> here, but I believe the biggest issue with your script is the fact that <code>rospy.wait_for_message(..)</code> doesn&#39;t work the way you seem to think it does.</p>
+
+<p><code>wait_for_message(..)</code> requires arguments, which you are not passing, and it <em>returns</em> a message, it&#39;s not a sort of <em>barrier</em> that makes sure there are messages (somewhere).</p>
+
+<p>If you want to retrieve a single message from a topic, without subscribing yourself, that is what <code>rospy.wait_for_message(..)</code> is for.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-20 05:26:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your comment. I had forgotten this line when trying out things, but wait_for_message() is not part of the problem unfortunately. Basically I am trying to get the same behaviour as the linked code (LatestJointStates), but without creating an additional node to offer the service. Just subscribe to the joint states topic and make sure the member variable self.jointsAng is the latest set of joint angles, to be used in the methods I call. I have no clue how to do that anymore - any idea?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51154">argargreg</a> on 2020-03-20 05:38:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes: use <code>rospy.wait_for_message(..)</code>.</p>
+
+<p>Your extra thread is unnecessary, <code>rospy.spin()</code> is unnecessary, the <code>Subscriber</code> is unnecessary, the locks are unnecessary and the callback is unnecessary.</p>
+
+<p>See <a href="https://docs.ros.org/kinetic/api/rospy/html/rospy.client-module.html#wait_for_message">the documentation</a> for how to use it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-20 05:43:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You&#39;re absolutely right, I don&#39;t know why the authors have chosen to do so! It works like a charm. Don&#39;t hesitate to answer and I&#39;ll accept it. Good day to you sir.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51154">argargreg</a> on 2020-03-20 06:01:09 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

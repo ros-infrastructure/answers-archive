@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Client doesn't return when you create a client class ROS2 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/376473">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Client doesn't return when you create a client class ROS2</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98857/client-doesnt-return-when-you-create-a-client-class-ros2">https://robotics.stackexchange.com/questions/98857/client-doesnt-return-when-you-create-a-client-class-ros2</a>.</p>
+        <p>Hi community, 
+I would like to write a client and server node using classes. I started writing the client in a class &quot;form&quot; using the tutorial in the documentation and I used the same messages and the same identical code for the server node. 
+I wanted to create a client class which is querying each 500ms the same msg to the server. Searching on the ROS Answer I found a similar <a href="https://answers.ros.org/question/340389/client-doesnt-return-when-declared-inside-c-class-in-ros-2/">question</a>. And using a solution like that I got that the client now is stuck in a deadlock or similar because send the first request but later no and the code continue to run.</p>
+
+<p>The client that I had written is this:</p>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;example_interfaces/srv/add_two_ints.hpp&quot;
+
+#include &lt;chrono&gt;
+#include &lt;cstdlib&gt;
+#include &lt;memory&gt;
+#include &lt;functional&gt;
+
+using namespace std::chrono_literals;
+
+
+class client_foo : public rclcpp::Node
+{
+    public:
+    client_foo(const std::string &amp;node_name) : rclcpp::Node(node_name)
+    {
+        client_ = this-&gt;create_client&lt;example_interfaces::srv::AddTwoInts&gt;(&quot;servizio&quot;, rmw_qos_profile_services_default);
+        cb_grp_client_ = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::MutuallyExclusive);
+
+        while (!client_-&gt;wait_for_service(1s))
+        {
+            if (!rclcpp::ok())
+            {
+                RCLCPP_ERROR(get_logger(), &quot;Errore mentre aspetto&quot;);
+                exit(1);
+            }
+            RCLCPP_INFO(get_logger(), &quot;Servizio non disponibile aspetta...&quot;);
+        }
+
+        timer_cb_ = create_wall_timer(500ms, std::bind(&amp;client_foo::start, this));
+    }
+
+    private:
+        rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedPtr client_;
+        rclcpp::callback_group::CallbackGroup::SharedPtr cb_grp_client_;
+        // Timer per il callback
+        rclcpp::TimerBase::SharedPtr timer_cb_;
+
+        example_interfaces::srv::AddTwoInts::Response::SharedPtr start()
+        {
+            auto request = std::make_shared&lt;example_interfaces::srv::AddTwoInts::Request&gt;();
+            request-&gt;a = 1;
+            request-&gt;b = 2;
+
+            auto result = client_-&gt;async_send_request(request);
+            result.wait();
+
+            RCLCPP_INFO(get_logger(), &quot;Results!&quot;);
+            return result.get();
+        }
+};
+
+
+int main(int argc, char *argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor exe;
+
+    std::shared_ptr&lt;client_foo&gt; client_node =
+        std::make_shared&lt;client_foo&gt;(&quot;client_foo&quot;);
+
+    exe.add_node(client_node);
+    exe.spin();
+    return 0;
+}
+</code></pre>
+
+<p>Probably the question is very silly but I don&#39;t get the point where the code fails.
+Someone can help me?</p>
+
+<p>Thank you so much.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/61250">Kappa95</a> on 2021-04-19 09:13:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I think you&#39;re on the right path, but two points:</p>
+
+<ol>
+<li><p>The callback group that you created
+is <code>MutuallyExclusive</code>, which means
+that callbacks from the same node
+cannot be run in parallel. This
+means that while your <code>start</code> callback
+from the timer is still running, no
+other callback on the same node can
+be started, like the service
+callback--you don&#39;t specify a
+callback but under the hood there is
+still a callback that is queued for
+when the result arrives. Because you
+<code>.wait()</code> on the result in the timer
+callback, the service is blocked,
+the result doesn&#39;t actually arrive,
+and <code>.wait()</code> never returns, i.e.
+you&#39;ve got a deadlock. Instead, you
+need to create a <code>Reentrant</code>
+callback group, which does allow
+callbacks on the the same node to
+run in parallel:</p>
+
+<pre><code>cb_grp_client_ = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::Reentrant);
+</code></pre></li>
+</ol>
+
+<p>That, or you create
+    two separate groups.</p>
+
+<ol>
+<li><p>You aren&#39;t actually using the
+callback group. You have to pass it
+when you create the client:</p>
+
+<pre><code>this-&gt;create_client&lt;example_interfaces::srv::AddTwoInts&gt;(&quot;servizio&quot;, rmw_qos_profile_services_default, cb_grp_client_)
+</code></pre></li>
+</ol>
+
+<p>and when you
+    create the timer:</p>
+
+<pre><code>    create_wall_timer(500ms, std::bind(&amp;client_foo::start, this), cb_grp_client_);
+</code></pre>
+
+<p>Otherwise both use the
+    default group which is again
+    <code>MutuallyExclusive</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/72841">sgvandijk</a> on 2021-04-19 11:21:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you so much! The answer is very clear! So it means that each time I&#39;m creating a service or a client I am using a thread; and in this case I was using 2 threads: one for the client and one for the start callback. In this case having the group with the mutual exclusion, one thread was waiting the end of the other, but they were stuck. Do I understand right?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61250">Kappa95</a> on 2021-04-19 15:05:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Well, actually by default as many threads as you have cores are created, and they just pick up work to do whenever they are ready, where work can be running a callback function or sending a service request etc. You can&#39;t predict which thread handles which bit of work. Because normally you probably don&#39;t want multiple bits of code in the same node to run at the same time, to prevent race conditions and such, the default callback group ensures that that doesn&#39;t happen and that the callbacks are &#39;mutually exclusive&#39;, even if they happen to be picked up by different threads.</p>
+
+<p>So on the flipside, by using a reentrant group (or multiple mutual exclusive ones in the same node) you possibly open yourself up to this kind of dangers. That is why it is good practice to use proper async calls where possible and then be able to use the standard group, i.e. don&#39;t <code>.wait()</code> on futures, but handle their result just in callbacks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72841">sgvandijk</a> on 2021-04-20 11:35:50 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

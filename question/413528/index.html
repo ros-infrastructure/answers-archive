@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Odd Docker roscore/roslaunch delays with Linux kernel 6.1 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/413528">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Odd Docker roscore/roslaunch delays with Linux kernel 6.1</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103128/odd-docker-roscore-roslaunch-delays-with-linux-kernel-6-1">https://robotics.stackexchange.com/questions/103128/odd-docker-roscore-roslaunch-delays-with-linux-kernel-6-1</a>.</p>
+        <p>Hello,
+I have an odd one here and am trying to figure out a possible root cause!</p>
+
+<p><strong>The Situation</strong></p>
+
+<p>I am running a custom Linux version made using Buildroot, with application ROS code containerized. I have noticed some odd behavior with both <code>roscore</code> and <code>roslaunch</code> delaying between log messages and ultimately taking minutes to execute. This behavior occurs <strong>only</strong> with ROS kinetic, lunar, and melodic versions of <code>roscore</code> and <code>roslaunch</code> on Linux kernel <strong>6.1</strong>. ROS noetic behaves as expected. </p>
+
+<p><em>Note</em>: the same configuration on Linux kernel 5.15 does <strong>not</strong> exhibit this behavior.</p>
+
+<hr>
+
+<p><strong>Test Summary</strong></p>
+
+<p>On Linux kernel 6.1, using the <code>ros:kinetic</code>/<code>ros:lunar</code>/<code>ros:melodic</code> Docker images from Docker Hub.</p>
+
+<p>Run <code>docker run -it --network host --entrypoint bash ros:kinetic</code>, then from within the container run <code>source /opt/ros/${ROS_DISTRO}/setup.bash &amp;&amp; roscore -v</code></p>
+
+<p>The terminal displays: </p>
+
+<pre><code>... logging to /root/.ros/log/0dfbd9a8-c533-11ed-998a-78d0042ad370/roslaunch-oc-general-68.log
+Checking log directory for disk usage. This may take awhile.
+ Press Ctrl-C to interrupt
+Done checking log file disk usage. Usage is &lt;1GB. 
+
+... loading XML file [/opt/ros/kinetic/etc/ros/roscore.xml]
+... executing command param [rosversion roslaunch]
+Added parameter [/rosversion]
+... executing command param [rosversion -d]
+Added parameter [/rosdistro]
+Added core node of type [rosout/rosout] in namespace [/]
+started roslaunch server http://localhost:40105/
+ros_comm version 1.12.17
+
+
+SUMMARY
+========
+
+PARAMETERS
+* /rosdistro: kinetic
+* /rosversion: 1.12.17
+
+NODES
+
+auto-starting new master
+</code></pre>
+
+<p>And it hangs on <code>auto-starting new master</code> for ~100 seconds. The CPU% from <code>htop</code> is 100%. </p>
+
+<p>After the initial ~100 seconds, <code>roscore</code> printed:</p>
+
+<pre><code>process[master]: started with pid [78]
+ROS_MASTER_URI=http://localhost:11311/
+
+setting /run_id to 0dfbd9a8-c533-11ed-998a-78d0042ad370
+</code></pre>
+
+<p>And hangs for another ~100 seconds on <code>setting /run_id ...</code>. The CPU% from <code>htop</code> is also 100%.</p>
+
+<p>Finally <code>roscore</code> finished with:</p>
+
+<pre><code>process[rosout-1]: started with pid [91]
+started core service [/rosout]
+</code></pre>
+
+<p>Similar behavior exists when running <code>roslaunch ...</code> with the ~100 second wait occurring on the <code>ROS_MASTER_URI=http://localhost:11311</code> output.</p>
+
+<p><em>ROS Environment Variable</em></p>
+
+<pre><code>ROS_ROOT=/opt/ros/kinetic/share/ros
+ROS_PACKAGE_PATH=/opt/ros/kinetic/share
+ROS_MASTER_URI=http://localhost:11311
+ROS_PYTHON_VERSION=2
+ROS_VERSION=1
+ROSLISP_PACKAGE_DIRECTORIES=
+ROS_DISTRO=kinetic
+ROS_ETC_DIR=/opt/ros/kinetic/etc/ros
+</code></pre>
+
+<p>Interestingly enough, if I use <code>rosmon</code> to launch I do not see the ~100 second wait. Could this point to a python issue shared by <code>roscore</code> and <code>roslaunch</code> since <code>rosmon</code> is written in C++?</p>
+
+<p>Any advice would be greatly appreciated!</p>
+
+<hr>
+
+<p><strong>Update</strong></p>
+
+<p>Using <code>pdb</code> running <code>roscore</code> in the <code>ros:melodic</code> container, I have narrowed it down to the following call in the <em>roslaunch/nodeprocess.py</em> file:</p>
+
+<p>/opt/ros/melodic/lib/python2.7/dist-packages/roslaunch/nodeprocess.py(340)</p>
+
+<p>Which is a call to subprocess.Popen (see <a href="https://github.com/ros/ros_comm/blob/melodic-devel/tools/roslaunch/src/roslaunch/nodeprocess.py#L340">https://github.com/ros/ros_comm/blob/melodic-devel/tools/roslaunch/src/roslaunch/nodeprocess.py#L340</a>)</p>
+
+<p>Stepping into the subprocess.Popen call it seems to be here:</p>
+
+<pre><code>&gt; /usr/lib/python2.7/subprocess.py(394)__init__()
+-&gt; errread, errwrite)
+</code></pre>
+
+<p>After executing that subprocess function the output from <code>ps -aux</code> is:</p>
+
+<pre><code>root         160  0.1  0.0 377148 63644 pts/0    Sl+  01:35   0:00 python -m pdb roscore
+root         174 99.2  0.0 377148 54332 ?        Rs   01:38   0:53 python -m pdb roscore
+</code></pre>
+
+<p>Which eventually turns into:</p>
+
+<pre><code>root         174 96.3  0.0 435416 60136 ?        Ssl  01:38   1:40 /usr/bin/python /opt/ros/melodic/bin/rosmaster --core -p 11311 -w 3 __log:=/root/.ros
+</code></pre>
+
+<p>Maybe unrelated, I did notice that after the <code>rosmaster</code> subprocess is spawn, it gradually decreases it&#39;s CPU% over time.</p>
+
+<hr>
+
+<p><strong>Update #2</strong></p>
+
+<p>I built the <code>melodic</code> <code>ros_base</code> variant from source with Python3 support, and do not see delays in <code>roscore</code> or <code>roslaunch</code>. Just to double-check, I made sure Python3 was being used to run <code>roscore</code></p>
+
+<pre><code>root    199  0.5  0.0 348944 40940 pts/0    Sl+  21:22   0:00 /usr/bin/python3 /opt/ros/melodic/bin/roscore -v
+root    209  0.4  0.0 561516 37780 ?        Ssl  21:22   0:00 /usr/bin/python3 /opt/ros/melodic/bin/rosmaster --core -p 11311 -w 3 __log:=...
+</code></pre>
+
+<p>Definitely seems like an issue with Python2 and Linux kernel 6.1...bummer.</p>
+
+<hr>
+
+<p><strong>Update #3</strong></p>
+
+<p>After some additional debugging, I determined that the issue occurs <em>only</em> when the <code>close_fds</code> argument of the Python2 <code>subprocess.Popen</code> is set to <code>True</code>. </p>
+
+<pre><code>close_file_descriptor = True
+...
+self.popen = subprocess.Popen(self.args, cwd=cwd, stdout=logfileout, stderr=logfileerr, env=full_env, close_fds=close_file_descriptor, preexec_fn=preexec_function)
+</code></pre>
+
+<p>This issue is not strictly related ROS as I tested using a base <code>ubuntu</code> image with a test Python2 script that called <code>subprocess.Popen</code>.</p>
+
+<p>After digging around the internet, I found that there have been issues with Python2&#39;s <code>subprocess</code> module causing deadlocks and race conditions. Google released a package called <code>subprocess32</code> that is a direct replacement for <code>subprocess</code> that addresses the issues as well as backports Python3&#39;s implementation of <code>fork</code> and <code>exec</code> using the C module (see <a href="https://stackoverflow.com/a/25213194">https://stackoverflow.com/a/25213194</a>).</p>
+
+<p>So I tested this by replacing the <code>subprocess</code> Python2.7 module with <code>subprocess32</code> in the <code>ros:kinetic-ros-base</code> container: </p>
+
+<pre><code># Install subprocess32, replace subprocess
+RUN pip install --no-cache subprocess32
+RUN cp /usr/local/lib/python2.7/dist-packages/subprocess32.py /usr/lib/python2.7/subprocess.py
+RUN cp /usr/local/lib/python2.7/dist-packages/_posixsubprocess32.so /usr/lib/python2.7/lib-dynload/_posixsubprocess32.so
+</code></pre>
+
+<p>and ran it on my original Buildroot configuration with Kernel 6.1 and did not have any issues with the <code>roscore</code> delays.</p>
+
+<p>My best guess at why I saw this issue in my updated Buildroot configuration was due to some race condition or deadlock interaction between Python2.7 <code>subprocess</code> and the updated version of <code>glibc</code>. In the new configuration <code>glibc</code> was at version <code>2.36-81</code> vs <code>2.34-109</code>.</p>
+
+<hr>
+
+<p><strong>Update #4</strong></p>
+
+<p>After doing more investigation and running into OOM issues caused by every ROS nodes consuming ~8GB of memory (similar to issues in <a href="https://answers.ros.org/question/336963/rosout-high-memory-usage/">https://answers.ros.org/question/336963/rosout-high-memory-usage/</a>), I think I might have found the real culprit to the underlying issue.</p>
+
+<p>It turns out newer versions of <code>docker</code> and <code>containerd</code> set <code>LimitNOFILE=infinity</code> in the corresponding systemd unit: <a href="https://github.com/containerd/containerd/pull/7566">https://github.com/containerd/containerd/pull/7566</a>.</p>
+
+<p>This then evaluates to a <code>ulimit</code> within the container of:</p>
+
+<pre><code>:~# ulimit -Hn
+1073741816
+:~# ulimit -Sn
+1073741816
+</code></pre>
+
+<p>Where the host evaluates to:</p>
+
+<pre><code>:~# ulimit -Hn
+524288
+:~# ulimit -Sn
+1024
+</code></pre>
+
+<p>The Python2 <code>submodule.Popen</code> call with <code>close_fd=True</code> most likely iterates through all file descriptors to find the fds owned by the <code>Popen</code> call to close (which would be roughly 1073741816), per <a href="https://github.com/containerd/containerd/pull/7566#issuecomment-1461140261">https://github.com/containerd/containerd/pull/7566#issuecomment-1461140261</a>. </p>
+
+<blockquote>
+<p>This is problematic for some software. A common daemon practice is to close all inherited file descriptors (typically 1024 from the standard soft limit) - which in Docker looks like a stalled / hanging process (but is actually performing over a billion close() syscalls IIRC):</p>
+</blockquote>
+
+<p><code>subprocess32</code> probably does a much better job at determining the fd to close and therefore resolves this issue:</p>
+
+<blockquote>
+<p>For the closing inherited FDs practice that daemons perform, there are more modern approaches</p>
+</blockquote>
+
+<p>&quot;modern approaches&quot; -&gt; <a href="https://stackoverflow.com/questions/899038/getting-the-highest-allocated-file-descriptor/918469#918469">https://stackoverflow.com/questions/899038/getting-the-highest-allocated-file-descriptor/918469#918469</a></p>
+
+<p>The real solution is to limit the soft/hard nofiles that docker/containerd provides to its containers and there has been some significant discussion on this in <a href="https://github.com/containerd/containerd/pull/7566">https://github.com/containerd/containerd/pull/7566</a>.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-17 21:52:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>If it hangs for multiple minutes, seeing what it&#39;s hanging on should not be too difficult with something like <code>ptrace</code>, or perhaps even <code>pdb</code> in case of Python scripts/packages.</p>
+
+<p>That might lead to results faster than speculation. Might be worth a try.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-03-18 10:30:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn using <code>pdb</code> running <code>roscore</code> in the <code>ros:melodic</code> container, I have narrowed it down to the following call in the <code>roslaunch/nodeprocess.py</code> file:</p>
+
+<p><code>/opt/ros/melodic/lib/python2.7/dist-packages/roslaunch/nodeprocess.py(340)</code></p>
+
+<p>Which is a call to <code>subprocess.Popen</code> (see <a href="https://github.com/ros/ros_comm/blob/melodic-devel/tools/roslaunch/src/roslaunch/nodeprocess.py#L340">here</a>)</p>
+
+<p>Stepping into the <code>subprocess.Popen</code> call it seems to be here:</p>
+
+<pre><code>&gt; /usr/lib/python2.7/subprocess.py(394)__init__()
+-&gt; errread, errwrite)
+</code></pre>
+
+<p>After executing that subprocess function the output from <code>ps -aux</code> is:</p>
+
+<pre><code>root         160  0.1  0.0 377148 63644 pts/0    Sl+  01:35   0:00 python -m pdb roscore
+root         174 99.2  0.0 377148 54332 ?        Rs   01:38   0:53 python -m pdb roscore
+</code></pre>
+
+<p>Which eventually turns into:</p>
+
+<pre><code>root         174 96.3  0.0 435416 60136 ?        Ssl  01:38   1:40 /usr/bin/python /opt/ros/melodic/bin/rosmaster --core -p 11311 -w 3 __log:=/root/.ros
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-18 20:44:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Maybe unrelated, I did notice that after the <code>rosmaster</code> subprocess is spawn, it gradually decreases it&#39;s CPU% over time.</p>
+
+<p>As regular posts don&#39;t have max lengths, please also include context around the <code>subprocess.Popen(..)</code> call. Especially the call chain leading <em>to</em> it. <code>roscore</code> starts multiple processes, and it&#39;d be interesting to know which is causing the issue (could be all of them, or a specific one).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-18 20:46:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Please add this to your initial post. Please also update all links to code to permalinks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-03-19 02:15:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Seeing as there don&#39;t appear to be any really interesting changes to the file you mention (<code>git diff  melodic-devel...noetic-devel -- tools/roslaunch/src/roslaunch/nodeprocess.py</code>), I&#39;m wondering whether this could be due to some incompatibility between Python <code>2.7</code> and kernel <code>6.1</code>. You mention Noetic works, so that would be Python 3. Melodic is Python 2.</p>
+
+<p>You <em>could</em> consider building a minimal Melodic with Python 3 support and starting <code>roscore</code>. There are a couple of Q&amp;As here on ROS Answers which document how to do that. Seeing as you only need <code>ros_comm</code> that should not be too much work (ie: you won&#39;t be building anything which actually needs Python-bindings, which is where it gets more complex).</p>
+
+<p><code>ptrace</code> might show you exactly <em>what</em> is happening at the point of the hang though -- on the OS level, below what <code>pdb</code> can show you. <code>subprocess</code> can hang for various reasons, and with the very recent kernel, it might be something at the OS-level.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-03-19 02:47:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Is it possible that another roscore process is already running on this machine? Only one port 11311 is available per machine.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-03-19 08:21:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn, updated the original post with the above comments, sorry about that. Feel free to remove the comments.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-19 09:04:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Mike Scheutzow there is only a single <code>roscore</code> being run. If there was multiple I would expect to see:</p>
+
+<pre><code>RLException: roscore cannot run as another roscore/master is already running. 
+Please kill other roscore/master processes before relaunching.
+The ROS_MASTER_URI is http://localhost:11311/
+The traceback for the exception was written to the log file
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-19 09:11:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn, see the update in the original post, seems like this is an issue with Python2 and Linux kernel 6.1. Suggest we close this as path forward would be to migrate to <code>noetic</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-19 16:26:38 UTC</p></div>
+</div>
+<div class="comment">
+              <p>There&#39;s another possible cause, and that could be a Python 2 <em>idiom</em> (or <em>pattern</em>) doesn&#39;t work with kernel <code>6.1</code> any more. I&#39;d say something like <code>subprocess.Popen(..)</code> would be especially &quot;vulnerable&quot; to that, as it deals with starting, monitoring and stopping processes as well as <code>stdin</code>, <code>stdout</code>, etc.</p>
+
+<blockquote>
+<p>Suggest we close this as path forward would be to migrate to <code>noetic</code>.</p>
+</blockquote>
+
+<p>This could indeed be an option.</p>
+
+<p>Or use a from-source Melodic-with-Python3. It&#39;s not too difficult to build those.</p>
+
+<p>There&#39;s probably a way to fix the problem you&#39;re seeing though. It would just require more debugging.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-03-20 03:06:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Still digging into this, I have started to convince myself this may not be an issue with Kernel 6.1 but a package or packages that come with the Buildroot LTS that provides 6.1.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-20 21:02:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@gvdhoorn let me know if you want to mark this closed or add an answer based on my recent update. Thank you for all your help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-03-25 09:20:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would suggest to post your last edit as the answer, as it seems like it <em>is</em> the answer.</p>
+
+<p>+1 for getting to the bottom of it. I&#39;m sure this will save some users (quite) some time when they try to do something similar.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-03-25 09:37:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@danambrosio That was a difficult one! Well done.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-03-25 10:39:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p><strong>Update #3</strong> in the original post is a bandaid solution for the delays in <code>roscore</code> and <code>roslaunch</code>.</p>
+
+<p><strong>Update #4</strong> highlights the underlying issue with <code>nofile</code> ulimits within a docker container. To override the values docker passes to containers for nofile soft and hard limits perform one of the following:</p>
+
+<p><code>docker run ... --ulimit nofile=1024:524288</code> </p>
+
+<p>If you want this for all containers consider adding:</p>
+
+<pre><code>&quot;default-ulimits&quot;: {
+    &quot;nofile&quot;: {
+        &quot;Name&quot;: &quot;nofile&quot;,
+        &quot;Hard&quot;: 524288,
+        &quot;Soft&quot;: 1024
+    }
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/64471">danambrosio</a> on 2023-03-25 14:33:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Wow, what a deep rabbit hole! Congrats on finding the root cause. That containerd ticket you linked seem to have impacted a lot of projects, and was an interesting read. Thanks!</p>
+
+<ul>
+<li><a href="https://github.com/containerd/containerd/pull/7566">https://github.com/containerd/containerd/pull/7566</a> </li>
+</ul>
+
+<p>If I understood correctly, your issue was an  unfortunate syzygy of using an older Python2 Popen submodule, with a modern linux kernel, and the latest containerd runtime? Should I expect to see such symptoms with modern or future distros (Ubuntu &gt;= 22.04 LTS) and ROS releases (ROS 2 &gt;= Humble) ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2023-04-07 11:00:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ruffsl the issue was really that the newer buildroot LTS (2023.02) brought in a docker/containerd change that increased the <em>container</em> <code>nofile</code> soft and hard limits to infinity (over 1 billion). The python2 <code>popen</code> call with <code>close_fd=True</code> seemed to loop through all of these file descriptors causing it to hang as well as a XmlRpc issue that caused large memory allocation in ROS1 post kinetic. I tested this with Humble and buildroot (2023.02) and did not run into any issue. Also seems as if the fix is going into the future releases of docker, containderd and go.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64471">danambrosio</a> on 2023-04-10 17:44:20 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

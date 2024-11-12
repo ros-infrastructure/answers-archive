@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Is there a tf:MessageFilter in the tf Python API? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/49069">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Is there a tf:MessageFilter in the tf Python API?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/46065/is-there-a-tfmessagefilter-in-the-tf-python-api">https://robotics.stackexchange.com/questions/46065/is-there-a-tfmessagefilter-in-the-tf-python-api</a>.</p>
+        <p>The <a href="http://www.ros.org/wiki/tf/Tutorials/Using%20Stamped%20datatypes%20with%20tf%3A%3AMessageFilter">tf::MessageFilter Tutorial</a> shows the C++ API. Does this functionality exist in the Python API?</p>
+
+<p>Doing a quick search:</p>
+
+<pre><code>grep -i -R --include=*.py messagefilter .
+</code></pre>
+
+<p>from the tf folder doesn&#39;t yield any results.</p>
+
+<p>Best,
+damjan</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2702">damjan</a> on 2012-11-25 07:56:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I didn&#39;t find any either. I have written something similar. let me know if you find it useful.</p>
+
+<pre><code>import rospy
+
+import Queue
+import tf 
+from message_filters import SimpleFilter
+
+class TfMessageFilter(SimpleFilter):
+    &quot;&quot;&quot;Stores a message unless corresponding transforms is 
+    available
+    &quot;&quot;&quot;
+    def __init__(self, input_filter, base_frame, target_frame,
+                 queue_size=500):
+        SimpleFilter.__init__(self)
+        self.connectInput(input_filter)
+        self.base_frame = base_frame
+        self.target_frame = target_frame
+        # TODO: Use a better data structure
+        self.message_queue = Queue.Queue(maxsize=queue_size)
+        self.listener = tf.TransformListener()
+        self.max_queue_size = queue_size
+        self._max_queue_size_so_far = 0
+
+    def connectInput(self, input_filter):
+        self.incoming_connection = \
+                input_filter.registerCallback(self.input_callback)
+
+    def poll_transforms(self, latest_msg_tstamp):
+        &quot;&quot;&quot;
+        Poll transforms corresponding to all messages. If found throw older
+        messages than the timestamp of transform just found
+        and if not found keep all the messages.
+        &quot;&quot;&quot;
+        # Check all the messages for transform availability
+        tmp_queue = Queue.Queue(self.max_queue_size)
+        first_iter = True
+        # Loop from old to new
+        while not self.message_queue.empty():
+            msg = self.message_queue.get()
+            tstamp = msg.header.stamp
+            if (first_iter and 
+                self.message_queue.qsize() &gt; self._max_queue_size_so_far):
+                first_iter = False
+                self._max_queue_size_so_far = self.message_queue.qsize()
+                rospy.logdebug(&quot;Queue(%d) time range: %f - %f&quot; %
+                              (self.message_queue.qsize(), 
+                               tstamp.secs, latest_msg_tstamp.secs))
+                rospy.loginfo(&quot;Maximum queue size used:%d&quot; %
+                              self._max_queue_size_so_far)
+            if self.listener.canTransform(self.base_frame, self.target_frame,
+                                          tstamp):
+                (trans, quat) = self.listener.lookupTransform(self.base_frame,
+                                              self.target_frame, tstamp)
+                self.signalMessage(msg, (trans, quat))
+                # Note that we are deliberately throwing away the messages
+                # older than transform we just received
+                return
+            else:
+                # if we don&#39;t find any transform we will have to recycle all
+                # the messages
+                tmp_queue.put(msg)
+        self.message_queue = tmp_queue
+
+    def input_callback(self, msg):
+        &quot;&quot;&quot; Handles incoming message &quot;&quot;&quot;
+        if self.message_queue.full():
+            # throw away the oldest message
+            rospy.logwarn(&quot;Queue too small. If you this message too often&quot;
+                          + &quot; consider increasing queue_size&quot;)
+            self.message_queue.get()
+
+        self.message_queue.put(msg)
+        # This can be part of another timer thread
+        # TODO: call this only when a new/changed transform
+        self.poll_transforms(msg.header.stamp)
+</code></pre>
+
+<p>Suggested usage:</p>
+
+<pre><code>import message_filters
+import rospy
+from sensor_msgs.msg import Image
+
+def callback(image, trans_rot):
+    print(&quot;Got image:%f&quot; % image.header.stamp.secs)
+
+rospy.init_node(&#39;test_tf_sync_msgs&#39;, log_level=rospy.DEBUG)
+image_sub = message_filters.Subscriber(&#39;/camera/depth_registered/image_rect&#39;,
+                                       Image)
+
+ts = TfMessageFilter(image_sub, &#39;/map&#39;, &#39;/ar_viewer&#39;,
+                                queue_size=1000)
+ts.registerCallback(callback)
+rospy.spin()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1768">Vikas</a> on 2013-09-27 10:53:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This worked for me thanks a lot!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27005">H.Ruthrash</a> on 2020-01-17 11:39:33 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

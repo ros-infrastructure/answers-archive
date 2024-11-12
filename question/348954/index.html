@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Runtime crash of ROS2 talker due to struct representations in C and C++ with clang - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/348954">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Runtime crash of ROS2 talker due to struct representations in C and C++ with clang</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95380/runtime-crash-of-ros2-talker-due-to-struct-representations-in-c-and-c-with-cla">https://robotics.stackexchange.com/questions/95380/runtime-crash-of-ros2-talker-due-to-struct-representations-in-c-and-c-with-cla</a>.</p>
+        <p>[I&#39;ve modified this question into more of an explanation, because the issue appears to be in my compiler, rather than with ROS2; however, it&#39;s an interesting trace through what I think happens when you call <code>rclcpp::init()</code>, so I thought I&#39;d leave it up.]</p>
+
+<p>I&#39;m trying to run a simple ROS2 (dashing) talker demo on a research system that closely tracks pointer provenance.  The system crashes at runtime with a trace that says I&#39;m trying to execute data on the stack.</p>
+
+<p>If I follow the trace, I end up in rcl init_options.c, trying to allocate with a non-existent allocator.  Here is the trace from the main function:</p>
+
+<p>from <code>talker.cpp</code> main:</p>
+
+<pre><code>int main(int argc, char * argv[]
+{
+    rclcpp::init(argc, argv);
+    ...
+}
+</code></pre>
+
+<p><code>rclcpp::init</code> is in in <code>utilities.cpp</code>:</p>
+
+<pre><code>void init(int argc, char const * const argv[], const InitOptions &amp; init_options)
+{
+  using contexts::default_context::get_global_default_context;
+  get_global_default_context()-&gt;init(argc, argv, init_options);
+  ...
+}
+</code></pre>
+
+<p><code>init</code> expects three arguments, but we only provide two (<code>argc</code> and <code>argv</code>).</p>
+
+<p>The prototype for <code>rclcpp::init</code> (in <code>utilities.hpp</code>) deals with this, as it has a default:</p>
+
+<pre><code>void init(int argc, char const * const argv[], const InitOptions &amp; init_options = InitOptions());
+</code></pre>
+
+<p><code>InitOptions()</code> is prototyped in <code>init_options.hpp</code> as:</p>
+
+<pre><code>explicit InitOptions(rcl_allocator_t allocator = rcl_get_default_allocator())
+</code></pre>
+
+<p><code>rcl_get_default_allocator()</code> is in <code>rcl</code>s <code>allocator.h</code>:</p>
+
+<pre><code>#define rcl_get_default_allocator rcutils_get_default_allocator
+</code></pre>
+
+<p>which takes us to <code>rcutils</code> <code>allocator.c</code>, which is where things get interesting:</p>
+
+<pre><code>rcutils_allocator_t rcutils_get_default_allocator()
+{
+    static rcutils_allocator_t default_allocator = {
+        .allocate = __default allocate,
+        ...
+        .state = NULL,
+    };
+    return default_allocator;
+}
+</code></pre>
+
+<p>So this assigns the function <code>__default_allocate()</code> as the <code>allocate</code> function of the default <code>allocator</code>.  <code>__default_allocate()</code> is also <code>rcutils</code> <code>allocator.c</code>:</p>
+
+<pre><code>static void *
+__default _allocate(size_t size, void * state)
+{
+    RCUTILS_UNUSED(state);
+    return malloc(size);
+}
+</code></pre>
+
+<p>So now we have a default <code>allocator</code>, which is provided to <code>rclcpp::InitOptions</code> as part of the call to <code>rclcpp::init</code> shown above.</p>
+
+<pre><code>InitOptions::InitOptions(rcl_allocator_t allocator)
+: init_options_(new rcl_init_options_t)
+{
+  *init_options_ = rcl_get_zero_initialized_init_options();
+  rcl_ret_t ret = rcl_init_options_init(init_options_.get(), allocator);
+  if (RCL_RET_OK != ret) {
+    rclcpp::exceptions::throw_from_rcl_error(ret, &quot;failed to initialized rcl init options&quot;);
+  }
+}
+</code></pre>
+
+<p><code>InitOptions</code> takes the default <code>allocator</code> and passes it to <code>rcl_init_options_init()</code> in <code>rcl</code>s <code>init_options.c</code>.</p>
+
+<p>&lt;&lt;&lt; C++ calling C with a structure &gt;&gt;&gt;</p>
+
+<pre><code>rcl_init_options_init(rcl_init_options_t * init_options, rcl_allocator_t allocator)
+{
+  RCL_CHECK_ARGUMENT_FOR_NULL(init_options, RCL_RET_INVALID_ARGUMENT);
+  if (NULL != init_options-&gt;impl) {
+    RCL_SET_ERROR_MSG(&quot;given init_options (rcl_init_options_t) is already initialized&quot;);
+    return RCL_RET_ALREADY_INIT;
+  }
+  RCL_CHECK_ALLOCATOR(&amp;allocator, return RCL_RET_INVALID_ARGUMENT);
+  init_options-&gt;impl = allocator.allocate(sizeof(rcl_init_options_impl_t), allocator.state);
+  ...
+}
+</code></pre>
+
+<p>Here, it finally crashes when trying to call <code>allocator.allocate()</code>.</p>
+
+<p>This appears to be because our version of <code>clang</code> has different conventions for passing structures as arguments to functions.  For C++, it appears to load a pointer to the whole structure into a register.  For C, it appears to load the structure members.  Therefore, when <code>rcl_init_options_init()</code> (a C function) calls <code>allocator.allocate()</code>, which was provided by <code>InitOptions()</code> (a C++ constructor), it doesn&#39;t find what it expects in memory and crashes.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/50781">broomstick</a> on 2020-04-09 12:28:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>[Update]  Before anyone spends any time on this:  This appears to be a compiler issue with our version of Clang.  We&#39;ve patched it and I&#39;m currently rebuilding everything.  If it works, I&#39;ll close this out.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50781">broomstick</a> on 2020-04-09 14:29:40 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I&#39;ve modified this question into more of an explanation, because the issue appears to be in my compiler, rather than with ROS2; however, it&#39;s an interesting trace through what I think happens when you call <code>rclcpp::init()</code>, so I thought I&#39;d leave it up and close out the question.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50781">broomstick</a> on 2020-04-10 08:52:18 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

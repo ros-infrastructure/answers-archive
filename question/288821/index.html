@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How can I add makefile funcionality to my CMakeLists.txt - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/288821">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How can I add makefile funcionality to my CMakeLists.txt</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/86592/how-can-i-add-makefile-funcionality-to-my-cmakelists-txt">https://robotics.stackexchange.com/questions/86592/how-can-i-add-makefile-funcionality-to-my-cmakelists-txt</a>.</p>
+        <p>Hello, I have got two pieces of software. One part is a simulation-software (CarMaker 6.0.4) written in C and I make it with a makefile, whereas I make the other part of the software (ROS kinetic) with a CMakeLists.txt file. I want to take a part of CarMaker-Code and include it in a ROS-node, so I can publish data on this ROS node which I get from the simulation. <br/>
+The whole thing is running on Linux Ubuntu 16.04 on a Macbook pro. <br/>
+gcc version: gcc (Ubuntu 5.4.0-6ubuntu1~16.04.9) 5.4.0<br/>
+My ROS Node looks like this: <br/> </p>
+
+<pre><code>#include &lt;sstream&gt;
+#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+
+
+
+#ifdef __cplusplus
+extern &quot;C&quot;
+{
+#endif
+//Header Einbindung CarMaker 
+
+#ifdef _WIN32
+# include &lt;windows.h&gt;
+#endif
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdarg.h&gt;
+
+#ifdef _MSC_VER
+# define strcasecmp(a, b) _stricmp(a,b)
+#endif
+
+#include &quot;/home/roboracemac3/catkin_ws/src/BachelorThesisTest/src/APO/ApoClnt.h&quot;
+#include &quot;/home/roboracemac3/catkin_ws/src/BachelorThesisTest/src/APO/GuiCmd.h&quot;
+#include &quot;/home/roboracemac3/catkin_ws/src/BachelorThesisTest/src/APODVA.h&quot;
+
+#ifdef __cplusplus
+}
+#endif
+
+
+//*********************************** ApoClntDemo.c Code Anfang *******************************************//
+static void
+error_and_exit (const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+
+    exit(EXIT_FAILURE);
+}
+
+
+/** Basic APO client infrastructure *******************************************/
+
+/* Connection parameters. */
+
+enum { CmdChannel  = 2             };       /* CarMaker command channel. */
+enum { ChannelMask = 1&lt;&lt;CmdChannel };
+
+static const char *AppClass = &quot;CarMaker&quot;;
+static const char *AppHost  = &quot;*&quot;;
+static const char *AppUser  = &quot;*&quot;;
+
+
+/* Connection handle to the application (CarMaker in this case). */
+static tApoSid Srv;
+
+
+/* Time to wait between calls to ApoClnt_PollAndSleep().
+   The duration must be fine-tuned to the actual subscription parameters used.
+   If too short you may hog the CPU, if too long you may loose quantity data. */
+static int SleepDelta_ms = 20;
+
+
+static int
+connection_ok (void)
+{
+    return (ApocGetStatus(Srv, NULL) &amp; ApoConnUp) != 0;
+}
+
+
+/*
+ * ApoClnt_PollAndSleep()
+ *
+ * This function has to be provided by the client application.
+ * It will be called from within the ApoClnt code whenever the
+ * application needs to wait for something without blocking the
+ * rest of the client.
+ * 
+ * You may adapt the function&#39;s code to your needs, provided that
+ * the basic APO communication structure is kept as is.
+ *
+ * Don&#39;t assume this function being called with a fixed timing.
+ */
+void
+ApoClnt_PollAndSleep (void)
+{
+    if (ApocWaitIO(SleepDelta_ms) == 1) {
+    ApocPoll(); /* _Always_ poll, even if connection is down. */
+
+    if (connection_ok()) {
+        unsigned long vecid;
+        int msglen, msgch;
+        char msgbuf[APO_ADMMAX];
+
+        while ((vecid = ApocGetData(Srv)) &gt; 0) {
+        if (ApoClnt_UpdateQuantVars(vecid))
+            return;
+
+        /* Put your own quantity data handling code here. */
+        /* ... */
+        }
+        if (ApocDictChanged(Srv))
+        ApoClnt_Resubscribe(Srv);
+
+        while (ApocGetAppMsg(Srv, &amp;msgch, msgbuf, &amp;msglen) &gt; 0) {
+        if (GuiCmd_HandleMsgs(msgch, msgbuf, msglen))
+            continue;
+        if (DVA_HandleMsgs(msgch, msgbuf, msglen))
+            continue;
+
+        /* Put your own message handling code here. */
+        /* ... */
+        }
+    }
+    }
+
+    /* Put your code handling other regular tasks here. */
+    /* ... */
+}
+
+
+static void
+pause (int milliseconds)
+{
+    double tstart = ApoGetTime_ms();
+    do {
+    ApoClnt_PollAndSleep();
+    } while (ApoGetTime_ms()-tstart &lt; milliseconds);
+}
+
+
+static void
+setup_client (void)
+{
+    if (ApocInit() != ApoErrOk)
+    error_and_exit(&quot;Fail to initialize APO library\n&quot;);
+
+    Srv = ApoClnt_Connect(AppClass, AppHost, AppUser, ChannelMask);
+    if (Srv == NULL)
+    error_and_exit(&quot;Could not connect\n&quot;);
+
+    if (!GuiCmd_IsReady(Srv))
+    error_and_exit(&quot;GUI not ready\n&quot;);
+}
+
+
+static void
+teardown_client (void)
+{
+    ApocCloseServer(Srv);
+}
+
+
+/******************************************************************************/
+
+static void
+show_result (void)
+{
+    const char *result, *s;
+    int size, status;
+
+    status = GuiCmd_GetResult(&amp;result, &amp;size);
+
+    switch (status) {
+      case GUI_EOK:      s = &quot;GUI_EOK (= no error)&quot;;             break;
+      case GUI_ETCL:     s = &quot;GUI_ETCL (= tcl error)&quot;;           break;
+      case GUI_ETIMEOUT: s = &quot;GUI_ETIMEOUT (= timeout expired)&quot;; break;
+      case GUI_ECONN:    s = &quot;GUI_ECONN (= connection failed)&quot;;  break;
+      default:           s = &quot;(unknown result status code)&quot;;     break;
+    }
+
+    printf(&quot;    Result status: %s\n&quot;, s);
+    printf(&quot;    Result size  : %d [characters]\n&quot;, size);
+    printf(&quot;    Result string: &#39;%s&#39;\n&quot;, result);
+    printf(&quot;\n&quot;);
+}
+
+
+
+static void
+demo_DVARead (void)
+{
+
+
+
+    float t;
+    FILE *f = fopen(&quot;READ_TO_TEST.txt&quot;, &quot;w&quot;);
+    if (f == NULL)
+    {
+        printf(&quot;Error opening file!\n&quot;);
+        exit(1);
+    }
+
+
+
+
+    printf(&quot;Load and start testrun &#39;Hockenheim&#39;\n&quot;);
+
+    GuiCmd_Eval(Srv, &quot;LoadTestRun Examples/VehicleDynamics/Handling/Racetrack_Hockenheim 1&quot;);
+    GuiCmd_Eval(Srv, &quot;StartSim&quot;);
+    GuiCmd_Eval(Srv, &quot;WaitForStatus running&quot;);
+    //pause(2000);
+
+    printf(&quot;Trying a number of DVA reads...\n&quot;);
+
+
+    do {
+        static char *names[] = { &quot;Time&quot;, &quot;Vhcl.Distance&quot;,&quot;Car.v&quot;,&quot;Vhcl.RollAcc&quot; ,NULL };
+
+        if (DVA_Read(Srv, names, 1000) == DVA_EOK) {
+            const double *p = DVA_GetResult();
+            printf(&quot;\t%s: %g\t%s: %g\t%s: %g\t%s: %g\n&quot;, names[0], p[0], names[1], p[1], names[2], p[2], names[3], p[3]);
+            t = p[0];
+
+            fprintf(f, &quot;\t%s: %g\t%s: %g\t%s: %g\n&quot;, names[0], p[0], names[1], p[1], names[2], p[2]);
+        }
+        else {
+            printf(&quot;DVA read error\n&quot;);
+        }
+
+    } while (t &lt; 20.0);
+
+
+
+    GuiCmd_Eval(Srv, &quot;StopSim&quot;);
+    GuiCmd_Eval(Srv, &quot;WaitForStatus idle 10000&quot;);
+}
+
+
+/******************************************************************************/
+
+static void
+usage_and_exit (void)
+{
+    printf(&quot;\n&quot;);
+    printf(&quot;Usage: ApoClntDemo [options] example\n&quot;);
+    printf(&quot;\n&quot;);
+    printf(&quot;Available options:\n&quot;);
+    printf(&quot;  -apphost h    Connect to application on host h\n&quot;);
+    printf(&quot;  -appuser u    Connect to application start by user u\n&quot;);
+    printf(&quot;  -apclass c    Connect to application of class c\n&quot;);
+    printf(&quot;\n&quot;);
+    printf(&quot;Available examples:\n&quot;);
+    printf(&quot;  Basics\n&quot;);
+    printf(&quot;  StartStop\n&quot;);
+    printf(&quot;  QuantSubscribe\n&quot;);
+    printf(&quot;  DVAWrite\n&quot;);
+    printf(&quot;  DVARead\n&quot;);
+    printf(&quot;\n&quot;);
+
+    exit(EXIT_SUCCESS);
+}
+
+
+//*********************************** ApoClntDemo.c Code Ende *********************************************//
+
+
+ /* This tutorial demonstrates simple sending of messages over the ROS system.
+ */
+
+int main(int argc, char **argv)
+{
+
+
+//*********************** Main ApoClntDemo.c Anfang *****************************************//
+     const char *example = &quot;&quot;;
+
+    while (*++argv != NULL) {
+    if (       strcmp(*argv, &quot;-appclass&quot;) == 0 &amp;&amp; *(argv+1) != NULL) {
+        AppClass = *++argv;
+    } else if (strcmp(*argv, &quot;-apphost&quot;)  == 0 &amp;&amp; *(argv+1) != NULL) {
+        AppHost = *++argv;
+    } else if (strcmp(*argv, &quot;-appuser&quot;)  == 0 &amp;&amp; *(argv+1) != NULL) {
+        AppUser = *++argv;
+    } else if (strcmp(*argv, &quot;-help&quot;) == 0 || strcmp(*argv, &quot;-h&quot;) == 0) {
+        usage_and_exit();
+    } else if (**argv == &#39;-&#39;) {
+        printf(&quot;Unknown option: &#39;%s&#39;\n&quot;, *argv);
+        printf(&quot;Run with &#39;-help&#39; to see the usage.\n&quot;);
+        exit(EXIT_FAILURE);
+    } else {
+        example = *argv;
+        break;
+    }
+    }
+    if (strcmp(AppHost, &quot;*&quot;) == 0) {
+    printf(&quot;Please specify at least a host to connect to.\n&quot;);
+    printf(&quot;Run with &#39;-help&#39; to see a list of available options.\n&quot;);
+    exit(EXIT_FAILURE);
+    }
+
+    setup_client();
+
+    if        (strcasecmp(example, &quot;Basics&quot;) == 0) {
+    demo_Basics();
+    } else if (strcasecmp(example, &quot;StartStop&quot;) == 0) {
+    demo_StartStop();
+    } else if (strcasecmp(example, &quot;QuantSubscribe&quot;) == 0) {
+    demo_QuantSubscribe();
+    } else if (strcasecmp(example, &quot;DVAWrite&quot;) == 0) {
+    demo_DVAWrite();
+    } else if (strcasecmp(example, &quot;DVARead&quot;) == 0) {
+    demo_DVARead();
+    } else {
+    printf(&quot;Invalid example specified.\n&quot;);
+    printf(&quot;Run with &#39;-help&#39; to see a list of available examples.\n&quot;);
+    }
+
+    teardown_client();
+
+    return EXIT_SUCCESS;
+//*********************** Main ApoClntDemo.c Ende *****************************************//
+
+
+
+  /**
+   * The ros::init() function needs to see argc and argv so that it can perform
+   * any ROS arguments and name remapping that were provided at the command line.
+   * For programmatic remappings you can use a different version of init() which takes
+   * remappings directly, but for most command-line programs, passing argc and argv is
+   * the easiest way to do it.  The third argument to init() is the name of the node.
+   *
+   * You must call one of the versions of ros::init() before using any other
+   * part of the ROS system.
+   */
+// %Tag(INIT)%
+  ros::init(argc, argv, &quot;talker&quot;);
+// %EndTag(INIT)%
+
+  /**
+   * NodeHandle is the main access point to communications with the ROS system.
+   * The first NodeHandle constructed will fully initialize this node, and the last
+   * NodeHandle destructed will close down the node.
+   */
+// %Tag(NODEHANDLE)%
+  ros::NodeHandle n;
+// %EndTag(NODEHANDLE)%
+
+  /**
+   * The advertise() function is how you tell ROS that you want to
+   * publish on a given topic name. This invokes a call to the ROS
+   * master node, which keeps a registry of who is publishing and who
+   * is subscribing. After this advertise() call is made, the master
+   * node will notify anyone who is trying to subscribe to this topic name,
+   * and they will in turn negotiate a peer-to-peer connection with this
+   * node.  advertise() returns a Publisher object which allows you to
+   * publish messages on that topic through a call to publish().  Once
+   * all copies of the returned Publisher object are destroyed, the topic
+   * will be automatically unadvertised.
+   *
+   * The second parameter to advertise() is the size of the message queue
+   * used for publishing messages.  If messages are published more quickly
+   * than we can send them, the number here specifies how many messages to
+   * buffer up before throwing some away.
+   */
+// %Tag(PUBLISHER)%
+  ros::Publisher chatter_pub = n.advertise&lt;std_msgs::String&gt;(&quot;chatter&quot;, 1000);
+// %EndTag(PUBLISHER)%
+
+// %Tag(LOOP_RATE)%
+  ros::Rate loop_rate(10);
+// %EndTag(LOOP_RATE)%
+
+
+
+
+
+
+
+  /**
+   * A count of how many messages we have sent. This is used to create
+   * a unique string for each message.
+   */
+// %Tag(ROS_OK)%
+  int count = 0;
+  while (ros::ok())
+  {
+// %EndTag(ROS_OK)%
+    /**
+     * This is a message object. You stuff it with data, and then publish it.
+     */
+
+
+
+
+
+// %Tag(FILL_MESSAGE)%
+    std_msgs::String msg;
+
+    std::stringstream ss;
+    ss &lt;&lt; &quot;hello world ROS&quot; &lt;&lt; count;
+    msg.data = ss.str();
+// %EndTag(FILL_MESSAGE)%
+
+// %Tag(ROSCONSOLE)%
+    ROS_INFO(&quot;%s&quot;, msg.data.c_str());
+// %EndTag(ROSCONSOLE)%
+
+    /**
+     * The publish() function is how you send messages. The parameter
+     * is the message object. The type of this object must agree with the type
+     * given as a template parameter to the advertise&lt;&gt;() call, as was done
+     * in the constructor above.
+     */
+// %Tag(PUBLISH)%
+    chatter_pub.publish(msg);
+// %EndTag(PUBLISH)%
+
+// %Tag(SPINONCE)%
+    ros::spinOnce();
+// %EndTag(SPINONCE)%
+
+// %Tag(RATE_SLEEP)%
+    loop_rate.sleep();
+// %EndTag(RATE_SLEEP)%
+    ++count;
+  }
+
+
+  return 0;
+}
+// %EndTag(FULLTEXT
+</code></pre>
+
+<p><br/>
+My CMakeLists.txt looks like this: <br/></p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8.3)
+project(BachelorThesisTest)
+
+## Compile as C++11, supported in ROS Kinetic and newer
+# add_compile_options(-std=c++11)
+
+## Find catkin macros and libraries
+## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
+## is used, also find other catkin packages
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  rospy
+  std_msgs
+  message_generation
+)
+
+## System dependencies are found with CMake&#39;s conventions
+#find_package(boost REQUIRED COMPONENTS system)
+
+
+## Uncomment this if the package has a setup.py. This macro ensures
+## modules and global scripts declared therein get installed
+## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
+# catkin_python_setup()
+
+################################################
+## Declare ROS messages, services and actions ##
+################################################
+
+## To declare and build messages, services or actions from within this
+## package, follow these steps:
+## * Let MSG_DEP_SET be the set of packages whose message types you use in
+##   your messages/services/actions (e.g. std_msgs, actionlib_msgs, ...).
+## * In the file package.xml:
+##   * add a build_depend tag for &quot;message_generation&quot;
+##   * add a build_depend and a run_depend tag for each pa
+
+ckage in MSG_DEP_SET
+##   * If MSG_DEP_SET isn&#39;t empty the following dependency has been pulled in
+##     but can be declared for certainty nonetheless:
+##     * add a run_depend tag for &quot;message_runtime&quot;
+## * In this file (CMakeLists.txt):
+##   * add &quot;message_generation&quot; and every package in MSG_DEP_SET to
+##     find_package(catkin REQUIRED COMPONENTS ...)
+##   * add &quot;message_runtime&quot; and every package in MSG_DEP_SET to
+##     catkin_package(CATKIN_DEPENDS ...)
+##   * uncomment the add_*_files sections below as needed
+##     and list every .msg/.srv/.action file to be processed
+##   * uncomment the generate_messages entry below
+##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
+
+## Generate messages in the &#39;msg&#39; folder
+ add_message_files(DIRECTORY msg
+   FILES
+   Num.msg
+
+ )
+
+## Generate services in the &#39;srv&#39; folder
+ add_service_files(DIRECTORY srv
+   FILES
+   AddTwoInts.srv
+
+ )
+
+## Generate actions in the &#39;action&#39; folder
+# add_action_files(
+#   FILES
+#   Action1.action
+#   Action2.action
+# )
+
+## Generate added messages and services with any dependencies listed here
+
+ generate_messages(
+   DEPENDENCIES
+   std_msgs
+ )
+
+################################################
+## Declare ROS dynamic reconfigure parameters ##
+################################################
+
+## To declare and build dynamic reconfigure parameters within this
+## package, follow these steps:
+## * In the file package.xml:
+##   * add a build_depend and a run_depend tag for &quot;dynamic_reconfigure&quot;
+## * In this file (CMakeLists.txt):
+##   * add &quot;dynamic_reconfigure&quot; to
+##     find_package(catkin REQUIRED COMPONENTS ...)
+##   * uncomment the &quot;generate_dynamic_reconfigure_options&quot; section below
+##     and list every .cfg file to be processed
+
+## Generate dynamic reconfigure parameters in the &#39;cfg&#39; folder
+# generate_dynamic_reconfigure_options(
+#   cfg/DynReconf1.cfg
+#   cfg/DynReconf2.cfg
+# )
+
+###################################
+## catkin specific configuration ##
+###################################
+## The catkin_package macro generates cmake config files for your package
+## Declare things to be passed to dependent projects
+## INCLUDE_DIRS: uncomment this if your package contains header files
+## LIBRARIES: libraries you create in this project that dependent projects also need
+## CATKIN_DEPENDS: catkin_packages dependent projects also need
+## DEPENDS: system dependencies of this project that dependent projects also need
+catkin_package(
+#  INCLUDE_DIRS include
+#  LIBRARIES BachelorThesisTest
+#  CATKIN_DEPENDS roscpp rospy std_msgs
+#  DEPENDS system_lib
+)
+
+###########
+## Build ##
+
+###########
+
+## Specify additional locations of header files
+## Your package locations should be listed before other locations
+include_directories(
+# include
+  ${catkin_INCLUDE_DIRS}
+  ${/home/roboracemac3/catkin_ws/src/BachelorThesisTest/src/APO}
+)
+
+
+
+
+## Declare a C++ library
+# add_library(${PROJECT_NAME}
+#   src/${PROJECT_NAME}/BachelorThesisTest.cpp
+# )
+
+## Add cmake target dependencies of the library
+## as an example, code may need to be generated before libraries
+## either from message generation or dynamic reconfigure
+# add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+## Declare a C++ executable
+## With catkin_make all packages are built within a single CMake context
+## The recommended prefix ensures that target names across packages don&#39;t collide
+# add_executable(${PROJECT_NAME}_node src/BachelorThesisTest_node.cpp)
+
+## Rename C++ executable without prefix
+## The above recommended prefix causes long target names, the following renames the
+## target back to the shorter version for ease of user use
+## e.g. &quot;rosrun someones_pkg node&quot; instead of &quot;rosrun someones_pkg someones_pkg_node&quot;
+# set_target_properties(${PROJECT_NAME}_node PROPERTIES OUTPUT_NAME node PREFIX &quot;&quot;)
+
+## Add cmake target dependencies of the executable
+## same as for the library above
+# add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} 
+
+${catkin_EXPORTED_TARGETS})
+
+## Specify libraries to link a library or executable target against
+# target_link_libraries(${PROJECT_NAME}_node
+#   ${catkin_LIBRARIES}
+# )
+
+#############
+## Install ##
+#############
+
+# all install targets should use catkin DESTINATION variables
+# See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
+
+## Mark executable scripts (Python etc.) for installation
+## in contrast to setup.py, you can choose the destination
+# install(PROGRAMS
+#   scripts/my_python_script
+#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
+
+## Mark executables and/or libraries for installation
+# install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node
+#   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
+
+## Mark cpp header files for installation
+# install(DIRECTORY include/${PROJECT_NAME}/
+
+#   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+#   FILES_MATCHING PATTERN &quot;*.h&quot;
+#   PATTERN &quot;.svn&quot; EXCLUDE
+# )
+
+## Mark other files for installation (e.g. launch and bag files, etc.)
+# install(FILES
+#   # myfile1
+#   # myfile2
+#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+# )
+
+#############
+## Testing ##
+#############
+
+## Add gtest based cpp test target and link libraries
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_BachelorThesisTest.cpp)
+# if(TARGET ${PROJECT_NAME}-test)
+#   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
+# endif()
+
+## Add folders to be run by python nosetests
+# catkin_add_nosetests(test)
+
+
+
+
+ add_executable(talker src/talker.cpp)
+    target_link_libraries(talker ${catkin_LIBRARIES})
+    add_dependencies(talker BachelorThesisTest_generate_messages_cpp)
+
+    add_executable(listener src/listener.cpp)
+    target_link_libraries(listener ${catkin_LIBRARIES})
+    add_dependencies(listener BachelorThesisTest_generate_messages_cpp)
+
+
+
+    ## Build service client and server
+
+# %Tag(SRVCLIENT)%
+add_executable(add_two_ints_server src/add_two_ints_server.cpp)
+target_link_libraries(add_two_ints_server ${catkin_LIBRARIES})
+add_dependencies(add_two_ints_server BachelorThesisTest_gencpp)
+
+add_executable(add_two_ints_client src/add_two_ints_client.cpp)
+target_link_libraries(add_two_ints_client ${catkin_LIBRARIES})
+add_dependencies(add_two_ints_client BachelorThesisTest_gencpp)
+</code></pre>
+
+<p><br/>
+My makefile for the simulation software code looks like this: 
+<br/> </p>
+
+<pre><code>#******************************************************************************
+#**  CarMaker - Version 6.0.4
+#**  Vehicle Dynamic Simulation Toolkit
+#**
+#**  Copyright (C)   IPG Automotive GmbH
+#**                  Bannwaldallee 60             Phone  +49.721.98520.0
+#**                  76185 Karlsruhe              Fax    +49.721.98520.99
+#**                  Germany                      WWW    www.ipg-automotive.com
+#******************************************************************************
+
+# For a 64-bit application include MakeDefs64 instead.
+include /opt/ipg/hil/linux-6.0.4/include/MakeDefs
+
+
+#OPT_CFLAGS =   -g
+OPT_CFLAGS =    -Os -DNDEBUG
+
+LIBS =      $(CARMAKER_LIB_DIR)/libapo-client-$(ARCH).a
+
+OBJS =      ApoClntDemo.o ApoClnt.o GuiCmd.o DVAWrite.o DVARead.o
+
+
+ApoClntDemo.$(ARCH)$(EXE_EXT):  $(OBJS)
+    $(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBS) $(LD_LIBS_OS)
+
+clean:
+    rm -f *~ *.o a.out a.exe core core.* ApoClntDemo.$(ARCH)$(EXE_EXT)
+
+
+
+ApoClntDemo.o:  ApoClnt.h DVA.h
+ApoClnt.o:  ApoClnt.h
+GuiCmd.o:   GuiCmd.h ApoClnt.h
+DVARead.o:  DVA.h ApoClnt.h
+DVAWrite.o: DVA.h
+
+# %EndTag(SRVCLIENT)%
+</code></pre>
+
+<p><br/> 
+When I make my catkin workspace I get the following error: 
+<br/></p>
+
+<pre><code>   roboracemac3@roboracemac3:~/catkin_ws$ catkin_make
+    Base path: /home/roboracemac3/catkin_ws
+    Source space: /home/roboracemac3/catkin_ws/src
+    Build space: /home/roboracemac3/catkin_ws/build
+    Devel space: /home/roboracemac3/catkin_ws/devel
+    Install space: /home/roboracemac3/catkin_ws/install
+    WARNING: Catkin package name &quot;BachelorThesisTest&quot; does not follow the naming conventions. It should start with a lower case letter and only contain lower case letters, digits, and underscores.
+    ####
+    #### Running command: &quot;make cmake_check_build_system&quot; in &quot;/home/roboracemac3/catkin_ws/build&quot;
+    ####
+    ####
+    #### Running command: &quot;make -j2 -l2&quot; in &quot;/home/roboracemac3/catkin_ws/build&quot;
+    ####
+    [  0%] Built target _BachelorThesisTest_generate_messages_check_deps_AddTwoInts
+    [  0%] Built target _BachelorThesisTest_generate_messages_check_deps_Num
+    [  0%] Built target std_msgs_generate_messages_cpp
+    [  0%] Built target std_msgs_generate_messages_eus
+    [  0%] Built target std_msgs_generate_messages_py
+    [  0%] Built target std_msgs_generate_messages_nodejs
+    [  0%] Built target std_msgs_generate_messages_lisp
+[  8%] Built target BachelorThesisTest_generate_messages_cpp
+[ 21%] Built target BachelorThesisTest_generate_messages_eus
+[ 39%] Built target BachelorThesisTest_generate_messages_py
+[ 47%] Built target BachelorThesisTest_generate_messages_nodejs
+[ 56%] Built target BachelorThesisTest_generate_messages_lisp
+[ 56%] Built target BachelorThesisTest_gencpp
+[ 60%] Linking C executable /home/roboracemac3/catkin_ws/devel/lib/BachelorThesisTest/ApoClnt
+[ 65%] Linking CXX executable /home/roboracemac3/catkin_ws/devel/lib/BachelorThesisTest/talker
+/usr/lib/gcc/x86_64-linux-gnu/5/../../../x86_64-linux-gnu/crt1.o: In function `_start&#39;:
+(.text+0x20): undefined reference to `main&#39;
+CMakeFiles/ApoClnt.dir/src/APO/ApoClnt.c.o: In function `query_for_apps&#39;:
+ApoClnt.c:(.text+0x15b): undefined reference to `ApocQueryServers&#39;
+ApoClnt.c:(.text+0x167): undefined reference to `ApocWaitIO&#39;
+ApoClnt.c:(.text+0x171): undefined reference to `ApocPoll&#39;
+ApoClnt.c:(.text+0x176): undefined reference to `ApocQueryDone&#39;
+CMakeFiles/ApoClnt.dir/src/APO/ApoClnt.c.o: In function `find_app&#39;:
+ApoClnt.c:(.text+0x1b6): undefined reference to `ApocGetServer&#39;
+ApoClnt.c:(.text+0x248): undefined reference to `ApocGetServerCount&#39;
+CMakeFiles/ApoClnt.dir/src/APO/ApoClnt.c.o: In function `connect_to_app&#39;:
+ApoClnt.c:(.text+0x277): undefined reference to `ApocOpenServer&#39;
+ApoClnt.c:(.text+0x28e): undefined reference to `ApocConnect&#39;
+ApoClnt.c:(.text+0x2a1): undefined reference to `ApocWaitIO&#39;
+ApoClnt.c:(.text+0x2ab): undefined reference to `ApocPoll&#39;
+ApoClnt.c:(.text+0x2bc): undefined reference to `ApocGetStatus&#39;
+ApoClnt.c:(.text+0x2d6): undefined reference to `ApocGetStatus&#39;
+ApoClnt.c:(.text+0x2e9): undefined reference to `ApocCloseServer&#39;
+CMakeFiles/ApoClnt.dir/src/APO/ApoClnt.c.o: In function `subscribe&#39;:
+ApoClnt.c:(.text+0xc1e): undefined reference to `ApocSubscribe&#39;
+ApoClnt.c:(.text+0xc39): undefined reference to `ApoGetTime_ms&#39;
+ApoClnt.c:(.text+0xc52): undefined reference to `ApoClnt_PollAndSleep&#39;
+ApoClnt.c:(.text+0xc63): undefined reference to `ApoGetTime_ms&#39;
+
+CMakeFiles/ApoClnt.dir/src/APO/ApoClnt.c.o: In function `ApoClnt_Subscribe&#39;:
+ApoClnt.c:(.text+0xccf): undefined reference to `ApocGetStatus&#39;
+CMakeFiles/ApoClnt.dir/src/APO/ApoClnt.c.o: In function `ApoClnt_Unsubscribe&#39;:
+ApoClnt.c:(.text+0xe64): undefined reference to `ApocGetStatus&#39;
+ApoClnt.c:(.text+0xe96): undefined reference to `ApocSubscribe&#39;
+collect2: error: ld returned 1 exit status
+BachelorThesisTest/CMakeFiles/ApoClnt.dir/build.make:113: recipe for target &#39;/home/roboracemac3/catkin_ws/devel/lib/BachelorThesisTest/ApoClnt&#39; failed
+make[2]: *** [/home/roboracemac3/catkin_ws/devel/lib/BachelorThesisTest/ApoClnt] Error 1
+CMakeFiles/Makefile2:439: recipe for target &#39;BachelorThesisTest/CMakeFiles/ApoClnt.dir/all&#39; failed
+make[1]: *** [BachelorThesisTest/CMakeFiles/ApoClnt.dir/all] Error 2
+make[1]: *** Waiting for unfinished jobs....
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `connection_ok()&#39;:
+talker.cpp:(.text+0xcf): undefined reference to `ApocGetStatus&#39;
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `ApoClnt_PollAndSleep&#39;:
+talker.cpp:(.text+0x103): undefined reference to `ApocWaitIO&#39;
+talker.cpp:(.text+0x116): undefined reference to `ApocPoll&#39;
+talker.cpp:(.text+0x137): undefined reference to `ApocGetData&#39;
+talker.cpp:(.text+0x15c): undefined reference to `ApoClnt_UpdateQuantVars&#39;
+talker.cpp:(.text+0x17a): undefined reference to `ApocDictChanged&#39;
+talker.cpp:(.text+0x192): undefined reference to `ApoClnt_Resubscribe&#39;
+talker.cpp:(.text+0x1b6): undefined reference to `ApocGetAppMsg&#39;
+talker.cpp:(.text+0x1dd): undefined reference to `GuiCmd_HandleMsgs&#39;
+talker.cpp:(.text+0x203): undefined reference to `DVA_HandleMsgs&#39;
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `pause(int)&#39;:
+talker.cpp:(.text+0x236): undefined reference to `ApoGetTime_ms&#39;
+talker.cpp:(.text+0x249): undefined reference to `ApoGetTime_ms&#39;
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `setup_client()&#39;:
+talker.cpp:(.text+0x274): undefined reference to `ApocInit&#39;
+talker.cpp:(.text+0x2ae): undefined reference to `ApoClnt_Connect&#39;
+talker.cpp:(.text+0x2df): undefined reference to `GuiCmd_IsReady&#39;
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `teardown_client()&#39;:
+talker.cpp:(.text+0x30d): undefined reference to `ApocCloseServer&#39;
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `show_result()&#39;:
+talker.cpp:(.text+0x33a): undefined reference to `GuiCmd_GetResult&#39;
+CMakeFiles/talker.dir/src/talker.cpp.o: In function `demo_DVARead()&#39;:
+talker.cpp:(.text+0xb73): undefined reference to `GuiCmd_Eval&#39;
+talker.cpp:(.text+0xb87): undefined reference to `GuiCmd_Eval&#39;
+talker.cpp:(.text+0xb9b): undefined reference to `GuiCmd_Eval&#39;
+talker.cpp:(.text+0xbbe): undefined reference to `DVA_Read&#39;
+talker.cpp:(.text+0xbd0): undefined reference to `DVA_GetResult&#39;
+talker.cpp:(.text+0xce7): undefined reference to `GuiCmd_Eval&#39;
+talker.cpp:(.text+0xcfb): undefined reference to `GuiCmd_Eval&#39;
+collect2: error: ld returned 1 exit status
+BachelorThesisTest/CMakeFiles/talker.dir/build.make:113: recipe for target &#39;/home/roboracemac3/catkin_ws/devel/lib/BachelorThesisTest/talker&#39; failed
+make[2]: *** [/home/roboracemac3/catkin_ws/devel/lib/BachelorThesisTest/talker] Error 1
+CMakeFiles/Makefile2:476: recipe for target &#39;BachelorThesisTest/CMakeFiles/talker.dir/all&#39; failed
+make[1]: *** [BachelorThesisTest/CMakeFiles/talker.dir/all] Error 2
+Makefile:138: recipe for target &#39;all&#39; failed
+make: *** [all] Error 2
+Invoking &quot;make -j2 -l2&quot; failed
+</code></pre>
+
+<p><br/></p>
+
+<p>I`m really new to programming, so I would be really happy if somebody could help me fix this problem. Thank you very much!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34387">felix_a</a> on 2018-04-16 14:00:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I have a feeling this is a bit of an xy-problem.</p>
+
+<p>If you&#39;re actually asking how to link a C library and a C++ program together, see #q227146 for some comments.</p>
+
+<p>Perhaps also #q200205.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2018-04-16 14:58:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

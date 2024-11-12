@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 to fastrtps interoperability - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/380642">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 to fastrtps interoperability</h2>
+      <div class="question">
+        <p>Hi,
+I&#39;m looking to set up a system where ROS2 nodes communicate with stand-alone (non-ROS2) FastRTPS applications. All signs point to this being possible, but i haven&#39;t seen any example on how to do this.  Does anyone have any guidance on how to do this? I&#39;m currently using an Ubuntu 20.04 foxy desktop setup.
+Thanks!
+Steve</p>
+
+        <div class="owner"><p>Asked by <a href="/users/76275">swhart</a> on 2021-06-18 13:25:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Maybe this isn&#39;t a great example to point to, but it&#39;s the one I&#39;m familiar with.</p>
+
+<p>The PX4 Autopilot system has a fastrtps bridge that talks with an agent on an offboard computer. <a href="https://github.com/PX4/px4_ros_com/tree/master/templates">px4_ros_com package source</a></p>
+
+<p>While the fastrtps agent software talks to ros2, it&#39;s not written with any ros2 libraries (other than the message generation stuff most likely.)</p>
+
+<p>So that&#39;s an example of a raw fastrtps application talking to ROS2 (without modification)</p>
+
+<p>The ability for a ROS2 node to talk with a raw fastrtps node (without modification) has a few caveats. The first is going to be getting message type names to match up. The second is around topic names. By default, ros2 nodes prefix all topic names with <code>rt/</code>, <code>rq/</code>, or <code>rr/</code> (topic, request, response respectively...) There is a <code>avoid_ros_namespace_conventions</code> parameter in the <code>rclcpp::QoS</code> structure, but even with that enabled, it forces every topic you make to have a leading <code>/</code> in the topic. Bottom line: if your raw fastrtps topics start with <code>/</code>, then you&#39;re fine. Otherwise you&#39;ll need to change your raw fastrtps nodes to have that <code>/</code> prefix the topic names.</p>
+
+<p>Hope that gets you going in the right direction!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30013">ChuiV</a> on 2021-06-21 09:25:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Thanks ChuiV, this is helpful.  After poking around some more, was able to get some topic communication to and from a standalone fastrtps app and a ROS2 node. I had five challenges, four of which if figured out, and one of which i found a work around on, but am still not sure the best solution:</p>
+
+<p>Things I figured out:</p>
+
+<ul>
+<li>the necessity of the <code>rt/</code> topic prefix.</li>
+<li>I needed to make sure the <code>domainID</code> is the the same on the ROS2 side as what i am setting in my fastrtps application. this means, of course setting, an env var in the terminal i am running my ROS2 node (<code>export ROS_DOMAIN_ID=42</code>)</li>
+<li>I needed to make sure the messages were registered using the appropriate &quot;ROS format&quot; prefixes.  In other words <code>&lt;msg_package_name&gt;::msg::dds_::&lt;MsgType&gt;_</code></li>
+<li><p>By default, fastrtps seemed to be trying to use shared memory as its transport layer, but ROS2 wants UDP (v4). By adding the following to my fastrtps applications, things connected:</p>
+
+<pre><code>auto localhostUdpv4Transport = std::make_shared&lt;UDPv4TransportDescriptor&gt;();
+PParam.rtps.useBuiltinTransports = false;
+PParam.rtps.userTransports.push_back(localhostUdpv4Transport);
+</code></pre></li>
+</ul>
+
+<p>It&#39;s probably worth sharing the whole <code>init()</code> function for my fastrtps application that publishes a (custom) HelloWorld.msg that my ROS2 app can subscribe to:</p>
+
+<pre><code>bool HelloWorldPublisher::init()
+{
+    ParticipantAttributes PParam;
+    auto localhostUdpv4Transport = std::make_shared&lt;UDPv4TransportDescriptor&gt;();
+    PParam.rtps.useBuiltinTransports = false;
+    PParam.rtps.userTransports.push_back(localhostUdpv4Transport);
+    PParam.rtps.builtin.discovery_config.leaseDuration = c_TimeInfinite;
+    PParam.domainId = 42;
+    PParam.rtps.setName(&quot;hello_world&quot;);
+    mp_participant = Domain::createParticipant(PParam);
+
+    if (mp_participant == nullptr)
+    {
+        return false;
+    }
+
+    //REGISTER THE TYPE
+    Domain::registerType(mp_participant, &amp;m_type);
+
+    //CREATE THE PUBLISHER
+    PublisherAttributes Wparam;
+    Wparam.topic.topicKind = NO_KEY;
+    Wparam.topic.topicDataType = &quot;hello_world_msgs::msg::dds_::HelloWorld_&quot;;
+    Wparam.topic.topicName = &quot;rt/hello_world&quot;;
+
+    // fill in the data to the msg to send, can overwrite later
+    m_Hello.message(&quot;hi from RTPS&quot;);
+
+    mp_publisher = Domain::createPublisher(mp_participant, Wparam, (PublisherListener*)&amp;m_listener);
+    if (mp_publisher == nullptr)
+    {
+        return false;
+    }
+
+    return true;
+} 
+</code></pre>
+
+<p>In this example, I am publishing a custom <code>hello_world_msgs/HelloWorld.msg</code> onto a ROS2 topic <code>/hello_world</code>, and with <code>ROS_DOMAIN_ID=42.</code> A simple ROS2 subscriber can will read this topic accordingly.</p>
+
+<hr>
+
+<p>The thing I have <strong>not yet</strong> found a great answer/solution to is how to get a &quot;shared&quot; message type that&#39;s used by ROS2 and my fastrtps application.  </p>
+
+<p>My hacky work-around was to build my ROS2 message package, then go find the generated .idl file in the build directory, and manually copy it to my fastrtps workspace.  I then used the fastrtps tools to generate the necessary DDS classes/files that I could compile against on my dds application side.  </p>
+
+<p>Ideally, there would be a way to do this <em>directly from the ROS2 generated files</em>, but I haven&#39;t figured this out yet.  Any insights or suggestions on this? </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/76275">swhart</a> on 2021-06-21 15:18:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

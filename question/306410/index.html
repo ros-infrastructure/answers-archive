@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>actionlib/SimpleActionClient sometimes not subscribe result topic - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/306410">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>actionlib/SimpleActionClient sometimes not subscribe result topic</h2>
+      <div class="question">
+        <p>I have a simple reproduction code, it tries action communication in the loop.
+In my environment, waitForResult() will time out as a result of miss subscribe result by approximately 500 - 10000 tries. I&#39;m running ROS Kinetic, actionlib 1.11.13, ros-comm 1.12.14, and Ubuntu 16.04.5 LTS AMD64, with kernel 4.15.0.</p>
+
+<p>To investigate further, I checked result<em>pub</em>.getNumSubscribes() in action<em>server</em>impl.h publishResult(). The number of subscribers is one in the first execution, and the become two. When a timeout occurred, the number of subscribers on the resulting topic was decreasing. Perhaps when running in the loop, one of the subscribers is the previous subscriber and the other is the current subscriber.</p>
+
+<p>Is this the wrong way to use actionlib or is it a bug?
+I suppose it is a bug that sometimes fails to register subscriber, so maybe it will be occur not only the loop but also first execution.</p>
+
+<p>Client log:</p>
+
+<pre><code>[ INFO] [1539855711.275219044]: sendGoal [570]
+[ INFO] [1539855711.672797568]: sendGoal [571]
+[ INFO] [1539855711.979528457]: sendGoal [572]
+[ INFO] [1539855712.278595804]: sendGoal [573]
+[ INFO] [1539855712.588373298]: sendGoal [574]
+[ INFO] [1539855712.888758167]: sendGoal [575]
+[ INFO] [1539855713.092482734]: sendGoal [576]
+[ INFO] [1539855713.401528966]: sendGoal [577]
+[ INFO] [1539855713.702749769]: sendGoal [578]
+[ERROR] [1539855718.703182372]: waitForResult timeout 578
+</code></pre>
+
+<p>Server log:</p>
+
+<pre><code>[ INFO] [1539855712.599485422]: getNumSubscribers() = 2
+[ INFO] [1539855712.600284986]: setSucceeded
+[ INFO] [1539855712.899739017]: getNumSubscribers() = 2
+[ INFO] [1539855712.899964403]: setSucceeded
+[ INFO] [1539855713.104094805]: getNumSubscribers() = 2
+[ INFO] [1539855713.104387345]: setSucceeded
+[ INFO] [1539855713.412796118]: getNumSubscribers() = 2
+[ INFO] [1539855713.413093028]: setSucceeded
+[ INFO] [1539855713.713709330]: getNumSubscribers() = 1
+[ INFO] [1539855713.713923076]: setSucceeded
+</code></pre>
+
+<p>Client code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;actionlib/client/simple_action_client.h&gt;
+#include &lt;control_msgs/FollowJointTrajectoryAction.h&gt;
+
+void spinThread()
+{
+  ros::NodeHandle nh;
+  ros::spin();
+}
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;TestClient&quot;);
+
+  boost::thread spin_thread(&amp;spinThread);
+
+  uint32_t i = 1;
+  control_msgs::FollowJointTrajectoryGoal goal;
+
+  while (ros::ok())
+  {
+    actionlib::SimpleActionClient&lt;control_msgs::FollowJointTrajectoryAction&gt; ac(&quot;follow_joint_trajectory_action&quot;, true);
+    ac.waitForServer();
+
+    ROS_INFO(&quot;sendGoal [%u]&quot;, i);
+    ac.sendGoal(goal);
+
+    if (!ac.waitForResult(ros::Duration(5.0)))
+    {
+      ROS_ERROR(&quot;waitForResult timeout %u&quot;, i);
+      while(1);
+    }
+
+    i++;
+  }
+
+  ros::shutdown();
+  spin_thread.join();
+
+  return 0;
+}
+</code></pre>
+
+<p>Server code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;actionlib/server/simple_action_server.h&gt;
+#include &lt;control_msgs/FollowJointTrajectoryAction.h&gt;
+
+class TestServer
+{
+protected:
+  ros::NodeHandle nh_;
+  actionlib::SimpleActionServer&lt;control_msgs::FollowJointTrajectoryAction&gt; as_;
+
+public:
+  TestServer(): as_(nh_, &quot;follow_joint_trajectory_action&quot;, boost::bind(&amp;TestServer::goalCb, this, _1), false)
+  {
+    as_.start();
+  }
+
+  ~TestServer()
+  {
+  }
+
+  void goalCb(const control_msgs::FollowJointTrajectoryGoalConstPtr &amp;goal)
+  {
+    ros::Duration(0.01).sleep();
+    control_msgs::FollowJointTrajectoryResult result;
+    as_.setSucceeded(result);
+    ROS_INFO(&quot;setSucceeded&quot;);
+  }
+};
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;TestServer&quot;);
+  TestServer ts;
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Modified actionlib/include/actionlib/server/action<em>server</em>imp.h</p>
+
+<pre><code>template&lt;class ActionSpec&gt;
+void ActionServer&lt;ActionSpec&gt;::publishResult(const actionlib_msgs::GoalStatus &amp; status,
+  const Result &amp; result)
+{
+  boost::recursive_mutex::scoped_lock lock(this-&gt;lock_);
+  // we&#39;ll create a shared_ptr to pass to ROS to limit copying
+  boost::shared_ptr&lt;ActionResult&gt; ar(new ActionResult);
+  ar-&gt;header.stamp = ros::Time::now();
+  ar-&gt;status = status;
+  ar-&gt;result = result;
+  ROS_DEBUG_NAMED(&quot;actionlib&quot;, &quot;Publishing result for goal with id: %s and stamp: %.2f&quot;,
+    status.goal_id.id.c_str(), status.goal_id.stamp.toSec());
+  ROS_INFO(&quot;getNumSubscribers() = %u&quot;, result_pub_.getNumSubscribers()); // ADD
+  result_pub_.publish(ar);
+  publishStatus();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/38133">ksawa</a> on 2018-10-22 05:44:42 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I believe this is a known issue with the ROS 1 implementation of <code>actionlib</code>.</p>
+
+<p>Please see the <a href="https://github.com/ros/actionlib/issues">issue tracker</a> for related issues.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-10-22 05:54:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your advice. I&#39;ve posted as new issue <a href="https://github.com/ros/actionlib/issues/119">here</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38133">ksawa</a> on 2018-11-05 06:47:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>My suggestion was to see whether one of the current bugreports already captures what you found and then provide more information there. Not necessarily to open a new issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-11-05 07:52:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

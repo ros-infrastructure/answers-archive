@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>What does &quot;ACCEPTED&quot; and &quot;CANCELING&quot; states do in the ros2 action state machine? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/372968">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>What does &quot;ACCEPTED&quot; and &quot;CANCELING&quot; states do in the ros2 action state machine?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98449/what-does-accepted-and-canceling-states-do-in-the-ros2-action-state-machine">https://robotics.stackexchange.com/questions/98449/what-does-accepted-and-canceling-states-do-in-the-ros2-action-state-machine</a>.</p>
+        <p><img src="http://design.ros2.org/img/actions/goal_state_machine.png" alt=""></p>
+
+<p>From the <a href="http://design.ros2.org/articles/actions.html">figure</a> above, when exactly does the used-defined functions (<code>handle_goal</code>, <code>handle_cancel</code>, and <code>handle_accepted</code>) passed to the <a href="https://docs.ros2.org/foxy/api/rclcpp_action/namespacerclcpp__action.html#aac27305f020b4586d4ae781024ac80e4"><code>create_server</code></a> function get called?</p>
+
+<p>What I understand from the <a href="http://design.ros2.org/articles/actions.html">document</a> is that: once we return <code>rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE</code> from the <code>handle_goal</code> (passed to  the <a href="https://docs.ros2.org/foxy/api/rclcpp_action/namespacerclcpp__action.html#aac27305f020b4586d4ae781024ac80e4"><code>create_server</code></a>), then at some point, the <code>handle_accepted</code> function will get called and we can perform the task inside the <code>handle_accepted</code> function.</p>
+
+<p>But for cancelling the action, I am a little bit confused reading the document. From the <a href="http://design.ros2.org/articles/actions.html">document</a>, it is written that:</p>
+
+<blockquote>
+<ul>
+<li><strong>CANCELING</strong> - The client has requested that the goal be canceled and the action server has accepted the cancel request. This state is useful for any <strong>user-defined “clean up”</strong> that the action server may have to do.</li>
+</ul>
+</blockquote>
+
+<p>But once we return <code>rclcpp_action::CancelResponse::ACCEPT</code> in the function <code>handle_cancel</code> (passed to the <a href="https://docs.ros2.org/foxy/api/rclcpp_action/namespacerclcpp__action.html#aac27305f020b4586d4ae781024ac80e4"><code>create_server</code></a>), what happen and what does the &quot;CANCELING&quot; state in the figure do? Where should we define the user-defined &quot;clean up&quot; function?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/69647">wkpst</a> on 2021-03-01 07:42:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just a note, please <em>DO NOT</em> cross post ROS answers questions to ROS Discourse.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/13336">kscottz</a> on 2021-03-01 14:02:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@kscottz Sorry, I posted on ROS Discourse first and I realized I should post here. Will remove my post on ROS Discourse.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69647">wkpst</a> on 2021-03-01 21:31:40 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>With respect to the diagram:</p>
+
+<ul>
+<li><code>handle_goal</code> is called when a goal is received (before ACCEPTED).</li>
+</ul>
+
+<p>If <code>handle_goal</code> returns &quot;accept&quot;, then the goal state is set to ACCEPTED. The ACCEPTED state tells us (and the action client) that the goal is queued for execution. It&#39;s possible that the action server chooses to defer execution (e.g. queue the goal for later), hence we don&#39;t always jump straight to EXECUTING. The &quot;ACCEPT_AND_EXECUTE&quot; return code is a convenient shortcut if we want to skip straight to EXECUTING.</p>
+
+<ul>
+<li><code>handle_accepted</code> is called after a goal enters the ACCEPTED state.</li>
+</ul>
+
+<p>This is a convenient way to let the code know that a particular goal handle <em>could</em> be executed. It is up to the action server to explicitly transition the goal to the EXECUTING state.</p>
+
+<p>CANCELING and CANCELED work in a similar way:</p>
+
+<ul>
+<li><code>handle_cancel</code> is called when a cancel request is received (before CANCELING).</li>
+</ul>
+
+<p>If the cancel request is accepted, then the goal enters in to the CANCELING state.
+ Note, however, this does not mean the goal has been completely canceled yet. There may be a time delay between entering CANCELING and transitioning to CANCELED. It is up to the action server to explicitly signal that the goal is canceled.</p>
+
+<ul>
+<li>Calling <code>canceled()</code> on the goal handle is the signal to transition the state to CANCELED.</li>
+</ul>
+
+<p>I.e. <code>canceled()</code> indicates that the action server is finished canceling the goal.</p>
+
+<p>Perhaps the <a href="https://github.com/ros2/demos/blob/ed0299dc808f94b3c995dd4530680560e07226ff/action_tutorials/action_tutorials_cpp/src/fibonacci_action_server.cpp#L98-L103">demo code</a> makes this more concrete:</p>
+
+<pre><code>if (goal_handle-&gt;is_canceling()) {
+  result-&gt;sequence = sequence;
+  goal_handle-&gt;canceled(result);
+  RCLCPP_INFO(this-&gt;get_logger(), &quot;Goal canceled&quot;);
+  return;
+}
+</code></pre>
+
+<p>Above, the goal execution thread checks if a cancel request has been accepted (<code>goal_handle-&gt;is_canceling()</code>), and if so it immediately transitions the goal to CANCELED (<code>goal_handle-&gt;canceled()</code>). In practice, it&#39;s possible the code might do something more complex before calling <code>goal_handle-&gt;canceled()</code> (e.g. wait for a robot should put down an object it is grasping).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26373"></a> on 2021-03-01 16:20:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@jacobperron Thanks for your detailed explanation. Aha, so it seems the design is that: the user (server side) is responsible for checking if <code>goal_handle-&gt;is_canceling()</code> and handle the clean-up task here. Once finished, call <code>goal_handle-&gt;canceled()</code> in order to transition the <code>goal_handle</code> to the terminal state <code>CANCELED</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69647">wkpst</a> on 2021-03-01 21:48:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@jacobperron I&#39;m just curious if I understand correctly that the <code>handle_cancel</code> is also a blocking call as well as <code>handle_accepted</code> right? Because sometimes if <code>handle_cancel</code> (which takes some time before returning <code>rclcpp_action::CancelResponse::ACCEPT</code>) returns after <code>handle_accepted</code> has finished, I do get this error: <code>what(): goal_handle attempted invalid transition from state SUCCEEDED with event CANCEL_GOAL</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69647">wkpst</a> on 2021-03-02 03:25:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It&#39;s an implementation detail, but I believe both <code>handle_cancel</code> and <code>handle_accepted</code> are blocking in both <code>rclcpp</code> and <code>rclpy</code>. From the error message, it sounds like the action server is marking the goal as done (called <code>goal_handle-&gt;succeeded()</code>) and then a cancel request is accepted. I don&#39;t think you should be seeing this error; it could be a bug in <code>rclcpp_action</code>. Consider opening an issue on GitHub with a <a href="http://sscce.org/">SSCCE</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26373">jacobperron</a> on 2021-03-02 14:02:55 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

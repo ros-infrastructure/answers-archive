@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>simulating sensor data, problem with rosbag and clock - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/11860">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>simulating sensor data, problem with rosbag and clock</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/35558/simulating-sensor-data-problem-with-rosbag-and-clock">https://robotics.stackexchange.com/questions/35558/simulating-sensor-data-problem-with-rosbag-and-clock</a>.</p>
+        <p>Hello</p>
+
+<p>I wrote a simple simulator that generates sensor data (ideal values plus some noise). My goal is to test my localization algorithms (EKF). It seems to work, but I am having problems with recording a bag file.</p>
+
+<p>Here is how it works: given an acceleration profile, I integrate it to obtain ground truth (position, orientation, velocity, etc.). I then generate encoder and IMU data from that ground truth. Once all the data has been generated, I publish it sequentially on respective topics, together with clock messages.</p>
+
+<p>Here some part of the code:</p>
+
+<pre><code>ros::init(argc, argv, &quot;sensorSimulator&quot;);
+bool realtime = false; //value obtained from command line or parameters...
+float period = 0.01; //period of the simulation
+
+// Generate the data
+// (...)
+vector&lt;StampedData *&gt; data = profile.generateData();
+
+// Create publishers on the following topics
+// sensor_msgs::Imu on /ms/imu/data
+// rosgraph_msgs::Clock on /clock
+// lowlevel::Encoders (custom) on /encoders
+// fmutil::SimpleOdo (custom) on /ground_truth_linear
+// nav_msgs::Odometry on /ground_truth
+// tf::TransformBroadcaster
+// (...)
+
+
+// Publish the data
+for( unsigned i=0; i&lt;data.size() &amp;&amp; ros::ok(); i++ )
+{
+    rosgraph_msgs::Clock clockmsg;
+    clockmsg.clock = ros::Time(data[i]-&gt;time);
+    clockPub.publish( clockmsg );
+
+    if( data[i]-&gt;type == ground_truth_t ) {
+        // publish the ground truth odometry and TF
+        // (...)
+        if( realtime )
+            ros::WallDuration(period).sleep();
+    }
+    else if( data[i]-&gt;type == imu_t ) {
+        //publish IMU data
+        // (...)
+    }
+    else if( data[i]-&gt;type == encoders_t ) {
+        // publish encoders data
+        // (...)
+    }
+}
+</code></pre>
+
+<p>This works: when I start rviz (with use<em>sim</em>time=true) and run my code with the real time option on, I can see the simulated vehicle moving on the desired trajectory. I can record all the data in a bag file as well.</p>
+
+<p>However, if I want to generate the data and record it in a bag it does not work:
+    roscore
+    rosbag record -a -O sensorSimulation
+    rosrun mypack sensorSimulation
+Once this is done, I CTRL-C the rosbag process. I can then inspect the content of the bag with <code>rosbag info sensorSimulation.bag</code>. Data is missing: only a few of the topics are recorded, and duration is wrong (too short).</p>
+
+<p>I have an hypothesis to explain what&#39;s happening. I am publishing too fast on the topics, and some data gets lost. So I am wondering: is there a way to monitor the status of the publishers and associate mechanisms, and slow down the publishing process accordingly? Btw, I should mention that my publishers are created with a message queue of size 0 (infinite).</p>
+
+        <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-08 17:34:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Probably the biggest issue is that rosbag does not subscribe to your topics in time. When recording all topics (<code>rosbag -a</code>), rosbag has to poll the master periodically to discover new topics, so it may miss initial messages on any topic. In this case, you&#39;re publishing in a quick burst, so it may even miss all the messages on some topics.</p>
+
+<p>Your hypothesis is also possible. rosbag uses an internal buffer of 256MB by default, which you might be filling up before rosbag can write everything to disk. You can use an infinite buffer instead (<code>rosbag --buffize=0</code>), though that&#39;s not recommended for any live system.</p>
+
+<p>So in theory, you could make your setup work by giving rosbag an infinite buffer and explicitly telling it which topics to record. You&#39;d probably also want your simulator to sleep for a couple seconds after creating the publishers, to give the socket connections the chance to form. Even then you&#39;re not 100% guaranteed to get a bag containing every single generated message.</p>
+
+<p>Fortunately, there&#39;s a better way! Instead of using the rosbag command-line tool, generate your bag directly from your simulator using the <a href="http://www.ros.org/wiki/rosbag/Code%20API">rosbag API</a>. No need to worry about network transport and buffering, you can just write data to a file.</p>
+
+<p>Final note: when using the rosbag API, you don&#39;t need to write the <code>/clock</code> messages. When you write a message, you also give a time. On playback, use <code>rosbag play --clock mydata.bag</code>. The rosbag tool will set <code>/use_sim_time=true</code> and publish <code>/clock</code> for you.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/180">Patrick Mihelich</a> on 2011-11-08 20:58:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I started a new question more specific to the TF issue: <a href="http://answers.ros.org/question/2858/how-to-write-tf-broadcasts-in-a-bag-with-the">http://answers.ros.org/question/2858/how-to-write-tf-broadcasts-in-a-bag-with-the</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-10 13:00:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p><code>$ rostopic type /tf</code> gives <code>tf/tfMessage</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-10 12:27:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="http://www.ros.org/doc/electric/api/tf/html/msg/tfMessage.html">http://www.ros.org/doc/electric/api/tf/html/msg/tfMessage.html</a>. It&#39;s just a vector of geometry_msgs/TransformStamped. While running your simulation in live mode, you can do &#39;rostopic echo /tf&#39; to see just what tfBroadcaster is publishing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/180">Patrick Mihelich</a> on 2011-11-10 06:46:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Experimentally: <a href="https://gist.github.com/1354948">https://gist.github.com/1354948</a> .  As for its formal definition, <a href="http://www.ros.org/doc/api/tf/html/c++/classtf_1_1tfMessage.html">http://www.ros.org/doc/api/tf/html/c++/classtf_1_1tfMessage.html</a>.  I don&#39;t really know the reason for this setup, but maybe it will give you a lead.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2011-11-10 01:20:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>According to the tutorial on writing a broadcaster, I should broadcast a tf/StampedTransform. Actually I could not find a definition for tfMessage. I tried writing both a tf/StampedTransform and geometry_msgs/TransformStamped. The first cannot be serialized, and the later results in the above error.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-10 01:13:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ah I miss read your comment, so the data you inserted into the bag file is on one message type and rviz is expecting a different msg type from that topic?  As far as I know if you write something to /tf it is always expected to be of the type tf/tfMessage.  Sorry if this isn&#39;t helpful.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2011-11-10 00:52:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks William. I&#39;ve read that tutorial. However, I don&#39;t want to publish a tf broadcast, I want to write it in the bag. I am using the rosbag API here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-10 00:44:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="http://www.ros.org/wiki/tf/Tutorials/Writing%20a%20tf%20broadcaster%20(C++)">c++ tf broadcaster</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2011-11-09 22:36:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That message means that you are publishing a msg of one type to a topic and rviz is subscribed to the topic with a different type.  I think You need to use a tf broadcaster not just a normal publisher for this. This is a basic example of that: <next comment></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2011-11-09 22:36:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>(continued) I tried to write a geometry_msgs/TransformStamped to /tf but I got this error when playing the bag and visualizing in rviz: &quot;Client [/rviz_1...] wants topic /tf to have datatype/md5sum [tf/tfMessage/9...], but our version has [geometry_msgs/TransformStamped/b...]. Dropping connection.&quot;</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-09 20:16:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hmm... when replaying my bag and visualizing with rviz, it complains that my frame &quot;ground_truth&quot; does not exist. I think this is because the transform broadcast is missing in the bag. How do I write stamped transforms in the bag?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-09 19:36:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Perfect. Using the rosbag API was very easy and it worked like a charm. Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2011-11-09 13:45:14 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

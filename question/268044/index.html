@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>can i execute a launch file or run a node through RosWebTool - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/268044">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>can i execute a launch file or run a node through RosWebTool</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/82164/can-i-execute-a-launch-file-or-run-a-node-through-roswebtool">https://robotics.stackexchange.com/questions/82164/can-i-execute-a-launch-file-or-run-a-node-through-roswebtool</a>.</p>
+        <p>i am now using roswebtool(roslibjs) to communicate with rosbridge </p>
+
+<p>so i can publish topic and subscribe topic in website</p>
+
+<p>now i want to remote execute a launch file or run a node in website, is that possible?</p>
+
+<p>or is there any other method to run the node when i want to ?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30508">marine0131</a> on 2017-08-04 00:42:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hello,</p>
+
+<p>When you use roslibjs with rosbridge, your website is not a node, but it can be seen as a node (it just don&#39;t register with the rosmaster, so you can&#39;t see him with &quot;rosnode list&quot;). Rosbridge act as a proxy to use ROS functionnalities.</p>
+
+<p>The easiest way to launch a remote process from your website is to use a process management library like <a href="http://en.cppreference.com/w/cpp/utility/program/system">std::system</a>, <a href="http://www.boost.org/doc/libs/1_64_0/doc/html/boost_process/tutorial.html#boost_process.tutorial.starting_a_process">boost::process</a> or <a href="https://pocoproject.org/">POCO</a> ,  there are all available in ROS (<a href="http://answers.ros.org/question/189788/how-can-use-external-library-in-ros/">POCO need this)</a></p>
+
+<p>For an example with std::system (will quit the callback only when the process finish): </p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;sstream&gt;
+
+    void callback(std_msgs::String msg){
+        std::stringstream ss;
+        ss &lt;&lt; &quot;roslaunch &quot; &lt;&lt; msg.data;
+        std::system(ss.str().c_str());//std::system only accept c_str() a.k.a char*
+    }
+
+    int main(int argc, char** argv){
+        ros::init(argc,argv,&quot;roslaunch_launcher&quot;);
+        ros::NodeHandle n;
+        ros::Subscriber sub = n.subscribe(&quot;/launch&quot;, 1, callback);
+        ros::spin();
+        return 0;
+    }
+</code></pre>
+
+<p>Just publish a string in the form &quot;&lt; package name &gt; &lt; launch file name &gt;&quot; and the launch file should be called</p>
+
+<p>You also should be sure to source the correct environment BEFORE launch this node, if you try to launch a file from an another workspace (not sourced) or you create a package after launching this node, the loaded environmnent will not find the launch file.</p>
+
+<p>And an example with POCO (with a run/kill procedure): </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;std_msgs/Empty.h&gt;
+#include &quot;Poco/Process.h&quot;
+#include &lt;boost/algorithm/string/classification.hpp&gt;
+#include &lt;boost/algorithm/string/split.hpp&gt;
+
+
+Poco::ProcessHandle* ph;
+bool running = false;
+
+void callback_run(std_msgs::String msg){
+    if(!running){
+        std::vector&lt;std::string&gt; args;
+        boost::split(args, msg.data, boost::is_any_of(&quot; &quot;) ); //Split the msg.data on space and save it to a vector
+        Poco::ProcessHandle ph_running = Poco::Process::launch(&quot;roslaunch&quot;, args,0,0,0); //launch a new node
+        ph = new Poco::ProcessHandle(ph_running); // Copy the processhandler to our global variable
+        running = true; //Refuse new launch
+        ROS_INFO_STREAM(&quot;launched : roslaunch&quot; &lt;&lt; msg.data);
+    }
+    else{
+        ROS_ERROR(&quot;A process is already running.&quot;);
+    }
+}
+
+void callback_kill(std_msgs::Empty msg){
+    if(running){
+        Poco::Process::requestTermination(ph-&gt;id()); //send SIGINT
+            Poco::Process::wait(*ph); //Wait for roslaunch to kill every node
+        free(ph);  
+        running = false;  //accept a new launch
+        ROS_INFO(&quot;Killed process&quot;);
+    }
+    else{
+        ROS_ERROR(&quot;No Process are running.&quot;);
+    }
+}
+
+
+int main(int argc, char** argv){
+    ros::init(argc, argv, &quot;node_runner&quot;);
+    ros::NodeHandle n;
+    ros::Subscriber sub_run = n.subscribe(&quot;/run&quot;,100,callback_run);
+    ros::Subscriber sub_kill = n.subscribe(&quot;/kill&quot;,100,callback_kill);
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+<p>This example subscribe 2 topics : /run and /kill. Run will accept a node package a name (example : &#39;rqt_gui rqt_gui&#39;) and kill accept a std_msgs/Empty.</p>
+
+<p>This need a little work, as the std::system example will block the subscriber (the function return only when the process die).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30984">lmathieu</a> on 2017-08-04 03:22:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>thank you so so much, that works!!!
+there is anthoer question:  how to stop this launch remote?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30508">marine0131</a> on 2017-08-06 22:26:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I added an example with POCO to run and kill a process, it work with rosrun but not with roslaunch... I think roslaunch spawn multiple process and detach them, but I don&#39;t know how to kill them. If you find a solution I will be happy to see it :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2017-08-07 12:19:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i use std::system start launch files and nodes.  and kill the nodes the same way using &quot;rosnode kill node&quot; command. if i start a launch, i have to know or record which nodes are started, and kill them using <strong>nodekill</strong>,&quot;rosnode kill node1 node2 node3&quot;</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30508">marine0131</a> on 2017-08-08 01:57:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Nice, that work too.
+I found a way to do it with Poco, with the use of Poco::Process::requestTermination() instead of kill(), it send a SIGINT to the roslaunch and close all nodes launched.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2017-08-08 03:30:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>great, so thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30508">marine0131</a> on 2017-08-08 04:05:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hello i just found this article. I would like to do the same as you, from a webpage. Do you mind sharing your final solution of this code for me?
+Did you manage to start/stop all kind of nodes?
+Thank you for your answer :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32640">molnardk</a> on 2017-11-15 05:36:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi, yes I made some buttons to start/stop all kind of nodes, I write a service in robot to process the request of start/stop nodes, and use std:system to start node and use nodekill to stop node. you can also use @Imathieu &#39;s method</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30508">marine0131</a> on 2017-11-15 22:22:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I will give a look, thank you :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32640">molnardk</a> on 2017-11-16 04:43:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I just started using ROS and managed to build the example with std::system.
+How i can publish a sting to it? I tried : rostopic pub /launch std_msgs/String rosbridge_server rosbridge_websocket
+Also: can i start more than 1 node?(i mean i dont stop them) and what about the 2nd method the POCO?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32640">molnardk</a> on 2017-11-23 03:43:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>[rosbridge_server] is neither a launch file in package [roslaunch] nor is [roslaunch] a launch file name
+it gives me this error also</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32640">molnardk</a> on 2017-11-23 03:53:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>have you tried : <code>rostopic pub /launch std_msgs/String &quot;data: &#39;rosbridge_server rosbridge_websocket.launch&#39;&quot;</code> ? </p>
+
+<p>The first method can only launch 1 process (rosrun or roslaunch), as std::system(..) is a blocking function. You can find alternative in python (like Popen) or in cpp (fork, boost,etc.)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2017-11-23 05:20:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Also, if you want more than 1 process to spawn with the 2nd method, you need to save all Poco::ProcessHandler in a vector to  delete them at the end of your node (remove the <code>bool running</code> and create a vector of ProcessHandler and delete them all at the end).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2017-11-23 05:33:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>rostopic pub /launch std_msgs/String &quot;data: &#39;rosbridge_server rosbridge_websocket.launch&#39;&quot; this is works :) thank you i misunderstood the format :)
+Yeah i wanted to remote start multiple nodes (like i type the node at the webpage and it starts it, and start an other) Thank you for you answer :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32640">molnardk</a> on 2017-11-23 05:49:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i want to launch some node from webtools. can you guys share some template for writing cmake and xml file for this and how to add boost and poco library.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56428">james P M</a> on 2021-09-13 04:32:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>For roslibjs I have to include a messageType. Would that just be std_msgs/String? Also, in my publish code I have two objects argc and argv - is this correct too? Do I pass argc the name of my package and argv the name of the launch file?</p>
+
+<pre><code>var survey = new ROSLIB.Message({
+    argc : &quot;&lt;package name&gt;&quot;,
+    argv : &quot;&lt;launch file name&gt;&quot;
+});
+cmdVel.publish(survey);
+</code></pre>
+
+<p>Does this look right? I&#39;m not quite sure I follow</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121372">meropis</a> on 2022-10-21 08:19:28 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

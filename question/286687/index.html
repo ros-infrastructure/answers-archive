@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Node slowing down other node on raspberry PI - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/286687">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Node slowing down other node on raspberry PI</h2>
+      <div class="question">
+        <p>Hi, 
+I&#39;m currently playing around with a GoPiGo, which is a small differential drive robot based on a Raspberry Pi. To control the robot I use the ROS node that developers of GoPiGo have made (<a href="https://github.com/ros-gopigo/gopigo3_node">https://github.com/ros-gopigo/gopigo3_node</a>).</p>
+
+<p>I added my own node to read the data from to Ultrasonic sensors that I connected to the Raspberry GPIO pins. The node publishes the ultrasonic data to a laserscan message.</p>
+
+<p>Now when I run my Ultrasonic node and send cmd_vel to the GoPiGo node the robot stutters extremely, It seems like the GoPiGo node gets slowed down or &quot;sleeps&quot; sometimes.</p>
+
+<p>The CPU load is around 30 %, and memory isn&#39;t full. When I stop my ultrasonic node the robot keeps stuttering. I have to restart the GoPiGo node to stop the stuttering</p>
+
+<p>It&#39;s not the <code>time.sleep()</code> functions, because I tried running a node that only runs <code>time.sleep()</code> but this didn&#39;t cause the stuttering. The same goes for <code>rospy.sleep()</code>. 
+Could it be that the GPIO pins cause the stuttering? Then why is stuttering still there after I close the node?</p>
+
+<p>The raspberry runs ubuntu 16.04 with kinetic (this to be exact: <a href="https://downloads.ubiquityrobotics.com/pi.html">https://downloads.ubiquityrobotics.com/pi.html</a>)</p>
+
+<p>The code is below, please note that it&#39;s still WIP, so it&#39;s fairly rough.
+Also on github: <a href="https://github.com/kwint/ros-hcsr04-laserscan/blob/master/src/sonic.py">https://github.com/kwint/ros-hcsr04-laserscan/blob/master/src/sonic.py</a></p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from sensor_msgs.msg import LaserScan
+
+import time
+import math
+import RPi.GPIO as GPIO
+
+
+class Measurement(object):
+    &#39;&#39;&#39;Create a measurement using a HC-SR04 Ultrasonic Sensor connected to
+    the GPIO pins of a Raspberry Pi.
+
+    Metric values are used by default. For imperial values use
+    unit=&#39;imperial&#39;
+    temperature=&lt;Desired temperature in Fahrenheit&gt;
+    &#39;&#39;&#39;
+
+    def __init__(self,
+                 trig_pin,
+                 echo_pin,
+                 temperature=20,
+                 round_to=1,
+                 gpio_mode=GPIO.BCM
+                 ):
+        self.trig_pin = trig_pin
+        self.echo_pin = echo_pin
+        self.temperature = temperature
+        self.round_to = round_to
+        self.gpio_mode = gpio_mode
+
+    def raw_distance(self, sample_size=11, sample_wait=0.1):
+        &quot;&quot;&quot;Return an error corrected unrounded distance, in cm, of an object
+        adjusted for temperature in Celcius.  The distance calculated
+        is the median value of a sample of `sample_size` readings.
+
+
+        Speed of readings is a result of two variables.  The sample_size
+        per reading and the sample_wait (interval between individual samples).
+
+        Example: To use a sample size of 5 instead of 11 will increase the
+        speed of your reading but could increase variance in readings;
+
+        value = sensor.Measurement(trig_pin, echo_pin)
+        r = value.raw_distance(sample_size=5)
+
+        Adjusting the interval between individual samples can also
+        increase the speed of the reading.  Increasing the speed will also
+        increase CPU usage.  Setting it too low will cause errors.  A default
+        of sample_wait=0.1 is a good balance between speed and minimizing
+        CPU usage.  It is also a safe setting that should not cause errors.
+
+        e.g.
+
+        r = value.raw_distance(sample_wait=0.03)
+        &quot;&quot;&quot;
+        speed_of_sound = 331.3 * math.sqrt(1 + (self.temperature / 273.15))
+        sample = []
+        # setup input/output pins
+        GPIO.setwarnings(False)
+        GPIO.setmode(self.gpio_mode)
+        GPIO.setup(self.trig_pin, GPIO.OUT)
+        GPIO.setup(self.echo_pin, GPIO.IN)
+
+        for distance_reading in range(sample_size):
+            GPIO.output(self.trig_pin, GPIO.LOW)
+            rospy.sleep(sample_wait)
+            GPIO.output(self.trig_pin, True)
+            rospy.sleep(0.000015)
+            GPIO.output(self.trig_pin, False)
+            echo_status_counter = 1
+            while GPIO.input(self.echo_pin) == 0:
+                if echo_status_counter &lt; 1000:
+                    sonar_signal_off = time.time()
+                    echo_status_counter += 1
+                else:
+                    raise SystemError(&#39;Echo pulse was not received&#39;)
+            while GPIO.input(self.echo_pin) == 1:
+                sonar_signal_on = time.time()
+            time_passed = sonar_signal_on - sonar_signal_off
+            distance_cm = time_passed * ((speed_of_sound * 100) / 2)
+            sample.append(distance_cm)
+        sorted_sample = sorted(sample)
+        # Only cleanup the pins used to prevent clobbering
+        # any others in use by the program
+        GPIO.cleanup((self.trig_pin, self.echo_pin))
+        return sorted_sample[sample_size // 2]
+
+    def distance_metric(self, median_reading):
+        &#39;&#39;&#39;Calculate the rounded metric distance, in cm&#39;s, from the sensor
+        to an object&#39;&#39;&#39;
+        return round(median_reading, self.round_to)
+
+
+sonar_trig = [3, 24]
+sonar_echo = [2, 23]
+
+angle = 0.5
+
+pub = rospy.Publisher(&#39;LaserScan&#39;, LaserScan, queue_size=10)
+rospy.init_node(&#39;sonic&#39;, anonymous=True)
+rate = rospy.Rate(100)  # 1hz
+laser_frequency = 1
+num_sensors = len(sonar_trig)
+
+sonic = []
+for i in range(0, num_sensors):
+    sonic.append(Measurement(sonar_trig[i], sonar_echo[i]))
+
+rospy.loginfo(sonic)
+
+scan = LaserScan()
+scan.range_min = 0.1
+scan.range_max = 2.3
+scan.header.frame_id = &#39;gopigo&#39;
+# scan.angle_min = -90 + 12
+# scan.angle_max = 90 + 12
+scan.angle_max = 3.141/2
+scan.angle_min = -3.141/2
+scan.header.seq = 0
+while not rospy.is_shutdown():
+
+    scan.ranges = []
+    num_readings = 0
+    for i in range(0, num_sensors):
+        try:
+            distance = sonic[i].distance_metric(sonic[i].raw_distance(sample_size=3, sample_wait=0.1)) / 100
+        except SystemError:  # Set distance to 0 so that it gets ignored further on, but direction stays alive
+            rospy.logwarn(&quot;No return&quot;)
+            distance = 0
+        except UnboundLocalError:
+            rospy.logwarn(&quot;local variable &#39;sonar_signal_on&#39; referenced before assignment&quot;)
+            distance = 0
+
+        scan.ranges.append(distance)
+        rospy.loginfo(str(i) + &quot;: &quot; + str(distance))
+
+        scan.header.stamp = rospy.Time.now()
+        # scan.header.stamp = rospy.Time(0)
+
+        scan.header.seq += 1
+        scan.angle_increment = (3.14*2) / num_sensors
+        scan.time_increment = (1.0 / laser_frequency) / num_sensors
+
+        pub.publish(scan)
+
+    rate.sleep()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/34217">kwint</a> on 2018-03-27 07:44:11 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This is a wild guess, but if your hw uses pin multiplexing, it could be that your usage of those pins could be interfering with the motor control, resulting in the stuttering you describe. But again: a wild guess.</p>
+
+<p>Another possibility could be that access to the GPIO pins is protected by some ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-03-27 08:16:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>.. locking mechanism and your use of them from your script prevents the motor control from updating them at a sufficient rate.</p>
+
+<p>If you remove all &#39;use of ROS&#39;, but keep a while loop and your sensor interfacing code, does it start to stutter as well?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-03-27 08:17:44 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for thinking along! Removing all &quot;use of ROS&quot; gives the same issue. So it has to be that the GPIO pins interfere with the motor control, I think the GoPiGo uses SPI to control the motors. I&#39;ll contact the manufacturer</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34217">kwint</a> on 2018-03-27 08:46:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I found out that I was using the I2C ports of the Raspberry, which the GoPiGo board might also use, so I changed them. I looks like it&#39;s working better now, but this might be me wanting to see things.. Anyhow it&#39;s still stuttering</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34217">kwint</a> on 2018-03-27 09:02:04 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

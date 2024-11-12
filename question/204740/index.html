@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>dwa_local_planner: in place rotation FIRST goal does not work - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/204740">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>dwa_local_planner: in place rotation FIRST goal does not work</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/66307/dwa-local-planner-in-place-rotation-first-goal-does-not-work">https://robotics.stackexchange.com/questions/66307/dwa-local-planner-in-place-rotation-first-goal-does-not-work</a>.</p>
+        <p>When running the navigation with dwa<em>local</em>planner, and give the <strong>first</strong> goal as an in place rotation, the robot won&#39;t move (except for recovery behaviors), and gives the below output. But, if you give a translation goal first, it moves normally, and from then on, it can rotate in place without a problem. </p>
+
+<pre><code>[ERROR] [...]: Footprint spec is empty, maybe missing call to setFootprint?
+[ WARN] [...]: Invalid Trajectory 0.000000, 0.000000, -0.401014, cost: -9.000000
+[ WARN] [...]: Rotation cmd in collision
+[ INFO] [...]: Error when rotating.
+</code></pre>
+
+<p>I think the error actually comes from line 80 in <a href="https://github.com/ros-planning/navigation/blob/indigo-devel/base_local_planner/src/obstacle_cost_function.cpp">obstacle<em>cost</em>function.cpp</a> at base<em>local</em>planner, something about the footprint is not properly initialized:</p>
+
+<pre><code>double ObstacleCostFunction::scoreTrajectory(Trajectory &amp;traj) {
+...
+if (footprint_spec_.size() == 0) {
+  // Bug, should never happen
+  ROS_ERROR(&quot;Footprint spec is empty, maybe missing call to setFootprint?&quot;);
+  return -9;
+}
+...
+</code></pre>
+
+<p>All this is easy to reproduce running, for example, turtlebot simulator and navigation amcl demo:</p>
+
+<pre><code>$ roslaunch turtlebot_gazebo turtlebot_world.launch
+$ roslaunch turtlebot_gazebo amcl_demo.launch
+$ roslaunch turtlebot_rviz_launchers view_navigation.launch
+</code></pre>
+
+<p>EDIT:
+   The local costmap config used in the example above is the one from turtlebot packages, which can be found here: <a href="https://github.com/turtlebot/turtlebot_apps/blob/indigo/turtlebot_navigation/param/local_costmap_params.yaml">local<em>costmap</em>params.yaml</a></p>
+
+<p>EDIT2: I use ROS Indigo on Ubuntu 14.04.2, but i&#39;ve also tried with Hydro on 12.04. And yes, I have all installed via apt-get</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2398">fherrero</a> on 2015-03-11 05:51:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you add your local costmap config please</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3632">paulbovbel</a> on 2015-03-12 06:16:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Please add information about which version of ROS. You installed navigation through apt-get?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3632">paulbovbel</a> on 2015-03-12 15:33:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>There may be a backwards compatibility issue. In the common costmap params, try setting the footprint directly instead of using a radius:</p>
+
+<pre><code>footprint: [[-0.325, -0.325], [-0.325, 0.325], [0.325, 0.325], [0.46, 0.0], [0.325, -0.325]] 
+#robot_radius: 0.46
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3632">paulbovbel</a> on 2015-03-12 11:05:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Just tried it, still the same. I noticed the local_costmap_params.yaml seems to be missing the footprint_layer plugin, but adding it didn&#39;t fix it either.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2398">fherrero</a> on 2015-03-12 11:38:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That&#39;s not necessary, the obstacle layer spawns it&#39;s own footprint layer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3632">paulbovbel</a> on 2015-03-13 06:49:46 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>To me, it looks like a bug. The footprint of the robot is set on the ObstacleCostFunction whenever DWAPlanner::findBestPath is called (line 298 in <a href="https://github.com/ros-planning/navigation/blob/indigo-devel/dwa_local_planner/src/dwa_planner.cpp">https://github.com/ros-planning/navigation/blob/indigo-devel/dwa_local_planner/src/dwa_planner.cpp</a>). This call will not be made when the robot is already at the goal location when the goal is given. The LatchedStopRotateController then calls DWAPlanner::checkTrajectory to check for a valid rotation command and this checks the ObstacleCostFunction which needs the footprint, but it wasn&#39;t set before. To fix this issue, the footprint has to be set before the call to DWAPlanner::checkTrajectory is made.</p>
+
+<p>I do have the same problem right now, which is why I looked into the sources to find the issue. But other than that, I have no idea about this package or why the footprint isn&#39;t set earlier (the cost map, which should know the footprint, is known in the constructor of DWAPlanner and even given to the ObstacleCostFunction upon construction, but the footprint is not extracted). I guess we should create a bugreport...</p>
+
+<p>Edit: finally I did just that: <a href="https://github.com/ros-planning/navigation/issues/327">https://github.com/ros-planning/navigation/issues/327</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21986">Peter P.</a> on 2015-03-26 06:52:08 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Can you detail what you did to make it work ? i have the same problem as you, and i don&#39;t know where and what changes i should make.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21982">Swan Baigne</a> on 2015-05-18 02:11:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Actually, I did not make it work, sorry that it sounded like that. I just figured out why this error occurs and created a ticket, hoping that it would be resolved by the project authors/maintainers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21986">Peter P.</a> on 2015-05-18 02:44:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i feared so. 
+The link you gave is quite detailed, except i have not found the dwa_planner.cpp anywhere in my computer, so i have no may to make the mentioned modifications
+Looks like we will have to wait for maintener&#39;s answers</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21982">Swan Baigne</a> on 2015-05-18 02:51:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You can find the file at <a href="https://github.com/ros-planning/navigation/blob/indigo-devel/dwa_local_planner/src/dwa_planner.cpp">https://github.com/ros-planning/navigation/blob/indigo-devel/dwa_local_planner/src/dwa_planner.cpp</a>. In order to change it, you have to clone the GIT repository into your workspace and build it yourself (and make sure that ROS uses that one over the installed package).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21986">Peter P.</a> on 2015-05-18 03:38:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I noticed that my path never includes an initial in-place rotation.  I think that it would frequently make sense for the robot to rotate before starting its translational move.  Could the problem you&#39;re asking about cause the absence of an initial in-place rotation?  Or is this just my parameters?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22960">mitch</a> on 2016-05-06 16:43:21 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Robot localization - With IMU stable; adding other pose sources(eg. AMCL) causes seizures. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/321657">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Robot localization - With IMU stable; adding other pose sources(eg. AMCL) causes seizures.</h2>
+      <div class="question">
+        <p>On the quest to stop the robot from drifting we have implemented an IMU which makes use of a madgwick filter. After painstaking troubleshooting with both the arduino and the raspberry pi used to read and convert the data for the ROS core to use, we&#39;ve gotten it to work and display somewhat stable within rviz, until we started driving the robot. The main issue, which has been resoled is that on rotation, the robot within rviz starts shaking which gets heavier the more we rotate it, yet when we return to its original position the shaking would stop but the position is rotated from its original setting. </p>
+
+<p>The remaining issue is that when adding the laser<em>scan</em>matcher&#39;s position to the <code>robot_localization</code> mix would cause the robot within rviz to warp to and fro at a high rate, incrementing wrong/concurrent position data until the robot&#39;s off the map completely. Adding <code>amcl</code>&#39;s postion data causes an epileptic seizure to both rviz and the robot&#39;s positioning data, luckily not to ourselves.</p>
+
+<p>The IMU has been properly reconfigured as per the last edit(s), however I can&#39;t seem to find the cause for the concurrency between the different posing algorithms nor can I discover the right method of implementing one or two <code>robot_localization</code> nodes as suggested in some other answers found on the community.</p>
+
+<p>In short, the question would be how I would implement both <code>laser_scan_matcher</code> for positioning via LIDAR (original method) and/or <code>amcl</code> without them and the IMU fighting against each other?</p>
+
+<p>The necessary configuration files are as follows, along with the <code>frames.pdf</code> that <code>tf</code> provided:</p>
+
+<p><em>navigation.launch:</em>
+    <launch>
+    <arg name="sim" default="false"/>
+    <arg name="path"/>
+        <param name="/use_sim_time" value="$(arg sim)"/></p>
+
+<pre><code>&lt;node if=&quot;$(eval sim == &#39;true&#39;)&quot; pkg=&quot;rosbag&quot; type=&quot;play&quot; name=&quot;play&quot; args=&quot;$(arg path)/bags/t5_lidar.bag --delay=5 --clock&quot;/&gt;
+
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_link_to_laser&quot; args=&quot;0.15 0.0 0.0 0.0 0.0 0.0 /base_link /laser 40&quot; /&gt;
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_link_to_imu&quot; args=&quot;-0.12 0.23 0.0 0.0 0.0 0.0 /base_link /imu_base 40&quot; /&gt;
+
+
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;world_to_map&quot; args=&quot;0.0 0 0 0.0 0.0 0.0 /world /map 40&quot;/&gt;
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;world_to_map_nav&quot; args=&quot;0.0 0 0 0.0 0.0 0.0 /world /map_nav 40&quot;/&gt;
+
+&lt;!-- 
+    &lt;node pkg=&quot;laser_filters&quot; type=&quot;scan_to_scan_filter_chain&quot; name=&quot;laser_filter&quot;&gt;
+        &lt;rosparam command=&quot;load&quot; file=&quot;$(arg path)/config/laser_filter_config.yaml&quot; /&gt;
+    &lt;/node&gt; 
+--&gt;
+
+&lt;node pkg=&quot;rviz&quot; type=&quot;rviz&quot; name=&quot;rviz&quot; args=&quot;-d $(arg path)/navigation.rviz&quot;/&gt;
+
+&lt;node pkg=&quot;laser_scan_matcher&quot; type=&quot;laser_scan_matcher_node&quot; name=&quot;laser_scan_matcher_node&quot; output=&quot;screen&quot;&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/laser_scan_matcher_params.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;remap from=&quot;scan&quot; to=&quot;scan_filtered&quot; /&gt;
+&lt;/node&gt;
+
+&lt;node pkg=&quot;map_server&quot; type=&quot;map_server&quot; name=&quot;map_server&quot; args=&quot;$(arg path)/maps/T5_full_small.yaml&quot; output=&quot;screen&quot;/&gt;
+&lt;node pkg=&quot;map_server&quot; type=&quot;map_server&quot; name=&quot;map_server_nav&quot; args=&quot;$(arg path)/maps/T5_full_small_move_base.yaml&quot; output=&quot;screen&quot;&gt;
+    &lt;remap from=&quot;map&quot; to=&quot;map_nav&quot;/&gt;
+&lt;/node&gt;
+
+&lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_odom&quot; clear_params=&quot;true&quot;&gt;
+    &lt;rosparam command=&quot;load&quot; file=&quot;$(arg path)/config/robot_localization_params.yaml&quot; /&gt;
+&lt;/node&gt;
+
+&lt;node pkg=&quot;amcl&quot; type=&quot;amcl&quot; name=&quot;amcl&quot; output=&quot;screen&quot;&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/amcl_params.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;remap from=&quot;scan&quot; to=&quot;scan_filtered&quot; /&gt;
+&lt;/node&gt;
+
+&lt;node pkg=&quot;move_base&quot; type=&quot;move_base&quot; respawn=&quot;false&quot; name=&quot;move_base&quot; output=&quot;screen&quot;&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;global_costmap&quot; /&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;local_costmap&quot; /&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/local_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/global_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;rosparam file=&quot;$(arg path)/config/base_local_planner_params.yaml&quot; command=&quot;load&quot; /&gt;
+
+    &lt;param name=&quot;base_local_planner&quot; value=&quot;teb_local_planner/TebLocalPlannerROS&quot; /&gt;
+    &lt;param name=&quot;controller_frequency&quot; value=&quot;5.0&quot; /&gt;
+&lt;/node&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>robot<em>localization</em>params.yaml:</p>
+
+<pre><code>frequency: 20
+sensor_timeout: 0.1
+two_d_mode: true
+
+publish_tf: true
+publish_acceleration: true
+
+map_frame: map              # Defaults to &quot;map&quot; if unspecified
+odom_frame: odom            # Defaults to &quot;odom&quot; if unspecified
+base_link_frame: base_link  # Defaults to &quot;base_link&quot; if unspecified
+world_frame: odom          # Defaults to the value of odom_frame if unspecified
+
+# Odometry input settings
+odom0: odom
+odom0_config: [true,  true,  false,
+           false, false, false,
+           false, false, false,
+           false, false, true,
+           false, false, false]
+odom0_queue_size: 2
+odom0_nodelay: true
+odom0_differential: true
+odom0_relative: false
+#odom0_pose_rejection_threshold: 5
+#odom0_twist_rejection_threshold: 1
+
+# IMU sensor input
+imu0: /imu/data
+imu0_config: [false, false, false,
+          true,  true,  true,
+          false, false, false,
+          true,  true,  true,
+          true,  true,  true]
+imu0_nodelay: true
+imu0_differential: true
+imu0_relative: false
+imu0_queue_size: 5
+imu0_pose_rejection_threshold: 0.01                # Note the difference in parameter names
+imu0_twist_rejection_threshold: 0.01                #
+imu0_linear_acceleration_rejection_threshold: 0.01  #
+imu0_remove_gravitational_acceleration: true
+</code></pre>
+
+<p>amcl_params.yaml:</p>
+
+<pre><code>transform_tolerance: 0.2
+gui_publish_rate: 5.0
+laser_max_beams: 30
+min_particles: 500
+max_particles: 15000
+kld_err: 0.05
+kld_z: 0.99
+odom_model_type: diff
+odom_alpha1: 0.0
+odom_alpha2: 0.0
+odom_alpha3: 0.0
+odom_alpha4: 0.0
+odom_alpha5: 0.0
+laser_z_hit: 0.5
+laser_z_short: 0.05
+laser_z_max: 0.05
+laser_z_rand: 0.5
+laser_sigma_hit: 0.2
+laser_lambda_short: 0.1
+laser_lambda_short: 0.1
+laser_model_type: likelihood_field    
+laser_likelihood_max_dist: 2.0
+update_min_d: 0.2
+update_min_a: 0.5
+odom_frame_id: odom
+tf_broadcast: true
+resample_interval: 1
+transform_tolerance: 0.1
+recovery_alpha_slow: 0.0
+recovery_alpha_fast: 0.0
+</code></pre>
+
+<p>laser<em>scan</em>matcher_params.yaml:</p>
+
+<pre><code>base_frame: base_link
+fixed_frame: odom
+vel: /cmd_vel
+use_cloud_input: false
+publish_tf: true
+publish_odom: true
+publish_pose: false
+publish_pose_stamped: true
+use_odom: true
+use_imu: true
+use_vel: true
+use_alpha_beta: true
+max_iterations: 10
+</code></pre>
+
+<p>last but not least, frames.pdf:
+<img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15560074312868842.png" alt="robot_frames_pdf_"></p>
+
+<p>-- Edit 21/05/19 --
+Sensor message outputs:</p>
+
+<p>laser<em>scan</em>matcher (<code>geometry_msgs/pose_stamped</code>):</p>
+
+<pre><code>pose:
+    position:
+        x: 0.143637594785
+        y: -0.464695389029
+        z: 0.0
+    orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.705418616116
+        w: 0.708790925476
+---
+header:
+    seq: 16011
+stamp:
+    secs: 1558433349
+    nsecs: 990096818
+    frame_id: &quot;odom&quot;
+pose:
+    position:
+        x: 0.142629867206
+        y: -0.464176164145
+        z: 0.0
+    orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.705386865759
+        w: 0.708822523355
+</code></pre>
+
+<p>IMU Sensor (MPU9250) (<code>sensor_msgs/Imu</code>):</p>
+
+<pre><code>header:
+  seq: 75349
+  stamp:
+    secs: 1558433544
+    nsecs: 761164170
+  frame_id: &quot;imu_link&quot;
+orientation:
+  x: -0.0121845967804
+  y: 0.029446108886
+  z: 0.0100522923438
+  w: 0.999441550913
+orientation_covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+angular_velocity:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+angular_velocity_covariance: [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+linear_acceleration:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+linear_acceleration_covariance: [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+---
+header:
+  seq: 75350
+  stamp:
+    secs: 1558433544
+    nsecs: 776157932
+  frame_id: &quot;imu_link&quot;
+orientation:
+  x: -0.0121845967804
+  y: 0.029446108886
+  z: 0.0100522923438
+  w: 0.999441550913
+orientation_covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+angular_velocity:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+angular_velocity_covariance: [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+linear_acceleration:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+linear_acceleration_covariance: [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+---
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-04-23 03:18:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>I am already aware the IMU would still need some tuning (eg. swapping positive/negative axes, rotation et al) </p>
+</blockquote>
+
+<p>so you still need to do this?</p>
+
+<p>Many packages have an (implicit) assumption (based on REP-103) about chirality and axis alignment. If your data doesn&#39;t adhere to that, things will go wrong.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-04-23 03:39:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>We&#39;re doing this right now, considering the rotation and linear acceleration is reversed; our foolish mistake.
+Edit; we&#39;ve resolved the IMU&#39;s goofed axes, thereby eliminating the epileptic rotations. However, the map now skews to the right/down a little bit. A problem from the past come to haunt us again.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-04-23 03:42:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>In a round of experimentation, I&#39;ve found that adding a secondary ekf node in place of <code>amcl</code> (ergo map-&gt;odom) would not cause any epileptic effects, but when moving the robot: it does move accurately, but the map is frozen in place. Can&#39;t discover why, and at worst it would make it impossible to use the &quot;2D Pose Estimate&quot; button within <code>rviz</code>.</p>
+
+<p>...Tis a monster we&#39;re working with, sadly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-04-23 07:07:15 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Please include sample messages from each sensor input. Your EKF config is also very confusing, as you have a lot of things commented out. Off the top of my head, one thing I see straight away is that you are (or were?) fusing absolute pose data from a bunch of different sources.</p>
+
+<p>Anyway, clear out anything in the EKF config that doesn&#39;t need to be there, and let&#39;s start with a simple setup, and work our way up. You clearly have some issue with conflicting frames, and/or multiple nodes trying to publish the same transform. But I&#39;d need to see all the sensor inputs to comment further.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3384">Tom Moore</a> on 2019-05-15 04:34:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I was indeed fusing the estimated pose from <code>amcl</code> (really bad idea.), <code>laser_scan_matcher</code> and the IMU at once. Since then I&#39;ve reduced the set-up to what it was beforehand, hooking the IMU sensor to <code>laser_scan_matcher</code> instead.</p>
+
+<p>The sensor messages will be included asap, I happen to have noticed that the orientation of the laser and imu don&#39;t quite match either, so we&#39;re working on reducing that difference the best we can.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-05-21 05:07:46 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I also note that you have both the laser scan matcher and the EKF publishing to tf. I&#39;m assuming that means you have two <em>odom</em>-&gt;<em>base_link</em> publishers. That&#39;s going to make lots of things unhappy.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3384">Tom Moore</a> on 2019-06-06 02:07:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Learned that the hard way, so as a result I&#39;ve set <code>publish_tf</code> to false in the laser scan matcher to have EKF be the only one. One gripe is that I was also feeding the position estimate from the laser scan matcher into EKF at a point.
+In later experiments I&#39;ve found that the laser was often publishing position estimates that would be accurate (around 0.02) but often jump to values higher than 5. How this is caused is unknown.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-06-06 02:47:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>So is this all working for you now?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3384">Tom Moore</a> on 2019-06-13 02:17:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p>From what I can gather, the current implementation seems to be working proper for a while; then appears to be slightly inaccurate (Which is to be expected of an IMU) but steady progress is being made. Despite a few tiny jumps (perhaps due to the LIDAR being jumbled by light/glass walls) it&#39;s safe to say the main issue could be closed since there are no (large) seizures anymore.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-06-13 02:38:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It would be nice if &#39;someone&#39; (either @halberd or @Tom Moore ) could post an answer summarising what were the steps that resolved the problems reported by the @halberd.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-06-13 02:39:33 UTC</p></div>
+</div>
+<div class="comment">
+              <p>How would you &quot;smooth&quot; the IMU Data? I&#39;m trying to filter out the abrupt variations present in the IMU Data as I&#39;m using it in transforming subsequent received Point Clouds but results are a bit messy</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/41851">dogh</a> on 2019-06-13 13:53:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>We thought of using a filter function, in our case on the arduino&#39;s level (our IMU&#39;s wired to that) before the quaternion is calculated, to skip calculating/including the positions that jump past a certain threshold, much like how the LIDAR&#39;s data would suddenly jump from being in the 0 - 1 range to values like 5 - 7. Alas, we haven&#39;t had much time to implement either one.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40215">halberd</a> on 2019-06-13 15:03:10 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The primary cause of this issue was a misinterpretation of how <code>robot_localization</code> should be implemented; Though the package suggests it would &quot;merge&quot; the output of sensors, the output of <code>amcl</code> isn&#39;t reliable enough as it reports coordinates on the map versus the raw coordinates returned by the sensors: <code>amcl</code> reports a position of X: 20, Y: -60 on the map I&#39;ve used for example, after giving it an estimated pose within <code>Rviz</code>. The sensors would only keep track with the difference from the coordinates: X: 0, Y: 0, thus causing the epileptic effect of the robot jumping between those two estimates as both packages kept firm with their estimations.</p>
+
+<p>As such, the original two packages for localization, being <code>laser_scan_matcher</code> and <code>amcl</code> were temporarily removed and replaced with two <code>robot_localization</code> packages. both being fed pose and orientation packets from the LIDAR sensor (via <code>laser_scan_matcher</code> configured to not publish to <code>tf</code>) and the IMU sensor (An MPU9250). 
+Although this still hasn&#39;t proven to be the right solution due to the map moving with the robot, it did resolve the &quot;epilepsy&quot; caused by two largely different estimations provided by <code>amcl</code> and the estimates of the packages (E.g. massive jumping between 0,0 and 20,60) by keeping only one source of estimation.</p>
+
+<p>The big picture hasn&#39;t been fully resolved yet, but the lesson learned in this issue is to review the <code>pose</code> messages returned by the packages and to avoid having two parties report way different estimates; that could be avoided by reviewing the <code>tf</code> tree to avoid conflicts and using <code>rostopic echo</code> to review the estimated positions of each package so that they match.
+The setup would now replace the <code>laser_scan_matcher</code> in the tf tree for <code>robot_localization</code> which fuses the IMU&#39;s orientation data with the LIDAR&#39;s position estimate.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40215">halberd</a> on 2019-06-13 02:56:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <blockquote>
+<p>Though the package suggests it would &quot;merge&quot; the output of sensors</p>
+</blockquote>
+
+<p>So it <em>does</em> merge them, in that it carries out a weighted average between the current measurement and the current belief state, and generates a new state (which is how all Kalman filters work). But each measurement is (and should be) processed in isolation. The problem is that you were trying to fuse data in two different coordinate frames, but were telling the filter they were the same coordinate frame. So the filter receives measurement 1, and jumps to a pose near that measurement. Then it receives a pose in a different frame in measurement 2, and jumps to that.</p>
+
+<p>If it were me, I&#39;d fuse the pose data from the most accurate pose source, and then (a) fuse velocity data from the other source, if available, or (b) turn on the <code>differential</code> parameter for that source, so that it gets converted to velocity data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3384">Tom Moore</a> on 2019-07-03 04:09:25 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

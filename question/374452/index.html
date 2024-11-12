@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gfile error Tensorflow in ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374452">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gfile error Tensorflow in ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98603/gfile-error-tensorflow-in-ros">https://robotics.stackexchange.com/questions/98603/gfile-error-tensorflow-in-ros</a>.</p>
+        <p>Hello.</p>
+
+<p>I am trying to create a node for image classification using ROS and Tensorflow. </p>
+
+<p>If I run this script with python, everything works perfectly with some differents networks:</p>
+
+<pre><code>import pyrealsense2 as rs
+import numpy as np
+import cv2
+import tensorflow as tf
+
+# Configure depth and color streams
+pipeline = rs.pipeline()
+config = rs.config()
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+print(&quot;[INFO] Starting streaming...&quot;)
+pipeline.start(config)
+print(&quot;[INFO] Camera ready.&quot;)
+
+# download model from: https://github.com/opencv/opencv/wiki/TensorFlow-Object-Detection-API#run-network-in-opencv
+print(&quot;[INFO] Loading model...&quot;)
+PATH_TO_CKPT = &quot;frozen_inference_graph.pb&quot;
+
+# Load the Tensorflow model into memory.
+detection_graph = tf.Graph()
+with detection_graph.as_default():
+    od_graph_def = tf.compat.v1.GraphDef()
+    with tf.compat.v1.gfile.GFile(PATH_TO_CKPT, &#39;rb&#39;) as fid:
+        serialized_graph = fid.read()
+        od_graph_def.ParseFromString(serialized_graph)
+        tf.compat.v1.import_graph_def(od_graph_def, name=&#39;&#39;)
+    sess = tf.compat.v1.Session(graph=detection_graph)
+
+# Input tensor is the image
+image_tensor = detection_graph.get_tensor_by_name(&#39;image_tensor:0&#39;)
+# Output tensors are the detection boxes, scores, and classes
+# Each box represents a part of the image where a particular object was detected
+detection_boxes = detection_graph.get_tensor_by_name(&#39;detection_boxes:0&#39;)
+# Each score represents level of confidence for each of the objects.
+# The score is shown on the result image, together with the class label.
+detection_scores = detection_graph.get_tensor_by_name(&#39;detection_scores:0&#39;)
+detection_classes = detection_graph.get_tensor_by_name(&#39;detection_classes:0&#39;)
+# Number of objects detected
+num_detections = detection_graph.get_tensor_by_name(&#39;num_detections:0&#39;)
+# code source of tensorflow model loading: https://www.geeksforgeeks.org/ml-training-image-classifier-using-tensorflow-object-detection-api/
+print(&quot;[INFO] Model loaded.&quot;)
+colors_hash = {}
+while True:
+    frames = pipeline.wait_for_frames()
+    color_frame = frames.get_color_frame()
+
+    # Convert images to numpy arrays
+    color_image = np.asanyarray(color_frame.get_data())
+    scaled_size = (color_frame.width, color_frame.height)
+    # expand image dimensions to have shape: [1, None, None, 3]
+    # i.e. a single-column array, where each item in the column has the pixel RGB value
+    image_expanded = np.expand_dims(color_image, axis=0)
+    # Perform the actual detection by running the model with the image as input
+    (boxes, scores, classes, num) = sess.run([detection_boxes, detection_scores, detection_classes, num_detections],
+                                                feed_dict={image_tensor: image_expanded})
+
+    boxes = np.squeeze(boxes)
+    classes = np.squeeze(classes).astype(np.int32)
+    scores = np.squeeze(scores)
+
+    for idx in range(int(num)):
+        class_ = classes[idx]
+        score = scores[idx]
+        box = boxes[idx]
+
+        if class_ not in colors_hash:
+            colors_hash[class_] = tuple(np.random.choice(range(256), size=3))
+
+        if score &gt; 0.6:
+            left = int(box[1] * color_frame.width)
+            top = int(box[0] * color_frame.height)
+            right = int(box[3] * color_frame.width)
+            bottom = int(box[2] * color_frame.height)
+
+            p1 = (left, top)
+            p2 = (right, bottom)
+            # draw box
+            r, g, b = colors_hash[class_]
+
+            cv2.rectangle(color_image, p1, p2, (int(r), int(g), int(b)), 2, 1)
+            cv2.putText(color_image, str(class_)+&quot; &quot;+str(score), p1, cv2.FONT_HERSHEY_SIMPLEX, 0.75, (int(r), int(g), int(b)))
+
+    cv2.namedWindow(&#39;RealSense&#39;, cv2.WINDOW_AUTOSIZE)
+    cv2.imshow(&#39;RealSense&#39;, color_image)
+    cv2.waitKey(1)
+
+print(&quot;[INFO] stop streaming ...&quot;)
+pipeline.stop()
+</code></pre>
+
+<p>In the other hand, I have created a ROS package where I launch the following script:</p>
+
+<pre><code>#!/usr/bin/env python3
+
+#Creador: AMC 2021
+#Funcion: Nodo de clasificacion de imagen con TensorFlow
+#Recibe: RealSense [Image(/camera/color/image_raw)]
+#Envia: Realsense [Image(/image_classified)]
+import rospy
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
+import pyrealsense2 as rs
+import numpy as np
+import cv2
+import tensorflow as tf
+import struct
+
+class TENSORFLOW_ROS_CLASS:
+
+# Function: __init__
+#
+# Comments
+# ----------
+# Define neural network
+#
+# Parameters
+# ----------
+#
+# Returns
+# -------
+    def __init__(self):
+
+        # download model from: https://github.com/opencv/opencv/wiki/TensorFlow-Object-Detection-API#run-network-in-opencv
+        print(&quot;[INFO] Loading model...&quot;)
+        PATH_TO_CKPT =&quot;frozen_inference_graph.pb&quot;
+
+        # Load the Tensorflow model into memory.
+        detection_graph = tf.Graph()
+        with detection_graph.as_default():
+            od_graph_def = tf.compat.v1.GraphDef()
+            with tf.compat.v1.gfile.GFile(PATH_TO_CKPT, &#39;rb&#39;) as fid:
+                serialized_graph = fid.read()
+                od_graph_def.ParseFromString(serialized_graph)
+                tf.compat.v1.import_graph_def(od_graph_def, name=&#39;&#39;)
+            sess = tf.compat.v1.Session(graph=detection_graph)
+
+        # Input tensor is the image
+        image_tensor = detection_graph.get_tensor_by_name(&#39;image_tensor:0&#39;)
+        # Output tensors are the detection boxes, scores, and classes
+        # Each box represents a part of the image where a particular object was detected
+        detection_boxes = detection_graph.get_tensor_by_name(&#39;detection_boxes:0&#39;)
+        # Each score represents level of confidence for each of the objects.
+        # The score is shown on the result image, together with the class label.
+        detection_scores = detection_graph.get_tensor_by_name(&#39;detection_scores:0&#39;)
+        detection_classes = detection_graph.get_tensor_by_name(&#39;detection_classes:0&#39;)
+        # Number of objects detected
+        num_detections = detection_graph.get_tensor_by_name(&#39;num_detections:0&#39;)
+        # code source of tensorflow model loading: https://www.geeksforgeeks.org/ml-training-image-classifier-using-tensorflow-object-detection-api/
+        print(&quot;[INFO] Model loaded.&quot;)
+        colors_hash = {}
+
+# Function: main
+#
+# Comments
+# ----------
+# Set up the node, the publications and subsciptions.
+#
+# Parameters
+# ----------
+#
+# Returns
+# -------
+
+    def main(self):
+
+        rospy.init_node(&#39;tensorflow_ros&#39;)
+        rospy.loginfo(&quot;Iniciado nodo tensorflow_ros&quot;)
+
+        #Publications
+        self.classification_pub = rospy.Publisher(&quot;image_classified&quot;, Image, queue_size=100)
+
+        #Subscriber
+        rospy.Subscriber(&quot;/camera/color/image_raw&quot;, Image, self.callback_image)
+
+        rospy.spin()
+
+# Function: callback_image
+#
+# Comments
+# ----------
+#
+# Parameters
+# ----------
+# msg: Data of the topic
+#
+# Returns
+# -------
+
+    def callback_image(self,msg):
+        color_image=Image()
+        color_image=msg
+
+        #Publish topic
+        self.classification_pub.publish(color_image)
+
+if __name__ == &#39;__main__&#39;:
+
+    detector=TENSORFLOW_ROS_CLASS()
+    detector.main()
+</code></pre>
+
+<p>And the error is this one:</p>
+
+<pre><code>[INFO] Loading model...
+Traceback (most recent call last):
+  File &quot;/home/sara/catkin_ws/src/tensorflow_ros/script/tensorflow_ros.py&quot;, line 106, in &lt;module&gt;
+    detector=TENSORFLOW_ROS_CLASS()
+  File &quot;/home/sara/catkin_ws/src/tensorflow_ros/script/tensorflow_ros.py&quot;, line 40, in __init__
+    serialized_graph = fid.read()
+  File &quot;/home/sara/.local/lib/python3.8/site-packages/tensorflow/python/lib/io/file_io.py&quot;, line 117, in read
+    self._preread_check()
+  File &quot;/home/sara/.local/lib/python3.8/site-packages/tensorflow/python/lib/io/file_io.py&quot;, line 79, in _preread_check
+    self._read_buf = _pywrap_file_io.BufferedInputStream(
+tensorflow.python.framework.errors_impl.NotFoundError: frozen_inference_graph.pb; No such file or directory
+</code></pre>
+
+<p>Actually the frozen<em>inference</em>graph.pb file is in the same directory of the script, so I don&#39;t know what is different respect the python execution.</p>
+
+<p>Any ideas or other example to run a DNN in ROS using tensorflow?</p>
+
+<p>Best regards.
+Alessandro</p>
+
+        <div class="owner"><p>Asked by <a href="/users/52370">Alessandro Melino</a> on 2021-03-22 05:35:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>Actually the frozen_inference_graph.pb file is in the same directory of the script, so I don&#39;t know what is different respect the python execution.</p>
+</blockquote>
+
+<p>I believe this is similar/a duplicate of #q235337.</p>
+
+<p>Summarising: the <code>CWD</code> (<em>current working directory</em>) when running a node with <code>rosrun</code> or <code>roslaunch</code> is not the same as when you start a script yourself.</p>
+
+<p>The <code>CWD</code> for all nodes is <code>$HOME/.ros</code>. So unless there is a file called <code>frozen_inference_graph.pb</code> in <code>$HOME/.ros</code>, the error you mention is expected.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-03-22 09:56:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes, that was the problem, I must use the whole path of the file to reference it. Thank you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52370">Alessandro Melino</a> on 2021-03-23 02:34:42 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Transform link missing from base_footprint -&gt; odom - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/399450">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Transform link missing from base_footprint -&gt; odom</h2>
+      <div class="question">
+        <p>Hello, </p>
+
+<p>I am new to ROS and I am trying to make an indoor autonomous robot. However, I am getting an error when connecting the tf frame base<em>link to odom. I have linked a screenshot of the error. I am not sure what the cause of this error is. We used and adapted a good amount of code from Automatic Addison, although we use the MPU 6050 and different robot.
+I believe that the code could be an issue in our topic names; something that is occuring is that the code is mapping to imu/imu/data instead of what we want, which is just imu/data (only one), but we can&#39;t find in the code where exactly this changes. All the odom data is publishing in our ekf</em>odom<em>pub, attached below. I&#39;ve also attached a picture of the TF tree, which shows that the odom/base</em>link is not linked. Any help or pointers would be awesome! </p>
+
+<p>We have tried things like rostopic echo, list, etc, and data is printing for odom and imu. We suspect that because of this that it isn&#39;t a data issue but just a tf pub/sub issue. </p>
+
+<p>Thank you!
+<a href="https://i.stack.imgur.com/zvn85.png"><img src="https://i.stack.imgur.com/zvn85.png" alt="ROS TREE"></a></p>
+
+<p>`</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/Int16.h&quot;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+#include &lt;tf2/LinearMath/Quaternion.h&gt;
+#include &lt;tf2_ros/transform_broadcaster.h&gt;
+#include &lt;cmath&gt;
+
+// Create odometry data publishers
+ros::Publisher odom_data_pub;
+ros::Publisher odom_data_pub_quat;
+nav_msgs::Odometry odomNew;
+nav_msgs::Odometry odomOld;
+
+// Initial pose
+const double initialX = 0.0;
+const double initialY = 0.0;
+const double initialTheta = 0.00000000001;
+const double PI = 3.141592;
+
+// Robot physical constants
+const double TICKS_PER_REVOLUTION = 620; // For reference purposes.
+const double WHEEL_RADIUS = 0.033; // Wheel radius in meters
+const double WHEEL_BASE = 0.165; // Center of left tire to center of right tire
+const double TICKS_PER_METER = 2700; // Original was 2800
+
+// Distance both wheels have traveled
+double distanceLeft = 0;
+double distanceRight = 0;
+
+// Flag to see if initial pose has been received
+bool initialPoseRecieved = false;
+
+using namespace std;
+
+// Get initial_2d message from either Rviz clicks or a manual pose publisher
+void set_initial_2d(const geometry_msgs::PoseStamped &amp;rvizClick) {
+
+  odomOld.pose.pose.position.x = rvizClick.pose.position.x;
+  odomOld.pose.pose.position.y = rvizClick.pose.position.y;
+  odomOld.pose.pose.orientation.z = rvizClick.pose.orientation.z;
+  initialPoseRecieved = true;
+}
+
+// Calculate the distance the left wheel has traveled since the last cycle
+void Calc_Left(const std_msgs::Int16&amp; leftCount) {
+
+  static int lastCountL = 0;
+  if(leftCount.data != 0 &amp;&amp; lastCountL != 0) {
+
+    int leftTicks = (leftCount.data - lastCountL);
+
+    if (leftTicks &gt; 10000) {
+      leftTicks = 0 - (65535 - leftTicks);
+    }
+    else if (leftTicks &lt; -10000) {
+      leftTicks = 65535-leftTicks;
+    }
+    else{}
+    distanceLeft = leftTicks/TICKS_PER_METER;
+  }
+  lastCountL = leftCount.data;
+}
+
+// Calculate the distance the right wheel has traveled since the last cycle
+void Calc_Right(const std_msgs::Int16&amp; rightCount) {
+
+  static int lastCountR = 0;
+  if(rightCount.data != 0 &amp;&amp; lastCountR != 0) {
+
+    int rightTicks = rightCount.data - lastCountR;
+
+    if (distanceRight &gt; 10000) {
+      distanceRight = (0 - (65535 - distanceRight))/TICKS_PER_METER;
+    }
+    else if (rightTicks &lt; -10000) {
+      rightTicks = 65535 - rightTicks;
+    }
+    else{}
+    distanceRight = rightTicks/TICKS_PER_METER;
+  }
+  lastCountR = rightCount.data;
+}
+
+// Publish a nav_msgs::Odometry message in quaternion format
+void publish_quat() {
+
+  tf2::Quaternion q;
+
+  q.setRPY(0, 0, odomNew.pose.pose.orientation.z);
+
+  nav_msgs::Odometry quatOdom;
+  quatOdom.header.stamp = odomNew.header.stamp;
+  quatOdom.header.frame_id = &quot;odom&quot;;
+  quatOdom.child_frame_id = &quot;base_link&quot;;
+  quatOdom.pose.pose.position.x = odomNew.pose.pose.position.x;
+  quatOdom.pose.pose.position.y = odomNew.pose.pose.position.y;
+  quatOdom.pose.pose.position.z = odomNew.pose.pose.position.z;
+  quatOdom.pose.pose.orientation.x = q.x();
+  quatOdom.pose.pose.orientation.y = q.y();
+  quatOdom.pose.pose.orientation.z = q.z();
+  quatOdom.pose.pose.orientation.w = q.w();
+  quatOdom.twist.twist.linear.x = odomNew.twist.twist.linear.x;
+  quatOdom.twist.twist.linear.y = odomNew.twist.twist.linear.y;
+  quatOdom.twist.twist.linear.z = odomNew.twist.twist.linear.z;
+  quatOdom.twist.twist.angular.x = odomNew.twist.twist.angular.x;
+  quatOdom.twist.twist.angular.y = odomNew.twist.twist.angular.y;
+  quatOdom.twist.twist.angular.z = odomNew.twist.twist.angular.z;
+
+  for(int i = 0; i&lt;36; i++) {
+    if(i == 0 || i == 7 || i == 14) {
+      quatOdom.pose.covariance[i] = .01;
+     }
+     else if (i == 21 || i == 28 || i== 35) {
+       quatOdom.pose.covariance[i] += 0.1;
+     }
+     else {
+       quatOdom.pose.covariance[i] = 0;
+     }
+  }
+
+  odom_data_pub_quat.publish(quatOdom);
+}
+
+// Update odometry information
+void update_odom() {
+
+  // Calculate the average distance
+  double cycleDistance = (distanceRight + distanceLeft) / 2;
+
+  // Calculate the number of radians the robot has turned since the last cycle
+  double cycleAngle = asin((distanceRight-distanceLeft)/WHEEL_BASE);
+
+  // Average angle during the last cycle
+  double avgAngle = cycleAngle/2 + odomOld.pose.pose.orientation.z;
+
+  if (avgAngle &gt; PI) {
+    avgAngle -= 2*PI;
+  }
+  else if (avgAngle &lt; -PI) {
+    avgAngle += 2*PI;
+  }
+  else{}
+
+  // Calculate the new pose (x, y, and theta)
+  odomNew.pose.pose.position.x = odomOld.pose.pose.position.x + cos(avgAngle)*cycleDistance;
+  odomNew.pose.pose.position.y = odomOld.pose.pose.position.y + sin(avgAngle)*cycleDistance;
+  odomNew.pose.pose.orientation.z = cycleAngle + odomOld.pose.pose.orientation.z;
+
+  // Prevent lockup from a single bad cycle
+  if (isnan(odomNew.pose.pose.position.x) || isnan(odomNew.pose.pose.position.y)
+     || isnan(odomNew.pose.pose.position.z)) {
+    odomNew.pose.pose.position.x = odomOld.pose.pose.position.x;
+    odomNew.pose.pose.position.y = odomOld.pose.pose.position.y;
+    odomNew.pose.pose.orientation.z = odomOld.pose.pose.orientation.z;
+  }
+
+  // Make sure theta stays in the correct range
+  if (odomNew.pose.pose.orientation.z &gt; PI) {
+    odomNew.pose.pose.orientation.z -= 2 * PI;
+  }
+  else if (odomNew.pose.pose.orientation.z &lt; -PI) {
+    odomNew.pose.pose.orientation.z += 2 * PI;
+  }
+  else{}
+
+  // Compute the velocity
+  odomNew.header.stamp = ros::Time::now();
+  odomNew.twist.twist.linear.x = cycleDistance/(odomNew.header.stamp.toSec() - odomOld.header.stamp.toSec());
+  odomNew.twist.twist.angular.z = cycleAngle/(odomNew.header.stamp.toSec() - odomOld.header.stamp.toSec());
+
+  // Save the pose data for the next cycle
+  odomOld.pose.pose.position.x = odomNew.pose.pose.position.x;
+  odomOld.pose.pose.position.y = odomNew.pose.pose.position.y;
+  odomOld.pose.pose.orientation.z = odomNew.pose.pose.orientation.z;
+  odomOld.header.stamp = odomNew.header.stamp;
+  odom_trans.header.stamp = ros::Time::now();
+  // Publish the odometry message
+  odom_data_pub.publish(odomNew);
+}
+
+int main(int argc, char **argv) {
+
+  // Set the data fields of the odometry message
+  odomNew.header.frame_id = &quot;odom&quot;;
+  odomNew.pose.pose.position.z = 0;
+  odomNew.pose.pose.orientation.x = 0;
+  odomNew.pose.pose.orientation.y = 0;
+  odomNew.twist.twist.linear.x = 0;
+  odomNew.twist.twist.linear.y = 0;
+  odomNew.twist.twist.linear.z = 0;
+  odomNew.twist.twist.angular.x = 0;
+  odomNew.twist.twist.angular.y = 0;
+  odomNew.twist.twist.angular.z = 0;
+  odomOld.pose.pose.position.x = initialX;
+  odomOld.pose.pose.position.y = initialY;
+  odomOld.pose.pose.orientation.z = initialTheta;
+
+  // Launch ROS and create a node
+  ros::init(argc, argv, &quot;ekf_odom_pub&quot;);
+  ros::NodeHandle node;
+
+  // Subscribe to ROS topics
+  ros::Subscriber subForRightCounts = node.subscribe(&quot;right_ticks&quot;, 100, Calc_Right, ros::TransportHints().tcpNoDelay());
+  ros::Subscriber subForLeftCounts = node.subscribe(&quot;left_ticks&quot;, 100, Calc_Left, ros::TransportHints().tcpNoDelay());
+  ros::Subscriber subInitialPose = node.subscribe(&quot;initial_2d&quot;, 1, set_initial_2d);
+
+  // Publisher of simple odom message where orientation.z is an euler angle
+  odom_data_pub = node.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom_data_euler&quot;, 100);
+
+  // Publisher of full odom message where orientation is quaternion
+  odom_data_pub_quat = node.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom_data_quat&quot;, 100);
+
+  ros::Rate loop_rate(30); 
+
+  while(ros::ok()) {
+
+    if(initialPoseRecieved) {
+      update_odom();
+      publish_quat();
+    }
+    ros::spinOnce();
+    loop_rate.sleep();
+  }
+
+  return 0;
+}
+</code></pre>
+
+<p>`</p>
+
+<p><a href="https://i.stack.imgur.com/P72PY.png"><img src="https://i.stack.imgur.com/P72PY.png" alt="enter image description here"></a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/102801">factos07</a> on 2022-04-22 19:43:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I&#39;m pretty sure that TF doesn&#39;t like it when one link has multiple parents. Please use <code>base_footprint</code> instead of <code>base_link</code> for your connection with odom.</p>
+
+<p>The error actually doesn&#39;t say anything useful. It&#39;s just costmap telling you there isn&#39;t a connection between the two, there&#39;s no more information than that.</p>
+
+<blockquote>
+<p>something that is occuring is that the code is mapping to imu/imu/data instead of what we want, which is just imu/data (only one)</p>
+</blockquote>
+
+<p>As for that, have you used a namespace? If so, the namespace is the first <code>imu</code> and if you then use the topic <code>imu/data</code> you get ns+topic=<code>imu/imu/data</code>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50769">Joe28965</a> on 2022-04-25 09:32:57 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Confirmed, you cannot have multiple parents in a tf tree. Every time it&#39;s published with a different parent you will break and reform the tree connected to the most recently published parent.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2022-04-25 14:51:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Update: We found out ekf_robot_pose was feeding to odom_combined and not odom, and so we changed all things to odom and were able to get the tf tree correct!</p>
+
+<p>However, we are still running into IMU errors because of the /imu/imu/data when it should be /imu/data (probably because of namespace like you suggested but we are a little confused by what that means and how it even ended up being different in the first place; would this be something we configured in our launch file?)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/102801">factos07</a> on 2022-04-25 17:39:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, it&#39;s probably your launch file. What node subscribes to <code>/imu/imu/data</code>? Do you configure it yourself? Do you tell it that the topic is <code>/imu/data</code>? What happens if you tell it to subscribe simply to <code>data</code>?</p>
+
+<p>If you want you could edit the post to add your launch file to the post, that way we could help you answer that question, although technically it&#39;s a separate question at this point since your original question has been resolved.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-04-26 02:32:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I posted a better explanation here: <a href="https://answers.ros.org/question/399652/imu-issues-with-namespace-data-rviz/">https://answers.ros.org/question/399652/imu-issues-with-namespace-data-rviz/</a></p>
+
+<p>It contains a snippet of the launch file pertaining to the IMU part</p>
+
+<p>Thank you so much!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/102801">factos07</a> on 2022-04-26 16:07:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://answers.ros.org/question/417577/canot-change-parent-child-relationship-between-base_link-and-base_footprint/">https://answers.ros.org/question/417577/canot-change-parent-child-relationship-between-base_link-and-base_footprint/</a> i hope this issue might be similar to yours, could you solve it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/147538">iamsdevaprasad</a> on 2023-07-19 21:25:40 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

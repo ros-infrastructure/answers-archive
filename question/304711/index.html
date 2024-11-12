@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to combine compliance and cartesian pose motion control? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/304711">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to combine compliance and cartesian pose motion control?</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I am working with a Franka Emika Panda using ROS Kinetic and am fairly new to C++ and ROS.  I am attempting to generate a cartesian motion of the end-effector that will be compliant with forces (so for example if it is commanded to move in the x direction, and you push on it in the y direction, it will move in y according to the force but also continue moving in x) .  My strategy thus far has been to combine the cartesian<em>pose</em>example<em>controller.cpp (which moves the end effector in a quarter circle) with the cartesian</em>impedance<em>example</em>controller.cpp into a new controller: cartesian<em>impedance</em>position_controller.cpp.  I got to the point where when I launch the following code with the control node, the cartesian impedance works, but it does not move in the quarter circle.  Any thoughts on how to make this work or other strategies to try would be greatly appreciated!  I apologize that the code is so long, let me know if I can remove or add information to be more helpful.</p>
+
+<pre><code>#include &lt;franka_example_controllers/cartesian_impedance_position_controller.h&gt;
+#include &lt;cmath&gt;
+#include &lt;memory&gt;
+#include &lt;stdexcept&gt;
+#include &lt;string&gt;
+
+#include &lt;controller_interface/controller_base.h&gt;
+#include &lt;franka/robot_state.h&gt;
+#include &lt;franka_hw/franka_cartesian_command_interface.h&gt;
+#include &lt;hardware_interface/hardware_interface.h&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+#include &lt;ros/ros.h&gt;
+
+#include &quot;pseudo_inversion.h&quot;
+
+namespace franka_example_controllers {
+
+bool CartesianImpedancePositionController::init (hardware_interface::RobotHW* robot_hw,
+                                               ros::NodeHandle&amp; node_handle) {
+
+//CARTPOS
+auto cartesian_pose_interface_ = robot_hw-&gt;get&lt;franka_hw::FrankaPoseCartesianInterface&gt;();
+  if (cartesian_pose_interface_ == nullptr) {
+    ROS_ERROR(
+        &quot;CartesianPoseExampleController: Could not get Cartesian Pose &quot;
+        &quot;interface from hardware&quot;);
+    return false;
+}
+//ENDCARTPOS
+
+  std::vector&lt;double&gt; cartesian_stiffness_vector;
+  std::vector&lt;double&gt; cartesian_damping_vector;
+
+sub_equilibrium_pose_ = node_handle.subscribe(
+      &quot;/equilibrium_pose&quot;, 20, &amp;CartesianImpedancePositionController::equilibriumPoseCallback, this,
+      ros::TransportHints().reliable().tcpNoDelay());
+
+  std::string arm_id;
+  if (!node_handle.getParam(&quot;arm_id&quot;, arm_id)) {
+    ROS_ERROR_STREAM(&quot;CartesianImpedanceExampleController: Could not read parameter arm_id&quot;);
+    return false;
+  }
+  std::vector&lt;std::string&gt; joint_names;
+  if (!node_handle.getParam(&quot;joint_names&quot;, joint_names) || joint_names.size() != 7) {
+    ROS_ERROR(
+        &quot;CartesianImpedanceExampleController: Invalid or no joint_names parameters provided, &quot;
+        &quot;aborting controller init!&quot;);
+    return false;
+  }
+
+  auto* model_interface = robot_hw-&gt;get&lt;franka_hw::FrankaModelInterface&gt;();
+  if (model_interface == nullptr) {
+    ROS_ERROR_STREAM(
+        &quot;CartesianImpedanceExampleController: Error getting model interface from hardware&quot;);
+    return false;
+  }
+
+//CARTPOS
+try {
+    cartesian_pose_handle_ = std::make_unique&lt;franka_hw::FrankaCartesianPoseHandle&gt;(
+        cartesian_pose_interface_-&gt;getHandle(arm_id + &quot;_robot&quot;));
+  } catch (const hardware_interface::HardwareInterfaceException&amp; e) {
+    ROS_ERROR_STREAM(
+        &quot;CartesianPoseExampleController: Exception getting Cartesian handle: &quot; &lt;&lt; e.what());
+    return false;
+  }
+
+auto* state_interface = robot_hw-&gt;get&lt;franka_hw::FrankaStateInterface&gt;();
+  if (state_interface == nullptr) {
+    ROS_ERROR(&quot;CartesianPoseExampleController: Could not get state interface from hardware&quot;);
+    return false;
+  }
+
+  try {
+    auto state_handle = state_interface-&gt;getHandle(arm_id + &quot;_robot&quot;);
+
+    std::array&lt;double, 7&gt; q_start{{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
+    for (size_t i = 0; i &lt; q_start.size(); i++) {
+      if (std::abs(state_handle.getRobotState().q_d[i] - q_start[i]) &gt; 0.1) {
+        ROS_ERROR_STREAM(
+            &quot;CartesianPoseExampleController: Robot is not in the expected starting position for &quot;
+            &quot;running this example. Run `roslaunch franka_example_controllers move_to_start.launch &quot;
+            &quot;robot_ip:=&lt;robot-ip&gt; load_gripper:=&lt;has-attached-gripper&gt;` first.&quot;);
+        return false;
+      }
+    }
+  } catch (const hardware_interface::HardwareInterfaceException&amp; e) {
+    ROS_ERROR_STREAM(
+        &quot;CartesianPoseExampleController: Exception getting state handle: &quot; &lt;&lt; e.what());
+    return false;
+  }
+//ENDCARTPOS
+
+  try {
+    model_handle_ = std::make_unique&lt;franka_hw::FrankaModelHandle&gt;(
+        model_interface-&gt;getHandle(arm_id + &quot;_model&quot;));
+  } catch (hardware_interface::HardwareInterfaceException&amp; ex) {
+    ROS_ERROR_STREAM(
+        &quot;CartesianImpedanceExampleController: Exception getting model handle from interface: &quot;
+        &lt;&lt; ex.what());
+    return false;
+  }
+
+  try {
+    state_handle_ = std::make_unique&lt;franka_hw::FrankaStateHandle&gt;(
+        state_interface-&gt;getHandle(arm_id + &quot;_robot&quot;));
+  } catch (hardware_interface::HardwareInterfaceException&amp; ex) {
+    ROS_ERROR_STREAM(
+        &quot;CartesianImpedanceExampleController: Exception getting state handle from interface: &quot;
+        &lt;&lt; ex.what());
+    return false;
+  }
+
+  auto* effort_joint_interface = robot_hw-&gt;get&lt;hardware_interface::EffortJointInterface&gt;();
+  if (effort_joint_interface == nullptr) {
+    ROS_ERROR_STREAM(
+        &quot;CartesianImpedanceExampleController: Error getting effort joint interface from hardware&quot;);
+    return false;
+  }
+  for (size_t i = 0; i &lt; 7; ++i) {
+    try {
+      joint_handles_.push_back(effort_joint_interface-&gt;getHandle(joint_names[i]));
+    } catch (const hardware_interface::HardwareInterfaceException&amp; ex) {
+      ROS_ERROR_STREAM(
+          &quot;CartesianImpedanceExampleController: Exception getting joint handles: &quot; &lt;&lt; ex.what());
+      return false;
+    }
+  }
+
+  dynamic_reconfigure_compliance_param_node_ =
+      ros::NodeHandle(&quot;dynamic_reconfigure_compliance_param_node&quot;);
+
+  dynamic_server_compliance_param_ = std::make_unique&lt;
+      dynamic_reconfigure::Server&lt;franka_example_controllers::compliance_paramConfig&gt;&gt;(
+
+      dynamic_reconfigure_compliance_param_node_);
+  dynamic_server_compliance_param_-&gt;setCallback(
+      boost::bind(&amp;CartesianImpedancePositionController::complianceParamCallback, this, _1, _2));
+
+  position_d_.setZero();
+  orientation_d_.coeffs() &lt;&lt; 0.0, 0.0, 0.0, 1.0;
+  position_d_target_.setZero();
+  orientation_d_target_.coeffs() &lt;&lt; 0.0, 0.0, 0.0, 1.0;
+
+  cartesian_stiffness_.setZero();
+  cartesian_damping_.setZero();
+
+  return true;
+}
+
+void CartesianImpedancePositionController::starting(const ros::Time&amp; /*time*/) {
+
+//CARTPOS
+  initial_pose_ = cartesian_pose_handle_-&gt;getRobotState().O_T_EE_d;
+  elapsed_time_ = ros::Duration(0.0);
+//ENDCARTPOS
+
+  // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
+  // to initial configuration
+  franka::RobotState initial_state = state_handle_-&gt;getRobotState();
+  // get jacobian
+  std::array&lt;double, 42&gt; jacobian_array =
+      model_handle_-&gt;getZeroJacobian(franka::Frame::kEndEffector);
+  // convert to eigen
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 6, 7&gt;&gt; jacobian(jacobian_array.data());
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 7, 1&gt;&gt; dq_initial(initial_state.dq.data());
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 7, 1&gt;&gt; q_initial(initial_state.q.data());
+  Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
+
+  // set equilibrium point to current state
+  position_d_ = initial_transform.translation();
+  orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
+  position_d_target_ = initial_transform.translation();
+  orientation_d_target_ = Eigen::Quaterniond(initial_transform.linear());
+
+  // set nullspace equilibrium configuration to initial q
+  q_d_nullspace_ = q_initial;
+}
+
+void CartesianImpedancePositionController::update(const ros::Time&amp; /*time*/,
+                                                 const ros::Duration&amp; period) {
+
+    //CARTPOS
+    elapsed_time_ += period;
+
+      double radius = 0.3;
+      double angle = M_PI / 4 * (1 - std::cos(M_PI / 5.0 * elapsed_time_.toSec()));
+      double delta_x = radius * std::sin(angle);
+      double delta_z = radius * (std::cos(angle) - 1);
+      std::array&lt;double, 16&gt; new_pose = initial_pose_;
+      new_pose[12] -= delta_x;
+      new_pose[14] -= delta_z;
+      cartesian_pose_handle_-&gt;setCommand(new_pose);
+    //ENDCARTPOS
+
+  // get state variables
+  franka::RobotState robot_state = state_handle_-&gt;getRobotState();
+  std::array&lt;double, 7&gt; coriolis_array = model_handle_-&gt;getCoriolis();
+  std::array&lt;double, 42&gt; jacobian_array =
+      model_handle_-&gt;getZeroJacobian(franka::Frame::kEndEffector);
+
+  // convert to Eigen
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 7, 1&gt;&gt; coriolis(coriolis_array.data());
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 6, 7&gt;&gt; jacobian(jacobian_array.data());
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 7, 1&gt;&gt; q(robot_state.q.data());
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 7, 1&gt;&gt; dq(robot_state.dq.data());
+  Eigen::Map&lt;Eigen::Matrix&lt;double, 7, 1&gt;&gt; tau_J_d(  // NOLINT (readability-identifier-naming)
+      robot_state.tau_J_d.data());
+  Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+  Eigen::Vector3d position(transform.translation());
+  Eigen::Quaterniond orientation(transform.linear());
+
+  // compute error to desired pose
+  // position error
+  Eigen::Matrix&lt;double, 6, 1&gt; error;
+  error.head(3) &lt;&lt; position - position_d_;
+
+  // orientation error
+  if (orientation_d_.coeffs().dot(orientation.coeffs()) &lt; 0.0) {
+    orientation.coeffs() &lt;&lt; -orientation.coeffs();
+  }
+  // &quot;difference&quot; quaternion
+  Eigen::Quaterniond error_quaternion(orientation * orientation_d_.inverse());
+  // convert to axis angle
+  Eigen::AngleAxisd error_quaternion_angle_axis(error_quaternion);
+  // compute &quot;orientation error&quot;
+  error.tail(3) &lt;&lt; error_quaternion_angle_axis.axis() * error_quaternion_angle_axis.angle();
+
+  // compute control
+  // allocate variables
+  Eigen::VectorXd tau_task(7), tau_nullspace(7), tau_d(7);
+
+  // pseudoinverse for nullspace handling
+  // kinematic pseuoinverse
+  Eigen::MatrixXd jacobian_transpose_pinv;
+  pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
+
+  // Cartesian PD control with damping ratio = 1
+  tau_task &lt;&lt; jacobian.transpose() *
+                  (-cartesian_stiffness_ * error - cartesian_damping_ * (jacobian * dq));
+  // nullspace PD control with damping ratio = 1
+  tau_nullspace &lt;&lt; (Eigen::MatrixXd::Identity(7, 7) -
+                    jacobian.transpose() * jacobian_transpose_pinv) *
+                       (nullspace_stiffness_ * (q_d_nullspace_ - q) -
+                        (2.0 * sqrt(nullspace_stiffness_)) * dq);
+  // Desired torque
+  tau_d &lt;&lt; tau_task + tau_nullspace + coriolis;
+  // Saturate torque rate to avoid discontinuities
+  tau_d &lt;&lt; saturateTorqueRate(tau_d, tau_J_d);
+  for (size_t i = 0; i &lt; 7; ++i) {
+    joint_handles_[i].setCommand(tau_d(i));
+  }
+
+  // update parameters changed online either through dynamic reconfigure or through the interactive
+  // target by filtering
+  cartesian_stiffness_ =
+      filter_params_ * cartesian_stiffness_target_ + (1.0 - filter_params_) * cartesian_stiffness_;
+  cartesian_damping_ =
+      filter_params_ * cartesian_damping_target_ + (1.0 - filter_params_) * cartesian_damping_;
+  nullspace_stiffness_ =
+      filter_params_ * nullspace_stiffness_target_ + (1.0 - filter_params_) * nullspace_stiffness_;
+  position_d_ = filter_params_ * position_d_target_ + (1.0 - filter_params_) * position_d_;
+  Eigen::AngleAxisd aa_orientation_d(orientation_d_);
+  Eigen::AngleAxisd aa_orientation_d_target(orientation_d_target_);
+  aa_orientation_d.axis() = filter_params_ * aa_orientation_d_target.axis() +
+                            (1.0 - filter_params_) * aa_orientation_d.axis();
+  aa_orientation_d.angle() = filter_params_ * aa_orientation_d_target.angle() +
+                             (1.0 - filter_params_) * aa_orientation_d.angle();
+  orientation_d_ = Eigen::Quaterniond(aa_orientation_d);
+}
+
+Eigen::Matrix&lt;double, 7, 1&gt; CartesianImpedancePositionController::saturateTorqueRate(
+    const Eigen::Matrix&lt;double, 7, 1&gt;&amp; tau_d_calculated,
+    const Eigen::Matrix&lt;double, 7, 1&gt;&amp; tau_J_d) {  // NOLINT (readability-identifier-naming)
+  Eigen::Matrix&lt;double, 7, 1&gt; tau_d_saturated{};
+  for (size_t i = 0; i &lt; 7; i++) {
+    double difference = tau_d_calculated[i] - tau_J_d[i];
+    tau_d_saturated[i] =
+        tau_J_d[i] + std::max(std::min(difference, delta_tau_max_), -delta_tau_max_);
+  }
+  return tau_d_saturated;
+}
+
+void CartesianImpedancePositionController::complianceParamCallback(
+    franka_example_controllers::compliance_paramConfig&amp; config,
+    uint32_t /*level*/) {
+  cartesian_stiffness_target_.setIdentity();
+  cartesian_stiffness_target_.topLeftCorner(3, 3)
+      &lt;&lt; config.translational_stiffness * Eigen::Matrix3d::Identity();
+  cartesian_stiffness_target_.bottomRightCorner(3, 3)
+      &lt;&lt; config.rotational_stiffness * Eigen::Matrix3d::Identity();
+  cartesian_damping_target_.setIdentity();
+  // Damping ratio = 1
+  cartesian_damping_target_.topLeftCorner(3, 3)
+      &lt;&lt; 2.0 * sqrt(config.translational_stiffness) * Eigen::Matrix3d::Identity();
+  cartesian_damping_target_.bottomRightCorner(3, 3)
+      &lt;&lt; 2.0 * sqrt(config.rotational_stiffness) * Eigen::Matrix3d::Identity();
+  nullspace_stiffness_target_ = config.nullspace_stiffness;
+}
+
+void CartesianImpedancePositionController::equilibriumPoseCallback(
+    const geometry_msgs::PoseStampedConstPtr&amp; msg) {
+
+  position_d_target_ &lt;&lt; msg-&gt;pose.position.x, msg-&gt;pose.position.y, msg-&gt;pose.position.z;
+  Eigen::Quaterniond last_orientation_d_target(orientation_d_target_);
+  orientation_d_target_.coeffs() &lt;&lt; msg-&gt;pose.orientation.x, msg-&gt;pose.orientation.y,
+      msg-&gt;pose.orientation.z, msg-&gt;pose.orientation.w;
+  if (last_orientation_d_target.coeffs().dot(orientation_d_target_.coeffs()) &lt; 0.0) {
+    orientation_d_target_.coeffs() &lt;&lt; -orientation_d_target_.coeffs();
+  }
+}
+
+} // namespace franka_example_controllers
+
+PLUGINLIB_EXPORT_CLASS(franka_example_controllers::CartesianImpedancePositionController,
+                       controller_interface::ControllerBase)
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/36153">chloe</a> on 2018-10-02 16:13:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I could use help specifically with what kinds of controllers to use/combine and how to do that, or what ros topics the two types of commands should be sent to (effort and pose?) Should they be published to the same topic or separate topics?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36153">chloe</a> on 2018-10-04 08:52:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m having a hunch that force-position won&#39;t work, and I need to do force-velocity?  I think compliant control requires control of power transfer?  I&#39;m not sure how to go about that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36153">chloe</a> on 2018-10-09 13:37:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

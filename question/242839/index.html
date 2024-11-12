@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>stack smashing detected - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/242839">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>stack smashing detected</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/76066/stack-smashing-detected">https://robotics.stackexchange.com/questions/76066/stack-smashing-detected</a>.</p>
+        <p>I use the joystick Joy package to generate joy messages and process them with a node I wrote.
+My node dies consistently after processing one message and I can&#39;t make any sense of what is going on.</p>
+
+<p>Judging by the debug messages I inserted in the code, it looks like the callback is entered once, runs properly and then crashes at some point between its end and its next call.</p>
+
+<p>Any help is greatly appreciated.</p>
+
+<p>Here is the code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/Joy.h&gt;
+#include &lt;cstdlib&gt;
+#include &lt;ros/console.h&gt;
+
+#include &lt;last_letter_msgs/SimPWM.h&gt;
+
+class JoyConverter{
+public:
+    ros::Subscriber sub;
+    ros::Publisher pub;
+
+    int axisIndex[11];
+    int buttonIndex[11];
+    double throwIndex[11];
+    int mixerid;
+
+    JoyConverter(ros::NodeHandle n);
+    ~JoyConverter();
+    void joy2chan(sensor_msgs::Joy joyMsg);
+    last_letter_msgs::SimPWM mixer(double * input, int mixerid);
+};
+
+JoyConverter::JoyConverter(ros::NodeHandle n)
+{
+
+    sub = n.subscribe(&quot;joy&quot;,1,&amp;JoyConverter::joy2chan,this);
+    pub = n.advertise&lt;last_letter_msgs::SimPWM&gt;(&quot;rawPWM&quot;,1);    // Read the controller configuration parameters from the HID.yaml file
+
+    XmlRpc::XmlRpcValue listInt, listDouble;
+    int i;
+    if(!ros::param::getCached(&quot;/HID/throws&quot;, listDouble)) {ROS_FATAL(&quot;Invalid parameters for -/HID/throws- in param server!&quot;); ros::shutdown();}
+    for (i = 0; i &lt; listDouble.size(); ++i) {
+        ROS_ASSERT(listDouble[i].getType() == XmlRpc::XmlRpcValue::TypeDouble);
+        throwIndex[i]=listDouble[i];
+    }
+    ROS_INFO(&quot;Reading input axes&quot;);
+    if(!ros::param::getCached(&quot;/HID/axes&quot;, listInt)) {ROS_FATAL(&quot;Invalid parameters for -/HID/axes- in param server!&quot;); ros::shutdown();}
+    for (i = 0; i &lt; listInt.size(); ++i) {
+        ROS_ASSERT(listInt[i].getType() == XmlRpc::XmlRpcValue::TypeInt);
+        axisIndex[i]=listInt[i];
+    }
+    ROS_INFO(&quot;Reading input buttons configuration&quot;);
+    if(!ros::param::getCached(&quot;/HID/buttons&quot;, listInt)) {ROS_FATAL(&quot;Invalid parameters for -/HID/buttons- in param server!&quot;); ros::shutdown();}
+    for (i = 0; i &lt; listInt.size(); ++i) {
+        ROS_ASSERT(listInt[i].getType() == XmlRpc::XmlRpcValue::TypeInt);
+        buttonIndex[i]=listInt[i];
+    }
+    // Read the mixer type
+    if(!ros::param::getCached(&quot;/HID/mixerid&quot;, mixerid)) {ROS_INFO(&quot;No mixing function selected&quot;); mixerid=0;}
+}
+
+JoyConverter::~JoyConverter()
+{
+}
+
+void JoyConverter::joy2chan(sensor_msgs::Joy joyMsg)
+{
+    ROS_DEBUG(&quot;joy2chan: Processing new joy msg&quot;);
+    last_letter_msgs::SimPWM channels;
+    double input[11];
+    int i;
+    for (i = 0; i &lt;= 11; i++) {
+        if (axisIndex[i] != -1) { // if an axis is assigned in this channel
+            input[i] = 1.0/throwIndex[i]*joyMsg.axes[axisIndex[i]];
+        }
+        else if (buttonIndex[i] != -1) {
+            input[i] = 1.0/throwIndex[i]*joyMsg.buttons[buttonIndex[i]];
+        }
+        else {
+            input[i] = 0.0;
+        }
+    }
+
+    ROS_DEBUG(&quot;joy2chan: Calling mixing function&quot;);
+    channels = mixer(input, mixerid);
+    for (i=0;i&lt;11;i++) // Cap channel limits
+    {
+        if (channels.value[i]&lt;1000) channels.value[i]=1000;
+        if (channels.value[i]&gt;2100) channels.value[i]=2100;
+    }
+
+    channels.header.stamp = ros::Time::now();
+    ROS_DEBUG(&quot;joy2chan: Publishing channels&quot;);
+    pub.publish(channels);
+    ROS_DEBUG(&quot;joy2chan: Callback ended&quot;);
+}
+
+// Mixer function
+last_letter_msgs::SimPWM JoyConverter::mixer(double * input, int mixerid)
+{
+    last_letter_msgs::SimPWM channels;
+    int i;
+    switch (mixerid)
+    {
+    case 0: // No mixing applied
+        for (i=0;i&lt;11;i++)
+        {
+            channels.value[i] = (unsigned int)(input[i]*500 + 1500);
+        }
+        return channels;
+    case 1: // Airplane mixing
+        channels.value[0] = (unsigned int)(input[0]*500+ 1500); // Aileron channel
+        channels.value[1] = (unsigned int)(input[1]*500+ 1500); // Elevator channel
+        channels.value[2] = (unsigned int)((input[2]+1)*500+ 1000); // Throttle channel
+        channels.value[3] = (unsigned int)(input[3]*500+ 1500); // Rudder channel
+        channels.value[4] = (unsigned int)(input[4]*500 + 1500); // Steering gear channel
+        channels.value[5] = (unsigned int)(input[5]*1000 + 1000); // Breaks channel
+        channels.value[6] = (unsigned int)(input[6]*500 + 1500); // Generic channel
+        channels.value[7] = (unsigned int)(input[7]*500 + 1500); // Generic channel
+        channels.value[8] = (unsigned int)(input[8]*500 + 1500); // Generic channel
+        channels.value[9] = (unsigned int)(input[9]*1000 + 1000); // Reset channel
+        channels.value[10] = (unsigned int)(input[10]*500 + 1500); // Generic channel
+        return channels;
+    case 2: // Quadrotor mixing
+        channels.value[0] = (unsigned int)(500*((input[2]+1) -0.11*input[0] +0.11*input[1] -0.11*input[3]) +1000);
+        channels.value[1] = (unsigned int)(500*((input[2]+1) +0.11*input[0] +0.11*input[1] +0.11*input[3]) +1000);
+        channels.value[2] = (unsigned int)(500*((input[2]+1) -0.11*input[0] -0.11*input[1] +0.11*input[3]) +1000);
+        channels.value[3] = (unsigned int)(500*((input[2]+1) +0.11*input[0] -0.11*input[1] -0.11*input[3]) +1000);
+        channels.value[4] = (unsigned int)(input[4]*500 + 1500); // Generic channel
+        channels.value[5] = (unsigned int)(input[5]*500 + 1500); // Generic channel
+        channels.value[6] = (unsigned int)(input[6]*500 + 1500); // Generic channel
+        channels.value[7] = (unsigned int)(input[7]*500 + 1500); // Generic channel
+        channels.value[8] = (unsigned int)(input[8]*500 + 1500); // Generic channel
+        channels.value[9] = (unsigned int)(input[9]*1000 + 1000); // Reset channel
+        channels.value[10] = (unsigned int)(input[10]*1000 + 1000); // Generic channel
+        return channels;
+    case 3: // Firefly Y6 mixing
+        channels.value[0] = (unsigned int)(500*((input[2]+1) -0.11*input[0] +0.11*input[1] -0.11*input[3]) +1000); // top-right motor channel
+        channels.value[1] = (unsigned int)(500*((input[2]+1) -0.11*input[0] +0.11*input[1] +0.11*input[3]) +1000); // bottom-right motor channel
+        channels.value[2] = (unsigned int)(500*((input[2]+1) +0.00*input[0] -0.11*input[1] -0.11*input[3]) +1000); // top-rear motor channel
+        channels.value[3] = (unsigned int)(500*((input[2]+1) +0.00*input[0] -0.11*input[1] +0.11*input[3]) +1000); // bottom-rear motor channel
+        channels.value[4] = (unsigned int)(500*((input[2]+1) +0.11*input[0] +0.11*input[1] -0.11*input[3]) +1000); // top-left motor channel
+        channels.value[5] = (unsigned int)(500*((input[2]+1) +0.11*input[0] +0.11*input[1] +0.11*input[3]) +1000); // bottom-left channel
+        channels.value[6] = (unsigned int)(-input[3]*500 + 1500); // steering wheel channel
+        channels.value[7] = (unsigned int)(input[9]*1000 + 1000); // reset channel
+        channels.value[8] = (unsigned int)(input[0]*500 + 1500); // aileron channel
+        channels.value[9] = (unsigned int)(input[1]*500 + 1500); // elevator channel
+        channels.value[10] = (unsigned int)(input[6]*500 + 1500); // motor gimbal channel
+        return channels;
+    default:
+        ROS_FATAL(&quot;Invalid parameter for -/HID/mixerid- in param server!&quot;);
+        ros::shutdown();
+
+    }
+}
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;joystick_node&quot;);
+    ros::NodeHandle n;
+
+    JoyConverter converter(n);
+
+    // Setting debug level of the node
+    if( ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug) ) {
+        ros::console::notifyLoggerLevelsChanged();
+    }
+
+    // Enter spin
+    while (ros::ok())
+    {
+        ros::spin();
+    }
+
+    return 0;
+}
+</code></pre>
+
+<p>the launch file</p>
+
+<pre><code>&lt;launch&gt;
+
+&lt;rosparam command=&quot;load&quot; file=&quot;$(find last_letter)data/parameters/HID.yaml&quot; /&gt;
+
+&lt;node pkg=&quot;joy&quot; type=&quot;joy_node&quot; name=&quot;joystick&quot; output=&quot;screen&quot; &gt;
+    &lt;param name=&quot;dev&quot; value=&quot;/dev/input/js0&quot; /&gt;
+    &lt;param name=&quot;deadzone&quot; value=&quot;0.01&quot; /&gt;
+&lt;/node&gt;
+
+&lt;node pkg=&quot;last_letter&quot; name=&quot;joy2chan&quot; type=&quot;joy2chan&quot; output=&quot;screen&quot; &gt;
+    &lt;remap from=&quot;rawPWM&quot; to=&quot;ctrlPWM&quot;/&gt;
+&lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>the console output:</p>
+
+<pre><code>$ roslaunch last_letter joytest.launch 
+... logging to /home/george/.ros/log/119b1428-6fa6-11e6-a462-2c6e859e3f86/roslaunch-george-Inspiron-5559-28254.log
+Checking log directory for disk usage. This may take awhile.
+Press Ctrl-C to interrupt
+Done checking log file disk usage. Usage is &lt;1GB.
+
+started roslaunch server http://george-Inspiron-5559:46412/
+
+SUMMARY
+========
+
+PARAMETERS
+ * /HID/axes: [0, 1, 3, 2, 2, -...
+ * /HID/buttons: [-1, -1, -1, -1, ...
+ * /HID/mixerid: 1
+ * /HID/throws: [-1.0, -1.0, 1.0,...
+ * /joystick/deadzone: 0.01
+ * /joystick/dev: /dev/input/js0
+ * /rosdistro: kinetic
+ * /rosversion: 1.12.2
+
+NODES
+  /
+    joy2chan (last_letter/joy2chan)
+    joystick (joy/joy_node)
+
+auto-starting new master
+process[master]: started with pid [28265]
+ROS_MASTER_URI=http://localhost:11311
+
+setting /run_id to 119b1428-6fa6-11e6-a462-2c6e859e3f86
+process[rosout-1]: started with pid [28278]
+started core service [/rosout]
+process[joystick-2]: started with pid [28285]
+process[joy2chan-3]: started with pid [28315]
+[ INFO] [1472666973.702040051]: Reading input axes
+[ INFO] [1472666973.702935490]: Reading input buttons configuration
+[ INFO] [1472666973.817538003]: Opened joystick: /dev/input/js0. deadzone_: 0.010000.
+[DEBUG] [1472666974.728438506]: joy2chan: Processing new joy msg
+[DEBUG] [1472666974.728592498]: joy2chan: Calling mixing function
+[DEBUG] [1472666974.728720886]: joy2chan: Publishing channels
+[DEBUG] [1472666974.728855197]: joy2chan: Callback ended
+*** stack smashing detected ***: /home/george/catkin_ws/devel/lib/last_letter/joy2chan terminated
+[joy2chan-3] process has died [pid 28315, exit code -6, cmd /home/george/catkin_ws/devel/lib/last_letter/joy2chan rawPWM:=ctrlPWM __name:=joy2chan __log:=/home/george/.ros/log/119b1428-6fa6-11e6-a462-2c6e859e3f86/joy2chan-3.log].
+log file: /home/george/.ros/log/119b1428-6fa6-11e6-a462-2c6e859e3f86/joy2chan-3*.log
+^C[joystick-2] killing on exit
+[rosout-1] killing on exit
+[master] killing on exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+done
+</code></pre>
+
+<p>and the log file</p>
+
+<pre><code>[rosmaster.main][INFO] 2016-08-31 20:23:42,869: initialization complete, waiting for shutdown
+[rosmaster.main][INFO] 2016-08-31 20:23:42,870: Starting ROS Master Node
+[xmlrpc][INFO] 2016-08-31 20:23:42,871: XML-RPC server binding to 0.0.0.0:11311
+[rosmaster.master][INFO] 2016-08-31 20:23:42,871: Master initialized: port[11311], uri[http://george-Inspiron-5559:11311/]
+[xmlrpc][INFO] 2016-08-31 20:23:42,871: Started XML-RPC server [http://george-Inspiron-5559:11311/]
+[xmlrpc][INFO] 2016-08-31 20:23:42,871: xml rpc node: starting XML-RPC server
+[rosmaster.master][INFO] 2016-08-31 20:23:42,944: +PARAM [/run_id] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:42,948: +PARAM [/roslaunch/uris/host_george_inspiron_5559__36964] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/HID/throws] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/rosdistro] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/HID/mixerid] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/joystick/dev] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/HID/axes] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/rosversion] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,014: +PARAM [/HID/buttons] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,015: +PARAM [/joystick/deadzone] by /roslaunch
+[rosmaster.master][INFO] 2016-08-31 20:23:43,017: +SERVICE [/rosout/get_loggers] /rosout http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,018: +SERVICE [/rosout/set_logger_level] /rosout http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,019: +PUB [/rosout_agg] /rosout http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,023: +SUB [/rosout] /rosout http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,028: +PUB [/rosout] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,029: +SERVICE [/joystick/get_loggers] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,030: +SERVICE [/joystick/set_logger_level] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,031: +PUB [/diagnostics] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,032: +PUB [/joy] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,054: +PUB [/rosout] /joy2chan http://george-Inspiron-5559:40879/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,055: +SERVICE [/joy2chan/get_loggers] /joy2chan http://george-Inspiron-5559:40879/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,056: +SERVICE [/joy2chan/set_logger_level] /joy2chan http://george-Inspiron-5559:40879/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,059: +SUB [/joy] /joy2chan http://george-Inspiron-5559:40879/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,059: +PUB [/ctrlPWM] /joy2chan http://george-Inspiron-5559:40879/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,070: publisherUpdate[/rosout] -&gt; http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:43,072: publisherUpdate[/rosout] -&gt; http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:47,189: -PUB [/rosout] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:47,193: -PUB [/diagnostics] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:47,195: -PUB [/joy] /joystick http://george-Inspiron-5559:40955/
+[rosmaster.master][INFO] 2016-08-31 20:23:47,199: -SERVICE [/joystick/get_loggers] /joystick rosrpc://george-Inspiron-5559:50657
+[rosmaster.master][INFO] 2016-08-31 20:23:47,202: -SERVICE [/joystick/set_logger_level] /joystick rosrpc://george-Inspiron-5559:50657
+[rosmaster.master][INFO] 2016-08-31 20:23:47,283: publisherUpdate[/rosout] -&gt; http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:47,284: publisherUpdate[/joy] -&gt; http://george-Inspiron-5559:40879/
+[rosmaster.threadpool][ERROR] 2016-08-31 20:23:47,291: Traceback (most recent call last):
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rosmaster/threadpool.py&quot;, line 218, in run
+    result = cmd(*args)
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rosmaster/master_api.py&quot;, line 208, in publisher_update_task
+    xmlrpcapi(api).publisherUpdate(&#39;/master&#39;, topic, pub_uris)
+  File &quot;/usr/lib/python2.7/xmlrpclib.py&quot;, line 1243, in __call__
+    return self.__send(self.__name, args)
+  File &quot;/usr/lib/python2.7/xmlrpclib.py&quot;, line 1602, in __request
+    verbose=self.__verbose
+  File &quot;/usr/lib/python2.7/xmlrpclib.py&quot;, line 1283, in request
+    return self.single_request(host, handler, request_body, verbose)
+  File &quot;/usr/lib/python2.7/xmlrpclib.py&quot;, line 1311, in single_request
+    self.send_content(h, request_body)
+  File &quot;/usr/lib/python2.7/xmlrpclib.py&quot;, line 1459, in send_content
+    connection.endheaders(request_body)
+  File &quot;/usr/lib/python2.7/httplib.py&quot;, line 1053, in endheaders
+    self._send_output(message_body)
+  File &quot;/usr/lib/python2.7/httplib.py&quot;, line 897, in _send_output
+    self.send(msg)
+  File &quot;/usr/lib/python2.7/httplib.py&quot;, line 859, in send
+    self.connect()
+  File &quot;/usr/lib/python2.7/httplib.py&quot;, line 836, in connect
+    self.timeout, self.source_address)
+  File &quot;/usr/lib/python2.7/socket.py&quot;, line 575, in create_connection
+    raise err
+error: [Errno 111] Connection refused
+
+[rosmaster.master][INFO] 2016-08-31 20:23:48,287: -PUB [/rosout_agg] /rosout http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:48,288: -SUB [/rosout] /rosout http://george-Inspiron-5559:34959/
+[rosmaster.master][INFO] 2016-08-31 20:23:48,288: -SERVICE [/rosout/get_loggers] /rosout rosrpc://george-Inspiron-5559:51747
+[rosmaster.master][INFO] 2016-08-31 20:23:48,289: -SERVICE [/rosout/set_logger_level] /rosout rosrpc://george-Inspiron-5559:51747
+[rosmaster.main][INFO] 2016-08-31 20:23:48,352: keyboard interrupt, will exit
+[rosmaster.main][INFO] 2016-08-31 20:23:48,352: stopping master...
+[rospy.core][INFO] 2016-08-31 20:23:48,353: signal_shutdown [atexit]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/10641">Georacer</a> on 2016-08-31 13:16:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>My initial suspicion is that the problem might be with accessing past the end of the <code>input</code> array. What happens if you change the first <code>for</code> loop in <code>joy2chan</code> to have a conditional statement of <code>i&lt;11</code> instead of <code>i&lt;=1</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1272">jarvisschultz</a> on 2016-08-31 15:28:06 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>There are a few problems with your code, which potentially crashes your node:</p>
+
+<ol>
+<li><p>Are you sure the <code>joyMsg</code> in the callback <code>joy2chan</code> always has a fixed number of axes and buttons? I saw that you always trying to read 11 (or 12?) elements from the array.</p></li>
+<li><p>This part of your code is confusing:  <code>for (i = 0; i &lt;= 11; i++) ...</code> Are you trying to say that there are 12 elements? Because you only declare <code>double input[11];</code> </p></li>
+</ol>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26292">DavidN</a> on 2016-09-01 00:57:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;m embarrassed to say it, but it was <code>&lt;=11</code> that was breaking the code.
+Two weird parts, though:
+1) If I was calling an invalid element of <code>input</code> inside <code>joy2chan</code>, why did the callback finish (as seen by the debug messages) and the crash?
+2) This code used to run fine in 14.04 and Indigo.
+Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10641">Georacer</a> on 2016-09-01 01:19:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Perhaps Kinetic uses a new compiler, which is more strict.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10641">Georacer</a> on 2016-09-01 01:23:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The stack grows downwards from the top of your address space, so writing past the end of an array that&#39;s on the stack will clobber whatever else is on the stack. Depending on how the compiler decides to lay out your stack, that could be another variable, the return address or something else.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2016-09-01 05:15:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I suspect the compiler or the C library is putting a sentinel value between stack frames, and using that to detect if you&#39;ve accidentally written past the end of your frame. Might be showing up now because it&#39;s new, might be due to better compiler optimizations, or just different stack layout.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2016-09-01 05:17:30 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

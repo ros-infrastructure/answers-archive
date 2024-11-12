@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Start launchfile from service - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/260212">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Start launchfile from service</h2>
+      <div class="question">
+        <p>I&#39;m looking into using the <code>roslaunch</code> python API to start/stop a given launch file based on service calls. The <code>roslaunch</code> API is fairly straight forward to work with, but I&#39;ve run into a threading issue. When calling <code>roslaunch.parent.ROSLaunchParent</code>from my Service Handler function, I get the following error:
+<code>Error processing request: signal only works in main thread</code>.</p>
+
+<p>This makes sense, as the documentation clearly states that <code>ROSLaunchParent</code> must be called from the main thread, while the service handler function is clearly running in its own thread.</p>
+
+<p>So my question is: is there an easy way to switch context/execute the <code>ROSLaunchParent</code> call in the main thread of the node hosting the service?</p>
+
+<p>The node looks like this:</p>
+
+<pre><code>from rosbag_logging.srv import *
+import rospy
+import roslaunch
+
+class LoggingNode:
+    def __init__(self):
+        self.launch = None
+        self.start_service = rospy.Service(&#39;rosbag_logging/start&#39;, StartLogging, self._srv_start_logging)
+        self.stop_service = rospy.Service(&#39;rosbag_logging/stop&#39;, StopLogging, self._srv_stop_logging)
+        self.status_service = rospy.Service(&#39;rosbag_logging/status&#39;, GetLoggingStatus, self._srv_status_logging)
+
+    def _srv_start_logging(self, req):
+        if self.launch == None:
+            uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
+            roslaunch.configure_logging(uuid)
+            self.launch = roslaunch.parent.ROSLaunchParent(uuid, [&#39;rosbag_logging.launch&#39;])
+            self.launch.start()
+        return EmptyResponse()
+
+    def _srv_stop_logging(self, req):
+        if self.launch != None:
+            self.launch.shutdown()
+            self.launch = None
+        return EmptyResponse()
+
+    def _srv_status_logging(self, req):
+        is_running = self.launch != None
+        return GetLoggingStatusResponse(is_running)
+
+if __name__ == &quot;__main__&quot;:
+    rospy.init_node(&#39;rosbag_logging&#39;)
+    logging_node = LoggingNode()
+    rospy.spin()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/28262">follesoe</a> on 2017-04-25 05:39:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>The ROS <a href="http://wiki.ros.org/capabilities">capabilities</a> provides a set of services for discovering, starting and stopping launch files using ROS services. Maybe you can use that instead of writing your own version?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2017-04-25 12:59:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@follesoe Did you figure out a bespoke solution or a solution using capabilities?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27828">surfertas</a> on 2019-03-23 10:34:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would like to know it too</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37912">rezenders</a> on 2020-12-15 12:31:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Any developments on this topic? I face the same problem - I cannot launch a node from the ros server.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69218">mac137</a> on 2021-02-09 11:12:59 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Not perfect but one way round this problem is to trigger launch.start() in the main thread by passing the variable self.launch generated in _srv_start_logging and any other required information to the main thread using global variables. Then in the main thread have a loop that performs the start/stop actions.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/44434">felix_v</a> on 2019-08-01 05:57:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I think a straightforward way is to use a Queue object that holds a boolean value. The service callback function can set or reset the bit in the queue and then the main thread can start or stop the launchfile using the roslaunch API. You could adapt the following pseudocode to your needs</p>
+
+<pre><code>from Queue import Queue
+import rospy
+from your_package.srv import StartPackage, StopPackage
+
+
+def set_queue_item(queue):
+    queue.get()
+    queue.put(True)
+
+
+def reset_queue_item(queue):
+    queue.get()
+    queue.put(False)
+
+
+def read_from_queue(queue):
+    current_item = queue.get()
+    queue.put(current_item)
+    return current_item
+
+
+def start_package(req, queue):
+    # callback method the StartPackage service
+    # the req parameter contains the message received from the client
+    set_queue_item(queue)
+
+
+def stop_package(req, queue):
+    # callback method the StopPackage service
+    # the req parameter contains the message received from the client
+    reset_queue_item(queue)
+
+
+if __name__ == &#39;__main__&#39;:
+    queue = Queue(1)    #create a queue of just 1 element
+    queue.put(False)
+    package_launched = False
+    rospy.init_node(&#39;your_node&#39;)
+    start_package_service = rospy.Service(&#39;start_package&#39;, StartPackage, lambda req: start_package(req, queue))
+    stop_package_service = rospy.Service(&#39;stop_package&#39;, StopPackage, lambda req: stop_package(req, queue))
+    while not rospy.is_shutdown():
+        if read_from_queue(queue) and not package_launched:
+            launch(&#39;yourfile.launch&#39;)  # implement your custom launch method using the roslaunch API
+            package_launched = True
+        if not read_from_queue(queue) and package_launched:
+            stop(&#39;yourfile.launch&#39;)    # implement your custom stop method using the roslaunch API
+            package_launched = False
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/66603"></a> on 2020-12-27 17:33:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Spawning multiple robots in Gazebo and assinging namespaces - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/379101">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Spawning multiple robots in Gazebo and assinging namespaces</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99134/spawning-multiple-robots-in-gazebo-and-assinging-namespaces">https://robotics.stackexchange.com/questions/99134/spawning-multiple-robots-in-gazebo-and-assinging-namespaces</a>.</p>
+        <p>In my application I want to spawn multiple robots in the Gazebo world and also keep namespaces for each robot in order to use tools as SLAM, navigation or exploration for each robot individually.</p>
+
+<p>Thanks to <a href="https://zmk5.github.io/general/demo/2019/07/15/ros2-spawning-entity.html">Zahi Kakish</a> and the splitting of Gazebo map with robot models I am now able to spawn robots in my world at arbitrary positions.</p>
+
+<p>However, I face a problem with my namespace configuration. When spawning robots with the code shown below I will receive a rqt_graph as shown in the picture.</p>
+
+<pre><code>for position in positions:
+        # Set their respective variables via gazebo service call /spawn_entity
+        robots.append(
+            Node(
+                package=&quot;my_sim_robot_spawner&quot;,
+                executable=&quot;spawn_robot&quot;,
+                name=&quot;robot_spawner&quot;,
+                namespace=&quot;robot&quot;+str(robot_cnt),
+                output=&quot;screen&quot;,
+                arguments=[&#39;robot&#39;+str(robot_cnt),
+                           &#39;robot&#39;+str(robot_cnt),
+                           str(position[&#39;x&#39;]),
+                           str(position[&#39;y&#39;]),
+                           str(position[&#39;z&#39;])
+                ],
+                remappings=[
+                    (&quot;/tf&quot;, &quot;/robot&quot; + str(robot_cnt) + &quot;/tf&quot;),
+                ]
+            )
+        )
+    # Generate state publishers for each robot
+    robots.append(
+        Node(
+            package=&quot;robot_state_publisher&quot;,
+            executable=&quot;robot_state_publisher&quot;,
+            name=&quot;state_publisher&quot;,
+            namespace=&quot;robot&quot;+str(robot_cnt),
+            output=&quot;screen&quot;,
+            parameters=[
+                {
+                    &#39;use_sim_time&#39;: use_sim_time,
+                    &#39;robot_description&#39;: robot_desc,
+                    #&#39;tf_prefix&#39;: &quot;robot&quot;+str(robot_cnt)
+                }
+            ],
+            arguments=[urdf],
+            remappings=[
+                (&quot;/tf&quot;, &quot;/robot&quot; + str(robot_cnt) + &quot;/tf&quot;),
+                (&quot;/tf_static&quot;, &quot;/robot&quot; + str(robot_cnt) + &quot;/tf_static&quot;),
+            ]
+        )
+    )
+
+    # Initialize online SLAM for each robot via slam_toolbox online_sync_launch
+    robots.append(
+        Node(
+            package=&quot;slam_toolbox&quot;,
+            executable=&quot;sync_slam_toolbox_node&quot;,
+            name=&quot;slam_toolbox&quot;,
+            namespace=&quot;robot&quot;+str(robot_cnt),
+            output=&quot;screen&quot;,
+            parameters=[
+                get_package_share_directory(&quot;my_sim_slam_toolbox&quot;) + &#39;/config/my_mapper_params_online_sync.yaml&#39;,
+                #get_package_share_directory(&quot;slam_toolbox&quot;) + &#39;/config/my_mapper_params_online_sync.yaml&#39;,
+                {&#39;use_sim_time&#39;: use_sim_time}
+            ],
+            remappings=[
+                (&quot;/scan&quot;, &quot;/robot&quot;+str(robot_cnt)+&quot;/scan&quot;),
+                (&quot;/tf&quot;, &quot;/robot&quot;+str(robot_cnt)+&quot;/tf&quot;),
+                (&quot;/tf_static&quot;, &quot;/robot&quot;+str(robot_cnt)+&quot;/tf_static&quot;),
+                (&quot;/map_metadata&quot;, &quot;/robot&quot;+str(robot_cnt)+&quot;/map_metadata&quot;),
+                (&quot;/map&quot;, &quot;/robot&quot;+str(robot_cnt)+&quot;/map&quot;)
+            ]
+        )
+    )
+
+    robots.append(
+        Node(
+            package=&#39;rviz2&#39;,
+            executable=&#39;rviz2&#39;,
+            name=&#39;rviz2&#39;,
+            namespace=&quot;robot&quot;+str(robot_cnt),
+            output=&#39;screen&#39;,
+            # arguments=&#39;&#39;
+        )
+    )
+</code></pre>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16221334354117414.png" alt="image description"></p>
+
+<p>My original problem is, that the message filter drops messages from base_scan like so</p>
+
+<blockquote>
+<p>[sync<em>slam</em>toolbox<em>node-6] [INFO]
+[1622133119.029122539]
+[robot0.slam</em>toolbox]: Message Filter
+dropping message: frame &#39;base_scan&#39; at
+time 1694.763 for reason &#39;Unknown&#39;&gt;</p>
+</blockquote>
+
+<p>Therefore I digged deeper and came to the hypothesis that the tf tree outside my robots namespace is probably the source of this behavior, due to missing transformations which may cause the message filter for SLAM toolbox troubles.</p>
+
+<p>I searched the code for additional possibilities where I may have forgotten to define the namespace but I was unable to find where. Probably inside the turtlebot3<em>diff</em>drive as it is the only node, which I haven&#39;t found the configuration for, except within the model.sdf of the robot, in which I have defined </p>
+
+<pre><code>&lt;plugin name=&quot;turtlebot3_diff_drive&quot; filename=&quot;libgazebo_ros_diff_drive.so&quot;&gt;
+      &lt;ros&gt;
+          namespace&gt;/robot0&lt;/namespace&gt;
+      &lt;/ros&gt;
+   &lt;update_rate&gt;30&lt;/update_rate&gt;
+   &lt;!-- wheels --&gt;
+   &lt;left_joint&gt;wheel_left_joint&lt;/left_joint&gt;
+</code></pre>
+
+<p>as it is a Gazebo plugin.</p>
+
+<p>So, I would be glad if someone can point me in the right direction, regarding how to make SLAM toolbox work with my namespace configuration, or even if I am on the right track with my problem analysis?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/69326">NotARobot</a> on 2021-05-27 11:59:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I think your problem is indeed with your tf tree. Each robot should have a separated tf tree, e.g /robot1/tf, /robot2/tf, etc. So indeed you need to do that remapping in the .sdf of the robot. Look at the example with 2 robots from the navigation2 folks: <a href="https://github.com/ros-planning/navigation2/blob/galactic/nav2_bringup/nav2_gazebo_spawner/nav2_gazebo_spawner/nav2_gazebo_spawner.py#L75">https://github.com/ros-planning/navigation2/blob/galactic/nav2_bringup/nav2_gazebo_spawner/nav2_gazebo_spawner/nav2_gazebo_spawner.py#L75</a> They modify the .sdf for each robot they want to spawn. 
+Did you solve this?</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/64524">charlie92</a> on 2021-11-25 01:36:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes, the issue is within gazebo and their /tf tree. Shortly after I asked the question here I stumbled upon a git issue addressing that the remapping via spawner was not possible and open to be fixed. At that time the issue was less then a week old - unfortunately I can&#39;t find it that fast to link it here.
+However it seems Mr.Macenski found a workaround. <a href="https://githubmemory.com/repo/ros-simulation/gazebo_ros_pkgs/issues/1301">[ros2] gazebo plugins should publish /tf topic as /namespace/tf if the robot is spawned with namespace #1301</a>. This workaround seems to be the answer your giving :)</p>
+
+<p>Have you tried it out? Is it working? - I haven&#39;t solved the issue yet, but I would be glad if you could give me feedback if that workaround solves the problem. As for now, I have not that much time to try it out due to my PHD studies, but I will test it in the holidays.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69326">NotARobot</a> on 2021-11-25 03:15:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, I could manage to run multiple robots with multiple slam_toolbox instances that way, which is using a namespace for each robot. One more thing on the slam_toolbox launch file, as mention by the link you cited, the following remappings need to be done so the namespace can be preprended to those topics</p>
+
+<pre><code>remappings = [
+    (&quot;/map&quot;, &quot;map&quot;),
+    (&quot;/scan&quot;, &quot;scan&quot;),
+    (&quot;/tf&quot;, &quot;tf&quot;),
+    (&quot;/tf_static&quot;, &quot;tf_static&quot;),
+]
+</code></pre>
+
+<p>Hope it helps</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64524">charlie92</a> on 2021-11-25 10:13:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you very much! I&#39;ll try it asap. :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69326">NotARobot</a> on 2021-11-25 10:15:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@NotARobot Did you get your example project to work correctly? Can you maybe share it on GitHub or similar? I am in the same place as you previously, I think, with the same problems ):</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63587">ljaniec</a> on 2022-02-02 09:13:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ljaniec I have not tried it for now. ATM I am working on SEIF SLAM - however this will eventually become important again when I test my multi-robot slam. For now it is on hold on my end.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69326">NotARobot</a> on 2022-02-07 07:24:12 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

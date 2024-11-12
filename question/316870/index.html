@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] composition and node names with launch files - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/316870">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] composition and node names with launch files</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/90683/ros2-composition-and-node-names-with-launch-files">https://robotics.stackexchange.com/questions/90683/ros2-composition-and-node-names-with-launch-files</a>.</p>
+        <p>Hi,</p>
+
+<p>I have a container with two nodes using intraprocess communication. One node is &quot;normal&quot;, while the other is a lifecycle managed node.</p>
+
+<p>When I use a launch file to start the container both the nodes get the same name and I get this warning:
+<code>1551268818.982420326: [rcl.logging_rosout] [WARN]    Publisher already registered for provided node name. If this is due to multiple nodes with the same name then all logs for that logger name will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.</code></p>
+
+<p>Is there a way to assign an unique name to each node components?</p>
+
+<p>Thank you</p>
+
+        <div class="owner"><p>Asked by <a href="/users/455"></a> on 2019-02-27 08:57:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Remapping arguments can be targeted on the command line. There&#39;s no functionality in <code>launch_ros</code> for this yet. I had theorized about a <code>Process with Multiple Nodes</code>:</p>
+
+<p><a href="https://github.com/ros2/design/pull/163/files#diff-df7db447d3b09c67c5487a923f56a445R423">https://github.com/ros2/design/pull/163/files#diff-df7db447d3b09c67c5487a923f56a445R423</a></p>
+
+<p>In there I note that&#39;s possible to remap name/namespace for each one, e.g. <code>camera1:__ns:=left camera2:__ns:=right</code>. But there&#39;s no helper for that in launch. You&#39;d need to figure out the command line arguments yourself and then pass those manually in the launch file.</p>
+
+<hr>
+
+<p>Edit1:</p>
+
+<p>So, let me make a few examples to explain the current state of affairs.</p>
+
+<p>First consider this:</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;string&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+
+class MyNode : public rclcpp::Node
+{
+public:
+  MyNode() : rclcpp::Node(&quot;my_node&quot;)
+  {}
+};
+
+int main(int argc, char const *argv[])
+{
+  rclcpp::init(argc, argv);
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+
+  auto node1 = std::make_shared&lt;MyNode&gt;();
+  auto node2 = std::make_shared&lt;MyNode&gt;();
+
+  executor.add_node(node1);
+  executor.add_node(node2);
+
+  executor.spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>The issue with this is that you run into the problem you reported originally, and you cannot effectively address them from the command line (and therefore also not from launch either).</p>
+
+<p>When you do something like this:</p>
+
+<pre><code>launch_ros.actions.LifecycleNode(
+    node_name=&#39;my_node_instance1&#39;,
+    node_namespace=&#39;my_ns&#39;,
+    node_executable=&#39;my_exec&#39;,
+    # ...
+)
+</code></pre>
+
+<p>Then what launch then does is something like <code>my_exec __node:=my_node_instance1 __ns:=/my_ns</code>, which as you&#39;ve discovered will apply to both nodes (in objects <code>node1</code> and <code>node2</code>), which still leaves them with the same name.</p>
+
+<p>If you instead did something like this:</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;string&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+
+class MyNode : public rclcpp::Node
+{
+public:
+  explicit
+  MyNode(const std::string &amp; node_name=&quot;my_node&quot;, const std::string &amp; node_namespace=&quot;/&quot;)
+  : rclcpp::Node(node_name, node_namespace)
+  {}
+};
+
+int main(int argc, char const *argv[])
+{
+  rclcpp::init(argc, argv);
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+
+  auto node1 = std::make_shared&lt;MyNode&gt;(&quot;my_node1&quot;);
+  auto node2 = std::make_shared&lt;MyNode&gt;(&quot;my_node2&quot;);
+
+  executor.add_node(node1);
+  executor.add_node(node2);
+
+  executor.spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>The above program can be run in any of these ways:</p>
+
+<ul>
+<li>remap a topic <code>my_exec my_node1:chatter:=chatter1 my_node2:chatter:=chatter2</code></li>
+<li>change node namespace <code>my_exec my_node1:__ns:=/ns1 my_node2:__ns:=/ns2</code></li>
+<li>change node name <code>my_exec my_node1:__node:=foo my_node2:__node:=bar</code></li>
+</ul>
+
+<p>For this reason, I recommend you always give nodes with in the same process a unique name, so that you can automatically avoid the issue you original reported and so you can address specific settings to them from the command line.</p>
+
+<p>That does not however address the concern you had with launch, if you then again do:</p>
+
+<pre><code>launch_ros.actions.LifecycleNode(
+    node_name=&#39;my_node_instance1&#39;,
+    node_namespace=&#39;my_ns&#39;,
+    node_executable=&#39;my_exec&#39;,
+    # ...
+)
+</code></pre>
+
+<p>You&#39;ll still end up with a command like <code>my_exec __node:=my_node_instance1 __ns:=&quot;my_ns&quot;</code>, which will get you back to have two nodes with the same name, and your original issue.</p>
+
+<p>As you suggested in your comments, you can work around this by telling it to not use global arguments, which would at least prevent launch from affecting the node names:</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;string&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+
+class MyNode : public rclcpp::Node
+{
+public:
+  explicit
+  MyNode(
+    const std::string &amp; node_name,
+    const std::string &amp; node_namespace,
+    rclcpp::NodeOptions options)
+  : rclcpp::Node(node_name, node_namespace, options)
+  {}
+};
+
+int main(int argc, char const *argv[])
+{
+  rclcpp::init(argc, argv);
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+
+  auto options = rclcpp::NodeOptions().use_global_arguments(false);
+  auto node1 = std::make_shared&lt;MyNode&gt;(&quot;my_node1&quot;, &quot;ns&quot;, options);
+  auto node2 = std::make_shared&lt;MyNode&gt;(&quot;my_node2&quot;, &quot;ns&quot;, options);
+
+  executor.add_node(node1);
+  executor.add_node(node2);
+
+  for (auto name : node1-&gt;get_node_names()) {if (!name.empty()) printf(&quot;&#39;%s&#39;\n&quot;, name.c_str());}
+
+  executor.spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>So if you take the above and run the aforementioned launch code, it will not change your node names.</p>
+
+<p>However, it may prevent launch from working correctly because <code>launch_ros.actions.LifecycleNode</code> uses the given node name and namespace to know how to monitor the node for lifecycle state changes.</p>
+
+<p>Long term, launch should be updated to better support executables with multiple nodes within them.</p>
+
+<p>In the meantime, however, for your specific use case where you have a lifecycle and non-lifecycle node in the same process, I&#39;d recommend something like this:</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;string&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_lifecycle/lifecycle_node.hpp&gt;
+
+class MyNode : public rclcpp::Node
+{
+public:
+  template&lt;typename... Args&gt;
+  explicit
+  MyNode(Args&amp;&amp;... args) : rclcpp::Node(std::forward&lt;Args&gt;(args)...) {}
+};
+
+class MyLifecycleNode : public rclcpp_lifecycle::LifecycleNode
+{
+public:
+  template&lt;typename... Args&gt;
+  explicit
+  MyLifecycleNode(Args&amp;&amp;... args)
+  : rclcpp_lifecycle::LifecycleNode(std::forward&lt;Args&gt;(args)...)
+  {}
+};
+
+int main(int argc, char const *argv[])
+{
+  rclcpp::init(argc, argv);
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+
+  auto node1 =
+    std::make_shared&lt;MyNode&gt;(&quot;normal&quot;, &quot;&quot;, rclcpp::NodeOptions().use_global_arguments(false));
+  auto node2 = std::make_shared&lt;MyLifecycleNode&gt;(&quot;lifecycle&quot;);
+
+  executor.add_node(node1);
+  executor.add_node(node2-&gt;get_node_base_interface());
+
+  for (auto name : node1-&gt;get_node_names()) {if (!name.empty()) printf(&quot;&#39;%s&#39;\n&quot;, name.c_str());}
+
+  executor.spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Which creates a normal node with <code>use_global_arguments</code> as false, and a lifecycle node with the default of true. In this case the node name given to launch will effect the lifecycle node but leave the normal one untouched. So if you do something like this:</p>
+
+<pre><code>launch_ros.actions.LifecycleNode(
+    node_name=&#39;my_node_instance1&#39;,
+    node_namespace=&#39;my_ns&#39;,
+    node_executable=&#39;my_exec&#39;,
+    # ...
+)
+</code></pre>
+
+<p>You&#39;ll get something like this:</p>
+
+<pre><code>&#39;normal&#39;
+&#39;my_node_instance1&#39;
+</code></pre>
+
+<p>Which allows you to avoid the duplicate names issue, allows you to control the lifecycle node&#39;s name from launch, and therefore for launch to monitor it remotely for state changes.</p>
+
+<hr>
+
+<p>There is a lingering and related issue (or actually two), which is that targeting nodes with specific settings from the command line only considers the node name and not the fully qualified node name which would also include the namespace, see: <a href="https://github.com/ros2/rcl/issues/296">https://github.com/ros2/rcl/issues/296</a> and that <code>rclcpp::Node::get_node_names()</code> does not return the fully qualified node name (it does not include the namespace) which you may have noticed in the last example&#39;s output, see: <a href="https://github.com/ros2/rclcpp/issues/643">https://github.com/ros2/rclcpp/issues/643</a> (we could use help with implementing this ;) )</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/10"></a> on 2019-02-27 17:14:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Where do you specify the <code>camera1</code> and <code>camera2</code> node names? Another problem that I see is about parameters, having the nodes two different names and different namespace I must create two different YAML files even if they have common parameters... or is there a way to specify common (global) params?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/455">Myzhar</a> on 2019-02-27 17:58:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The assumption in that example is that you have a single process which has two nodes, one called <code>camera1</code> and one called <code>camera2</code>. If the class does not let you set the node name (without remapping) then you might have a use case we didn&#39;t think of and don&#39;t currently support. I&#39;ll edit my answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2019-02-27 18:17:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Do you think that is possible to use the constructor with <code>use_global_arguments</code> and set it to false to ignore the name passed by the launch file? In this case I do not know where to get the <code>context</code>:
+<a href="http://docs.ros2.org/latest/api/rclcpp/classrclcpp_1_1Node.html#ab28b0b3c08b1a3597b1e0442822f46f2">http://docs.ros2.org/latest/api/rclcpp/classrclcpp_1_1Node.html#ab28b0b3c08b1a3597b1e0442822f46f2</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/455">Myzhar</a> on 2019-02-28 03:49:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It seems that setting <code>use_global_arguments</code> to false and using the <code>get_global_default_context</code> function for context I can overwrite the names. Now the problem is that also the <code>__params</code> argument is ignored and parameters are not initialized from YAML. How can I create the param list by myself?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/455">Myzhar</a> on 2019-02-28 06:05:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Finally I made a function to parse the YAML file using RCL. I think that a function that gets a YAML file as input and returns a parameter list should be useful:
+<code>std::vector&lt;rclcpp::Parameter&gt; createParamsListFromYAML(std::string yaml_file, std::string ros_namespace, std::string node_name)</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/455">Myzhar</a> on 2019-02-28 11:35:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I did a bit edit to my answer, hopefully it&#39;s helpful for you and others. Yeah you can create your own parameters as you described.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2019-02-28 17:19:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for the very helpful reply... I will work with that in mind... waiting for Lifecycle support for <code>image_transport</code> and <code>tf_broadcaster</code> that is why I have this hybrid multinode configuration ;-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/455">Myzhar</a> on 2019-02-28 17:28:26 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

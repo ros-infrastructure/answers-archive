@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscriber not working - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/410948">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscriber not working</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102864/subscriber-not-working">https://robotics.stackexchange.com/questions/102864/subscriber-not-working</a>.</p>
+        <p>Greeting. Sory if I made any mistake, English is not native language for me. I have three subscribers that supposed to change global variable but, as far as I understand, or they don&#39;t call or they don&#39;t change this variable. Sorry if this is something simple or obvious, but I spend quite amount of time trying to understand what is wrong.</p>
+
+<p>Header:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;sensor_msgs/Range.h&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+#include &lt;math.h&gt;
+#include &lt;stdlib.h&gt;
+
+void onIRSensor0(const sensor_msgs::Range &amp;msg);
+void onIRSensor1(const sensor_msgs::Range &amp;msg);
+void onIRSensor2(const sensor_msgs::Range &amp;msg);
+void onLaserSensor(const sensor_msgs::LaserScan &amp;msg);
+geometry_msgs::Twist update_velocity();
+
+float const MYROBOT_MAX_LIN_VEL = 0.6;
+float const MYROBOT_MAX_ANG_VEL = 2.0;
+int const MYROBOT_SPEED = 1;
+static int const SEGMENTS = 24;
+
+float dist_front_0;
+float dist_front_1;
+float dist_front_2; 
+float target_linear_velocity = 0.0;
+float target_angular_velocity = 0.0;
+float distances[SEGMENTS] = {};
+</code></pre>
+
+<p>Node itself:</p>
+
+<pre><code>#include &lt;auto_teleop_c.h&gt;
+
+float lerp(float a, float b, float coeff){
+    return float(a) + float(b-a) * float(coeff);
+}
+void onIRSensor0(const sensor_msgs::Range &amp;msg){
+    ROS_INFO(&quot;inside onIRSensor0&quot;);
+    dist_front_0 = msg.range / msg.max_range;
+}
+void onIRSensor1(const sensor_msgs::Range &amp;msg){
+    ROS_INFO(&quot;inside onIRSensor1&quot;);
+    dist_front_1 = msg.range / msg.max_range;
+}
+void onIRSensor2(const sensor_msgs::Range &amp;msg){
+    ROS_INFO(&quot;inside onIRSensor2&quot;);
+    dist_front_2 = msg.range / msg.max_range;
+}
+void onLaserSensor(const sensor_msgs::LaserScan &amp;msg){
+    for (int i = 0; i &lt; SEGMENTS; i++){
+        distances[i] = 9999.0;
+    }
+    float angle = msg.angle_min;
+    float r = 0.0;
+    for (int i = 0; i &lt; msg.ranges.size(); i++){
+        if (isinf(msg.ranges[i]))
+            float r = 12.0;
+        else
+            float r = msg.ranges[i];
+
+        float a = angle * 180 / M_PI;
+        int idx = int(a / (360 / SEGMENTS)) % SEGMENTS;
+        distances[idx] = std::min(distances[idx], r);
+        angle = angle + msg.angle_increment;
+    }
+}
+geometry_msgs::Twist update_velocity(){
+
+    if (dist_front_1 &lt; 0.8){
+        target_angular_velocity = MYROBOT_MAX_ANG_VEL;
+    }
+    else if (dist_front_0 &lt; 0.8){
+
+        target_linear_velocity = MYROBOT_MAX_LIN_VEL * dist_front_0;
+        target_angular_velocity = MYROBOT_MAX_ANG_VEL * (1 - dist_front_0);
+    }
+    else if (dist_front_2 &lt; 0.8){
+
+        target_linear_velocity = MYROBOT_MAX_LIN_VEL * dist_front_2;
+        target_angular_velocity = -MYROBOT_MAX_ANG_VEL * (1 - dist_front_2);
+    }
+    else{
+        ROS_INFO(&quot;Case 4&quot;);
+        int best_idx = 12;
+        float best_val = distances[best_idx];
+        for (int i = 8; i &lt;=16; i++){
+            if (distances[i] &gt; best_val){
+                best_val = distances[i];
+                best_idx = i;
+            }
+        }
+        float coeff = float(best_idx - 6) / 12.0;
+        target_angular_velocity = lerp(-float(MYROBOT_MAX_ANG_VEL), float(MYROBOT_MAX_ANG_VEL), coeff);
+        target_linear_velocity = MYROBOT_MAX_LIN_VEL * (1.0 - abs(coeff - 0.5) * 2.0);
+        ROS_INFO(&quot;target_angular_velocity : %f&quot;, target_angular_velocity);
+        ROS_INFO(&quot;target_linear_velocity : %f&quot;, target_linear_velocity);
+    }
+
+    geometry_msgs::Twist twist;
+    twist.linear.x = target_linear_velocity; twist.linear.y = 0.0; twist.linear.z = 0.0;
+    twist.angular.x = 0.0; twist.angular.y = 0.0; twist.angular.z = target_angular_velocity;
+    return twist;
+    }
+
+int main(int argc, char **argv){
+    ros::init(argc, argv, &quot;keyboard_teleop&quot;);
+    ros::NodeHandle nh;
+    ros::Publisher pub = nh.advertise&lt;geometry_msgs::Twist&gt;(&quot;/controller/cmd_vel&quot;, 10);
+    ros::Subscriber sub_front_0 = nh.subscribe(&quot;/myrobot/sensor/front_0&quot;, 1000, onIRSensor0);
+    ros::Subscriber sub_front_1 = nh.subscribe(&quot;/myrobot/sensor/front_1&quot;, 1000, onIRSensor1);
+    ros::Subscriber sub_front_2 = nh.subscribe(&quot;/myrobot/sensor/front_2&quot;, 1000, onIRSensor2);
+    ros::Subscriber sub_lidar = nh.subscribe(&quot;/myrobot/rplidar/scan&quot;, 1000, onLaserSensor);
+    ros::Rate rate(10);
+    while (ros::ok()){
+        pub.publish(update_velocity());
+        rate.sleep();
+    }   
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/130732">VitorW</a> on 2022-12-29 05:52:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This code is never spinning, which is required.</p>
+
+<p>Your <code>ros::spin()</code> is accomplishing nothing, because the code is in the while loop. You need to add a <code>ros::spinOnce()</code> inside the while loop, or create a <code>ros::AsyncSpinner()</code> object before entering the while loop.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-12-30 07:28:04 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>it&#39;s working. Thank you for your help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/130732">VitorW</a> on 2023-01-10 01:43:21 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

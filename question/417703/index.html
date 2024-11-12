@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf2 transform and pose publish with ROS2 and humble - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417703">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf2 transform and pose publish with ROS2 and humble</h2>
+      <div class="question">
+        <p>Hi</p>
+
+<p>I like to publish a pose using IMU and Monocular Image from ORB_SLAM3 in ROS2 and humble. I made a function. But some how not familiar with tf2 in ROS2 . So I got some errors. I include the tf2 header and also declared in CMakeList.txt dependencies. But still not working</p>
+
+<p>Here the code</p>
+
+<pre><code>void ImageGrabber::SyncWithImu()
+{
+  //while(1)
+  while (rclcpp::ok())
+  {
+    cv::Mat im;
+    double tIm = 0;
+    if (!img0Buf.empty()&amp;&amp;!mpImuGb-&gt;imuBuf.empty())
+    {
+      tIm = img0Buf.front()-&gt;header.stamp.sec + img0Buf.front()-&gt;header.stamp.nanosec * 1e-9;
+      if (tIm &gt; mpImuGb-&gt;imuBuf.back()-&gt;header.stamp.sec + mpImuGb-&gt;imuBuf.back()-&gt;header.stamp.nanosec * 1e-9)
+          continue;
+      {
+      this-&gt;mBufMutex.lock();
+      im = GetImage(img0Buf.front());
+      img0Buf.pop();
+      this-&gt;mBufMutex.unlock();
+      }
+
+      vector&lt;ORB_SLAM3::IMU::Point&gt; vImuMeas;
+      mpImuGb-&gt;mBufMutex.lock();
+      if(!mpImuGb-&gt;imuBuf.empty())
+      {
+        // Load imu measurements from buffer
+        vImuMeas.clear();
+        while (!mpImuGb-&gt;imuBuf.empty() &amp;&amp; mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.sec +
+                        mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.nanosec * 1e-9 &lt;= tIm)
+        {
+          double t = mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.sec + mpImuGb-&gt;imuBuf.front()-&gt;header.stamp.nanosec * 1e-9;          
+          cv::Point3f acc(mpImuGb-&gt;imuBuf.front()-&gt;linear_acceleration.x, mpImuGb-&gt;imuBuf.front()-&gt;linear_acceleration.y, mpImuGb-&gt;imuBuf.front()-&gt;linear_acceleration.z);
+          cv::Point3f gyr(mpImuGb-&gt;imuBuf.front()-&gt;angular_velocity.x, mpImuGb-&gt;imuBuf.front()-&gt;angular_velocity.y, mpImuGb-&gt;imuBuf.front()-&gt;angular_velocity.z);
+          vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc,gyr,t));
+          mpImuGb-&gt;imuBuf.pop();
+        }
+      }
+      mpImuGb-&gt;mBufMutex.unlock();
+      if(mbClahe)
+        mClahe-&gt;apply(im,im);
+
+      cv::Mat T_, R_, t_ ;
+
+      //stores return variable of TrackMonocular
+      mpSLAM-&gt;TrackMonocular(im, tIm, vImuMeas);
+
+      if (pub_tf || pub_pose)
+      {    
+        if (!(T_.empty())) {
+
+          cv::Size s = T_.size();
+          if ((s.height &gt;= 3) &amp;&amp; (s.width &gt;= 3)) {
+            R_ = T_.rowRange(0,3).colRange(0,3).t();
+            t_ = -R_*T_.rowRange(0,3).col(3);
+            std::vector&lt;float&gt; q = ORB_SLAM3::Converter::toQuaternion(R_);
+            float scale_factor=1.0;
+            //tf2::Transform transform;
+            geometry_msgs::msg::TransformStamped tf_msg;
+            tf_msg.header.stamp = rclcpp::Time(tIm);
+            tf_msg.header.frame_id = &quot;world&quot;;
+            tf_msg.child_frame_id = &quot;ORB_SLAM3_MONO_INERTIAL&quot;;
+            tf2::Transform tf_msg;
+            tf_msg.transform.translation.x = t_.at&lt;float&gt;(0, 0) * scale_factor;
+            tf_msg.transform.translation.y = t_.at&lt;float&gt;(0, 1) * scale_factor;
+            tf_msg.transform.translation.z = t_.at&lt;float&gt;(0, 2) * scale_factor;
+            tf_msg.transform.rotation.x = q[0];
+            tf_msg.transform.rotation.y = q[1];
+            tf_msg.transform.rotation.z = q[2];
+            tf_msg.transform.rotation.w = q[3];
+            //transform = tf2::Transform(tf_msg.transform);
+            //tf_broadcaster_-&gt;sendTransform(tf_msg.transform);
+          /*
+          if (pub_tf)
+            {
+              static tf::TransformBroadcaster br_;
+              br_.sendTransform(tf::StampedTransform(transform, ros::Time(tIm), &quot;world&quot;, &quot;ORB_SLAM3_MONO_INERTIAL&quot;));
+            }
+
+          */
+
+          if (pub_pose)
+            {
+              geometry_msgs::msg::PoseStamped pose;
+              //pose.header.stamp = img0Buf.front()-&gt;header.stamp;
+              pose.header.frame_id =&quot;ORB_SLAM3_MONO_INERTIAL&quot;;
+              tf_msg::poseTFToMsg(transform, pose.pose);
+              orb_pub-&gt;publish(pose);
+            }
+
+          }
+        }
+      }
+    }
+
+    std::chrono::milliseconds tSleep(1);
+    std::this_thread::sleep_for(tSleep);
+  }
+}
+
+void ImuGrabber::GrabImu(const sensor_msgs::msg::Imu::SharedPtr imu_msg)
+{
+  mBufMutex.lock();
+  imuBuf.push(imu_msg);
+  mBufMutex.unlock();
+  return;
+}
+</code></pre>
+
+<p>So i got errors in </p>
+
+<pre><code>    tf2::Transform tf_msg;
+</code></pre>
+
+<p>and</p>
+
+<pre><code>      tf_msg::poseTFToMsg(transform, pose.pose);
+</code></pre>
+
+<blockquote>
+<p>error: ‘tf2’ has not been declared<br>
+245 |             tf2::Transform
+tf_msg;</p>
+
+<p>error: ‘tf<em>msg’ is not a class,
+namespace, or enumeration   269 |<br>
+tf</em>msg::poseTFToMsg(transform,
+pose.pose);</p>
+</blockquote>
+
+<p>Any help?
+Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2023-07-25 03:31:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

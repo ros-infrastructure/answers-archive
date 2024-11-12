@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>I can't see the movement I made with the robot on the rviz screen, what is the reason? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/400175">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>I can't see the movement I made with the robot on the rviz screen, what is the reason?</h2>
+      <div class="question">
+        <p>I can&#39;t see the movement I made with the robot on the rviz screen, what is the reason?i chose tf</p>
+
+<p>the video  shows what I am trying to do</p>
+
+<p><a href="https://www.youtube.com/shorts/7IWGS1OrNwA">link text</a></p>
+
+<p>my problem odom turn around base_link axes</p>
+
+<pre><code>    #include &quot;Motor.h&quot;
+#include &lt;ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include&lt;PID_v1.h&gt;
+#include &lt;ros/time.h&gt;
+#include &lt;std_msgs/Int16.h&gt;
+ros::NodeHandle  nh;
+
+int updatenh = 0;
+
+
+#define LOOPTIME 10
+
+Motor right(11,10,3,2);
+Motor left(9,8,5,4);
+
+volatile long encoder0Pos = 0;    // encoder 1
+volatile long encoder1Pos = 0;    // encoder 2
+
+double left_kp = 17, left_ki = 0 , left_kd = 0;             // modify for optimal performance
+double right_kp = 20, right_ki = 0 , right_kd = 0;
+
+float demandx=0;
+float demandz=0;
+
+double demand_speed_left;
+double demand_speed_right;
+
+double right_input = 0, right_output = 0, right_setpoint = 0;
+PID rightPID(&amp;right_input, &amp;right_output, &amp;right_setpoint, right_kp, right_ki, right_kd, DIRECT); 
+double left_input = 0, left_output = 0, left_setpoint = 0;
+PID leftPID(&amp;left_input, &amp;left_output, &amp;left_setpoint, left_kp, left_ki, left_kd, DIRECT);  
+
+unsigned long currentMillis;
+unsigned long prevMillis;
+
+float encoder0Diff;
+float encoder1Diff;
+
+float encoder0Error;
+float encoder1Error;
+
+float encoder0Prev;
+float encoder1Prev;
+
+void cmd_vel_cb( const geometry_msgs::Twist&amp; twist){
+  demandx = twist.linear.x;
+  demandz = twist.angular.z;
+}
+
+ros::Subscriber&lt;geometry_msgs::Twist&gt; sub(&quot;cmd_vel&quot;, cmd_vel_cb );     //create a &quot;speed_msg&quot; ROS message
+std_msgs::Int16 left_wheel_msg;
+ros::Publisher left_wheel_pub(&quot;lwheel&quot; , &amp;left_wheel_msg);
+std_msgs::Int16 right_wheel_msg;
+ros::Publisher right_wheel_pub(&quot;rwheel&quot; , &amp;right_wheel_msg);                         //create a publisher to ROS topic &quot;speed&quot; using the &quot;speed_msg&quot; type
+
+double pos_act_left = 0;                    
+double pos_act_right = 0;                    
+
+void setup() {
+
+  nh.initNode();
+  nh.subscribe(sub);
+  nh.advertise(left_wheel_pub); 
+  nh.advertise(right_wheel_pub);      //prepare to publish speed in ROS topic
+//  Serial.begin(115200);
+
+  rightPID.SetMode(AUTOMATIC);
+  rightPID.SetSampleTime(1);
+  rightPID.SetOutputLimits(-100, 100);
+
+  leftPID.SetMode(AUTOMATIC);
+  leftPID.SetSampleTime(1);
+  leftPID.SetOutputLimits(-100, 100);
+
+
+
+
+//  Serial.println(&quot;Basic Encoder Test:&quot;);
+  attachInterrupt(digitalPinToInterrupt(left.en_a), change_left_a, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(left.en_b), change_left_b, CHANGE);
+
+  attachInterrupt(digitalPinToInterrupt(right.en_a), change_right_a, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(right.en_b), change_right_b, CHANGE);
+}
+
+void loop() {
+  currentMillis = millis();
+  if (currentMillis - prevMillis &gt;= LOOPTIME){
+    prevMillis = currentMillis;
+
+demand_speed_left = demandx - (demandz*0.2);
+demand_speed_right = demandx + (demandz*0.2);
+
+/*PID controller for speed control
+  Base speed being 1 ms and the demand_speed variables controlling it at fractions of the base.
+  The PID controller keeps trying to match the difference 
+  in encoder counts to match with the required amount, hence controlling the speed. */
+encoder0Diff = encoder0Pos - encoder0Prev; // Get difference between ticks to compute speed
+encoder1Diff = encoder1Pos - encoder1Prev;
+
+
+pos_act_left = encoder0Pos;  
+pos_act_right = encoder1Pos;
+
+encoder0Error = (demand_speed_left*39.65)-encoder0Diff; // 3965 ticks in 1m = 39.65 ticks in 10ms, due to the 10 millis loop
+encoder1Error = (demand_speed_right*39.65)-encoder1Diff;
+
+encoder0Prev = encoder0Pos; // Saving values
+encoder1Prev = encoder1Pos;
+
+
+left_setpoint = demand_speed_left*39.65;  //Setting required speed as a mul/frac of 1 m/s
+right_setpoint = demand_speed_right*39.65;
+
+
+left_input = encoder0Diff;  //Input to PID controller is the current difference
+right_input = encoder1Diff;
+
+
+
+   leftPID.Compute();
+    left.rotate(left_output);
+    rightPID.Compute();
+    right.rotate(right_output);
+//    Serial.print(encoder0Pos);
+//    Serial.print(&quot;,&quot;);
+//    Serial.println(encoder1Pos);
+
+
+
+
+publishPos(LOOPTIME);
+   if(updatenh&gt;10){
+    nh.spinOnce();
+    updatenh=0;
+  }else{
+    updatenh++;
+  }  
+  }
+
+ }
+
+
+//Publish function for odometry, uses a vector type message to send the data (message type is not meant for that but that&#39;s easier than creating a specific message type)
+void publishPos(double time) {
+ left_wheel_msg.data = pos_act_left;      //timestamp for odometry data
+ right_wheel_msg.data = pos_act_right;    //left wheel speed (in m/s)
+ left_wheel_pub.publish(&amp;left_wheel_msg);   //right wheel speed (in m/s)
+ right_wheel_pub.publish(&amp;right_wheel_msg);         //looptime, should be the same as specified in LOOPTIME (in s)
+
+}
+
+// ************** encoders interrupts **************
+
+// ************** encoder 1 *********************
+
+
+void change_left_a(){  
+
+  // look for a low-to-high on channel A
+  if
+
+ (digitalRead(left.en_a) == HIGH) { 
+    // check channel B to see which way encoder is turning
+    if (digitalRead(left.en_b) == LOW) {  
+      encoder0Pos = encoder0Pos + 1;         // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;         // CCW
+    }
+  }
+  else   // must be a high-to-low edge on channel A                                       
+  { 
+
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(left.en_b) == HIGH) {   
+      encoder0Pos = encoder0Pos + 1;          // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;          // CCW
+    }
+  }
+
+}
+
+void change_left_b(){  
+
+  // look for a low-to-high on channel B
+  if (digitalRead(left.en_b) == HIGH) {   
+   // check channel A to see which way encoder is turning
+    if (digitalRead(left.en_a) == HIGH) {  
+      encoder0Pos = encoder0Pos + 1;         // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;         // CCW
+    }
+      }
+  // Look for a high-to-low on channel B
+  else { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(left.en_a) == LOW) {   
+      encoder0Pos = encoder0Pos + 1;          // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;          // CCW
+    }
+  }
+
+
+}
+
+// ************** encoder 2 *********************
+
+void change_right_a(){  
+
+  // look for a low-to-high on channel A
+  if (digitalRead(right.en_a) == HIGH) {
+
+
+
+    // check channel B to see which way encoder is turning
+    if (digitalRead(right.en_b) == LOW) {  
+      encoder1Pos = encoder1Pos - 1;         // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;         // CCW
+    }
+  }
+  else   // must be a high-to-low edge on channel A                                       
+  { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(right.en_b) == HIGH) {   
+      encoder1Pos = encoder1Pos - 1;          // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;          // CCW
+    }
+  }
+
+}
+
+void change_right_b(){  
+
+  // look for a low-to-high on channel B
+  if (digitalRead(right.en_b) == HIGH) {   
+   // check channel A to see which way encoder is turning
+    if (digitalRead(right.en_a) == HIGH) {  
+      encoder1Pos = encoder1Pos - 1;         // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;         // CCW
+    }
+  }
+
+  // Look for a high-to-low on channel B
+  else { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(right.en_a) == LOW) {   
+      encoder1Pos = encoder1Pos - 1;          // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;          // CCW
+    }
+  }
+
+
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-05-06 03:02:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You&#39;re still not publishing anything related to Odom, neither are you actually creating a TF broadcaster.
+This was addressed the last time you asked <a href="https://answers.ros.org/question/399461/odometry-does-not-transform-in-rviz/">this question</a>.</p>
+
+<p>I suggest reading these <a href="https://wiki.ros.org/tf/Tutorials">tf tutorials</a> and also reading up about odometry. The construct has some videos on odometry data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-05-09 01:58:57 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If I&#39;m not publish about odom, how does it move?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-05-09 04:48:57 UTC</p></div>
+</div>
+<div class="comment">
+              <p>i added video link about my project</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-05-09 04:49:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Fair enough, let me rephrase. The code that you have published only publishes the wheel encoders/speed. It does not publish anything related to odom. Yet your problem is related to odom.</p>
+
+<p>I suggest looking <em>where</em> your odom TF comes from and first start looking there. <em>Then</em> if you still can&#39;t get it working, you can ask a question with the relevant code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-05-09 04:59:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I don&#39;t understand what you mean when you tell me to check where your Odom TF came from, can you help?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-05-09 05:09:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Are you a student? In that case I highly recommend asking your peers or professors to help you answer this question.</p>
+
+<p>First, check the tf tutorials I linked in the first comment.</p>
+
+<p>Second, tf has something called a <code>broadcaster</code> which broadcasts the <code>tf</code> (the transformation matrix) between two links, in this case <code>odom</code> and <code>base_link</code> (or <code>base_footprint</code>, I don&#39;t know which you use, but that&#39;s not too important).</p>
+
+<p>That TF broadcaster uses the encoder data to figure out how much your robot has moved and then creates the broadcast. It&#39;s obviously not broadcasting correctly.</p>
+
+<p>That&#39;s what I mean, but as I said, I suggest doing some googling and watching some videos on TF and odom (for instance from the construct).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-05-09 05:22:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m a mechanical engineer, but I&#39;m new to these issues, I&#39;m someone who is curious to learn:)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-05-09 05:43:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I understand, the problem is that your question is too broad for this forum, which is why I pointed you towards the tutorials and videos.</p>
+
+<p>As I said, I&#39;d advise you to find out where the odom transform is coming from. If you do not know how, I suggest you first dive into TF and odom by watching videos and doing some tutorials.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-05-09 06:05:59 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

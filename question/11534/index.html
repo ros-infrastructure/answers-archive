@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Arm navigation with a virtual robot - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/11534">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Arm navigation with a virtual robot</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/34917/arm-navigation-with-a-virtual-robot">https://robotics.stackexchange.com/questions/34917/arm-navigation-with-a-virtual-robot</a>.</p>
+        <p>I have read the <a href="http://www.ros.org/wiki/arm_navigation/Tutorials/Understanding%20the%20Planning%20Scene%20architecture">tutorial</a> on the new arm_navigation architecture, and I am really excited to try it out. As most tutorials have not been updated yet, do you have any code example that shows how to plan a movement using a robot position which is different from the current one?</p>
+
+<p>Let&#39;s say the robot is at (x,y,th), and I want to see if I can reach a place by moving the robot to (x&#39;, y&#39;, th&#39;). How can I do it using the planning scene?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/155">Lorenzo Riano</a> on 2011-10-13 03:16:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Lorenzo,</p>
+
+<p>It should be pretty easy.  Basically, you are going to put a different transform between the world frame (in this case &#39;odom_combined&#39;) and the frame associated with the base of the robot (&#39;base_footprint&#39;).  If operating with a running system you&#39;ll take the current state, apply whatever multi-dof and joint states are in the planning_scene_diff, and push the result to all components, who will then respond accordingly.  You&#39;ll want to interact with the components directly instead of using MoveArm, as you probably don&#39;t want to actually act based on state that&#39;s not the current one, though you are given the option.  </p>
+
+<p>Here&#39;s some code for generating IK solutions given another base configuration for your robot: </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+
+#include &lt;kinematics_msgs/GetKinematicSolverInfo.h&gt;
+#include &lt;kinematics_msgs/GetConstraintAwarePositionIK.h&gt;
+#include &lt;arm_navigation_msgs/SetPlanningSceneDiff.h&gt;
+
+static const std::string ARM_COLLISION_IK_NAME = &quot;/pr2_right_arm_kinematics/get_constraint_aware_ik&quot;;
+static const std::string ARM_QUERY_NAME = &quot;/pr2_right_arm_kinematics/get_ik_solver_info&quot;;
+static const std::string SET_PLANNING_SCENE_DIFF_NAME = &quot;/environment_server/set_planning_scene_diff&quot;;
+
+int main(int argc, char **argv){
+  ros::init (argc, argv, &quot;get_fk&quot;);
+  ros::NodeHandle rh;
+
+  ros::service::waitForService(ARM_QUERY_NAME);
+  ros::service::waitForService(ARM_COLLISION_IK_NAME);
+  ros::service::waitForService(SET_PLANNING_SCENE_DIFF_NAME);
+
+  ros::ServiceClient set_planning_scene_diff_client = rh.serviceClient&lt;arm_navigation_msgs::SetPlanningSceneDiff&gt;(SET_PLANNING_SCENE_DIFF_NAME);
+  ros::ServiceClient query_client = rh.serviceClient&lt;kinematics_msgs::GetKinematicSolverInfo&gt;(ARM_QUERY_NAME);
+  ros::ServiceClient ik_with_collision_client = rh.serviceClient&lt;kinematics_msgs::GetConstraintAwarePositionIK&gt;(ARM_COLLISION_IK_NAME);
+
+  arm_navigation_msgs::SetPlanningSceneDiff::Request planning_scene_req;
+  arm_navigation_msgs::SetPlanningSceneDiff::Response planning_scene_res;
+
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.stamp = ros::Time::now();
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.joint_names.push_back(&quot;world_joint&quot;);
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.frame_ids.push_back(&quot;odom_combined&quot;);
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.child_frame_ids.push_back(&quot;base_footprint&quot;);
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.poses.resize(1);
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.poses[0].position.x = 4.0;
+  planning_scene_req.planning_scene_diff.robot_state.multi_dof_joint_state.poses[0].orientation.w = 1.0;
+
+  if(!set_planning_scene_diff_client.call(planning_scene_req, planning_scene_res)) {
+    ROS_WARN(&quot;Can&#39;t get planning scene&quot;);
+    return -1;
+  }
+
+  // define the service messages
+  kinematics_msgs::GetKinematicSolverInfo::Request request;
+  kinematics_msgs::GetKinematicSolverInfo::Response response;
+
+  if(query_client.call(request,response))
+  {
+    for(unsigned int i=0; i&lt; response.kinematic_solver_info.joint_names.size(); i++)
+    {
+      ROS_DEBUG(&quot;Joint: %d %s&quot;,i,response.kinematic_solver_info.joint_names[i].c_str());
+    }
+  }
+  else
+  {
+    ROS_ERROR(&quot;Could not call query service&quot;);
+    ros::shutdown();
+    exit(-1);
+  }
+
+  // define the service messages
+  kinematics_msgs::GetConstraintAwarePositionIK::Request  gpik_req;
+  kinematics_msgs::GetConstraintAwarePositionIK::Response gpik_res;
+
+  gpik_req.timeout = ros::Duration(5.0);
+  gpik_req.ik_request.ik_link_name = &quot;r_wrist_roll_link&quot;;
+
+  gpik_req.ik_request.pose_stamped.header.frame_id = &quot;odom_combined&quot;;
+  gpik_req.ik_request.pose_stamped.pose.position.x = 4.75;
+  gpik_req.ik_request.pose_stamped.pose.position.y = -0.188;
+  gpik_req.ik_request.pose_stamped.pose.position.z = .94;
+
+  gpik_req.ik_request.pose_stamped.pose.orientation.x = 0.0;
+  gpik_req.ik_request.pose_stamped.pose.orientation.y = 0.0;
+  gpik_req.ik_request.pose_stamped.pose.orientation.z = 0.0;
+  gpik_req.ik_request.pose_stamped.pose.orientation.w = 1.0;
+
+  gpik_req.ik_request.ik_seed_state.joint_state.position.resize(response.kinematic_solver_info.joint_names.size());
+  gpik_req.ik_request.ik_seed_state.joint_state.name = response.kinematic_solver_info.joint_names;
+
+  for(unsigned int i=0; i&lt; response.kinematic_solver_info.joint_names.size(); i++)
+  {
+    gpik_req.ik_request.ik_seed_state.joint_state.position[i] = (response.kinematic_solver_info.limits[i].min_position + response.kinematic_solver_info.limits[i].max_position)/2.0;
+  }
+  if(ik_with_collision_client.call(gpik_req, gpik_res))
+  {
+    if(gpik_res.error_code.val == gpik_res.error_code.SUCCESS)
+    {
+      for(unsigned int i=0; i &lt; gpik_res.solution.joint_state.name.size(); i ++)
+      {
+        ROS_INFO(&quot;Joint: %s %f&quot;,gpik_res.solution.joint_state.name[i].c_str(),gpik_res.solution.joint_state.position[i]);
+      } 
+    }
+    else
+    {
+      ROS_ERROR(&quot;Inverse kinematics failed&quot;);
+    }
+  }
+  else
+  {
+    ROS_ERROR(&quot;Inverse kinematics service call failed&quot;);
+  }
+  ros::shutdown();
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/82">egiljones</a> on 2011-10-19 05:18:54 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Pre-allocation of messages for nodelets - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/353198">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Pre-allocation of messages for nodelets</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95969/pre-allocation-of-messages-for-nodelets">https://robotics.stackexchange.com/questions/95969/pre-allocation-of-messages-for-nodelets</a>.</p>
+        <p>I&#39;m working on an application where I need to remove all memory allocations from the critical path that affects the response time of my system.  I&#39;m using nodelets with zero-copy message passing.  I noticed that there is the concept of borrowing messages from the middlewhare in ROS2.  I assume this means you can have the system pre-allocate a buffer on messages on startup that can be used without allocations.  </p>
+
+<p>I&#39;m looking for something similar in ROS1.  Has anyone implemented this already?  I&#39;d like to avoid re-inventing the wheel. </p>
+
+        <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-25 12:07:37 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Conceptual question/observation: nodelets only support zero-copy message passing if you publish const pointers (we call them messages but it&#39;s really pointers). This means all subscribers share the same message. When would your publisher know when it&#39;s safe to change the message it has published (ie: for the next iteration)? The standard workflow for a nodelet would be:</p>
+
+<ol>
+<li>allocate new message</li>
+<li>set its fields</li>
+<li>publish</li>
+<li>goto 1</li>
+</ol>
+
+<p>Step 1 is necessary as you can never know how long one of your downstream consumers holds on to the shared ptr.</p>
+
+<p>Second:</p>
+
+<blockquote>
+<p>I&#39;m working on an application where I need to remove all memory allocations from the critical path that affects the response time of my system</p>
+</blockquote>
+
+<p>is memory allocation such a bottleneck on your machine? What architecture is this? If you&#39;re doing this to make this &quot;real-time safe&quot;, then there are bigger problems in <code>roscpp</code> than a few memory allocations.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-25 12:16:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your reply.  The issue is that I was using that workflow and profiled the loop rate of the system and over very long runs every so often the <code>allocate new message</code> step takes a long time to return and the system acts weird as a result.</p>
+
+<p>The zero-copy part is less important to me than consistent response time (I have plenty of overhead for a few copies).  I was able to do this by implementing my system as just separate threads that use a <code>boost::lockfree:spsc_queue</code> to communicate.  This solves the problem of memory allocations as the input message is created on the stack before the loop starts, filled out, and then copied into the queue.  This has the obvious limitation that if I fill the queue faster than I empty it I will lose messages.  I&#39;m ok with that as I can control my loop rates to avoid that situation.</p>
+
+<p>I&#39;m hoping for a similar workflow from nodelets.  I&#39;m considering trying to learn how boost memory pools work to see if I could use them.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-25 12:26:49 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>The issue is that I was using that workflow and profiled the loop rate of the system and over very long runs every so often the <code>allocate new message</code> step takes a long time to return and the system acts weird as a result.</p>
+</blockquote>
+
+<p>wouldn&#39;t figuring out <em>why</em> this happens be the correct way to solve this (memory leak, or perhaps fragmentation?), instead of working around it by trying to change the system?</p>
+
+<p>And from your description this sounds like what you did for <code>jog_arm</code>, is that correct?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-25 12:28:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes, this is my attempt at improving <code>jog_arm</code> and the determinism of the loop rates.  I first tried using <code>nodelets</code> and ros messaging for message passing between the threads and when I profiled it I discovered the weird performance in the memory allocation.  I&#39;m just testing on my laptop which is some old-ish i5.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-25 12:42:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>This is also a conceptual question.  If I could get zero-copy and pre-allocation of a message pool it would be really nice to use that in many other places.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-25 12:46:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m not sure it&#39;d be possible to use a different memory allocator with the code generated by <code>gencpp</code> et al. Perhaps <em>placement new</em> could be used.</p>
+
+<p>The default allocator in C++ iirc does not deal very well with memory fragmentation, which you will run into with small-ish messages and frequent (de)allocation. There are allocators available which are much faster and better equipped to deal with that.</p>
+
+<p>Placement new seems like it could approximate your memory pool idea (together with a pre-allocated block of storage and some accounting). Perhaps Boost&#39;s memory pool does this automatically (it&#39;s been too long, I don&#39;t remember).</p>
+
+<p>Note: nodelets do not really exchange any messages. It&#39;s all pointers, and messages don&#39;t even leave the process. In the end it&#39;s threads + some shared memory and pointers with overlayed ROS msg semantics.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-25 13:03:15 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In case anyone comes back here looking for this I got what I wanted with boost memory pools.  Here is a tiny code example creating my message that I would then publish (and would get automagically handled by a memory pool that allocates in blocks that are sized as a multiple of the message type+control_block for the shared ptr):</p>
+
+<pre><code>#include &lt;boost/pool/pool_alloc.hpp&gt;
+#include &lt;geometry_msgs/TwistStamped.h&gt;
+#include &lt;memory&gt;
+
+template &lt;typename T&gt;
+boost::shared_ptr&lt;T&gt; make_shared_from_pool() {
+  using allocator_t = boost::fast_pool_allocator&lt;boost::shared_ptr&lt;T&gt;&gt;;
+  return boost::allocate_shared&lt;T, allocator_t&gt;(allocator_t());
+}
+
+int main(int argc, char **argv) {
+  auto msg = make_shared_from_pool&lt;geometry_msgs::TwistStamped&gt;();
+
+  std::cout &lt;&lt; *msg &lt;&lt; std::endl;
+
+  return 0;
+}
+</code></pre>
+
+<p><em>Note</em>: This does not solve the problem of how does the memory for variable-sized arrays inside a ROS message gets allocated (those are still normal vectors that use normal new).  It just solves the issue of the message itself, which is fine if the message only includes PODs like TwistStamped.</p>
+
+<p>I discovered this cool tool for printing whenever malloc is called that helped troubleshoot this: <a href="https://github.com/samsk/log-malloc2">https://github.com/samsk/log-malloc2</a></p>
+
+<p>One other thing to note is that doesn&#39;t completely get rid of malloc calls in the critical path, it just greatly reduces them and so long as I roughly free one message for everyone I create in a short period of time (what happens here) I shouldn&#39;t get any more calls to malloc while the system is running.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-25 18:27:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Now I just have to go back and try to implement <code>jog_arm</code> communication like this before anyone notices.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-25 19:54:40 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>so long as I roughly free one message for everyone I create in a short period of time (what happens here) I shouldn&#39;t get any more calls to malloc while the system is running.</p>
+</blockquote>
+
+<p>this is indeed a constraint here. In general I would say this is not satisfiable / guaranteed (as Subscribers could be hanging on to the shared ptrs they receive for an undetermined amount of time), but in your specific case it&#39;s probably OK.</p>
+
+<p>Nice answer, and I like how it progressively got improved to be less intrusive and more efficient.</p>
+
+<p>Note that in ROS 2, using different allocators for messages and other entities in <code>rclcpp</code> is actually supported, so that should allow you to even deal with the memory allocations for non-PODs (and non-POD fields).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-26 02:05:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Just re-read <a href="http://wiki.ros.org/roscpp/Overview/MessagesCustomAllocators">wiki/roscpp/Overview/MessagesCustomAllocators</a> and it appears custom allocators are actually supported for messages generated by <code>gencpp</code>.</p>
+
+<p>Might be interesting to take a look at.</p>
+
+<p>It would not be as explicit (ie: clear from the code) a custom allocator is being used when you instantiate a message though (as no <code>make_shared_from_pool(..)</code> would be needed).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-26 02:11:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This would work.  The thing is a memory pool like this could have much worse performance if it is used to allocate arrays of different types.  One would have be really careful to give a separate tagged pool allocator to each message they are using per the types inside the vectors.  If a message had two types of vector that wouldn&#39;t work.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-26 07:58:45 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>this is indeed a constraint here. In general I would say this is not satisfiable / guaranteed (as Subscribers could be hanging on to the shared ptrs they receive for an undetermined amount of time), but in your specific case it&#39;s probably OK.</p>
+</blockquote>
+
+<p>This concern also applies to normal malloc/free.  If there is more memory being allocated than being freed the program will eventually run out of memory.  If the subscriber hangs onto the message the worst that happens is the pool is increased in size with a new malloc as it hits the limit in size.  Even in this case, a memory pool for that use case is making the tradeoff of fewer calls to malloc for generally more memory usage if they use a pool like this.</p>
+
+<p>One thing you&#39;ll notice is that when this started I declared the allocator and then passed it to the make function and now I&#39;m creating it as a temporary.  That is because this allocator in boost is a singletoon with a separate pool for each tag (that&#39;s what the template param is for).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48265">tyler-picknik</a> on 2020-05-26 08:04:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn: Do you know how do the custom message allocators work in the case of nodelets? What if I create a publisher with a custom allocator, and subscribe in another nodlet with the default allocator? Would that trigger roscpp to copy the value? Or would it be a runtime error? Or would it be okay as the subscriber does neither allocate nor deallocate the value?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2020-06-30 18:28:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@peci1: no, I&#39;m afraid I don&#39;t know.</p>
+
+<p>I would <em>expect</em> nothing to really happen though. The subscriber only interacts with the message object, it does not allocate anything. And deallocation is done through the standard <code>shared_ptr</code> dtor, so my expectation would for this to <em>just work</em>. But assumptions and all ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-07-01 03:23:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I did a test because I was really interested into what would really happen. And the result is - you will trigger a serialization and deserialization if your publisher and subscriber differ in allocators. I created a gist that proves it: <a href="https://gist.github.com/peci1/be78ffea761e38cdbeeca4e2c961c702">https://gist.github.com/peci1/be78ffea761e38cdbeeca4e2c961c702</a> . I also added a note to <a href="http://wiki.ros.org/roscpp/Overview/MessagesCustomAllocators#Compatibility_with_existing_code">http://wiki.ros.org/roscpp/Overview/MessagesCustomAllocators#Compatibility_with_existing_code</a> so that others don&#39;t have to wrap their heads around this problem. The decision about deserialization is made by <a href="https://github.com/ros/ros_comm/blob/noetic-devel/clients/roscpp/src/libros/subscription.cpp#L826">comparing</a> typeid of the published message (set <a href="https://github.com/ros/ros_comm/blob/noetic-devel/clients/roscpp/include/ros/publisher.h#L87">here</a>) with the typeid of the subscription callback (set <a href="https://github.com/ros/ros_comm/blob/noetic-devel/clients/roscpp/include/ros/subscription_callback_helper.h#L149">here</a>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2020-07-01 09:03:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ah, yes. I&#39;d forgotten about the <code>typeid(..)</code>, which will indeed be different with a different allocator.</p>
+
+<p>Nice test and thanks for the follow-up.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-07-01 09:06:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Suggestion: make that gist into a proper repository. Repositories have much better visibility, and it could even serve as an example on how to do this (ie: use custom allocators).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-07-01 09:07:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If there were not the serdes step, I guess you could run into problems if actually the subscriber would be the one responsible for deallocating the memory. Because the subscriber thinks the message uses <code>std::allocator</code>, it would call <code>std::allocator::deallocate</code>, which, however, can do a very different procedure than your custom allocator.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2020-07-01 09:10:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I now just wonder if we should start rewriting all ROS 1 nodes with <code>std::pmr::polymorphic_allocator</code> :-D @gvdhoorn: I&#39;m not sure a repository would be a better fit for this kind of one-off thing. Feel free to reference the gist, I&#39;m not going to delete it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/7736">peci1</a> on 2020-07-01 09:13:25 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

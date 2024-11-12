@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 action client callbacks not triggered - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402427">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 action client callbacks not triggered</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/101964/ros2-action-client-callbacks-not-triggered">https://robotics.stackexchange.com/questions/101964/ros2-action-client-callbacks-not-triggered</a>.</p>
+        <p>Hello,</p>
+
+<p>I am trying to call an action from an action server. However, the action client callbacks do not seem to trigger.</p>
+
+<p>Here is a minimal example I wrote based on the Fibonacci action <a href="https://docs.ros.org/en/foxy/Tutorials/Actions/Writing-a-Cpp-Action-Server-Client.html">tutorial</a>. This action server calls the action<em>tutorials</em>cpp Fibonacci action.</p>
+
+<pre><code>#include &lt;functional&gt;
+#include &lt;memory&gt;
+#include &lt;thread&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;rclcpp_action/rclcpp_action.hpp&quot;
+#include &quot;action_tutorials_interfaces/action/fibonacci.hpp&quot;
+
+
+class FibonacciActionServer : public rclcpp::Node {
+public:
+    using Fibonacci = action_tutorials_interfaces::action::Fibonacci;
+    using ServerGoalHandleFibonacci = rclcpp_action::ServerGoalHandle&lt;Fibonacci&gt;;
+    using ClientGoalHandleFibonacci = rclcpp_action::ClientGoalHandle&lt;Fibonacci&gt;;
+
+    explicit FibonacciActionServer(const rclcpp::NodeOptions &amp;options = rclcpp::NodeOptions())
+            : Node(&quot;fibonacci_action_server&quot;, options) {
+        using namespace std::placeholders;
+
+        this-&gt;action_server_ = rclcpp_action::create_server&lt;Fibonacci&gt;(
+                this,
+                &quot;master_fibonacci&quot;,
+                std::bind(&amp;FibonacciActionServer::handle_goal, this, _1, _2),
+                std::bind(&amp;FibonacciActionServer::handle_cancel, this, _1),
+                std::bind(&amp;FibonacciActionServer::handle_accepted, this, _1));
+    }
+
+private:
+    rclcpp_action::Server&lt;Fibonacci&gt;::SharedPtr action_server_;
+    std::shared_ptr&lt;ServerGoalHandleFibonacci&gt; called_action_goal_handle;
+
+    rclcpp_action::GoalResponse handle_goal(
+            const rclcpp_action::GoalUUID &amp;uuid,
+            std::shared_ptr&lt;const Fibonacci::Goal&gt; goal) {
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Received goal request with order %d&quot;, goal-&gt;order);
+        (void) uuid;
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }
+
+    rclcpp_action::CancelResponse handle_cancel(
+            const std::shared_ptr&lt;ServerGoalHandleFibonacci&gt; goal_handle) {
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Received request to cancel goal&quot;);
+        (void) goal_handle;
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+
+    void handle_accepted(const std::shared_ptr&lt;ServerGoalHandleFibonacci&gt; goal_handle) {
+        using namespace std::placeholders;
+        // this needs to return quickly to avoid blocking the executor, so spin up a new thread
+        std::thread{std::bind(&amp;FibonacciActionServer::execute, this, _1), goal_handle}.detach();
+    }
+
+    void execute(const std::shared_ptr&lt;ServerGoalHandleFibonacci&gt; goal_handle) {
+
+        this-&gt;called_action_goal_handle = goal_handle;
+
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Creating Action client and sending goal to Tutorial Fibonacci Action Server&quot;);
+
+        auto action_client = rclcpp_action::create_client&lt;Fibonacci&gt;(shared_from_this(),
+                                                                     &quot;fibonacci&quot;);
+
+        Fibonacci::Goal goal_msg;
+        goal_msg.order = goal_handle-&gt;get_goal()-&gt;order;
+
+        using std::placeholders::_1;
+        using std::placeholders::_2;
+        auto send_goal_options = rclcpp_action::Client&lt;Fibonacci&gt;::SendGoalOptions();
+        send_goal_options.goal_response_callback =
+                std::bind(&amp;FibonacciActionServer::goal_response_callback, this, _1);
+        send_goal_options.feedback_callback =
+                std::bind(&amp;FibonacciActionServer::feedback_callback, this, _1, _2);
+        send_goal_options.result_callback =
+                std::bind(&amp;FibonacciActionServer::result_callback, this, _1);
+        action_client-&gt;async_send_goal(goal_msg, send_goal_options);
+    }
+
+    void goal_response_callback(std::shared_future&lt;ClientGoalHandleFibonacci::SharedPtr&gt; future) {
+        auto goal_handle = future.get();
+        if (!goal_handle) {
+            RCLCPP_ERROR(this-&gt;get_logger(), &quot;Goal was rejected by server&quot;);
+        } else {
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;Goal accepted by server, waiting for result&quot;);
+        }
+    }
+
+    void feedback_callback(
+            ClientGoalHandleFibonacci::SharedPtr,
+            const std::shared_ptr&lt;const Fibonacci::Feedback&gt; feedback) {
+        std::stringstream ss;
+        ss &lt;&lt; &quot;Next number in sequence received: &quot;;
+        for (auto number: feedback-&gt;partial_sequence) {
+            ss &lt;&lt; number &lt;&lt; &quot; &quot;;
+        }
+        RCLCPP_INFO(this-&gt;get_logger(), ss.str().c_str());
+    }
+
+    void result_callback(const ClientGoalHandleFibonacci::WrappedResult &amp;result) {
+        switch (result.code) {
+            case rclcpp_action::ResultCode::SUCCEEDED:
+                break;
+            case rclcpp_action::ResultCode::ABORTED:
+                RCLCPP_ERROR(this-&gt;get_logger(), &quot;Goal was aborted&quot;);
+                return;
+            case rclcpp_action::ResultCode::CANCELED:
+                RCLCPP_ERROR(this-&gt;get_logger(), &quot;Goal was canceled&quot;);
+                return;
+            default:
+                RCLCPP_ERROR(this-&gt;get_logger(), &quot;Unknown result code&quot;);
+                return;
+        }
+        std::stringstream ss;
+        ss &lt;&lt; &quot;Result received: &quot;;
+        for (auto number: result.result-&gt;sequence) {
+            ss &lt;&lt; number &lt;&lt; &quot; &quot;;
+        }
+        RCLCPP_INFO(this-&gt;get_logger(), ss.str().c_str());
+        this-&gt;called_action_goal_handle-&gt;succeed(result.result);
+    }
+
+};  // class FibonacciActionServer
+
+int main(int argc, char **argv) {
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;FibonacciActionServer&gt;();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>I expected the callbacks to be called and the goal handle to succeed once the tutorials Fibonacci action server succeeds. However, only the &quot;goal<em>response</em>callback&quot; is called, not the feedback<em>callback nor the result</em>callback...</p>
+
+<p>I tried using a SingleThreadedExecutor and a MultiThreadedExecutor to spin the node but the behavior doesn&#39;t change.</p>
+
+<p>I am running Ubuntu 20.04.1 on an x86, with kernel 5.13.0 and ROS2 foxy fitzroy.</p>
+
+<p>So I am wondering if it is possible to trigger the client callbacks while the server is waiting for a response and if so, how ?</p>
+
+<p>I hope I asked the questions correctly. Thanks for your help !</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108360">Sam_HeraclesRobotics</a> on 2022-06-16 10:46:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I figured out my mistake. The problem happens because when the action server’s &quot;execute&quot; function ends, the action client is deleted. </p>
+
+<p>I fixed this by putting the pointer to the action client as a class member. Now the callbacks are called and the action succeeds when the result_callback is triggered.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/108360">Sam_HeraclesRobotics</a> on 2022-06-17 02:25:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It is a nice question and an explanation to a bit niche problem, you should accept your own answer as a solution :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63587">ljaniec</a> on 2022-06-17 04:16:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks ! I am new here so I think I couldn&#39;t accept it myself. Thanks for accepting it for me !</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108360">Sam_HeraclesRobotics</a> on 2022-06-20 03:39:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>No problem, this is a good, detailed question with code snippets and a non-obvious answer, good for future readers :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63587">ljaniec</a> on 2022-06-20 03:47:45 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

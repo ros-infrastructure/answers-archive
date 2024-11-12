@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Service Client freezes when calling twice - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/352098">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Service Client freezes when calling twice</h2>
+      <div class="question">
+        <p>Service clients seem to freeze, if you are calling them more then just one time in ROS2.</p>
+
+<p>I slightly modified the demo example from here:</p>
+
+<p><a href="https://github.com/ros2/examples/blob/master/rclpy/services/minimal_client/examples_rclpy_minimal_client/client_async.py">https://github.com/ros2/examples/blob/master/rclpy/services/minimal_client/examples_rclpy_minimal_client/client_async.py</a></p>
+
+<p>If I just remove the <code>break</code> like that:</p>
+
+<pre><code>future = cli.call_async(req)
+while rclpy.ok():
+    rclpy.spin_once(node)
+    if future.done():
+        try:
+            result = future.result()
+        except Exception as e:
+            node.get_logger().info(&#39;Service call failed %r&#39; % (e,))
+        else:
+            node.get_logger().info(
+                &#39;Result of add_two_ints: for %d + %d = %d&#39; %
+                (req.a, req.b, result.sum))
+
+node.destroy_node()
+rclpy.shutdown()
+</code></pre>
+
+<p>This way the loop is called multiple times and should print the service response multiple times as well.
+This ends in the result that I get the client output twice:</p>
+
+<pre><code>[INFO] [minimal_client_async]: Result of add_two_ints: for 41 + 1 = 42
+[INFO] [minimal_client_async]: Result of add_two_ints: for 41 + 1 = 42
+</code></pre>
+
+<p>And the service server output appears only once:</p>
+
+<pre><code>[INFO] [minimal_service]: Incoming request
+a: 41 b: 1
+</code></pre>
+
+<p>If I now additionally move the service call itself <code>future = cli.call_async(req)</code> inside the loop, I am expecting the request to be sent multiple times. (Yes, I know that Services are not made to be called frequently, it&#39;s just to keep the example simple.)</p>
+
+<pre><code>while rclpy.ok():
+    future = cli.call_async(req)
+    rclpy.spin_once(node)
+    if future.done():
+        try:
+            result = future.result()
+        except Exception as e:
+            node.get_logger().info(&#39;Service call failed %r&#39; % (e,))
+        else:
+            node.get_logger().info(
+                &#39;Result of add_two_ints: for %d + %d = %d&#39; %
+                (req.a, req.b, result.sum))
+
+node.destroy_node()
+rclpy.shutdown()
+</code></pre>
+
+<p>This results in printing from the client only once:</p>
+
+<pre><code>[INFO] [minimal_client_async]: Result of add_two_ints: for 41 + 1 = 42
+</code></pre>
+
+<p>But the service server seems anyway to be requested frequently, because it is continuously printing to the terminal:</p>
+
+<pre><code>[INFO] [minimal_service]: Incoming request
+a: 41 b: 1
+[INFO] [minimal_service]: Incoming request
+a: 41 b: 1
+[INFO] [minimal_service]: Incoming request
+a: 41 b: 1
+[INFO] [minimal_service]: Incoming request
+a: 41 b: 1
+...
+</code></pre>
+
+<p>I would just like to call a service multiple times from the client. For example I would like to use a button to stop my robot by calling the service, if the button is pressed (which might result in sending cmd_vel: 0) and as soon as it is released again, the robot should be able to move on. Any ideas on how to solve this?</p>
+
+<p>I am using Ubuntu 18.04 in a VM with ROS2 Eloquent installed.</p>
+
+<p>It is easy to reproduce this by using the service examples from here:</p>
+
+<p><a href="https://github.com/ros2/examples/tree/master/rclpy/services">https://github.com/ros2/examples/tree/master/rclpy/services</a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/3527"></a> on 2020-05-12 04:16:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I also faced a same problem, so I tried that fixed this code.</p>
+
+<p>Use a following code if you like:</p>
+
+<pre><code>from example_interfaces.srv import AddTwoInts
+
+import rclpy
+import random
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = rclpy.create_node(&#39;minimal_client_async&#39;)
+
+    cli = node.create_client(AddTwoInts, &#39;add_two_ints&#39;)
+
+    req = AddTwoInts.Request()
+    # req.a = 41
+    # req.b = 1
+    while not cli.wait_for_service(timeout_sec=1.0):
+        node.get_logger().info(&#39;service not available, waiting again...&#39;)
+
+    # future = cli.call_async(req)
+    while rclpy.ok():
+        req.a = random.randrange(10)
+        req.b = random.randrange(10)
+        future = cli.call_async(req)
+        # rclpy.spin_once(node)
+        rclpy.spin_until_future_complete(node, future)
+        if future.done():
+            try:
+                result = future.result()
+            except Exception as e:
+                node.get_logger().info(&#39;Service call failed %r&#39; % (e,))
+            else:
+                node.get_logger().info(
+                    &#39;Result of add_two_ints: for %d + %d = %d&#39; %
+                    (req.a, req.b, result.sum))
+            # break
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<hr>
+
+<pre><code>[environment]
+・Ubuntu 20.04.01 LTS (docker)
+・ROS2 Foxy
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/65579">ksato-dev</a> on 2020-12-14 07:56:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>The problem with the code when you add the future inside the loop is that you&#39;re overwriting the future before the service even returns. You&#39;re probably calling it hundreds of times per second and the service takes much longer than that to finish. As pointed out in the answer by ksato-dev, you can just wait for each future to complete, or you could initialize and add to a list of futures if you&#39;re trying to execute many service calls simultaneously.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30659"></a> on 2021-12-02 19:43:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

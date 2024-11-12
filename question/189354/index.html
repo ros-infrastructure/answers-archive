@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>RViz does not display topics from a separate node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/189354">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>RViz does not display topics from a separate node</h2>
+      <div class="question">
+        <p>I posted in another thread about RViz not displaying PoseArray, turns out the issues is not just PoseArray but my other displays in the same node too. Thread here: <a href="http://answers.ros.org/question/189041">http://answers.ros.org/question/189041</a></p>
+
+<p>The PC2 topic is also not displaying.</p>
+
+<p>Just a bit of context: It is taking in a point cloud &quot;point<em>cloud</em>centers&quot; and calculating normals PoseArray, as well as outputting a normal filtered point cloud (limited by z). The point cloud was displaying fine until i added the normals PoseArray to be published in RViz, which has a fixed frame &quot;/map&quot; given by another node (which is already running at the same time as /point<em>cloud</em>centers&quot; is given by that same node)</p>
+
+<p>Also, both published topics <em>are</em> receiving the data, as given by <code>rostopic echo /normal_filtered_pcl</code> and <code>rostopic echo /normal_vectors</code>. My pc cloud is about 90,000 points if that matters at all. Thanks!</p>
+
+<p>Edit: Thanks to bvbdort to point out I didn&#39;t attach my declarations. They&#39;ve been added to the top (forgot this was right underneath the include statements.)</p>
+
+<pre><code>ros::Publisher pub;
+ros::Publisher poseArrayPub;
+geometry_msgs::PoseArray poseArray; // particles as PoseArray (preallocated)
+
+void normalCallback (const sensor_msgs::PointCloud2ConstPtr&amp; cloud)
+{
+
+  sensor_msgs::PointCloud2 output_normals;
+  sensor_msgs::PointCloud2 cloud_normals;
+  sensor_msgs::PointCloud2 cloud_filtered;
+  pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud2 (new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+  pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;::Ptr cloud_pass (new pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;);
+  pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;::Ptr cloud_filtered2 (new pcl::PointCloud&lt;pcl::PointXYZRGBNormal&gt;);   
+
+  // Start making result
+
+  pcl::fromROSMsg (*cloud, *cloud2);
+
+  poseArray.header.stamp = ros::Time::now();
+  poseArray.header.frame_id = cloud2-&gt;header.frame_id; //EDITED
+  ROS_INFO_STREAM(&quot;poseArray.header: frame=&quot; &lt;&lt; poseArray.header.frame_id); //Outputs &quot;/map&quot;
+
+  // estimate normals
+  pcl::NormalEstimation&lt;pcl::PointXYZ, pcl::PointNormal&gt; ne;
+  ne.setInputCloud(cloud2);
+  ne.setKSearch (24);
+  pcl::PointCloud&lt;pcl::PointNormal&gt;::Ptr normals (new pcl::PointCloud&lt;pcl::PointNormal&gt;);
+  ne.compute(*normals);
+
+
+
+  /******************Display filtered cloud based on height********/
+  pcl::toROSMsg (*normals, output_normals);
+  pcl::concatenateFields (*cloud, output_normals, cloud_normals);
+
+  pcl::fromROSMsg (cloud_normals, *cloud_pass);
+
+
+
+   // Create the filtering object
+    pcl::PassThrough&lt;pcl::PointXYZRGBNormal&gt; pass;
+    pass.setInputCloud (cloud_pass);
+    pass.setFilterFieldName (&quot;z&quot;);
+    pass.setFilterLimits (0.0, 1.0);
+    pass.filter (*cloud_filtered2);
+
+
+    pcl::toROSMsg (*cloud_filtered2, cloud_filtered);
+
+    ROS_INFO(&quot;points: %lu\n&quot;, cloud_filtered2-&gt;points.size());
+
+    // Publish the data
+    pub.publish (cloud_filtered);
+  /***************************************************************/
+
+
+
+  /***********************publish normal vectors************************/
+  for(size_t i = 0; i&lt;normals-&gt;points.size(); ++i)
+  {
+
+    // Declare goal output pose
+    geometry_msgs::PoseStamped pose;
+    geometry_msgs::Quaternion msg;
+
+    tf::Vector3 axis_vector(normals-&gt;points[i].normal[0], normals-&gt;points[i].normal[1], normals-&gt;points[i].normal[2]);
+    tf::Vector3 up_vector(0.0, 0.0, 1.0);
+
+    tf::Vector3 right_vector = axis_vector.cross(up_vector);
+    right_vector.normalized();
+    tf::Quaternion q(right_vector, -1.0*acos(axis_vector.dot(up_vector)));
+    q.normalize();
+    tf::quaternionTFToMsg(q, msg);
+
+    pose.pose.position.x = cloud2-&gt;points[i].x;
+    pose.pose.position.y = cloud2-&gt;points[i].y;
+    pose.pose.position.z = cloud2-&gt;points[i].z;
+
+    pose.pose.orientation = msg;
+
+    poseArray.poses.push_back(pose.pose);
+
+  }
+
+    poseArrayPub.publish(poseArray);
+    ROS_INFO(&quot;poseArray size: %i&quot;, poseArray.poses.size());
+    /***************************************************************/
+
+}
+
+int main (int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init (argc, argv, &quot;normal_filter&quot;);
+  ros::NodeHandle nh;
+
+  ros::Rate loop_rate(10);
+  // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe (&quot;/point_cloud_centers&quot;, 10, normalCallback);
+
+  // Create a ROS publisher for the output point cloud
+  pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt; (&quot;/normal_filtered_pcl&quot;, 10, 1);
+  poseArrayPub = nh.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/normal_vectors&quot;, 10, 1);
+
+
+
+  // Spin
+  ros::spin();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-07 11:05:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p><code>posearray</code> definition is missing</p>
+
+<pre><code>geometry_msgs::PoseArray poseArray;
+</code></pre>
+
+<p>Increase size of buffer in publisher</p>
+
+<pre><code>poseArrayPub = nh.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/normal_vectors&quot;, 1000, 1); 
+</code></pre>
+
+<p>Try to find frame id of pointcould and use the same frame from poseArray</p>
+
+<pre><code>ROS_INFO_STREAM(&quot;frame=&quot; &lt;&lt; cloud_filtered.header.frame_id);
+
+poseArray.header.frame_id=&quot;/camera_depth_optical_frame&quot;;  // check this 
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/9486">bvbdort</a> on 2014-08-07 11:45:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi, Thanks for pointing the first point out -- I had it in my code but was trying to avoid the #include messages in copy pasting. I did the next two suggestions, none worked. Neither topics are displaying.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18591">xuningy</a> on 2014-08-07 12:11:59 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>SOLVED. Had -nan values somewhere in my 90,000 points.</p>
+
+<pre><code> if (isinf(pose.pose.orientation.x) || isnan(pose.pose.orientation.x) ||
+      isinf(pose.pose.orientation.y) || isnan(pose.pose.orientation.y) || 
+      isinf(pose.pose.orientation.z) || isnan(pose.pose.orientation.z) ||
+      isinf(pose.pose.orientation.w) || isnan(pose.pose.orientation.w) ){
+      ROS_WARN(&quot;Point %d [%0.5f, %0.5f, %0.5f | %0.5f, %0.5f, %0.5f, %0.5f] &quot;, i, pose.pose.position.x, pose.pose.position.y, pose.pose.position.z, pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w);
+      continue;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/18591">xuningy</a> on 2014-08-07 13:19:21 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

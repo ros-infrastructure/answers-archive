@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>TimeSynchronizer in a class using stereo input - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/219139">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>TimeSynchronizer in a class using stereo input</h2>
+      <div class="question">
+        <p>Hi,
+I&#39;m relatively new to ROS. I want to write a class which gets two raw images and creates a callback,where I can afterwards manipulate both obtained images at the same time. I tried TimeSynchronizer  but it seems to never reach the Process() function. I want to create later on a disparity map (but not with the stereo_view) so I need synchronized input images. Time stamps are telling me that my input images are synchronized. So how can I get the two corresponding images in a callback function? </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;image_transport/image_transport.h&gt;
+#include &lt;image_transport/subscriber_filter.h&gt;
+#include &lt;sensor_msgs/image_encodings.h&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;message_filters/time_synchronizer.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+
+class ImgProcessor
+{
+
+
+
+ros::NodeHandle nh_;
+image_transport::ImageTransport it_;
+
+
+sensor_msgs::ImageConstPtr img_L;
+sensor_msgs::ImageConstPtr img_R;
+
+
+image_transport::Publisher image_pub_L;
+image_transport::Publisher image_pub_R;
+
+std::string IMG_TARGET_L_;
+std::string IMG_TARGET_R_;
+
+std::string IMG_DEST_L_;
+std::string IMG_DEST_R_;
+public:
+
+
+// Constructor: Initialize the subscribe-act-publish-cycle
+ImgProcessor(const std::string IMG_DEST_L, const std::string IMG_TARGET_L,const std::string IMG_DEST_R, const std::string IMG_TARGET_R)
+    : it_(nh_)
+{
+    // Open Window to show output stream
+    IMG_TARGET_L_ = IMG_TARGET_L;
+    IMG_TARGET_R_ = IMG_TARGET_R;
+    IMG_DEST_L_ = IMG_DEST_L;
+    IMG_DEST_R_ = IMG_DEST_R;
+
+    // Create output window
+    cv::namedWindow(IMG_TARGET_L_);
+    cv::namedWindow(IMG_TARGET_R_);
+
+    // Subscribe to input video and publish output video
+    message_filters::Subscriber&lt;sensor_msgs::Image&gt; image_sub_L(nh_,IMG_DEST_L_,40);
+    message_filters::Subscriber&lt;sensor_msgs::Image&gt; image_sub_R(nh_,IMG_DEST_R_,40);
+    message_filters::TimeSynchronizer&lt;sensor_msgs::Image,sensor_msgs::Image&gt; sync(image_sub_L,image_sub_R,40);
+    sync.registerCallback(boost::bind(&amp;ImgProcessor::Process,this, _1, _2));
+
+    ROS_INFO(&quot;Synched.&quot;);
+
+    image_pub_L = it_.advertise(IMG_TARGET_L_,1);
+    image_pub_R = it_.advertise(IMG_TARGET_R_,1);
+
+}
+
+// Destructor: Close all opened images
+~ImgProcessor()
+{
+    cv::destroyAllWindows();
+}
+
+
+// Process a message obtained in IMG_DEST
+void Process(const sensor_msgs::ImageConstPtr&amp; msg_l,const sensor_msgs::ImageConstPtr&amp; msg_r)
+{
+
+    ROS_INFO(&quot;Origin Stamp = [%i] &quot;, int(msg_l-&gt;header.stamp.toSec()));
+
+    // Create a CV image copy from incoming message
+    cv_bridge::CvImagePtr cv_ptr[2];
+    try
+    {
+        cv_ptr[0] = cv_bridge::toCvCopy(msg_l, sensor_msgs::image_encodings::MONO8);
+        cv_ptr[1] = cv_bridge::toCvCopy(msg_r, sensor_msgs::image_encodings::MONO8);
+    }
+    catch(cv_bridge::Exception&amp; e)
+    {
+        ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+        return;
+    }
+
+
+    // Process the incoming image
+    //cv::medianBlur(cv_ptr-&gt;image,cv_ptr-&gt;image,3);
+    cv::equalizeHist(cv_ptr[0]-&gt;image,cv_ptr[0]-&gt;image);
+    cv::Canny(cv_ptr[0]-&gt;image,cv_ptr[0]-&gt;image,50,255);
+
+    cv::equalizeHist(cv_ptr[1]-&gt;image,cv_ptr[1]-&gt;image);
+    cv::Canny(cv_ptr[1]-&gt;image,cv_ptr[1]-&gt;image,50,255);
+
+
+    // Update GUI
+    cv::imshow(IMG_TARGET_L_, cv_ptr[0]-&gt;image);
+    cv::waitKey(3);
+    cv::imshow(IMG_TARGET_R_, cv_ptr[1]-&gt;image);
+    cv::waitKey(3);
+
+    img_L = cv_ptr[0]-&gt;toImageMsg();
+    img_R = cv_ptr[1]-&gt;toImageMsg();
+    //ROS_INFO(&quot;Processed Stamp = [%i] &quot;, int(msg_o-&gt;header.stamp.nsecs));
+    //Publish transformed video
+    image_pub_L.publish(img_L);
+    image_pub_R.publish(img_R);
+}
+
+};
+
+
+
+
+
+int main(int argc, char **argv)
+{
+// Initialize the ROS system
+ros::init(argc, argv, &quot;stereo_proc_node&quot;);
+
+// Tell the user that the node has started to process images
+ROS_INFO(&quot;Processing images...&quot;);
+
+// Create image processor object
+ImgProcessor ip(&quot;/stereo/left/image_rect&quot;,&quot;stereo_proc/left/image&quot;,&quot;/stereo/right/image_rect&quot;,&quot;stereo_proc/right/image&quot;);
+
+
+//sync.registerCallback(boost::bind(&amp;callback, _1, _2));
+ros::spin();
+return 0;
+</code></pre>
+
+<p>}</p>
+
+        <div class="owner"><p>Asked by <a href="/users/24499">lamparta</a> on 2015-10-14 18:11:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <pre><code>ImgProcessor(..) : it_(nh_)
+{
+     ...
+    // Subscribe to input video and publish output video
+    message_filters::Subscriber&lt;sensor_msgs::Image&gt; image_sub_L(nh_,IMG_DEST_L_,40);
+    message_filters::Subscriber&lt;sensor_msgs::Image&gt; image_sub_R(nh_,IMG_DEST_R_,40);
+    message_filters::TimeSynchronizer&lt;sensor_msgs::Image,sensor_msgs::Image&gt; sync(image_sub_L,image_sub_R,40);
+    sync.registerCallback(boost::bind(&amp;ImgProcessor::Process,this, _1, _2));
+    ...
+}
+</code></pre>
+
+<p>This is more basic C++ than ROS, but your <code>TimeSynchronizer</code> instance and both <code>message_filters::Subscriber</code> instances are not member variables, so will go out-of-scope as soon as your constructor runs to completion.</p>
+
+<p>As they then no longer exist, I&#39;d expect your callback to never be called, as you observed.</p>
+
+<hr>
+
+<p>You may also want to look at <a href="http://wiki.ros.org/roslaunch/XML/remap">topic remapping</a>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2015-10-15 07:20:48 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;m facing almost a similar problem. In this case what would be the correct way to declare and define the <code>message_filters::Subscriber</code> and <code>TimeSynchronizer</code> inside the class and make the callback work?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31101">reverse3D</a> on 2018-05-01 04:44:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi @reverse3D 
+Did you find the correct the way to declare message_filters and TimeSynchronizer inside the class?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/31135">blenderrender</a> on 2018-08-20 03:53:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You can check arminkazim answer, it worked for me (basically make use of the class constructor).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53453">Vlad Hondru</a> on 2020-04-11 10:09:19 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>My solution for this problem :</p>
+
+<pre><code>class SubscribeAndPublish { 
+public:     
+SubscribeAndPublish():sync2(image_sub,image_sub2,500){       
+//https://gist.github.com/tdenewiler/e2172f628e49ab633ef2786207793336       
+image_sub.subscribe(n, &quot;/camera/color/image_raw&quot;, 1);       
+image_sub2.subscribe(n, &quot;/camera/aligned_depth_to_color/image_raw&quot;, 1);     
+sync2.registerCallback(boost::bind(&amp;SubscribeAndPublish::callback,this,
+_1, _2));       
+odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;RGBDodom&quot;, 50);
+}   
+void callback(const sensor_msgs::ImageConstPtr&amp; msg,const sensor_msgs::ImageConstPtr&amp; msg2){ }
+ private:   
+ ros::NodeHandle n;     
+ ros::Publisher odom_pub;   
+ message_filters::Subscriber&lt;Image&gt; image_sub;  
+ message_filters::Subscriber&lt;Image&gt; image_sub2;     
+ TimeSynchronizer&lt;Image, Image&gt; sync2; 
+</code></pre>
+
+<p>};</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/36033">arminkazim</a> on 2019-11-05 06:44:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

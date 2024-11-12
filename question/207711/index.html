@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>odom code please help - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/207711">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>odom code please help</h2>
+      <div class="question">
+        <p>hello,
+I have my own robot platform and I&#39;m trying to implement SLAM using ROS. I&#39;m using Roboteq SDC21xx motor controller. Now I am trying to get correct odotmetry data manually, not using any drivers.</p>
+
+<p>here is my code: </p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;math.h&gt;
+#include &quot;roboteq_motor/RoboteqDevice.h&quot;
+#include &quot;roboteq_motor/ErrorCodes.h&quot;
+#include &quot;roboteq_motor/Constants.h&quot;
+#include &lt;unistd.h&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;cmath&gt;
+# define M_PI  3.14159265358979323846  /* pi - which you should NOT be redefining since it&#39;s already available in cmath */ 
+
+using namespace std;
+int status;
+RoboteqDevice device; // Motor Controller Roboteq API
+
+int main(int argc, char *argv[])
+{
+    ros::init(argc, argv, &quot;odom&quot;); 
+    ros::NodeHandle nh; 
+    string response = &quot;&quot;; 
+    status = device.Connect(&quot;/dev/ttyACM0&quot;); 
+    if(status != RQ_SUCCESS) 
+    {
+        cout&lt;&lt;&quot;Error connecting to device: &quot;&lt;&lt;status&lt;&lt;&quot;.&quot;&lt;&lt;endl;
+        return 1;
+    }
+
+    double encoder1;
+    double encoder2;
+    int pre1;
+    int pre2;
+    double distance;
+
+    ros::Publisher odom_pub = nh.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 10);
+    tf::TransformBroadcaster odom_broadcaster;
+
+    double x = 0;
+    double y = 0;
+    double th = 0;
+    ros::Rate r(20);
+
+    //first, we&#39;ll publish the transform over tf
+    geometry_msgs::TransformStamped odom_trans;
+    odom_trans.header.frame_id = &quot;odom&quot;;
+    odom_trans.child_frame_id = &quot;base_link&quot;;
+
+    while(nh.ok()){
+        device.SetConfig(_EMOD, 1); //Mc settings
+        device.SetConfig(_EMOD, 2); //Mc settings
+        device.SetConfig(_EPPR, 1, 200);  //Mc settings
+        device.SetConfig(_EPPR, 2, 200);  //Mc settings
+        device.SetConfig(_MXPR, 1, 83);  //Mc settings
+        device.SetConfig(_MXPF, 1, 83);  //Mc settings
+        device.GetValue(_ABCNTR, 1, pre1); // get the counts of motor 1
+        device.GetValue(_ABCNTR, 2, pre2); // get the counts of motor 2
+
+        encoder1= (double)-pre1; // put pre1 integer value in a double variable and make it minus cuz when the robot is going fwd one encoder gives minus and the other positive
+        encoder2= (double)pre2; // put pre2 value in a double variable since the method GetValue doesn&#39;t support doubles.
+
+        encoder1 /= 982 * 0.8; // 982 is the number of pulses per revolution for motor 1 and 0.8 is the wheel&#39;s circumference in meters .
+        encoder2 /= 966 * 0.8; // 966 is the number of pulses per revolution for motor 2 and 0.8 is the wheel&#39;s circumference in meters .
+
+        distance= (encoder1 + encoder2) / 2; // distance
+        th = ((encoder1- encoder2 ) / 0.36); //theta
+        th=th*(M_PI/180); // convert the incoming angle to radian
+
+        x = distance * cos(th); // x position
+        y = distance * sin(th); // y position
+
+        //since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+        geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+
+        odom_trans.header.stamp = current_time;
+        odom_trans.transform.translation.x = x;
+        odom_trans.transform.translation.y = 0.0;
+        odom_trans.transform.translation.z = 0.0;
+        odom_trans.transform.rotation = odom_quat ;
+
+        //next, we&#39;ll publish the odometry message over ROS
+        nav_msgs::Odometry odom;
+        odom.header.stamp = current_time;
+        odom.header.frame_id = &quot;odom&quot;;
+
+        //set the position
+        odom.pose.pose.position.x = x;
+        odom.pose.pose.position.y = y;
+        odom.pose.pose.position.z = 0.0;
+        odom.pose.pose.orientation = odom_quat;
+       odom.child_frame_id = &quot;base_link&quot;;
+
+        last_time = current_time;
+
+        //send the transform
+        odom_broadcaster.sendTransform(odom_trans);
+        //publish the message
+        odom_pub.publish(odom);
+
+        r.sleep();
+    }
+    device.Disconnect();
+
+return 0;
+}
+</code></pre>
+
+<p>Now, the results of the x and y are logical but for the theta it is very small.. like if i turned the robot 90 degrees it only gives results of 0.05 and if i didnt change the the values to radian .. i get weird values ..</p>
+
+<p>any help?
+rviz only goes straight forward even if the robot is turning and giving correct x and y values??
+for exampl..
+it sees in the published odom data x as 7 and y as 5 th as 0.05 and still goes forward.. is this another problem?
+it correct to convert th to radian? to use them in the cos, sin correctly?</p>
+
+<p>thank you</p>
+
+        <div class="owner"><p>Asked by <a href="/users/21965">maha</a> on 2015-04-23 11:34:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p><a href="https://github.com/solorzaa/Team-B-MRSD/blob/b035985c0b7a4ade4803d9ddc45c62554d150573/PROJECT%20FILES/Drive%20System/Software%20Files/roboteqMotorController/navigationFile.cpp">this</a> may help you .</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/9486">bvbdort</a> on 2015-04-24 11:54:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi,
+I&#39;m facing the same problem. Did you find a solution to this ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10216">assil</a> on 2015-12-13 04:21:06 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why does waitForMessage not work for a single non-latching message? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/368646">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why does waitForMessage not work for a single non-latching message?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97942/why-does-waitformessage-not-work-for-a-single-non-latching-message">https://robotics.stackexchange.com/questions/97942/why-does-waitformessage-not-work-for-a-single-non-latching-message</a>.</p>
+        <p>I need a way to <strong>get the first message that was published after this line of code</strong>.  I am thinking <code>waitForMessage</code> seems like a logical choice.  However, it does not seem to be behaving as I expected.</p>
+
+<p>Given the following simple program that waits for messages from a topic a couple of times.</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/Int32.h&quot;
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;listener&quot;);
+
+    ros::NodeHandle nh;
+    std_msgs::Int32::ConstPtr ret;
+    ret = ros::topic::waitForMessage&lt;std_msgs::Int32&gt;(&quot;/topic&quot;);
+    ROS_INFO(&quot;%d&quot;, ret-&gt;data);
+    ret = ros::topic::waitForMessage&lt;std_msgs::Int32&gt;(&quot;/topic&quot;);
+    ROS_INFO(&quot;%d&quot;, ret-&gt;data);
+    ret = ros::topic::waitForMessage&lt;std_msgs::Int32&gt;(&quot;/topic&quot;);
+    ROS_INFO(&quot;%d&quot;, ret-&gt;data);
+
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>I publish with the following non-latching publish</p>
+
+<pre><code>#!/usr/bin/env python  
+import rospy
+import std_msgs
+
+if __name__ == &quot;__main__&quot;:
+        rospy.init_node(&#39;publisher&#39;)
+        pub = rospy.Publisher(&#39;/topic&#39;, std_msgs.msg.Int32, queue_size=1, latch=False)
+        pub.publish(0)
+        rospy.spin()
+</code></pre>
+
+<p><code>rostopic echo /topic</code> shows that the message is published correctly.  However, the listener program is still stuck at <code>waitForMessage</code> even though the listener program was started before the publishing node.  Why is that the case?</p>
+
+<p>Further testing with</p>
+
+<pre><code>#!/usr/bin/env python  
+import rospy
+import std_msgs
+
+if __name__ == &quot;__main__&quot;:
+    i = 0
+    while not rospy.is_shutdown():
+        pub = rospy.Publisher(&#39;/topic&#39;, std_msgs.msg.Int32, queue_size=1)
+        rospy.init_node(&#39;publisher&#39;)
+        pub.publish(i)
+        i += 1
+        rospy.sleep(10)
+</code></pre>
+
+<p>shows that it&#39;s always only the first message that is ignored.  The subsequent messages are correctly caught by <code>waitForMessage</code></p>
+
+        <div class="owner"><p>Asked by <a href="/users/34739"></a> on 2020-12-30 00:28:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Seeing your question (and #q368589), perhaps it would be good if you could clarify <em>why</em> you &quot;<em>need a way to get the first message that was published after this line of code</em>&quot;. What is it you&#39;re trying to achieve?</p>
+
+<p>Publish-subscribe being a completely asynchronous pattern of communication, implementing anything which requires strict ordering of events in different entities is typically a bit more complex than normal. So things may need a different approach.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-12-30 04:53:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the patience and detailed responses,  I am currently running tests in simulation where I rearrange some 200+ objects in gazebo and check if the sensor detects them.  This is repeated many times for many different configurations.  Since I am simulating multiple lidars, getting each sensor measurement takes an incredibly long time.  As such, to speed up my testing, I only get the first sensor reading immediately after rearrangement (which I was thinking to accomplish with <code>waitForMessage</code>).  I am currently tracking down an issue where the sensor measurements don&#39;t seem to be updated afte rearrangement (<a href="https://answers.gazebosim.org/question/26198/does-setmodelstate-block-such-that-the-next-sensor-readings-account-for-the-modified-scene/?answer=26214#post-id-26214">question on gazebosim here</a>) which led me to the questions on <code>waitForMessage</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34739">Rufus</a> on 2020-12-30 22:07:52 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>tl;dr: creating publisher-&gt;subscriber connections takes time. You are not giving <code>waitForMessage(..)</code> sufficient time, hence it doesn&#39;t see any messages on your topic. Result: first message is &quot;lost&quot; and your program then &quot;hangs&quot;.</p>
+
+<hr>
+
+<p>Longer explanation:</p>
+
+<blockquote>
+<p>Why does waitForMessage not work for a single non-latching message?</p>
+</blockquote>
+
+<p>From what you show, I don&#39;t believe this is caused by <code>waitForMessage(..)</code> not working, but again (as in #q368589) has to do with your expectations.</p>
+
+<p>First, to get it out of the way: <strong>there is no central buffer</strong> or message queue maintained between publishers and subscribers. Publishers and subscribers have their <strong>own internal buffer</strong>, but that is not shared with any other nodes, and only exists as long as a node is running.</p>
+
+<p>Consequence of this: messages published <em>before</em> a subscriber is online (or: has a connection with a publisher) will <strong>disappear</strong>.</p>
+
+<p>Second: <code>waitForMessage(..)</code> does approximately the following (from <a href="https://github.com/ros/ros_comm/blob/f06d584965a80ed6a966456758de20d1a63b6893/clients/roscpp/include/ros/topic.h">here</a> and <a href="https://github.com/ros/ros_comm/blob/f06d584965a80ed6a966456758de20d1a63b6893/clients/roscpp/src/libros/topic.cpp#L43-L62">here</a>):</p>
+
+<ol>
+<li>create a <code>NodeHandle</code> (if needed)</li>
+<li>subscribe to the topic you specify with the message type you specify</li>
+<li>register a callback, which sets a <code>bool</code> to <code>true</code> as soon it has received a message</li>
+<li>returns the message received, or times-out</li>
+</ol>
+
+<p>Note: <em>approximately</em>, as the actual implementation is a bit more complicated (uses separate <code>ros::CallbackQueue</code>s fi).</p>
+
+<p>From this it should be clear <code>waitForMessage(..)</code> essentially does the same thing as any code which subscribes to a topic.</p>
+
+<p>And it also has the exact same limitations and requirements as any other code subscribing to a topic.</p>
+
+<p>As to your observations:</p>
+
+<blockquote>
+<p>I publish with the following non-latching publish</p>
+
+<pre><code>#!/usr/bin/env python  
+import rospy
+import std_msgs
+
+if __name__ == &quot;__main__&quot;:
+        rospy.init_node(&#39;publisher&#39;)
+        pub = rospy.Publisher(&#39;/topic&#39;, std_msgs.msg.Int32, queue_size=1, latch=False)
+        pub.publish(0)
+        rospy.spin()
+</code></pre>
+
+<p><code>rostopic echo /topic</code> shows that the message is published correctly.  However, the listener program is still stuck at <code>waitForMessage</code> even though the listener program was started before the publishing node.  Why is that the case?</p>
+</blockquote>
+
+<p>There are many, many Q&amp;As here on ROS Answers about this (keywords: &quot;<em>subscriber first message lost</em>&quot;), but summarising: the cause here is most likely that setting up publisher&lt;-&gt;subscriber connections takes time. Even though your listener program was started earlier, the code creating the <code>ros::Subscriber</code> in <code>waitForMessage(..)</code> simply didn&#39;t have sufficient time to subscribe to <code>/topic</code> before you published the <code>0</code>.</p>
+
+<p>So <code>waitForMessage(..)</code> subscribes, but then never sees a message (as you only publish a single one), causing it to &quot;get stuck&quot;.</p>
+
+<blockquote>
+<p>Further testing with</p>
+
+<pre><code>#!/usr/bin/env python  
+import rospy
+import std_msgs
+
+if __name__ == &quot;__main__&quot;:
+    i = 0
+    while not rospy.is_shutdown():
+        pub = rospy.Publisher(&#39;/topic&#39;, std_msgs.msg.Int32, queue_size=1)
+        rospy.init_node(&#39;publisher&#39;)
+        pub.publish(i)
+        i += 1
+        rospy.sleep(10)
+</code></pre>
+
+<p>shows that it&#39;s always only the first message that is ignored.  The subsequent messages are correctly caught by <code>waitForMessage</code></p>
+</blockquote>
+
+<p>This should now be less of a surprise: while this code goes against best-practices (you should never call <code>rospy.init_node(..)</code> nor <code>rospy.Publisher(..)</code> in a loop), there is simply more time for <code>waitForMessage(..)</code> to create the necessary connections.</p>
+
+<blockquote>
+<p>shows that it&#39;s always only the first message that is ignored.</p>
+</blockquote>
+
+<p>that&#39;s exactly what you would expect (see some of the existing Q&amp;As about &quot;first message ignored&quot; problems).</p>
+
+<p>All-in-all, I believe again <code>waitForMessage(..)</code> does exactly what it is designed for, and the behaviour you observe appears to be by-design.</p>
+
+<p>Whether it is what you expected would be something else.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-12-30 04:51:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

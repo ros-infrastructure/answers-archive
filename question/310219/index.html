@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Astra Pro registered point cloud - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/310219">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Astra Pro registered point cloud</h2>
+      <div class="question">
+        <p>Hi all. I am using Ubuntu 16.04 with ROS kinetic. Fresh install with upgrades for both.</p>
+
+<p>I have purchased an Astra Pro unit (unknowingly that it has completely separate RGB and depth units inside.... its a shame they don&#39;t tell that before you buy one). </p>
+
+<p>I have installed their driver as per instructed, with udev rules and everything. When I launch the astrapro.launch file I can see the depth point cloud and depth image in Rviz. The Astra driver does not publish a color image but I am able to watch it through the usb<em>cam node so it is operational. 
+The thing is, that the astra driver has a &quot;/camera/depth</em>registered/points&quot; topic, but echoing it results in nothing. The terminal running the launch pops up the message:</p>
+
+<blockquote>
+<p>[ INFO] [1544185697.502299836]:
+Starting depth stream. [ INFO]
+[1544185697.698366710]: camera
+calibration URL:
+file:///home/steve/catkin<em>ws/src/camera</em>info/depth<em>Astra</em>Orbbec.yaml</p>
+</blockquote>
+
+<p>I did make a calibration file for both the rgb and the depth, put them in the default ${ROS<em>HOME}/camera</em>info/${NAME.yaml}, and added the paths to the astrapro launch file.</p>
+
+<p>I have tried various launch argument combinations and solutions from the internet but with no avail. Orbbec did not answer mails as well.</p>
+
+<p>Am I missing something here? Do I need a third node to match the RGB and D? All I want is to be able to view a registered pointcloud in Rviz using the Astra Pro, even if a workaround is needed. Don&#39;t care about synchronization delay.</p>
+
+<p>Hope I&#39;m not the only one having this exact problem. Thank you all in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30608">StevenCoral</a> on 2018-12-07 07:49:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Sorry to be answering my own question but I found the solution, and in the absence of other instructions I want to make it available to other users ever encountering the same problem.</p>
+
+<p>The Astra Pro launch file loads the Astra driver (publishing the depth and IR images only). It uses a third party node called rgbd_launch <a href="http://wiki.ros.org/rgbd_launch">found here along with partial reference info</a>. This node does most of the real job - listening to depth and RGB images to create point clouds and registered point clouds.</p>
+
+<p>In order to do so, everything has to be aligned. In the astrapro launch file, the nodes are published under the /camera namespace. The default namespaces for the depth, IR and RGB publications are as depicted, and are the same for both the astra driver and rgbd_launch nodes. What needs to be done (in addition to the short instructions given at the <a href="https://github.com/orbbec/ros_astra_camera">orbbec ros astra wrapper git</a> ) is as follows:</p>
+
+<ol>
+<li><p>Create both an RGB and depth calibration files because rgbd_launch has to rectify the data before registering. Default location for these files, so I&#39;ve heard, is in the ${ROS_HOME}/camera_info/${NAME.yaml}, so I actually created and empty package named camera_info and put the files in the root directory (so that I could use $(find camera_info) in the launch file. In these files, see to it that the name of the cameras are: depth_Astra_Orbbec / rgb_Astra_Orbbec respectively, I don&#39;t remember why anymore but I got an error about it from one of the launched nodes / nodelets.</p></li>
+<li><p>Launch a node that would publish an image topic named /rgb/image_raw and the camera calibration info (taken from the calibration files) into /rgb/camera_info, both have to be in the same namespace where the rgbd_launch node is running (because it&#39;s listening to it). The images must be raw, not rectified. Also, the frame_id in the header must match the one used in the camera driver. In our case, the usb_camera node publishes the topics as /camera/rgb/image_raw and /camera/rgb/camera_info (&quot;camera&quot; because of the namespace they are all running at, and &quot;rgb&quot; because thats what we chose for the rgb image namespace). The frame id is the default one, &quot;camera_rgb_optical_frame&quot;.</p></li>
+<li><p>Make sure the following parameters for rgbd_launch are true: &quot;rgb_processing&quot;, &quot;depth_processing&quot;, &quot;sw_registered_processing&quot; and &quot;depth_registered_processing&quot;. Also make sure that &quot;hw_registered_processing&quot; is false, I received errors stating that the device is not calibrated. Perhaps I&#39;ll dig into it, maybe it is possible to upload a calibration file to the device flash? maybe this is unsupported? who knows. Also not sure how the pipeline would work if it did. BTW, other processing flags in rgbd_launch seems to have little to no connection with the publishing registered pointclouds.</p></li>
+</ol>
+
+<p>This creates a namespace where /depth/camera_info, /depth/image_raw, /rgb/camera_info, and /rgb/image_raw are all published together along with a running rgbd_launch node, listening to them and publishing (among others) the /detph/points and /depth_registered/points topics.</p>
+
+<p>EDIT: This modified-default launch file should give an example of how to implement:</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;!-- &quot;camera&quot; should uniquely identify the device. All topics are pushed down
+       into the &quot;camera&quot; namespace, and it is prepended to tf frame ids. --&gt;
+  &lt;arg name=&quot;camera&quot; default=&quot;camera&quot; /&gt;
+  &lt;arg name=&quot;rgb_frame_id&quot;   default=&quot;$(arg camera)_rgb_optical_frame&quot; /&gt;
+  &lt;arg name=&quot;depth_frame_id&quot; default=&quot;$(arg camera)_depth_optical_frame&quot; /&gt;
+
+  &lt;!-- device_id can have the following formats:
+         &quot;#n&quot;            : the nth device found, starts from 1
+         &quot;2@n&quot;           : the nth device on USB bus 2, n starts from 1
+         &quot;2bc5/0401@1/6&quot; : uri in format &lt;vendor ID&gt;/&lt;product ID&gt;@&lt;bus number&gt;/&lt;device number&gt;
+         &quot;15120410023&quot;   : serial number --&gt;
+  &lt;arg name=&quot;device_id&quot; default=&quot;#1&quot; /&gt;
+  &lt;arg name=&quot;bootorder&quot; default=&quot;0&quot; /&gt;
+  &lt;arg name=&quot;devnums&quot; default=&quot;1&quot; /&gt;
+
+  &lt;!-- By default, calibrations are stored to file://${ROS_HOME}/camera_info/${NAME}.yaml,
+       where ${NAME} is of the form &quot;[rgb|depth]_[serial#]&quot;, e.g. &quot;depth_B00367707227042B&quot;.
+       See camera_info_manager docs for calibration URL details. --&gt;
+  &lt;arg name=&quot;rgb_camera_info_url&quot;   default=&quot;file://$(find camera_info)/rgb_Astra_Orbbec.yaml&quot; /&gt;
+  &lt;arg name=&quot;depth_camera_info_url&quot; default=&quot;file://$(find camera_info)/depth_Astra_Orbbec.yaml&quot; /&gt;
+
+  &lt;!-- Hardware depth registration --&gt;
+  &lt;arg name=&quot;depth_registration&quot; default=&quot;false&quot; /&gt;
+
+  &lt;!-- Driver parameters --&gt;
+  &lt;arg name=&quot;color_depth_synchronization&quot;     default=&quot;false&quot; /&gt;
+  &lt;arg name=&quot;auto_exposure&quot;                   default=&quot;true&quot; /&gt;
+  &lt;arg name=&quot;auto_white_balance&quot;              default=&quot;true&quot; /&gt;
+
+  &lt;!-- Arguments for remapping all device namespaces --&gt;
+  &lt;arg name=&quot;rgb&quot;              default=&quot;rgb&quot; /&gt;
+  &lt;arg name=&quot;ir&quot;               default=&quot;ir&quot; /&gt;
+  &lt;arg name=&quot;depth&quot;            default=&quot;depth&quot; /&gt;
+
+  &lt;!-- Optionally suppress loading the driver nodelet and/or publishing the default tf
+       tree. Useful if you are playing back recorded raw data from a bag, or are
+       supplying a more accurate tf tree from calibration. --&gt;
+  &lt;arg name=&quot;load_driver&quot; default=&quot;true&quot; /&gt;
+  &lt;arg name=&quot;publish_tf&quot; default=&quot;true&quot; /&gt;
+  &lt;!-- Processing Modules --&gt;
+  &lt;arg name=&quot;rgb_processing&quot;                  default=&quot;true&quot;  /&gt;
+  &lt;arg name=&quot;debayer_processing&quot;              default=&quot;false&quot; /&gt;
+  &lt;arg name=&quot;ir_processing&quot;                   default=&quot;false&quot; /&gt;
+  &lt;arg name=&quot;depth_processing&quot;                default=&quot;true&quot; /&gt;
+  &lt;arg name=&quot;depth_registered_processing&quot;     default=&quot;true&quot; /&gt;
+  &lt;arg name=&quot;disparity_processing&quot;            default=&quot;false&quot; /&gt;
+  &lt;arg name=&quot;disparity_registered_processing&quot; default=&quot;false&quot; /&gt;
+  &lt;arg name=&quot;hw_registered_processing&quot;        default=&quot;true&quot; if=&quot;$(arg depth_registration)&quot; /&gt;
+  &lt;arg name=&quot;sw_registered_processing&quot;        default=&quot;false&quot; if=&quot;$(arg depth_registration)&quot; /&gt;
+  &lt;arg name=&quot;hw_registered_processing&quot;        default=&quot;false&quot; unless=&quot;$(arg depth_registration)&quot; /&gt;
+  &lt;arg name=&quot;sw_registered_processing&quot;        default=&quot;true&quot; unless=&quot;$(arg depth_registration)&quot; /&gt;
+
+  &lt;!-- Disable bond topics by default --&gt;
+  &lt;arg name=&quot;respawn&quot; default=&quot;false&quot; /&gt;
+
+  &lt;!-- Worker threads for the nodelet manager --&gt;
+  &lt;arg name=&quot;num_worker_threads&quot; default=&quot;4&quot; /&gt;
+
+  &lt;!-- Push down all topics/nodelets into &quot;camera&quot; namespace --&gt;
+  &lt;group ns=&quot;$(arg camera)&quot;&gt;
+
+        &lt;!-- Start nodelet manager --&gt;
+        &lt;arg name=&quot;manager&quot; value=&quot;$(arg camera)_nodelet_manager&quot; /&gt;
+        &lt;arg name=&quot;debug&quot; default=&quot;false&quot; /&gt; &lt;!-- Run manager in GDB? --&gt;
+        &lt;include file=&quot;$(find rgbd_launch)/launch/includes/manager.launch.xml&quot;&gt;
+          &lt;arg name=&quot;name&quot; value=&quot;$(arg manager)&quot; /&gt;
+          &lt;arg name=&quot;debug&quot; value=&quot;$(arg debug)&quot; /&gt;
+          &lt;arg name=&quot;num_worker_threads&quot;  value=&quot;$(arg num_worker_threads)&quot; /&gt;
+        &lt;/include&gt;
+
+    &lt;!-- Load driver --&gt;
+    &lt;include file=&quot;$(find astra_launch)/launch/includes/device.launch.xml&quot; if=&quot;$(arg load_driver)&quot;&gt;
+      &lt;arg name=&quot;manager&quot;                         value=&quot;$(arg manager)&quot; /&gt;
+      &lt;arg name=&quot;device_id&quot;                       value=&quot;$(arg device_id)&quot; /&gt;
+      &lt;arg name=&quot;bootorder&quot;                       value=&quot;$(arg bootorder)&quot; /&gt;
+      &lt;arg name=&quot;devnums&quot;                         value=&quot;$(arg devnums)&quot; /&gt;
+      &lt;arg name=&quot;rgb_frame_id&quot;                    value=&quot;$(arg rgb_frame_id)&quot; /&gt;
+      &lt;arg name=&quot;depth_frame_id&quot;                  value=&quot;$(arg depth_frame_id)&quot; /&gt;
+      &lt;arg name=&quot;rgb_camera_info_url&quot;             value=&quot;$(arg rgb_camera_info_url)&quot; /&gt;
+      &lt;arg name=&quot;depth_camera_info_url&quot;           value=&quot;$(arg depth_camera_info_url)&quot; /&gt;
+      &lt;arg name=&quot;rgb&quot;                             value=&quot;$(arg rgb)&quot; /&gt;
+      &lt;arg name=&quot;ir&quot;                              value=&quot;$(arg ir)&quot; /&gt;
+      &lt;arg name=&quot;depth&quot;                           value=&quot;$(arg depth)&quot; /&gt;
+      &lt;arg name=&quot;respawn&quot;                         value=&quot;$(arg respawn)&quot; /&gt;
+      &lt;arg name=&quot;depth_registration&quot;              value=&quot;$(arg depth_registration)&quot; /&gt;
+      &lt;arg name=&quot;color_depth_synchronization&quot;     value=&quot;$(arg color_depth_synchronization)&quot; /&gt;
+      &lt;arg name=&quot;auto_exposure&quot;                   value=&quot;$(arg auto_exposure)&quot; /&gt;
+      &lt;arg name=&quot;auto_white_balance&quot;              value=&quot;$(arg auto_white_balance)&quot; /&gt;
+    &lt;/include&gt;
+
+        &lt;node name=&quot;rgb&quot; pkg=&quot;usb_cam&quot; type=&quot;usb_cam_node&quot; output=&quot;screen&quot; &gt;
+          &lt;param name=&quot;video_device&quot; value=&quot;/dev/video1&quot; /&gt;
+          &lt;param name=&quot;image_width&quot; value=&quot;640&quot; /&gt;
+          &lt;param name=&quot;image_height&quot; value=&quot;480&quot; /&gt;
+          &lt;param name=&quot;camera_frame_id&quot; value=&quot;$(arg rgb_frame_id)&quot; /&gt;
+          &lt;param name=&quot;framerate&quot; value=&quot;30&quot;/&gt;
+            &lt;param name=&quot;pixel_format&quot; value=&quot;yuyv&quot;/&gt;
+            &lt;param name=&quot;camera_info_url&quot; value=&quot;$(arg rgb_camera_info_url)&quot;/&gt;
+            &lt;param name=&quot;camera_name&quot; value=&quot;rgb_Astra_Orbbec&quot;/&gt;
+        &lt;/node&gt;
+
+    &lt;!-- Load standard constellation of processing nodelets --&gt;
+    &lt;include file=&quot;$(find rgbd_launch)/launch/includes/processing.launch.xml&quot;&gt;
+      &lt;arg name=&quot;manager&quot;                         value=&quot;$(arg manager)&quot; /&gt;
+      &lt;arg name=&quot;rgb&quot;                             value=&quot;$(arg rgb)&quot; /&gt;
+      &lt;arg name=&quot;ir&quot;                              value=&quot;$(arg ir)&quot; /&gt;
+      &lt;arg name=&quot;depth&quot;                           value=&quot;$(arg depth)&quot; /&gt;
+      &lt;arg name=&quot;respawn&quot;                         value=&quot;$(arg respawn)&quot; /&gt;
+      &lt;arg name=&quot;rgb_processing&quot;                  value=&quot;$(arg rgb_processing)&quot; /&gt;
+      &lt;arg name=&quot;debayer_processing&quot;              value=&quot;$(arg debayer_processing)&quot; /&gt;
+      &lt;arg name=&quot;ir_processing&quot;                   value=&quot;$(arg ir_processing)&quot; /&gt;
+      &lt;arg name=&quot;depth_processing&quot;                value=&quot;$(arg depth_processing)&quot; /&gt;
+      &lt;arg name=&quot;depth_registered_processing&quot;     value=&quot;$(arg depth_registered_processing)&quot; /&gt;
+      &lt;arg name=&quot;disparity_processing&quot;            value=&quot;$(arg disparity_processing)&quot; /&gt;
+      &lt;arg name=&quot;disparity_registered_processing&quot; value=&quot;$(arg disparity_registered_processing)&quot; /&gt;
+      &lt;arg name=&quot;hw_registered_processing&quot;        value=&quot;$(arg hw_registered_processing)&quot; /&gt;
+      &lt;arg name=&quot;sw_registered_processing&quot;        value=&quot;$(arg sw_registered_processing)&quot; /&gt;
+    &lt;/include&gt;
+
+  &lt;/group&gt; &lt;!-- camera --&gt;
+
+  &lt;!-- Load reasonable defaults for the relative pose between cameras --&gt;
+  &lt;include file=&quot;$(find astra_launch)/launch/includes/astra_frames.launch&quot; if=&quot;$(arg publish_tf)&quot;&gt;
+    &lt;arg name=&quot;camera&quot; value=&quot;$(arg camera)&quot; /&gt;
+  &lt;/include&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Cheers, Steve</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30608">StevenCoral</a> on 2018-12-08 09:59:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>No need to apologise for answering your own question: it&#39;s perfectly ok to do that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-12-08 11:30:08 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>I&#39;m trying to attach my launch file as a reference but the xml syntax mixes with the forum&#39;s..... advice any1?</p>
+</blockquote>
+
+<p>Paste the launch file in your answer, select all lines of xml and press the <em>Preformatted Text</em> button (the one with <code>101010</code> on it). Or press <code>ctrl+k</code>. Done.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-12-08 11:30:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>One time I did that and someone stated that I should write a comment instead... not really enough space for that.
+Thanks for the help, I was trying the quote thing and it didn&#39;t work. All done.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30608">StevenCoral</a> on 2018-12-08 13:32:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank guy, you solve my problem which confuse me constantly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/45201">huoxingwen</a> on 2019-12-26 23:02:48 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

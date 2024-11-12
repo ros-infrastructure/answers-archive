@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Odometry does not transform in rviz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/399461">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Odometry does not transform in rviz</h2>
+      <div class="question">
+        <p>When I move my vehicle, odomety does not move in rviz, what is the reason , please help me..</p>
+
+<pre><code>#include &quot;Motor.h&quot;
+#include &lt;ros.h&gt;
+#include &lt;ros/time.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;std_msgs/Int16.h&gt;
+#include&lt;PID_v1.h&gt;
+
+
+
+
+ros::NodeHandle  nh;
+
+#define LOOPTIME 10
+int updatenh;
+
+Motor right(11,10,20,21);
+Motor left(9,8,18,19);
+
+volatile long encoder0Pos = 0;    // encoder 1
+volatile long encoder1Pos = 0;    // encoder 2
+
+double left_kp = 17 , left_ki = 0 , left_kd = 0.0;             // modify for optimal performance
+double right_kp = 20 , right_ki = 0 , right_kd = 0.0;
+
+float demandx=0;
+float demandz=0;
+
+double demand_speed_left;
+double demand_speed_right;
+
+double right_input = 0, right_output = 0, right_setpoint = 0;
+PID rightPID(&amp;right_input, &amp;right_output, &amp;right_setpoint, right_kp, right_ki, right_kd, DIRECT);  
+
+double left_input = 0, left_output = 0, left_setpoint = 0;
+PID leftPID(&amp;left_input, &amp;left_output, &amp;left_setpoint, left_kp, left_ki, left_kd, DIRECT);  
+
+unsigned long currentMillis;
+unsigned long prevMillis;
+
+float encoder0Diff;
+float encoder1Diff;
+
+float encoder0Error;
+float encoder1Error;
+
+float encoder0Prev;
+float encoder1Prev;
+
+void cmd_vel_cb( const geometry_msgs::Twist&amp; twist){
+  demandx = twist.linear.x;
+  demandz = twist.angular.z;
+}
+
+ros::Subscriber&lt;geometry_msgs::Twist&gt; sub(&quot;cmd_vel&quot;, cmd_vel_cb );
+std_msgs::Int16 left_wheel_msg;
+ros::Publisher left_wheel_pub(&quot;lwheel&quot; , &amp;left_wheel_msg);
+std_msgs::Int16 right_wheel_msg;
+ros::Publisher right_wheel_pub(&quot;rwheel&quot; , &amp;right_wheel_msg);
+
+
+double pos_act_left = 0;                    //Actual speed for left wheel in m/s
+double pos_act_right = 0;                    //Command speed for left wheel in m/s 
+
+void setup() {
+  nh.initNode();
+  nh.subscribe(sub);
+  nh.advertise(left_wheel_pub); 
+  nh.advertise(right_wheel_pub);    //prepare to publish speed in ROS topic
+//  Serial.begin(115200);
+
+  rightPID.SetMode(AUTOMATIC);
+  rightPID.SetSampleTime(1);
+  rightPID.SetOutputLimits(-100, 100);
+
+  leftPID.SetMode(AUTOMATIC);
+  leftPID.SetSampleTime(1);
+  leftPID.SetOutputLimits(-100, 100);
+
+//  Serial.println(&quot;Basic Encoder Test:&quot;);
+  attachInterrupt(digitalPinToInterrupt(left.en_a), change_left_a, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(left.en_b), change_left_b, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(right.en_a), change_right_a, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(right.en_b), change_right_b, CHANGE);
+}
+
+void loop() {
+  currentMillis = millis();
+  if (currentMillis - prevMillis &gt;= LOOPTIME){
+    prevMillis = currentMillis;
+
+    demand_speed_left = demandx - (demandz*0.1075);
+    demand_speed_right = demandx + (demandz*0.1075);
+
+    /*PID controller for speed control
+      Base speed being 1 ms and the demand_speed variables controlling it at fractions of the base.
+      The PID controller keeps trying to match the difference 
+      in encoder counts to match with the required amount, hence controlling the speed. */
+    encoder0Diff = encoder0Pos - encoder0Prev; // Get difference between ticks to compute speed
+    encoder1Diff = encoder1Pos - encoder1Prev;
+
+    pos_act_left = encoder0Pos;                    
+    pos_act_right = encoder1Pos; 
+
+    encoder0Error = (demand_speed_left*39.65)-encoder0Diff; // 3965 ticks in 1m = 39.65 ticks in 10ms, due to the 10 millis loop
+    encoder1Error = (demand_speed_right*39.65)-encoder1Diff;
+
+    encoder0Prev = encoder0Pos; // Saving values
+    encoder1Prev = encoder1Pos;
+
+    left_setpoint = demand_speed_left*39.65;  //Setting required speed as a mul/frac of 1 m/s
+    right_setpoint = demand_speed_right*39.65;
+
+    left_input = encoder0Diff;  //Input to PID controller is the current difference
+    right_input = encoder1Diff;
+
+    leftPID.Compute();
+    left.rotate(left_output);
+    rightPID.Compute();
+    right.rotate(right_output);
+//    Serial.print(encoder0Pos);
+//    Serial.print(&quot;,&quot;);
+//    Serial.println(encoder1Pos);
+
+  publishPos(LOOPTIME);
+
+  if(updatenh&gt;10){
+    nh.spinOnce();
+    updatenh=0;
+  }else{
+    updatenh++;
+  }  
+  }
+
+
+}
+
+
+//Publish function for odometry, uses a vector type message to send the data (message type is not meant for that but that&#39;s easier than creating a specific message type)
+void publishPos(double time) {
+  int pos_act_left;
+  int pos_act_right;
+  left_wheel_msg.data = pos_act_left;      //timestamp for odometry data
+  right_wheel_msg.data = pos_act_right;    //left wheel speed (in m/s)
+  left_wheel_pub.publish(&amp;left_wheel_msg);   //right wheel speed (in m/s)
+  right_wheel_pub.publish(&amp;right_wheel_msg);         //looptime, should be the same as specified in LOOPTIME (in s)
+
+  nh.loginfo(&quot;Publishing odometry&quot;);
+}
+
+
+// ************** encoders interrupts **************
+
+// ************** encoder 1 *********************
+
+
+void change_left_a(){  
+
+  // look for a low-to-high on channel A
+  if (digitalRead(left.en_a) == HIGH) { 
+    // check channel B to see which way encoder is turning
+    if (digitalRead(left.en_b) == LOW) {  
+      encoder0Pos = encoder0Pos + 1;         // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;         // CCW
+    }
+  }
+  else   // must be a high-to-low edge on channel A                                       
+  { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(left.en_b) == HIGH) {   
+      encoder0Pos = encoder0Pos + 1;          // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;          // CCW
+    }
+  }
+
+}
+
+void change_left_b(){  
+
+  // look for a low-to-high on channel B
+  if (digitalRead(left.en_b) == HIGH) {   
+   // check channel A to see which way encoder is turning
+    if (digitalRead(left.en_a) == HIGH) {  
+      encoder0Pos = encoder0Pos + 1;         // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;         // CCW
+    }
+  }
+  // Look for a high-to-low on channel B
+  else { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(left.en_a) == LOW) {   
+      encoder0Pos = encoder0Pos + 1;          // CW
+    } 
+    else {
+      encoder0Pos = encoder0Pos - 1;          // CCW
+    }
+  }
+
+
+}
+
+// ************** encoder 2 *********************
+
+void change_right_a(){  
+
+  // look for a low-to-high on channel A
+  if (digitalRead(right.en_a) == HIGH) { 
+    // check channel B to see which way encoder is turning
+    if (digitalRead(right.en_b) == LOW) {  
+      encoder1Pos = encoder1Pos - 1;         // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;         // CCW
+    }
+  }
+  else   // must be a high-to-low edge on channel A                                       
+  { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(right.en_b) == HIGH) {   
+      encoder1Pos = encoder1Pos - 1;          // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;          // CCW
+    }
+  }
+
+}
+
+void change_right_b(){  
+
+  // look for a low-to-high on channel B
+  if (digitalRead(right.en_b) == HIGH) {   
+   // check channel A to see which way encoder is turning
+    if (digitalRead(right.en_a) == HIGH) {  
+      encoder1Pos = encoder1Pos - 1;         // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;         // CCW
+    }
+  }
+  // Look for a high-to-low on channel B
+  else { 
+    // check channel B to see which way encoder is turning  
+    if (digitalRead(right.en_a) == LOW) {   
+      encoder1Pos = encoder1Pos - 1;          // CW
+    } 
+    else {
+      encoder1Pos = encoder1Pos + 1;          // CCW
+    }
+  }
+
+
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-23 08:46:58 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hi @ahmet, please provide more details of your exact problem like screenshots of the terminal window and tf tree so that we can help you better in solving your problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/90798">Robo_guy</a> on 2022-04-25 02:10:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>i added my code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 02:28:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>car wheels are moving but tf tree not move</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 03:41:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ok, what do you mean by tf tree not move? a particular frame like <code>base_footprint</code> or <code>odom</code> is not moving in rviz?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/90798">Robo_guy</a> on 2022-04-25 04:07:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>yes,odom is not moving in rviz</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 04:43:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ok, it could be you are keeping wrong frame of reference in the global frame in rviz and that is why you cannot see the odom frame moving in rviz, but I think as @aarsh_t mentioned you need to publish the <code>nav_msgs/Odometry Message</code> and also launch <code>robot_state_publisher</code> node as this publishes all the tf information for visualizing in rviz and gazebo.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/90798">Robo_guy</a> on 2022-04-25 07:32:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m new to ros, can you help me make this edit? How should I add a code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 00:41:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I agree with  @Joe28965, it is better to watch vide tutorials about odometry so that you can understand the concept properly or ask your professor who can explain you better about it. To start, with you can have a look at this - <a href="http://wiki.ros.org/navigation/Tutorials/RobotSetup/Odom">http://wiki.ros.org/navigation/Tutorials/RobotSetup/Odom</a> 
+You can also find many other tutorials here which can clear your concepts, also this - <a href="https://www.theconstructsim.com/">https://www.theconstructsim.com/</a> is a great place to learn ros through video tutorials, you can also find some of their videos on youtube. Hope this helps you. Good luck with your project !!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/90798">Robo_guy</a> on 2022-04-26 02:47:52 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hello,
+You do not have any topic corresponding to the Odometry. You should be publishing the <a href="https://docs.ros.org/en/noetic/api/nav_msgs/html/msg/Odometry.html">this</a> msg in order to visualize the odometry of the robot. Also, you should be launching the <a href="http://wiki.ros.org/robot_state_publisher">robot_state_publisher</a> node along with the gazebo simulation(if you are using) to convert/update the state of the robot into tf2.</p>
+
+<p><strong>Edit-1</strong></p>
+
+<p>I guess you only need a current position of the robot in the rviz. Do you have the same launch file <code>drive.launch</code> as the person is launching in he video? If not, you need <a href="http://wiki.ros.org/differential_drive">differential-drive</a> package. it will convert the left wheel velocity and right wheel velocity to the <code>nav_msgs/Odometry</code> and the tf frame.</p>
+
+<p>before launching the rviz, do <code>rosrun differential_drive diff_tf.py</code></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/73435">aarsh_t</a> on 2022-04-25 04:20:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>//Publish function for odometry, uses a vector type message to send the data (message type is not meant for that but that&#39;s easier than creating a specific message type)</p>
+
+<pre><code>void publishPos(double time) {
+  int pos_act_left;
+  int pos_act_right;
+  left_wheel_msg.data = pos_act_left;      //timestamp for odometry data
+  right_wheel_msg.data = pos_act_right;    //left wheel speed (in m/s)
+  left_wheel_pub.publish(&amp;left_wheel_msg);   //right wheel speed (in m/s)
+  right_wheel_pub.publish(&amp;right_wheel_msg);         //looptime, should be the same as specified in LOOPTIME (in s)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 04:50:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Isn&#39;t this part about odometry?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 04:51:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>also i wont use gazebo</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 04:52:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>How should I edit the code, do you have any suggestions?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 04:53:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You will need to create a publisher for publishing the <code>nav_msgs/Odometry Message</code> and create a launch file for launching all the nodes where you will need to include the <code>robot_state_publisher</code> node also.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/90798">Robo_guy</a> on 2022-04-25 07:35:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://github.com/vinay-lanka/navbot_hardware">link text</a>I am running the code here, there is no problem there because there is a video on the youtube page.(<a href="https://www.youtube.com/watch?v=n9yU7u55zGg&t=600s">https://www.youtube.com/watch?v=n9yU7u55zGg&amp;t=600s</a>)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-25 07:48:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Odometry is how much your robot has moved <em>as seen from the base_link/base_footprint</em>. You only publish how much the wheels have rotated. You&#39;re missing the calculation from <em>wheel rotation</em> to <em>robot movement</em>. It&#39;s basically the reverse of what you do with cmd_vel. Cmd_vel is the speed the robot should move, so you calculate how fast each wheel should go to accomplish that. Odometry is the reverse: my wheels go this fast, so how fast does my robot go?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-04-25 09:22:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m new to ros, can you help me make this edit? How should I add a code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 00:42:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>its my school project ,i do not have any idea what shoul i do</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 00:43:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I suggest reading up/watching videos about odometry. It&#39;s important that you understand the concept. There are quite a few videos on the concept if you google &quot;odometry differential drive&quot;. Either that, or ask your professor if they could explain it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-04-26 02:37:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="http://aarsh_t">aarsh_t</a> yes i only need curent positon of the robot and i have same launch file but my robot positon doesnt change</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 02:52:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>can you please share the launch file via pasting it to the <a href="https://pastebin.com/">pastebin</a> and sending the link here?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73435">aarsh_t</a> on 2022-04-26 03:03:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://pastebin.com/ymvJQfD9">https://pastebin.com/ymvJQfD9</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 03:28:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://pastebin.com/GJcW0Gvt">https://pastebin.com/GJcW0Gvt</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 03:29:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I see. It looks correct. Stupid question but did you added the Odometry and the tf tab to your rviz window with proper topic? can you share the screenshot of the rviz window?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73435">aarsh_t</a> on 2022-04-26 04:16:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>of course i added , in my opinion there is a deficiency in the arduino code that I shared above or there are places that need to be edited.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 04:44:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I see you publish odometry to the <code>odom</code> topic, but I think you&#39;re missing something that broadcasts the link <code>odom</code> to the TF tree.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50769">Joe28965</a> on 2022-04-26 04:46:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m new to ros, so I got the code from github, I don&#39;t know how to add a code. I would appreciate your help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 04:50:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>okay last ask. can you run the <code>rosrun tf view_frames</code> after launching everything and share the screenshot of the tf tree? That should give more insight in the problem. To know more about tf <a href="http://wiki.ros.org/tf/Tutorials/Introduction%20to%20tf">visit here</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73435">aarsh_t</a> on 2022-04-26 04:51:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ahmet Sorry if this sound rude but, see no one will spoon feed you with the code. You will need to learn about it by self. we are here to help if you get stuck in the learning. We are not here to complete your assignments and write the code on your behalf. You can not just ask to do coding for you. There are many freelancers in the market for that. you can contact them if you want to be spoon feed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73435">aarsh_t</a> on 2022-04-26 04:56:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I just wanted help because I couldn&#39;t understand where the error was, of course you are not in a position to write all the code yourself.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/101723">ahmet</a> on 2022-04-26 05:10:14 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

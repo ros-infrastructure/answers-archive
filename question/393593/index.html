@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscriber only receives data from connected publisher after 'ros2 topic echo &lt;name_of_topic&gt;' - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/393593">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscriber only receives data from connected publisher after 'ros2 topic echo &lt;name_of_topic&gt;'</h2>
+      <div class="question">
+        <p>Environment:</p>
+
+<ul>
+<li>ROS Galactic, built from source using instructions similar to <a href="https://docs.ros.org/en/galactic/Installation/Ubuntu-Development-Setup.html">https://docs.ros.org/en/galactic/Installation/Ubuntu-Development-Setup.html</a> (stopped after the &#39;Install dependencies using rosdep&#39; sections, i.e. did NOT install additional DDS implementations)</li>
+<li>Lubuntu 20.04</li>
+<li>Additional repos of interest, also built from source:
+
+<ul>
+<li><a href="https://github.com/ros-perception/image_common.git">https://github.com/ros-perception/image_common.git</a>, &#39;ros2&#39; branch</li>
+<li><a href="https://github.com/klintan/ros2_usb_camera.git">https://github.com/klintan/ros2_usb_camera.git</a>, &#39;foxy-devel&#39; branch</li>
+</ul></li>
+</ul>
+
+<p>I have a couple of nodes, one of which publishes sensor<em>msgs::msg::Image data on a topic **/smart</em>home/scc_image**, the other subscribes to the data on this topic.</p>
+
+<p>The publisher node is started with a custom launch file, which instantiates a node from the aforementioned <strong>ros2<em>usb</em>camera</strong> package (the topic remapping moves &#39;image&#39; to &#39;scc<em>image&#39;, and &#39;sh</em>common_py&#39; is a custom module):</p>
+
+<pre><code>from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, LogInfo, Shutdown
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+from os.path import join as ojoin
+
+import sh_common_py
+
+def generate_launch_description():
+    cfg = ojoin(
+        get_package_share_directory(&quot;sh_scc_image_stream&quot;),
+        &quot;config&quot;,
+        &quot;params.yaml&quot;
+    )
+    desc = LaunchDescription()
+    desc.add_action(DeclareLaunchArgument(
+        &quot;camera_calibration_file&quot;,
+        default_value=&quot;&quot;
+    ))
+    desc.add_action(DeclareLaunchArgument(
+        &quot;camera_id&quot;,
+        default_value=&quot;0&quot;
+    ))
+    desc.add_action(Node(
+        package=&quot;usb_camera_driver&quot;,
+        executable=&quot;usb_camera_driver_node&quot;,
+        name=&quot;sh_scc_image_stream&quot;,
+        namespace=&quot;/smart_home&quot;,
+        remappings=[(&quot;image&quot;, sh_common_py.topics.SCC_CAMERA_IMAGE)],
+        parameters=[
+            cfg,
+            {&quot;camera_calibration_file&quot;: LaunchConfiguration(&quot;camera_calibration_file&quot;)},
+            {&quot;camera_id&quot;: LaunchConfiguration(&quot;camera_id&quot;)},
+        ],
+        on_exit=Shutdown(),
+    ))
+    desc.add_action(LogInfo(msg=LaunchConfiguration(&quot;camera_calibration_file&quot;)))
+    desc.add_action(LogInfo(msg=LaunchConfiguration(&quot;camera_id&quot;)))
+    return desc
+</code></pre>
+
+<p>And this references a simple configuration file:</p>
+
+<pre><code>/smart_home:
+    sh_scc_image_stream:
+        ros__parameters: 
+            frame_id: &quot;sh_scc_image_stream_camera&quot;
+            image_width: 3840
+            image_height: 2160
+            fps: 30.0
+            camera_id: 0
+</code></pre>
+
+<p>The subscriber node is from a custom package. The header declares the subscription as:</p>
+
+<pre><code>image_transport::Subscriber cap_image_raw_sub;
+</code></pre>
+
+<p>And is initialized in the source as:</p>
+
+<pre><code>cap_image_raw_sub = image_transport::create_subscription(
+    this,
+    ::sh::names::topics::SCC_CAMERA_IMAGE,
+    std::bind(
+        &amp;sh::ColorPeaksCalculatorNode::cap_image_raw_callback,
+        this,
+        std::placeholders::_1
+    ),
+    &quot;raw&quot;,
+    rmw_qos_profile_sensor_data
+);
+</code></pre>
+
+<p>Where sh::ColorPeaksCalculatorNode::cap<em>image</em>raw_callback has the following signature:</p>
+
+<pre><code>void sh::ColorPeaksCalculatorNode::cap_image_raw_callback(const sensor_msgs::msg::Image::ConstSharedPtr&amp; msg);
+</code></pre>
+
+<p>Running the full system, I can see that these two nodes connect to the same topic:</p>
+
+<pre><code>$ ros2 topic info /smart_home/scc_image --verbose
+Type: sensor_msgs/msg/Image
+
+Publisher count: 1
+
+Node name: sh_scc_image_stream
+Node namespace: /smart_home
+Topic type: sensor_msgs/msg/Image
+Endpoint type: PUBLISHER
+GID: 56.8b.10.01.47.47.5d.07.f0.e5.e7.23.00.00.15.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  Durability: VOLATILE
+  Lifespan: 9223372036854775807 nanoseconds
+  Deadline: 9223372036854775807 nanoseconds
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: 9223372036854775807 nanoseconds
+
+Subscription count: 1
+
+Node name: sh_color_peaks_calculator
+Node namespace: /smart_home
+Topic type: sensor_msgs/msg/Image
+Endpoint type: SUBSCRIPTION
+GID: 66.4f.10.01.3d.3e.6d.25.6a.9f.f5.fd.00.00.1a.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  Durability: VOLATILE
+  Lifespan: 9223372036854775807 nanoseconds
+  Deadline: 9223372036854775807 nanoseconds
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: 9223372036854775807 nanoseconds
+</code></pre>
+
+<p>However, the subscriber node is not behaving like it is receiving data. But as soon as I run <strong>ros2 topic echo /smart<em>home/scc</em>image</strong>, both this and the subscriber node start receiving data. When I terminate the echo command, the subscriber node continues to receive data as expected. Output I receive with <strong>ros2 topic echo /smart<em>home/scc</em>image</strong> active:</p>
+
+<pre><code>$ ros2 topic info /smart_home/scc_image --verbose
+Type: sensor_msgs/msg/Image
+
+Publisher count: 1
+
+Node name: sh_scc_image_stream
+Node namespace: /smart_home
+Topic type: sensor_msgs/msg/Image
+Endpoint type: PUBLISHER
+GID: 59.09.10.01.0f.1a.31.17.5e.49.e5.fd.00.00.15.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  Durability: VOLATILE
+  Lifespan: 9223372036854775807 nanoseconds
+  Deadline: 9223372036854775807 nanoseconds
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: 9223372036854775807 nanoseconds
+
+Subscription count: 2
+
+Node name: sh_color_peaks_calculator
+Node namespace: /smart_home
+Topic type: sensor_msgs/msg/Image
+Endpoint type: SUBSCRIPTION
+GID: 69.1b.10.01.8a.c2.62.a0.71.2c.b8.5b.00.00.1a.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  Durability: VOLATILE
+  Lifespan: 9223372036854775807 nanoseconds
+  Deadline: 9223372036854775807 nanoseconds
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: 9223372036854775807 nanoseconds
+
+Node name: _ros2cli_50568
+Node namespace: /
+Topic type: sensor_msgs/msg/Image
+Endpoint type: SUBSCRIPTION
+GID: bf.29.10.01.80.c7.9b.bb.cf.70.ca.a6.00.00.08.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  Durability: VOLATILE
+  Lifespan: 9223372036854775807 nanoseconds
+  Deadline: 9223372036854775807 nanoseconds
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: 9223372036854775807 nanoseconds
+</code></pre>
+
+<p>I&#39;ve also tried to use rclcpp::Node::create_subscription to create the subscription in the subscriber node but with the same behavior.</p>
+
+<p>I can provide more information if needed. Any idea as to what would cause this behavior? Or additional debugging strategies I could use? I&#39;m somewhat new to ROS2, so any help would be appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/45301">rnvandemark</a> on 2021-12-31 14:50:03 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

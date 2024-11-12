@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf transformation glitching - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/214065">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf transformation glitching</h2>
+      <div class="question">
+        <p>Hi everybody, </p>
+
+<p>I&#39;ve been using Gazebo with the PR2 simulated robot. I&#39;m working on a node which grabs a point cloud from PR2&#39;s Kinect (by subscribing to /head<em>mount</em>kinect/depth_registered/points), extract some points and publish a new cloud with the extracted data. To do this I transform the cloud from Kinect&#39;s coordinate system to PR2&#39;s base coordinate system, extract the points and publish new cloud to topic using the base&#39;s coordinate system (I don&#39;t convert them back).</p>
+
+<p>Here is where the thing turns weird. If I want to view the extracted cloud using RViz I need to publish the coordinate system associated to it, since without it RViz can&#39;t show it correctly. So I publish cloud&#39;s coordinate system in the same node where the extraction is performed. This coordinate system is basically same as PR2 base&#39;s.</p>
+
+<p>So far this sounds good (I think), but when I visualize the extracted cloud using RViz the cloud &#39;gliches&#39; in its orientation, I mean sometimes it is oriented good, like if the coordinate transformation was done ok, that is objects are well placed according to the base. Nevertheless sometimes the cloud is oriented bad, like if the coordinate transformation weren&#39;t be done at all, I can notice this because if I display data according to base&#39;s coordinate system objects show inclined, exactly like if it weren&#39;t been transformed from Kinect&#39;s coordinate system.</p>
+
+<p>My code is basically the following (I removed I few methods to make it shorter). I checked tf and the transformation is being published, at an awful slow rate (around 1Hz), but it is. </p>
+
+<p>Has this happened to anybody?? So far I got no clue what might be the problem.
+Thanks in advance.</p>
+
+<pre><code>void cloudCallback(const sensor_msgs::PointCloud2ConstPtr &amp;_msg)
+{
+    // Convert and clean input cloud
+    pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;());
+    fromROSMsg(*_msg, *cloud);
+    Util::removeNANs(cloud);
+
+    ROS_INFO(&quot;Transforming and filtering&quot;);
+    if (!transformCloud(cloud, _msg-&gt;header.frame_id))
+        return;
+    removeFloor(cloud);
+
+    // Get plane segmenting data
+    ROS_INFO(&quot;Segmenting&quot;);
+    pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+    Eigen::Hyperplane&lt;float, 3&gt; plane = getSegmentationPlane(cloud, inliers);
+
+    std::map&lt;int, bool&gt; inlierMap;
+    for (size_t i = 0; i &lt; inliers-&gt;indices.size(); ++i)
+        inlierMap[inliers-&gt;indices[i]] = true;
+
+    // Extract only the interesting data
+    pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr filteredCloud(new pcl::PointCloud&lt;pcl::PointXYZ&gt;());
+    filteredCloud-&gt;reserve(cloud-&gt;size());
+    for (size_t i = 0; i &lt; cloud-&gt;size(); i++)
+    {
+        if (inlierMap.find(i) != inlierMap.end())
+            continue;
+
+        Eigen::Vector3f point = cloud-&gt;at(i).getVector3fMap();
+        if (plane.signedDistance(point) &gt; 0)
+            filteredCloud-&gt;push_back(cloud-&gt;points[i]);
+    }
+
+    // Publish the extracted data
+    ROS_INFO(&quot;Publishing&quot;);
+    ros::Time now = ros::Time::now();
+    sensor_msgs::PointCloud2 output;
+    pcl::toROSMsg(*filteredCloud, output);
+    output.header.stamp = now;
+    output.header.frame_id = EXTRACTED_CLOUD_FRAME;
+    publisher.publish(output);
+}
+
+int main(int argc, char** argv)
+{
+    // Initialize ROS
+    ros::init(argc, argv, &quot;basic_cloud_extractor&quot;);
+    ros::NodeHandle handler;
+
+    // Create a ROS publisher and subscriber
+    publisher = handler.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;pr2_grasping/extracted_cloud&quot;, 2);
+    ros::Subscriber sub = handler.subscribe(&quot;input&quot;, 1, cloudCallback);
+
+    // Publish transformation
+    static tf::TransformBroadcaster broadcaster;
+    ros::Rate loop_rate(10);
+    while (ros::ok())
+    {
+        frameTransformation.setOrigin(tf::Vector3(0, 0, 0));
+        q.setRPY(0, 0, 0);
+        frameTransformation.setRotation(q);
+        broadcaster.sendTransform(tf::StampedTransform(frameTransformation, ros::Time::now(), BASE_FRAME, EXTRACTED_CLOUD_FRAME));
+
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
+
+    return EXIT_SUCCESS;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/23164">Rodrigo</a> on 2015-07-18 19:08:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Have you checked your tf tree? Also these kind of glitches are possible when several nodes are publishing to the same topic, but <code>frame_id</code> fields are different. So check the node graph as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2873">Boris</a> on 2015-07-19 09:16:44 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You shouldn&#39;t need to create your own frame to publish clouds in; you should just be able to transform and publish them in the <code>/odom</code> or <code>/map</code> frame (depending on if you&#39;re using nav or not).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2015-07-19 12:07:02 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

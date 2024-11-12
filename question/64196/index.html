@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>move_base problem - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/64196">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>move_base problem</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/51638/move-base-problem">https://robotics.stackexchange.com/questions/51638/move-base-problem</a>.</p>
+        <p>Hello @all,
+I am still having a problem with our custom 4-wheel robot. I can move it with keyboard or ArbotixGUI an create a map, that&#39;s fine. With move_base started with launchfile and after click on 2D Nav Goal in RVIZ nothing happened. With additional started amcl node in rviz I see the computed route (blue and red) but the movement goes in wrong direction backwards.</p>
+
+<p>Here my files. Maybe somebody can look over and may see an error.
+If you need more information or other files, please let me know.</p>
+
+<p>Thank yo for your help</p>
+
+<p>Michael</p>
+
+<p>The robot: <code>fh_base_control.py</code></p>
+
+<pre><code>#!/usr/bin/env python
+
+# Stand 27.05.2013 mha
+
+import roslib; roslib.load_manifest(&#39;fh_basecontroller&#39;)
+import rospy
+import tf
+import math
+from math import sin, cos, pi
+import sys
+import os
+import time
+
+from geometry_msgs.msg import Quaternion, Twist, Point, Pose, Pose2D, PoseWithCovariance, TwistWithCovariance, Vector3
+from nav_msgs.msg import Odometry
+from std_msgs.msg import String
+from sensor_msgs.msg import JointState
+from EposManager.msg import MotorInfo
+from EposManager.msg import EPOSControl
+import dynamic_reconfigure.server
+
+
+
+class FH_Basectrl(object):  
+    def __init__(self):
+
+        rospy.init_node(&#39;fh_basecontrol&#39;)
+        rospy.loginfo(&quot;Init fh_basecontrol&quot;)
+
+        # get values from conmon.launch
+        self.ticks_per_meter = float(rospy.get_param(&quot;~ticks_per_meter&quot;, 1771))
+        self.wheel_track = float(rospy.get_param(&quot;~wheel_track&quot;, 0.445))    # Distance of wheels, (Spurbreite)
+        self.rate = float(rospy.get_param(&quot;~rate&quot;, 10))
+        self.odom_angular_scale_correction = float(rospy.get_param(&quot;~odom_angular_scale_correction&quot;, 0.72))
+        self.odom_linear_scale_correction = float(rospy.get_param(&quot;~odom_linear_scale_correction&quot;, 1))
+        self.speed_factor = float(rospy.get_param(&quot;~speed_factor&quot;, 4000))   # for Eposmanager
+        self.odom_frame = rospy.get_param(&quot;~odom_frame&quot;, &quot;odom&quot;)
+        self.base_frame = rospy.get_param(&quot;~base_frame&quot;, &quot;base_link&quot;)
+
+        now = rospy.Time.now()
+        self.timeold = now
+        self.t_delta = rospy.Duration(1.0 / self.rate)
+        self.t_next = now + self.t_delta
+        self.then = now # time for determining dx/dy
+
+        # reset on start
+        self.x = 0
+        self.y = 0
+        self.theta = 0
+        self.d_left = 0.0
+        self.d_right = 0.0
+        self.motor_position_left_old = 0
+        self.motor_position_right_old = 0
+        self.motor_position_left_new = 0
+        self.motor_position_right_new = 0
+
+        self.init = 1   # init counter: first Motor_Infos will be trashed
+        self.waitforMotor_Infos = 0     # wait untill Motor_infos from both motors arrived 
+
+        self._pos2D  = Pose2D()   # 2D Pose for odometrie       
+
+        # subscriptions
+        self.cmd_vel_sub = rospy.Subscriber(&quot;cmd_vel&quot;, Twist, self._HandleVelocityCommand)
+        self.motorInfoSubscriber = rospy.Subscriber(&quot;motors/Motor_Info&quot;, MotorInfo, self._motorInfoCallback)
+
+        # publisher
+        self._OdometryTransformBroadcaster = tf.TransformBroadcaster()
+        self._OdometryPublisher = rospy.Publisher(&quot;odom&quot;, Odometry)
+        self._EPOSControlPublisher = rospy.Publisher(&quot;motors/Motor_Control&quot;, EPOSControl)
+
+        self.joint_states_pub = rospy.Publisher(&#39;joint_states&#39;, JointState)     
+
+
+
+    def _motorInfoCallback(self,msg):
+        &quot;&quot;&quot; Handle EPOS Motorinfo requests &quot;&quot;&quot;
+        self.now = rospy.Time.now()
+
+
+
+        if msg.node_id == 1:    
+            self.motor_position_left_new = msg.motor_position
+            self.waitforMotor_Infos|=0x01
+
+
+        if msg.node_id == 2:    
+            self.motor_position_right_new = msg.motor_position  
+            self.waitforMotor_Infos|=0x02
+
+
+        # when both msg.motor_position arrived: go ahead
+        if self.waitforMotor_Infos!=0x03:
+            return
+
+        self.waitforMotor_Infos = 0
+
+        now = rospy.Time.now()
+        if now &gt; self.t_next:
+            dt = now - self.timeold
+            dt = dt.to_sec()
+            self.timeold = now
+
+        # calculate odometry
+        self.d_left = (self.motor_position_left_new - self.motor_position_left_old)/ self.ticks_per_meter
+        self.d_right = (self.motor_position_right_new - self.motor_position_right_old)/ self.ticks_per_meter
+
+        # invert the direction of one motor
+        self.d_right *= -1. 
+
+        self.motor_position_left_old = self.motor_position_left_new
+        self.motor_position_right_old = self.motor_position_right_new 
+
+        # delete first values
+        if self.init &gt; 0:
+            # rospy.logwarn(&quot;####### init:&quot; + str(self.init) )
+            self.init = self.init -1
+            return
+
+        dxy_ave = (self.d_left + self.d_right) / 2.0
+        dtheta = (self.d_right - self.d_left) / self.wheel_track    
+
+        vxy = dxy_ave  / dt
+        vth = dtheta / dt
+        dtheta = float(dtheta) / 100 # m --&gt; cm
+        dtheta = dtheta * self.odom_angular_scale_correction
+        dxy_ave = float(dxy_ave)
+        rospy.logwarn(&quot;d_theta: %s&quot; %str(dtheta)) 
+        rospy.logwarn(&quot;vth: %s&quot; %str(vth))
+
+        if (dxy_ave != 0):
+            dx = cos(dtheta) * dxy_ave 
+            dy = -sin(dtheta) * dxy_ave
+            self.x +=((cos(self.theta) * dx - sin(self.theta) * dy) /100.) * self.odom_linear_scale_correction
+            self.y +=((sin(self.theta) * -dx + cos(self.theta) * dy) /100.) * self.odom_linear_scale_correction 
+        else:
+            rospy.logwarn (&quot;dxy_ave != 0&quot;)
+
+        rospy.logwarn(&quot;pos x: %.2lf&quot; %self.x)
+        rospy.logwarn(&quot;pos y: %.2lf&quot; %self.y)
+
+
+        if dtheta != 0:
+            self.theta = self.theta+dtheta
+
+
+        quaternion = tf.transformations.quaternion_from_euler(0, 0, self.theta)
+        quaternion = Quaternion()
+        quaternion.x = 0.0
+        quaternion.y = 0.0
+        quaternion.z = sin(self.theta / 2.0)
+        quaternion.w = cos(self.theta / 2.0)
+
+
+        # First, we&#39;ll publish the transform from frame odom to frame base_link over tf
+        # Note that sendTransform requires that &#39;to&#39; is passed in before &#39;from&#39; while
+        # the TransformListener&#39; lookupTransform function expects &#39;from&#39; first followed by &#39;to&#39;.
+        try:
+            self._OdometryTransformBroadcaster.sendTransform(
+                (self.x, self.y, 0),
+                (quaternion.x, quaternion.y, quaternion.z, quaternion.w),
+                rospy.Time.now(),
+                &quot;base_link&quot;,
+                &quot;odom&quot;)               
+
+        except Exception,e:
+            rospy.logwarn(&quot;Unexpected error1:&quot; + str(e))#str(sys.exc_info()[0]))
+
+        odometry = Odometry()
+        odometry.header.frame_id = &quot;odom&quot;
+        odometry.child_frame_id = &quot;base_link&quot;
+        odometry.header.stamp = now
+
+        odometry.pose.pose.position.x = self.x
+        odometry.pose.pose.position.y = self.y
+        odometry.pose.pose.position.z = 0
+        odometry.pose.pose.orientation = quaternion
+        odometry.twist.twist.linear.x = vxy
+        odometry.twist.twist.linear.y = 0
+        odometry.twist.twist.angular.z = vth
+
+        self._OdometryPublisher.publish(odometry)
+
+    def _sendmotorVelocity(self,id1,vel1):
+        &#39;&#39;&#39;publish EPosControl msg&#39;&#39;&#39;
+        eposctrl = EPOSControl()
+        eposctrl.control_mode=EPOSControl.VELOCITY;
+        eposctrl.node_id = id1;
+        eposctrl.setpoint = vel1;
+        rospy.loginfo(eposctrl)
+        self._EPOSControlPublisher.publish(eposctrl)
+
+    def _HandleVelocityCommand(self, cmd_vel):
+        &quot;&quot;&quot; Handle movement requests. Twistmsg&quot;&quot;&quot;
+
+        v = cmd_vel.linear.x        # m/s
+        omega = cmd_vel.angular.z      # rad/s
+
+        left_speed_out  = cmd_vel.linear.x - cmd_vel.angular.z * self.wheel_track/2
+        right_speed_out = cmd_vel.linear.x + cmd_vel.angular.z * self.wheel_track/2
+        left_speed_out = left_speed_out * self.speed_factor
+        right_speed_out = -right_speed_out * self.speed_factor
+
+        self._sendmotorVelocity(1,left_speed_out)
+        self._sendmotorVelocity(2,right_speed_out)
+
+        message = &#39;s %.2f %.2f\r&#39; % (v, omega)
+        rospy.logdebug(&quot;Sending speed command message: &quot; + message)
+
+    def _HandleEposdata(self):
+        rospy.loginfo(_HandleEposdata)
+        data = 0
+        self._BroadcastOdometryInfo(data)
+
+    def Start(self):
+        rospy.logdebug(&quot;Starting&quot;)
+
+    def Stop(self):
+        rospy.logdebug(&quot;Stopping&quot;)
+        self._sendmotorVelocity(1,0)
+        self._sendmotorVelocity(2,0)
+
+    def spin(self):
+        js = JointState(name = [&quot;left_wheel_joint&quot;, &quot;right_wheel_joint&quot;, &quot;front_castor_joint&quot;, &quot;back_castor_joint&quot;], position=[0,0,0,0], velocity=[0,0,0,0], effort=[0,0,0,0])  
+        r = rospy.Rate(self.update_rate)
+        last_cmd_vel = 0, 0
+        last_cmd_vel_time = rospy.get_rostime()
+        last_js_time = rospy.Time(0)
+        rospy.loginfo(&quot;send velocitytest&quot;)
+
+
+        while not rospy.is_shutdown():
+            last_time = s.header.stamp
+            curr_time = rospy.get_rostime()
+            js.header.stamp = curr_time + rospy.Duration(1)
+
+
+            # PUBLISH STATE
+
+        self.odom_pub.publish(odom)
+        if self.publish_tf:
+            self.publish_odometry_transform(odom)
+            # 1hz, future-dated joint state
+        if curr_time &gt; last_js_time + rospy.Duration(1):
+            self.joint_states_pub.publish(js)
+            last_js_time = curr_time
+
+            r.sleep()
+
+if __name__ == &#39;__main__&#39;:  
+    basectrl = FH_Basectrl()
+    try:
+        basectrl.Start()
+
+        rospy.spin()
+
+    except rospy.ROSInterruptException:
+        basectrl.Stop()
+</code></pre>
+
+<p>The launchfile:</p>
+
+<pre><code>&lt;launch&gt;
+
+&lt;!-- Start the Motorcontrol --&gt;
+    &lt;param name=&quot;run_id&quot; value=&quot;test1&quot; /&gt;
+        &lt;env name=&quot;ROS_LOG_DIR&quot; value=&quot;$(find EposManager)/logs&quot; /&gt;
+        &lt;rosparam command=&quot;load&quot; file=&quot;$(find EposManager)/params/Left_Motor.yaml&quot; ns=&quot;motors/Left_Motor&quot; /&gt;
+        &lt;rosparam command=&quot;load&quot; file=&quot;$(find EposManager)/params/Right_Motor.yaml&quot; ns=&quot;motors/Right_Motor&quot; /&gt; 
+    &lt;node name=&quot;Drive_Motors&quot; pkg=&quot;EposManager&quot; type=&quot;EposManager&quot; args=&quot;Left_Motor Right_Motor&quot; ns=&quot;motors/&quot; output=&quot;screen&quot;  &gt;
+        &lt;param name=&quot;Port&quot; value=&quot;USB0&quot; /&gt;
+        &lt;param name=&quot;Protocol&quot; value=&quot;USB&quot; /&gt;
+        &lt;param name=&quot;Publish_Rate&quot; value=&quot;10&quot; /&gt;        
+    &lt;/node&gt;
+
+&lt;!-- Start the Laser-Node --&gt;
+    &lt;node name=&quot;laserscanner_tcp&quot; pkg=&quot;rotoscan_node&quot; type=&quot;rotoscan_node&quot; &gt;
+        &lt;param name=&quot;connection&quot; type=&quot;str&quot; value=&quot;tcp&quot; /&gt;
+        &lt;param name=&quot;host&quot; type=&quot;str&quot; value=&quot;192.168.60.3&quot; /&gt;
+        &lt;param name=&quot;port&quot; type=&quot;str&quot; value=&quot;9008&quot; /&gt;
+        &lt;param name=&quot;max_range&quot; type=&quot;double&quot; value=&quot;40.&quot; /&gt;
+    &lt;/node&gt;
+
+    &lt;!-- Static transform for the laser --&gt;
+    &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_link_to_laser&quot; args=&quot;0.12 0.0 0.2 0.0 0.0 0.0 /base_link /laser 100&quot; /&gt; 
+
+&lt;!--    optional Keyboard-Control  --&gt;
+    &lt;!--    &lt;node name=&quot;control&quot; pkg=&quot;drive_base_tutorial&quot; type=&quot;drive_base&quot; /&gt; --&gt;
+
+&lt;!-- Load the URDF/Xacro model of our robot --&gt;
+   &lt;arg name=&quot;urdf_file&quot; default=&quot;$(find xacro)/xacro.py &#39;$(find fh_basecontroller)/urdf/conmon.urdf.xacro&#39;&quot; /&gt;
+        &lt;param name=&quot;robot_description&quot; command=&quot;$(arg urdf_file)&quot; /&gt;
+
+&lt;!-- Run the map server with a map --&gt;  
+        &lt;node name=&quot;map_server&quot; pkg=&quot;map_server&quot; type=&quot;map_server&quot; args=&quot;$(find fh_basecontroller)/maps/map.yaml&quot;/&gt; 
+
+&lt;!-- Start the Basecontroller with Parameters  --&gt;
+    &lt;node name=&quot;basecontroller&quot; pkg=&quot;fh_basecontroller&quot; type=&quot;fh_base_control.py&quot;&gt;
+        &lt;param name=&quot;odom_linear_scale_correction&quot; value=&quot;1.0&quot;  /&gt;  # ueber calibrate_linear.py ermittelt
+        &lt;param name=&quot;odom_angular_scale_correction&quot; value=&quot;0.72&quot;  /&gt; # ueber calibrate_angular.py ermittelt
+        &lt;param name=&quot;ticks_per_meter&quot; value=&quot;1771&quot;  /&gt;
+        &lt;param name=&quot;wheel_track&quot; value=&quot;0.445&quot;  /&gt;
+        &lt;param name=&quot;rate&quot; value=&quot;30&quot;  /&gt;
+        &lt;param name=&quot;update_rate&quot; value=&quot;30&quot;  /&gt;    
+        &lt;param name=&quot;speed_factor&quot; value = &quot;4000&quot; /&gt;
+        &lt;param name=&quot;cmd_vel_timeout&quot; value = &quot;0.6&quot; /&gt;
+        &lt;param name=&quot;odom_frame&quot; value = &quot;odom&quot; /&gt;
+        &lt;param name=&quot;base_frame&quot; value = &quot;base_link&quot; /&gt;
+        &lt;param name=&quot;min_abs_yaw_vel&quot; value = &quot;None&quot; /&gt;
+        &lt;param name=&quot;max_abs_yaw_vel&quot; value = &quot;None&quot; /&gt;
+    &lt;/node&gt;
+
+&lt;!-- Start the move_base-node   --&gt;
+    &lt;node name=&quot;move_base&quot; pkg=&quot;move_base&quot; type=&quot;move_base&quot; respawn=&quot;false&quot; output=&quot;screen&quot;&gt;
+        &lt;rosparam file=&quot;$(find fh_basecontroller)/config/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;global_costmap&quot; /&gt;
+        &lt;rosparam file=&quot;$(find fh_basecontroller)/config/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;local_costmap&quot; /&gt;
+        &lt;rosparam file=&quot;$(find fh_basecontroller)/config/local_costmap_params.yaml&quot; command=&quot;load&quot;  /&gt;
+        &lt;rosparam file=&quot;$(find fh_basecontroller)/config/global_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+        &lt;rosparam file=&quot;$(find fh_basecontroller)/config/base_local_planner_params.yaml&quot; command=&quot;load&quot; /&gt;e
+    &lt;/node&gt;
+
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;odom_map_broadcaster&quot; args=&quot;0 0 0 0 0 0 /map /odom  100&quot; /&gt;
+
+&lt;!-- Start the GUI to reconfigure several settings --&gt;  
+    &lt;node name=&quot;dynamic_reconfigure&quot; pkg=&quot;dynamic_reconfigure&quot; type=&quot;reconfigure_gui&quot; /&gt;
+
+    &lt;node name=&quot;robot_tf_publisher&quot; pkg=&quot;conmon_tf&quot; type=&quot;tf_broadcaster&quot; /&gt;
+    &lt;node name=&quot;robot_tf_listener&quot; pkg=&quot;conmon_tf&quot; type=&quot;tf_listener&quot; /&gt;
+
+    &lt;node name=&quot;robot_state_publisher&quot; pkg=&quot;robot_state_publisher&quot; type=&quot;state_publisher&quot;&gt;
+        &lt;param name=&quot;publish_frequency&quot; type=&quot;double&quot; value=&quot;10.0&quot; /&gt;
+    &lt;/node&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>rostopic list:</p>
+
+<pre><code>/cmd_vel
+/initialpose
+/joint_states
+/map
+/map_metadata
+/motors/Group_Motor_Control
+/motors/Group_Motor_Info
+/motors/Left_Motor/parameter_descriptions
+/motors/Left_Motor/parameter_updates
+/motors/Motor_Control
+/motors/Motor_Info
+/motors/Right_Motor/parameter_descriptions
+/motors/Right_Motor/parameter_updates
+/move_base/NavfnROS/NavfnROS_costmap/inflated_obstacles
+/move_base/NavfnROS/NavfnROS_costmap/obstacles
+/move_base/NavfnROS/NavfnROS_costmap/robot_footprint
+/move_base/NavfnROS/NavfnROS_costmap/unknown_space
+/move_base/NavfnROS/plan
+/move_base/TrajectoryPlannerROS/cost_cloud
+/move_base/TrajectoryPlannerROS/global_plan
+/move_base/TrajectoryPlannerROS/local_plan
+/move_base/TrajectoryPlannerROS/parameter_descriptions
+/move_base/TrajectoryPlannerROS/parameter_updates
+/move_base/cancel
+/move_base/current_goal
+/move_base/feedback
+/move_base/global_costmap/inflated_obstacles
+/move_base/global_costmap/obstacles
+/move_base/global_costmap/parameter_descriptions
+/move_base/global_costmap/parameter_updates
+/move_base/global_costmap/robot_footprint
+/move_base/global_costmap/unknown_space
+/move_base/goal
+/move_base/local_costmap/inflated_obstacles
+/move_base/local_costmap/obstacles
+/move_base/local_costmap/parameter_descriptions
+/move_base/local_costmap/parameter_updates
+/move_base/local_costmap/robot_footprint
+/move_base/local_costmap/unknown_space                                                                                                   
+/move_base/parameter_descriptions                                                                                                        
+/move_base/parameter_updates                                                                                                             
+/move_base/result                                                                                                                        
+/move_base/status                                                                                                                        
+/move_base_simple/goal
+/odom
+/particlecloud
+/rosout
+/rosout_agg
+/scan
+/tf
+/waypoint_markers
+/waypoint_markers_array
+</code></pre>
+
+<p>rostopic echo tf:</p>
+
+<pre><code>---
+transforms: 
+  - 
+    header: 
+      seq: 0
+      stamp: 
+        secs: 1370251675
+        nsecs: 719868000
+      frame_id: /map
+    child_frame_id: /odom
+    transform: 
+      translation: 
+        x: 0.012765523603
+        y: -0.00185758867047
+        z: 0.0
+      rotation: 
+        x: -0.0
+        y: -0.0
+        z: 8.56034512309e-05
+        w: 0.999999996336
+</code></pre>
+
+<p>rostopic echo odom:</p>
+
+<pre><code>---
+header: 
+  seq: 2467
+  stamp: 
+    secs: 1370251787
+    nsecs: 143330097
+  frame_id: odom
+child_frame_id: base_link
+pose: 
+  pose: 
+    position: 
+      x: -1.01842431067
+      y: -0.000323505793659
+      z: 0.0
+    orientation: 
+      x: 0.0
+      y: 0.0
+      z: -0.00046593365865
+      w: 0.999999891453
+  covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+twist: 
+  twist: 
+    linear: 
+      x: -7.04065560314
+      y: 0.0
+      z: 0.0
+    angular: 
+      x: 0.0
+      y: 0.0
+      z: -1.12850912872
+  covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+</code></pre>
+
+<p>Thank you for reading and any hint to solve the problem.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4636">mharms</a> on 2013-06-02 23:51:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please post results from view frames (<a href="http://www.ros.org/wiki/tf/Debugging%20tools#view_frames">http://www.ros.org/wiki/tf/Debugging%20tools#view_frames</a>) and the move_base params yaml files.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1505">weiin</a> on 2013-06-19 15:36:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi Weiin, I posted the files and a link below. It would be great, if you can give me hint, where to look.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4636">mharms</a> on 2013-06-20 04:46:08 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Here the content of the move_base yaml-files</p>
+
+<p>base_local_planner_params<br>
+controller_frequency: 5.0
+recovery_behavior_enabled: false
+clearing_rotation_allowed: false</p>
+
+<p>TrajectoryPlannerROS:
+  max_vel_x: 0.5
+  min_vel_x: 0.05
+  max_vel_theta: 2.0
+  min_vel_theta: 0.5
+  min_in_place_vel_theta: 0.5
+  max_rotational_vel: 2.0
+  min_in_place_rotational_vel: 1.0</p>
+
+<p>holonomic_robot: false
+  yaw_goal_tolerance: 0.3 # about 6 degrees
+  xy_goal_tolerance: 0.10 # 5 cm
+  gdist_scale: 0.6
+  pdist_scale: 0.8</p>
+
+<p>heading_lookahead: 1.5
+  heading_scoring: true
+  heading_scoring_timestep: 0.5
+  meter_scoring: false
+  oscillation_reset_dist: 0.5</p>
+
+<p>costmap_common_params
+obstacle_range: 2.5
+raytrace_range: 3.0
+footprint: [[27, -26], [27, 26], [-27, 26], [-27, -26]]# cw or ccw</p>
+
+<h1>robot_radius: 0.35</h1>
+
+<p>inflation_radius: 0.3
+max_obstacle_height: 0.6
+min_obstacle_height: 0.0
+observation_sources: scan
+scan: {data_type: LaserScan, topic: /scan, marking: true, clearing: true, expected_update_rate: 0}</p>
+
+<p>global_costmap_params.yaml
+global_costmap:
+   global_frame: map
+   robot_base_frame: base_link
+   update_frequency: 5.0
+   publish_frequency: 1.0
+   static_map: false
+   rolling_window: false
+   resolution: 0.01
+   transform_tolerance: 2.0
+   map_type: costmap</p>
+
+<p>local_costmap_params
+local_costmap:
+   global_frame: odom
+   robot_base_frame: base_link
+   update_frequency: 5.0
+   publish_frequency: 1.0
+   static_map: false
+   rolling_window: true
+   width: 5.0
+   height: 5.0
+   resolution: 0.01
+   transform_tolerance: 1.0
+   map_type: costmap</p>
+
+<p>Here the link to frames.pdf: 
+<a href="http://www.kunst-raum.de/frames.pdf">http://www.kunst-raum.de/frames.pdf</a></p>
+
+<p>Hope that somebody may help me.</p>
+
+<p>Thanks for reading</p>
+
+<p>Michael</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4636">mharms</a> on 2013-06-20 04:31:51 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Please use correct highlighting, as I have done for you question, nobody can read this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/606">felix k</a> on 2013-06-25 00:09:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ok, I founf out that I forgot the decimal-point in my values for the footprint ;-o, now it works fine. @felix k, I just copied the text, dont know from where the formatting comes...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4636">mharms</a> on 2013-06-26 04:04:18 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>A few things I noticed that may be causing your problem. Your velocity (twist in odom topic) seems quite high (-7m/s?). This does not match what you put in the yaml file (max_vel_x: 0.5). I suggest you review your calculation for the velocity and do a teleop check on your robot. eg, command robot to move at 0.1m/s. Check if odom twist gives 0.1m/s</p>
+
+<p>You mentioned in your question you are using amcl. But the frames show /odom_map_broadcaster broadcasting map-&gt;odom. I suggest you read through <a href="http://www.ros.org/wiki/navigation/Tutorials">http://www.ros.org/wiki/navigation/Tutorials</a> to understand how to set up your robot for autonomous navigation</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1505">weiin</a> on 2013-07-04 17:08:28 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi, weiin, thanks for your answer. the error was a missing decimal point in my footprint. What do you mean with your last sentence? Can you please explain to use amcl? The right frames? thx</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4636">mharms</a> on 2013-07-04 19:27:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="http://www.ros.org/wiki/amcl">http://www.ros.org/wiki/amcl</a> amcl is just a method for localization within a known map. You mentioned using it in your question. But you are also using odom_map_broadcaster to broadcast a static transform. So you need to figure out what you really want. Reading through that tutorial will help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1505">weiin</a> on 2013-07-04 20:33:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi weiin, I believe that I understood the navigation-tutorials. I mentioned AMCL, because I was not sure where the error was. When I understand it right, I start AMCL on top, but dont have to create a transform manually?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4636">mharms</a> on 2013-07-05 08:50:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>yes, with amcl, you will not need the static transform /map-&gt;/odom</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1505">weiin</a> on 2013-07-07 19:45:07 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

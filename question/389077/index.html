@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Remote node doesn't shut down when connection with master is lost - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/389077">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Remote node doesn't shut down when connection with master is lost</h2>
+      <div class="question">
+        <p>I&#39;m currently working in a ROS environment where master is running on one host and another node is running on a remote host and I&#39;m attempting to modify the remote node to shut down automatically when the connection to master is severed (by physically removing the ethernet cable, in this case). I&#39;ve tried the following approaches with no luck so far:</p>
+
+<ul>
+<li><p>Publishing a custom heartbeat message which the remote node listens for, calling cleanup if one is not received in 1 second, the idea being that if master is unreachable then the node will not be able to read from the topic. I&#39;ve tried variations where the remote node itself is the heartbeat sender and where a node on the master host is the sender instead.</p></li>
+<li><p>Using <code>rosgraph.is_master_online()</code> with a Timer set to 1 second, calling cleanup when False. I&#39;ve tried using both <code>rospy.Timer</code> and <code>threading.Timer</code> obects to schedule the callback.</p></li>
+</ul>
+
+<p>In all cases, the node stays running when the ethernet cable is disconnected, as indicated by a light on the remote host showing the state of the node.</p>
+
+<p>I don&#39;t think the issue is with the shutdown, as the same code is called when the node is terminated through Ctrl+C or <code>rosnode kill</code>, which both work fine. Moreover, when the cable is <em>reconnected</em>, the node detects the stopping condition and shuts down.</p>
+
+<p>This is just speculation, but my gut feeling is that when the connection is severed, the remote node is getting paused and never reaching the connection checking code. When the connection is restored, the node unpauses and retroactively hits the check. I haven&#39;t seen this behaviour documented anywhere, though. It may just be that I&#39;m overlooking something obvious.</p>
+
+<p>I&#39;d much appreciate any help resolving this issue!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/77776">aa-tom</a> on 2021-10-20 13:48:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>The issue seems to stem from <code>rosgraph.is_master_online()</code> blocking the node. I&#39;ve raised a PR with rosgraph <a href="https://github.com/ros/ros_comm/pull/2195">here</a> adding an optional timeout parameter to <code>rosgraph.is_master_online()</code>. In the meantime, the following solution seems to be sufficient, despite feeling a little hacky</p>
+
+<pre><code>import socket
+...
+socket.setdefaulttimeout(timeout)
+rosgraph.is_master_online()
+socket.setdefaulttimeout(None)
+...
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/77776">aa-tom</a> on 2021-10-20 17:01:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for sharing. I enjoyed reading your troubleshooting steps and how you found a solution and raised a PR</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-10-20 18:53:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I doubt the PR will get merged as-is (still: +1000 for submitting it of course).</p>
+
+<p>Getting that timeout setting where it should be (ie: <code>xmlrpclib</code>) would have a much higher chance I believe.</p>
+
+<p>Or: monkey-patch the specific <code>socket</code> object that is being used to make the request. Not as elegant as it could be, but probably better than setting a program-wide default timeout value.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-21 03:39:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Agree that the workaround feels a bit extreme. I&#39;ll take a deeper look into <code>xmlrpclib</code> when I get time. Had a brief look yesterday, but couldn&#39;t seem to find the <code>ServerProxy.getPid()</code> method being called from <code>rosgraph</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/77776">aa-tom</a> on 2021-10-21 05:30:38 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>the idea being that if master is unreachable then the node will not be able to read from the topic.</p>
+</blockquote>
+
+<p>Note btw also: it&#39;s perfectly possible for the master to not be reachable, while the rest of your application still works. It&#39;s not a &quot;normal&quot; situation, but technically master-not-reachable != nodes-are-down. As long as no new connections need to be created, nodes can keep communicating with what they have. It&#39;s all peer-to-peer, so as long as connections are established, the master is not needed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-21 05:38:26 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Publishing a custom heartbeat message which the remote node listens for, calling cleanup if one is not received in 1 second, </p>
+</blockquote>
+
+<p>have you seen <a href="http://wiki.ros.org/bond">wiki/bond</a>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-21 05:39:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>That would explain the behaviour I was seeing when the heartbeat sender was also the remote node, as I presume the p2p connection to itself would&#39;ve already been established (and would stay alive) when the connection was cut. Sill a little unsure about the behaviour when the sender was located on the master host though. Do ROS topics also use xmlrpc under the hood? Possibly a similar blocking issue as the <code>rosgraph</code> example.</p>
+
+<p>The remote node contains a controller for the robot. If the network goes down, we want everything to halt ASAP for safety. It also causes issues when trying to spin up the node again since it&#39;s already running (though there&#39;s probably options to kill and reboot in that case). Either way, I think the first point rules out that option.</p>
+
+<p>I haven&#39;t seen bond before. Thanks for letting me know about it! Looks perfect if we end up going that route</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/77776">aa-tom</a> on 2021-10-21 06:25:15 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p><code>rosgraph.is_master_online()</code> <em>was</em> blocking when the network was down, however, I&#39;d also missed that there was a <code>rospy.logwarn()</code> call in the cleanup code of the remote node, which was also blocking under the same conditions.</p>
+
+<p>I&#39;ve used the following lines of code to force <code>rosgraph.is_master_online()</code> to return False after a given timeout period:</p>
+
+<pre><code>import socket
+...
+socket.setdefaulttimeout(timeout)
+rosgraph.is_master_online()
+socket.setdefaulttimeout(None)
+...
+</code></pre>
+
+<p>And replaced the <code>rospy.logwarn()</code> call with a <code>logging.Logger</code> object calling <code>warn()</code></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/77776">aa-tom</a> on 2021-10-22 04:52:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>So what is &quot;fully fixed now&quot;?</p>
+
+<p>It would be good to describe your full solution / work-around in your answer, so future readers don&#39;t have to guess what you did in the end.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-22 05:04:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Good point! Edited with the specifics</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/77776">aa-tom</a> on 2021-10-22 05:42:45 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

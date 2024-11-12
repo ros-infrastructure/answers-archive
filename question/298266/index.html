@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Correct implementation of computeCartesianPath? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/298266">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Correct implementation of computeCartesianPath?</h2>
+      <div class="question">
+        <p>Hello everyone. I&#39;m quite new to ROS, doing a practicum project right now and have been pretty stumped with this for a few days. I have a TIAGO Robot, with a 6DOF arm with whom I want to be able to move on a straight line. The &quot;straight&quot; part is important as we&#39;ll be having a pressure sensor on the fingertip with which we want to do &quot;feeling&quot; of surfaces, so we need to be able to move it on a straight line (maintaining orientation of it) on the XY plane.</p>
+
+<p>So I&#39;ve been basically doing some frankencode because while I&#39;m familiar with C++, I&#39;m not with ROS and MoveIt!; and been piecing something together from a basic code in the <a href="http://wiki.ros.org/Robots/TIAGo/Tutorials/MoveIt/Planning_cartesian_space">TIAGO tutorials</a> that moves the actuator to a cartesian point and orientation (but not necessarily in a straight line) and the <a href="http://docs.ros.org/indigo/api/moveit_tutorials/html/doc/pr2_tutorials/planning/src/doc/move_group_interface_tutorial.html#cartesian-paths">moveit tutorial</a> that deals with Cartesian path. Current code:</p>
+
+<pre><code>   /*
+ * Software License Agreement (Modified BSD License)
+ *
+ *  Copyright (c) 2016, PAL Robotics, S.L.
+ *  All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *
+ *   * Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above
+ *     copyright notice, this list of conditions and the following
+ *     disclaimer in the documentation and/or other materials provided
+ *     with the distribution.
+ *   * Neither the name of PAL Robotics, S.L. nor the names of its
+ *     contributors may be used to endorse or promote products derived
+ *     from this software without specific prior written permission.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *  &quot;AS IS&quot; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ *  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ *  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ *  POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/** \author Jordi Pages. */
+
+// ROS headers
+#include &lt;ros/ros.h&gt;
+#include &quot;shape_msgs/SolidPrimitive.h&quot;
+#include &quot;moveit_msgs/BoundingVolume.h&quot;
+
+
+// MoveIt! headers
+#include &lt;moveit/move_group_interface/move_group_interface.h&gt;
+//#include &lt;moveit_visual_tools/moveit_visual_tools.h&gt;
+
+// Std C++ headers
+#include &lt;string&gt;
+#include &lt;vector&gt;
+#include &lt;map&gt;
+#include &lt;cmath&gt;
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;plan_arm_torso_ik_idril&quot;);
+
+  if ( argc &lt; 7 )
+  {
+    ROS_INFO(&quot; &quot;);
+    ROS_INFO(&quot;\tUsage:&quot;);
+    ROS_INFO(&quot; &quot;);
+    ROS_INFO(&quot;\trosrun tiago_moveit_tutorial plan_arm_torso_ik_idril  x y z  r p y&quot;);
+    ROS_INFO(&quot; &quot;);
+    ROS_INFO(&quot;\twhere the list of arguments specify the target pose of /arm_tool_link expressed in /base_footprint&quot;);
+    ROS_INFO(&quot; &quot;);
+    return EXIT_FAILURE;
+  }
+
+  geometry_msgs::PoseStamped goal_pose;
+  goal_pose.header.frame_id = &quot;base_footprint&quot;;
+  goal_pose.pose.position.x = atof(argv[1]);
+  goal_pose.pose.position.y = atof(argv[2]);
+  goal_pose.pose.position.z = atof(argv[3]);
+  goal_pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(atof(argv[4]), atof(argv[5]), atof(argv[6]));
+
+  ros::NodeHandle nh;
+  ros::AsyncSpinner spinner(1);
+  spinner.start();
+
+  std::vector&lt;std::string&gt; torso_arm_joint_names;
+  //select group of joints
+  moveit::planning_interface::MoveGroupInterface group_arm_torso(&quot;arm_torso&quot;);
+  const robot_state::JointModelGroup* joint_model_group =
+    group_arm_torso.getCurrentState()-&gt;getJointModelGroup(&quot;arm_torso&quot;);
+
+  //choose your preferred planner
+
+  group_arm_torso.setPlannerId(&quot;SBLkConfigDefault&quot;);
+  group_arm_torso.setPoseReferenceFrame(&quot;base_footprint&quot;);
+  group_arm_torso.setPoseTarget(goal_pose);
+
+  ROS_INFO_STREAM(&quot;Planning to move&quot; &lt;&lt;
+                  group_arm_torso.getEndEffectorLink() &lt;&lt; &quot; to a target pose expressed in &quot; &lt;&lt;
+                  group_arm_torso.getPlanningFrame());
+
+  group_arm_torso.setStartStateToCurrentState();
+  group_arm_torso.setMaxVelocityScalingFactor(1.0);
+
+  // Getting Basic Information
+  // ^^^^^^^^^^^^^^^^^^^^^^^^^
+  //
+  // We can print the name of the reference frame for this robot.
+  ROS_INFO_NAMED(&quot;tutorial&quot;, &quot;Reference frame: %s&quot;, group_arm_torso.getPlanningFrame().c_str());
+
+  // We can also print the name of the end-effector link for this group.
+  ROS_INFO_NAMED(&quot;tutorial&quot;, &quot;End effector link: %s&quot;, group_arm_torso.getEndEffectorLink().c_str());
+
+  // Planning with Path Constraints
+  // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  //
+  // Path constraints can easily be specified for a link on the robot. straight line
+  // Let&#39;s specify a path constraint and a pose goal for our group.
+  // First define the path constraint.
+  ROS_INFO_STREAM(&quot;Calculating Restrictions&quot;);
+  geometry_msgs::PoseStamped start_pose;
+  start_pose.header.frame_id = &quot;base_footprint&quot;;
+  start_pose.pose = group_arm_torso.getCurrentPose().pose;
+
+  geometry_msgs::PoseStamped vector_direccional;
+  vector_direccional.pose.position.x = goal_pose.pose.position.x - start_pose.pose.position.x;
+  vector_direccional.pose.position.y = goal_pose.pose.position.y - start_pose.pose.position.y;
+  vector_direccional.pose.position.z = goal_pose.pose.position.z - start_pose.pose.position.z;
+
+  double dist = sqrt(pow(vector_direccional.pose.position.x,2) + pow(vector_direccional.pose.position.y, 2) + pow(vector_direccional.pose.position.z,2));
+
+  ROS_INFO_STREAM(&quot;Calculated directional vector: &quot; &lt;&lt;
+                  vector_direccional.pose.position &lt;&lt;
+                  &quot;Start and goal points are at distance: &quot; &lt;&lt; dist);
+
+  moveit_msgs::OrientationConstraint ocm;
+  ocm.link_name = &quot;arm_tool_link&quot;;
+  ocm.header.frame_id = &quot;base_footprint&quot;;
+  ocm.orientation = group_arm_torso.getCurrentPose().pose.orientation;
+  ocm.absolute_x_axis_tolerance = 0.1;
+  ocm.absolute_y_axis_tolerance = 0.1;
+  ocm.absolute_z_axis_tolerance = 0.1;
+  ocm.weight = 1.0;
+  ROS_INFO_STREAM(&quot;Calculated Orientation Constraint&quot;);
+
+  moveit_msgs::Constraints test_constraints;
+  test_constraints.orientation_constraints.push_back(ocm);
+  group_arm_torso.setPathConstraints(test_constraints);
+  ROS_INFO_STREAM(&quot;Constraints set&quot;);
+
+  //Cartesian Path
+  std::vector&lt;geometry_msgs::Pose&gt; waypoints;
+    waypoints.push_back(start_pose);
+    waypoints.push_back(goal_pose);
+  }
+
+  moveit_msgs::RobotTrajectory trajectory;
+  const double jump_threshold = 100;
+  const double eef_step = dist;
+  double fraction = 0;
+
+  double old_jump_threshold = jump_threshold;
+  double old_eef_step = eef_step;
+  double good_jump_threshold = jump_threshold;
+  double good_eef_step = eef_step;
+  double good_fraction = fraction;
+
+  //This loop is only to check how eef_step and jump_treshold affect the outcome.
+  for(int i = 1; i &lt;= 300; ++i){
+      for(int j = 1; j &lt;= 1000; ++j){
+               fraction = group_arm_torso.computeCartesianPath(waypoints,
+                                                               eef_step/i,
+                                                               jump_threshold/j,
+                                                               trajectory,
+                                                               true);
+      if (fraction &lt; 0.15) break;
+      if (fraction &gt; good_fraction){
+        ROS_INFO_STREAM(&quot;Found better parameters: &quot; &lt;&lt; good_fraction* 100.0 &lt;&lt; &#39;%&#39; &lt;&lt; &quot; ==&gt; &quot; &lt;&lt; fraction * 100.0 &lt;&lt; &#39;%&#39; &lt;&lt; &quot;:&quot;);
+        ROS_INFO_STREAM(&quot;eef &quot; &lt;&lt; old_eef_step &lt;&lt; &quot; ==&gt; &quot; &lt;&lt; good_eef_step);
+        ROS_INFO_STREAM(&quot;jump &quot; &lt;&lt; old_jump_threshold &lt;&lt; &quot; ==&gt; &quot; &lt;&lt; good_jump_threshold);
+        good_fraction = fraction;
+        old_eef_step = good_eef_step;
+        old_jump_threshold = good_jump_threshold;
+        good_eef_step = eef_step/i;
+        good_jump_threshold = jump_threshold/j;
+
+      }
+      if (fraction == 1) break;
+    }
+
+    if (fraction == 1) break;
+  }
+  if (fraction == 1) ROS_INFO_NAMED(&quot;tutorial&quot;, &quot;Visualizing plan 4 (Cartesian path) (%.2f%% achieved)&quot;, fraction * 100.0);
+  else{
+    fraction = group_arm_torso.computeCartesianPath(waypoints,
+                                                    good_eef_step,
+                                                    good_jump_threshold,
+                                                    trajectory,
+                                                    true);
+  ROS_INFO_NAMED(&quot;tutorial&quot;, &quot;Best I could do was (%.2f%% achieved)&quot;, fraction * 100.0);
+  ROS_INFO_STREAM(&quot;With eef = &quot; &lt;&lt; good_eef_step &lt;&lt; &quot;, jump = &quot; &lt;&lt; good_jump_threshold);
+
+  }
+
+  moveit::planning_interface::MoveGroupInterface::Plan my_plan;
+  //set maximum time to find a plan
+  ROS_INFO_STREAM(&quot;Finding Plan...&quot;);
+  group_arm_torso.setPlanningTime(20.0);
+  bool success = bool(group_arm_torso.plan(my_plan));
+
+  if ( !success )
+    throw std::runtime_error(&quot;No plan found&quot;);
+
+  ROS_INFO_STREAM(&quot;Plan found in &quot; &lt;&lt; my_plan.planning_time_ &lt;&lt; &quot; seconds&quot;);
+
+  // Execute the plan
+  ros::Time start = ros::Time::now();
+
+  moveit::planning_interface::MoveItErrorCode e = group_arm_torso.move();
+  if (!bool(e))
+    throw std::runtime_error(&quot;Error executing plan&quot;);
+
+  ROS_INFO_STREAM(&quot;Motion duration: &quot; &lt;&lt; (ros::Time::now() - start).toSec());
+  group_arm_torso.clearPathConstraints();
+  spinner.stop();
+
+  return EXIT_SUCCESS;
+}
+</code></pre>
+
+<p>I realise that it&#39;s probably just a newbie error somewhere but I&#39;ve been scouring the forums about the ComputeCartesianPath() function and I don&#39;t really get how it works. Sometimes it returns 100% but the path comes out clearly curved, other times it&#39;s 0% but the path is visually straight. To add to this, is there a way to &quot;compare&quot; the outcome of the planned (executed) path to the &quot;perfect&quot; path? To make sure it&#39;s actually straight and have a number that gives me the error.</p>
+
+<p>Thank you very much for your help</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36604">idrilirdi</a> on 2018-07-23 09:08:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p><a href="http://docs.ros.org/kinetic/api/moveit_tutorials/html/doc/move_group_interface/move_group_interface_tutorial.html#cartesian-paths">http://docs.ros.org/kinetic/api/moveit_tutorials/html/doc/move_group_interface/move_group_interface_tutorial.html#cartesian-paths</a></p>
+
+<p>I would recommend you to check this page.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21247">saikishor</a> on 2018-07-23 11:54:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m familiar with that page, it&#39;s where I started. It still doesn&#39;t solve my problem, sorry. Sometimes it returns 100% but the path comes out clearly curved, other times it&#39;s 0% but the path is visually straight. I can&#39;t find a correlation between the fraction returned and the results I get</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36604">idrilirdi</a> on 2018-07-24 02:45:45 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

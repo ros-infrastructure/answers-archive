@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>publish/receive large PointCloud2 is very slow - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/362928">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>publish/receive large PointCloud2 is very slow</h2>
+      <div class="question">
+        <p>Hi everybody,</p>
+
+<p>I&#39;m porting a python node from ROS1 to ROS2, the node publishes some large PointCloud2 messages and collect statistics.</p>
+
+<p>I explain the setup I did: </p>
+
+<ul>
+<li><p>Two python node</p></li>
+<li><p>One node is a dummy python node with one publisher and one subscriber, it listen to an input topic and when it receives something, it publishes on an output topic a dummy message copying the received header into it. In the subscriber callback I print the time elapsed between the time of the reception and the sending time. (The sending time is retrieved by the message header that is filled by the sending node with the sending time)</p></li>
+<li><p>The second node is a node that publishes a large PointCloud2 to the input topic of the node above, it reads a binary file (from kitti benchmark dataset), put it on a PointCloud2 message, setup the header with the current time and send it. It also listens to the output topic of the dummy node collecting information about the time, simply by doing the difference between the actual time and the time in the header, having so the amount of time between publishing and receiving back a response, we will call it <strong>iteration time</strong> from now on.</p></li>
+</ul>
+
+<p>When I was using it with ROS1 I had that one iteration time stands for less than 70 ms, now with ROS2 I see very high numbers, on average 900ms.</p>
+
+<p>I suspect that the problem is on the transmission of large PointCloud2, but I don&#39;t understand why it differs so much from ROS1.</p>
+
+<p>Pointcloud frame are on average 1.9Mb each.</p>
+
+<p>Anyone has an idea?</p>
+
+<p>Thank you very much</p>
+
+<p>P.s. I add some code.
+dummy node:</p>
+
+<pre><code>#! /usr/bin/env python3
+
+import rclpy
+from rclpy.qos import QoSProfile, qos_profile_default, qos_profile_sensor_data
+from ros2topic.api import get_msg_class
+from sensor_msgs.msg import PointCloud2
+from autoware_auto_msgs.msg import BoundingBoxArray
+
+
+class DummyClass(object):
+
+    def __init__(self, node, in_topic, out_topic):
+        self.node = node
+        self.publisher = node.create_publisher(
+                BoundingBoxArray,
+                out_topic,
+                qos_profile=QoSProfile(depth=10),
+                callback_group=rclpy.callback_groups.ReentrantCallbackGroup())
+
+        self.subscriber = node.create_subscription(
+                    PointCloud2,
+                    in_topic,
+                    self.sub_callback,
+                    qos_profile=QoSProfile(depth=10),
+                    callback_group=rclpy.callback_groups.ReentrantCallbackGroup()
+        )
+
+
+    def sub_callback(self, msg):
+        time_now = self.node.get_clock().now().nanoseconds
+        bbox_array = BoundingBoxArray()
+        bbox_array.header = msg.header
+
+        time_there = rclpy.time.Time()
+        time_there = time_there.from_msg(msg.header.stamp)
+        tm = int((time_now - time_there.nanoseconds) // (10**6))
+        print(&quot;time elapsed %d ms&quot; % tm)
+
+        self.publisher.publish(bbox_array)
+
+
+def main(args=None):
+    # Create a ROS2 node
+    rclpy.init(args=args)
+    node = rclpy.create_node(&quot;dummy_node&quot;)
+
+    node.get_logger().info(&quot;Dummy_node_started&quot;)
+
+    dummy = DummyClass(
+            node,
+            &#39;/points_nonground&#39;,
+            &#39;/lidar_bounding_boxes&#39;
+    )
+
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
+
+    rclpy.spin(node, executor)
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>The other node:</p>
+
+<pre><code>#! /usr/bin/env python3
+
+import rclpy
+from rclpy.qos import QoSProfile
+from sensor_msgs.msg import PointCloud2, PointField
+from autoware_auto_msgs.msg import BoundingBoxArray
+from numpy.random import seed
+from numpy.random import randint
+
+
+class DummyPubClass(object):
+
+    def __init__(self, node, in_topic, out_topic):
+        self.node = node
+        self.publisher = node.create_publisher(
+            PointCloud2,
+            out_topic,
+            qos_profile=QoSProfile(depth=1)
+        )
+        self.subscriber = node.create_subscription(
+            BoundingBoxArray,
+            in_topic,
+            self.sub_callback,
+            qos_profile=QoSProfile(depth=1)
+        )
+        self.clearToSend = True
+        self.out_topic = out_topic
+
+
+    def sub_callback(self, msg):
+        time_now = self.node.get_clock().now().nanoseconds
+
+        time_there = rclpy.time.Time()
+        time_there = time_there.from_msg(msg.header.stamp)
+        tm = int((time_now - time_there.nanoseconds) // (10**6))
+        print(&quot;time elapsed %d ms&quot; % tm)
+        self.clearToSend = True
+
+
+    def publish(self):
+        if self.node.count_subscribers(self.out_topic) &gt; 0:
+            if self.clearToSend == True:
+                # 1.9 Mb pointcloud
+                file_size = 1900000
+
+                p_cloud = PointCloud2()
+                p_cloud.header.frame_id    = &quot;base_link&quot;
+                p_cloud.height             = 1
+                p_cloud.point_step         = 16
+                p_cloud.width              = int(file_size / p_cloud.point_step)
+
+                # Data has x,y,z and intensity
+                p_cloud.fields             = [
+                    PointField(name=&#39;x&#39;, offset=0,
+                                datatype=PointField.FLOAT32, count=1),
+                    PointField(name=&#39;y&#39;, offset=4,
+                                datatype=PointField.FLOAT32, count=1),
+                    PointField(name=&#39;z&#39;, offset=8,
+                                datatype=PointField.FLOAT32, count=1),
+                    PointField(name=&#39;intensity&#39;, offset=12,
+                                datatype=PointField.FLOAT32, count=1)
+                ]
+
+                p_cloud.is_bigendian      = False
+                p_cloud.row_step          = p_cloud.width * p_cloud.point_step
+                p_cloud.is_dense          = False
+
+                # Copy the content of the file into the message data
+                p_cloud.data              = randint(0, 255, file_size).tolist()
+                p_cloud.header.stamp      = self.node.get_clock().now().to_msg()
+
+                self.clearToSend = False
+                self.publisher.publish(p_cloud)
+
+
+def main(args=None):
+    # Create a ROS2 node
+    rclpy.init(args=args)
+    node = rclpy.create_node(&quot;dummy_pub&quot;)
+
+    seed(1)
+
+    node.get_logger().info(&quot;Dummy_pub_started&quot;)
+
+    dummy = DummyPubClass(
+            node,
+            &#39;/lidar_bounding_boxes&#39;,
+            &#39;/points_nonground&#39;
+    )
+
+    # Loop rate at 1000 Hz
+    loop_rate_s = float(1.0/1000)
+    timer = node.create_timer(
+        loop_rate_s,
+        dummy.publish
+    )
+
+    rclpy.spin(node)
+
+    node.destroy_timer(timer)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/53590">luca.fancellu</a> on 2020-10-06 10:20:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Without sharing your code we can&#39;t tell you if the high latency has something to do with how you implemented it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2020-10-06 10:25:28 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dirk Thomas, I&#39;ve updated the body adding some code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53590">luca.fancellu</a> on 2020-10-06 10:51:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It is difficult to reproduce without also having working code for the publisher side of the point cloud. If you can&#39;t share that I would suggest trying to implement <code>DummyClass</code> in C++ to see it that is any better.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2020-10-06 11:09:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks @Dirk Thomas, well the code from the publisher side basically looks for any file inside a folder and for each file it reads it, fill a PointCloud2 message and send it. The next message is sent after something is received from sub_output_topic subscriber (I set a flag).
+I will try to implement the dummy node in C++ to see if there is any difference.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53590">luca.fancellu</a> on 2020-10-06 11:20:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve added an example of a publisher node that reproduces the issue I&#39;m encountering</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53590">luca.fancellu</a> on 2020-10-07 04:30:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Dirk Thomas I&#39;ve implemented the dummy_node also in C++, the result is the same. I don&#39;t know it it&#39;s worth to try to implement the sender node int C++ also</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53590">luca.fancellu</a> on 2020-10-07 06:39:56 UTC</p></div>
+</div>
+<div class="comment">
+              <p>For Python, we did a quick analysis here:
+<a href="https://github.com/cyberbotics/webots_ros2/pull/160#issuecomment-707204002">https://github.com/cyberbotics/webots_ros2/pull/160#issuecomment-707204002</a>
+and it seems that the bottleneck is <code>data</code> setter. It performs conversion from <code>bytes</code> object to <code>array</code> object which takes a big chunk of the time. I am not sure what is the best way to handle this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44970">lukicdarkoo</a> on 2020-10-13 02:59:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@lukicdarkoo thanks for your comment, very good analysis, did you found also a good setup for the dds layer?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53590">luca.fancellu</a> on 2020-10-13 03:07:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>No, but it seems that the default configuration handles like 60-70 messages, of 1MB in size, per second (when messages are prepared before sending).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44970">lukicdarkoo</a> on 2020-10-13 03:39:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>For large data, you should change udp setup ex:
+sudo sysctl -w net.core.rmem_max=&quot;20971520&quot;
+sudo sysctl -w net.core.wmem_max=&quot;20971520&quot;
+sudo sysctl -w net.core.rmem_default=&quot;20971520&quot;
+sudo sysctl -w net.core.wmem_default=&quot;20971520&quot;</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/43908">sdyy</a> on 2020-10-26 03:50:46 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>render with opengl in rviz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/91216">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>render with opengl in rviz</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/54847/render-with-opengl-in-rviz">https://robotics.stackexchange.com/questions/54847/render-with-opengl-in-rviz</a>.</p>
+        <p>I have lots of OpenGL code to draw various things, using display lists and textures. For instance I have an OpenGL model of our robot as a display list, and I have a visualization of our localization map rendered as a set of PNG images.</p>
+
+<p>Under Fuerte, I used a Ogre::RenderQueueListener to display those things (see code below for a rough sketch).</p>
+
+<p>Now I am switching to hydro, and it does not work any more: if both the fixed and target frames are set to base_link, then I can see the diamond, but it&#39;s displayed in the center of the visualization window, and not rotated, even when I move the camera around. I.e it is drawn in window frame, rather than in the fixed frame. If I set the fixed frame to /odom, then I can&#39;t see my diamond at all. I suspect that it&#39;s because the transform is several meters, and so in the window frame it&#39;s off the screen.</p>
+
+<p>I&#39;d appreciate some help fixing this code. What are the related changes between the fuerte version and the hydro version?</p>
+
+<p>Also, is there a recommended way to render OpenGL code in rviz?</p>
+
+<pre><code>class NRSOpenGlBase : public Ogre::RenderQueueListener
+{
+public:
+  NRSOpenGlBase(Ogre::Node* node, const Ogre::Camera* camera, Ogre::SceneManager* sceneMgr)
+  : scene_node_(node), camera_(camera), scene_manager_(sceneMgr)
+  { }
+
+  virtual void renderQueueEnded(Ogre::uint8 queueGroupId, const Ogre::String&amp; invocation, bool&amp; repeatThisInvocation);
+
+protected:
+  virtual void nativeRender() = 0;
+
+  Ogre::Node*         scene_node_;
+  const Ogre::Camera* camera_;
+  Ogre::SceneManager* scene_manager_;
+};
+
+void NRSOpenGlBase::renderQueueEnded(Ogre::uint8 queueGroupId,
+    const Ogre::String&amp; invocation, bool&amp; repeatThisInvocation)
+{
+  // Set wanted render queue here - make sure there are - make sure that something is on
+  // this queue - else you will never pass this if.
+  if (queueGroupId != Ogre::RENDER_QUEUE_MAIN)
+    return;
+
+  // save matrices
+  glMatrixMode(GL_MODELVIEW);
+  glPushMatrix();
+  glMatrixMode(GL_PROJECTION);
+  glPushMatrix();
+  glMatrixMode(GL_TEXTURE);
+  glPushMatrix();
+  glLoadIdentity(); //Texture addressing should start out as direct.
+
+  Ogre::RenderSystem* renderSystem = scene_manager_-&gt;getDestinationRenderSystem();
+
+  // Ogre coordinates are -Y forward, apply offset here
+  Ogre::Matrix4 xfm = scene_node_-&gt;_getFullTransform();
+  Ogre::Quaternion robotToOgreRot;
+  Ogre::Matrix4 robotToOgreMat(robotToOgreRot);
+  renderSystem-&gt;_setWorldMatrix(xfm * robotToOgreMat);
+
+  renderSystem-&gt;_setViewMatrix(camera_-&gt;getViewMatrix());
+  renderSystem-&gt;_setProjectionMatrix(camera_-&gt;getProjectionMatrixRS());
+
+  static Ogre::Pass* clearPass = NULL;
+  if (!clearPass) {
+    Ogre::MaterialPtr clearMat =
+        Ogre::MaterialManager::getSingleton().getByName(&quot;BaseWhite&quot;);
+    clearPass = clearMat-&gt;getTechnique(0)-&gt;getPass(0);
+  }
+  //Set a clear pass to give the renderer a clear renderstate
+  scene_manager_-&gt;_setPass(clearPass, true, false);
+
+  // save attribs
+  glPushAttrib(GL_ALL_ATTRIB_BITS);
+
+  // call native rendering function
+  //////////////////
+  nativeRender();
+  //////////////////
+
+  // restore original state
+  glPopAttrib();
+
+  // restore matrices
+  glMatrixMode(GL_TEXTURE);
+  glPopMatrix();
+  glMatrixMode(GL_PROJECTION);
+  glPopMatrix();
+  glMatrixMode(GL_MODELVIEW);
+  glPopMatrix();
+}
+
+
+class NRSDiamond : public NRSOpenGlBase
+{
+public:
+  NRSDiamond(Ogre::Node* node, const Ogre::Camera* camera, Ogre::SceneManager* sceneMgr) 
+  : NRSOpenGlBase(node, camera, sceneMgr) 
+  { }
+
+protected:
+  virtual void nativeRender();
+};
+
+void NRSDiamond::nativeRender()
+{
+  static const double x = 0, y = 0, r = 10;
+  glColor3f(0.5f, 0.0f, 1.0f);
+  glBegin(GL_POLYGON);
+  glVertex2f(x + r, y);
+  glVertex2f(x, y + r);
+  glVertex2f(x - r, y);
+  glVertex2f(x, y - r);
+  glEnd();
+}
+
+
+class DiamondDisplay : public rviz::Display
+{
+Q_OBJECT
+public:
+  DiamondDisplay()
+    : diamond_scene_node_(0)
+    , nrs_queue_listener_(NULL)
+    { }
+
+  virtual ~DiamondDisplay();
+
+protected:
+  // Overrides from Display
+  virtual void update(float wall_dt, float ros_dt);
+  virtual void onInitialize();
+
+private:
+  SceneNode* diamond_scene_node_;
+  NRSDiamond* nrs_queue_listener_;
+};
+
+DiamondDisplay::~DiamondDisplay()
+{
+  if (nrs_queue_listener_) {
+    scene_manager_-&gt;removeRenderQueueListener(nrs_queue_listener_);
+    delete nrs_queue_listener_;
+  }
+  if( diamond_scene_node_ )
+    scene_manager_-&gt;destroySceneNode(diamond_scene_node_-&gt;getName());
+}
+
+void DiamondDisplay::onInitialize()
+{
+  diamond_scene_node_ = scene_node_-&gt;createChildSceneNode();
+
+  ROS_ASSERT( !scene_manager_-&gt;getCameras().empty() );
+
+  // check that Native rendering system is supported
+  ROS_ASSERT( scene_manager_-&gt;getDestinationRenderSystem()-&gt;getName() == &quot;OpenGL Rendering Subsystem&quot;);
+
+  const Ogre::Camera* camera = scene_manager_-&gt;getCameras().begin()-&gt;second;
+  nrs_queue_listener_ = new NRSDiamond(passat_scene_node_, camera, scene_manager_);
+  scene_manager_-&gt;addRenderQueueListener(nrs_queue_listener_);
+}
+
+void DiamondDisplay::update(float wall_dt, float ros_dt)
+{
+  Ogre::Vector3 position;
+  Ogre::Quaternion orientation;
+  double theta_dot, velocity;
+
+  // Return the pose of the base_link frame in the fixed frame
+  if( context_-&gt;getFrameManager()-&gt;getTransform( &quot;base_link&quot;,
+                                                 ros::Time(0),
+                                                 position, orientation ))
+  {
+    setStatus(rviz::StatusProperty::Ok, &quot;Transform&quot;, &quot;Transform OK&quot;);
+  }
+  else
+  {
+    setStatus(rviz::StatusProperty::Error, &quot;Transform&quot;, &quot;Unable to lookup transform to base_link&quot;);
+    return;
+  }
+
+  diamond_scene_node_-&gt;setPosition( position );
+  diamond_scene_node_-&gt;setOrientation( orientation );
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2013-10-15 08:28:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>RViz wasn&#39;t designed with that use case in mind. You should look at ViewController / FramePositionTrackingViewController and their derived classes in RViz on how they set up the camera. There were a couple of changes between fuerte and groovy.</p>
+
+<p>Maybe you&#39;re just not getting the right camera in this line:</p>
+
+<p><code>
+const Ogre::Camera* camera = scene_manager_-&gt;getCameras().begin()-&gt;second;
+</code></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1564">dgossow</a> on 2013-10-16 10:35:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>So I managed to fix it. My solution is on gist: <a href="https://gist.github.com/bricerebsamen/7018215">https://gist.github.com/bricerebsamen/7018215</a></p>
+
+<p>basically, compared to the code in the question, I had to suppress the lines that set the render system&#39;s view and projection matrices:</p>
+
+<pre><code>//renderSystem-&gt;_setViewMatrix(camera_-&gt;getViewMatrix());
+//renderSystem-&gt;_setProjectionMatrix(camera_-&gt;getProjectionMatrixRS());
+</code></pre>
+
+<p>It might not work for all use cases. I will test it more in the next few days, but at least it works for my first test case, which is to display large display lists.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/597">brice rebsamen</a> on 2013-10-16 16:14:57 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

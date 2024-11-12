@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>issue with teleop and pid with differential drive !? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/336355">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>issue with teleop and pid with differential drive !?</h2>
+      <div class="question">
+        <p>hello guys,</p>
+
+<p>i have </p>
+
+<ul>
+<li>differential drive robot with castor for support,rplidar,rotarary encoder and brick imu</li>
+<li>using rosserial Arduino </li>
+</ul>
+
+<p>i want to do mapping with this and choosed gmapping </p>
+
+<p>The main loop in the motor<em>controller.ino converts encoder tick counts into the current rpm of both motors and controls the speed of the motors using PID control. The rosserial library to communicate with the rest of the ros nodes in the pc via USB. The program subscribes to the cmd</em>vel topic which sets the desired speed of the motors and publishes the actual speeds on the rpm topic</p>
+
+<p>while tuning navigation teleop speed is very low and still after 2 seconds it takes full speed in a different direction,</p>
+
+<p>I&#39;m confused is it because my left and right having separate motor PWM values or still PID tuning is required?</p>
+
+<p>I thought of using <a href="http://wiki.ros.org/pid">pid ros pacakge</a> but will it work with my architecture and also I don&#39;t know how to use it?</p>
+
+<p>here is my code :</p>
+
+<pre><code>#if (ARDUINO &gt;= 100)
+#include &lt;Arduino.h&gt;
+#else
+#include &lt;WProgram.h&gt;
+#endif
+#include &lt;ros.h&gt;
+#include &lt;geometry_msgs/Vector3Stamped.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt; //telop
+#include &lt;std_msgs/Int32.h&gt; //sending encoder data
+#include &lt;ros/time.h&gt; //to get current ruuning ros time  frame
+#include &lt;Encoder.h&gt; // encoder 
+
+
+#define RH_Directionf 26  //input 1
+#define RH_Directionb 28  // 2
+#define LH_Directionf 22  //in 1
+#define LH_Directionb 24  //in 2
+#define RH_Pwm 9  // motor 1 pwm
+#define LH_Pwm 10 //pwm pin for motor 2
+#define LOOPTIME        100   // PID loop time(ms) calling loop at fixed for pid 
+#define SMOOTH      10  //not used
+
+// variables to store the number of encoder pulses
+// for each motor
+
+Encoder myEnc1(2, 4);   //encoder declarations
+Encoder myEnc2(3, 5);
+long oldPosition1  = 0, newPosition1; //variable to store enc data from encoder library
+long oldPosition2  = 0, newPosition2;
+long d1r, d2r = -999, d1l, d2l = -999;
+
+
+volatile double leftCount = 0; //not used
+volatile double rightCount = 0;//n u
+volatile double prev, now , start, time_delay = 0, counter = 0, prev_rotR, prev_rotL, cur_rotR, cur_rotL; //variables for pid ,getting rps and rpm
+volatile double error_l = 0, last_error1_l = 0 ;
+volatile double error_r = 0, last_error1_r = 0 ;
+volatile double int_errorl;
+volatile double int_errorr;
+
+unsigned long lastMilli = 0;       // loop timing
+unsigned long lastMilliPub = 0;
+double Required_rpml = 0;
+double Required_rpmr = 0;
+double RPM_left = 0;
+double RPM_right = 0;
+double Required_rpml_smoothed = 0;
+double Required_rpmr_smoothed = 0;
+char direction1 ;
+char direction2 ;
+int PWM_val1 = 0;
+int PWM_val2 = 0;
+float Kp = 0.5;
+float Kd = 0;
+float Ki = 0;
+
+    ros::NodeHandle nh;
+
+void handle_cmd( const geometry_msgs::Twist&amp; cmd_msg)
+{
+  double x = cmd_msg.linear.x;
+  double z = cmd_msg.angular.z;
+  if (z == 0) {     // go straight
+    // convert m/s to rpm
+    Required_rpml = x * 95.469296598;
+    Required_rpmr = Required_rpml;
+  }
+  else if (x == 0) {
+    // convert rad/s to rpm
+    Required_rpmr = z * 33.90000294; ///z &lt; .307
+    Required_rpml = -Required_rpmr;
+  }
+  else {
+    Required_rpml = (x * 95.469296598) - (z * 33.90000294);
+    Required_rpmr = (x * 95.469296598) + (z * 33.90000294);
+  }
+  int_errorr = 0; //error for pid
+  int_errorl = 0;
+}
+
+ros::Subscriber&lt;geometry_msgs::Twist&gt; sub(&quot;cmd_vel&quot;, handle_cmd);
+geometry_msgs::Vector3Stamped rpm_msg;
+std_msgs::Int32 rot, enc1;
+ros::Publisher rpm_pub(&quot;rpm&quot;, &amp;rpm_msg);
+ros::Publisher enc(&quot;encoder1&quot;, &amp;enc1);
+
+ros::Time current_time;
+ros::Time last_time;
+
+void setup()
+{
+  Required_rpml = 0;
+  Required_rpmr = 0;
+  RPM_left = 0;
+  RPM_right = 0;
+  PWM_val1 = 0;
+  PWM_val2 = 0;
+  nh.initNode();
+  //nh.getHardware()-&gt;setBaud(57600);
+  nh.subscribe(sub);
+  nh.advertise(rpm_pub);
+  nh.advertise(enc);
+
+  //Serial.begin(115200);
+  pinMode(RH_Directionf, OUTPUT);
+  pinMode(RH_Directionb, OUTPUT);
+  pinMode(LH_Directionf, OUTPUT);
+  pinMode(LH_Directionb, OUTPUT);
+  pinMode(RH_Pwm, OUTPUT);
+  pinMode(LH_Pwm, OUTPUT);
+
+  prev = 0;
+}
+
+void loop()
+{
+  newPosition1 = myEnc1.read()/4;
+  if (newPosition1 != oldPosition1)
+  {
+    oldPosition1 = newPosition1;
+    d1r = newPosition1;
+  }
+  enc1.data = d1r;
+  enc.publish(&amp;enc1);
+
+
+  newPosition2 = myEnc2.read()/4;
+  if (newPosition2 != oldPosition2)
+  {
+    oldPosition2 = newPosition2;
+    d1l = newPosition2;
+  }
+  nh.spinOnce();
+
+  unsigned long tim = millis(); //getting in current time in milli sec
+  if (tim - lastMilli &gt;= LOOPTIME)    //100ms loop
+  { // enter tmed loop
+    time_delay = tim - prev;
+
+    if (d1r &gt; d2r)
+    {
+      //      cur_rotR = float(d1r - d2r) / ((float(tim - lastMilli)/1000));
+      cur_rotR = float(d1r - d2r) / 400.0;
+     cur_rotR /= (float(tim - lastMilli) / 1000.0);
+    }
+    else
+    {
+      // cur_rotR = (float(d2r - d1r)) / (float(tim - lastMilli)/1000);
+      cur_rotR = float(d2r - d1r) / 400.0;
+      cur_rotR /= (float(tim - lastMilli) / 1000.0);
+
+    }
+
+    if (d1l &gt; d2l)
+    {
+      //cur_rotL = (float(d1l - d2l)) / (float(tim - lastMilli)/1000);
+      cur_rotL = float(d1l - d2l) / 400.0;
+      cur_rotL /= (float(tim - lastMilli) / 1000.0);
+
+    }
+    else
+    {
+      //cur_rotL = (float(d2l - d1l)) / (float(tim - lastMilli)/1000);
+      cur_rotL = float(d2l - d1l) / 400.0;
+      cur_rotL /= (float(tim - lastMilli) / 1000.0);
+    }
+
+    if (cur_rotL &gt; prev_rotL)
+    {
+      RPM_left = (cur_rotL - prev_rotL) * 60; //  ****
+
+    }
+    else
+    {
+      RPM_left = (prev_rotL - cur_rotL) * 60; //  ****
+    }
+
+    if (cur_rotR &gt; prev_rotR) 
+    {
+      RPM_right = (cur_rotR - prev_rotR) * 60;
+    }
+    else
+    {
+      RPM_right = (prev_rotR - cur_rotR) * 60;
+    }
+
+    prev_rotR = cur_rotR;
+    prev_rotL = cur_rotL;
+
+    //Serial.print(&quot;cur_rotR:&quot;);
+    //Serial.print(cur_rotR);
+
+    //Serial.print(&quot;\td:&quot;);
+    //Serial.println(d1r-d2r);
+
+    //Serial.print(&quot;\tprev_rotR:&quot;);
+    //Serial.print(prev_rotR);
+    //Serial.print(&quot;\tRPM_right:&quot;);
+    //Serial.println(RPM_right);
+
+    d2r = d1r;
+    d2l = d1l;
+    error_l = - RPM_left + Required_rpml;
+    int_errorl += error_l;
+    int Value_l =  Value_l + 255 * ((Kp * error_l + Kd * (error_l - last_error1_l)) + Ki * (int_errorl)) / (Kp * 20 + Kd * 40 );
+    last_error1_l = error_l;
+    PWM_val1 = Value_l;
+
+
+    error_r = - RPM_right + Required_rpmr;
+    int_errorr += error_r;
+    int Value_r =  Value_r + 255 * ((Kp * error_r + Kd * (error_r - last_error1_r)) + Ki * (int_errorr)) / (Kp * 20 + Kd * 40);
+    last_error1_r = error_r;
+    PWM_val2 = Value_r;
+
+
+
+    if (PWM_val1 &gt; 0) direction1 = &#39;f&#39;;
+    else if (PWM_val1 &lt; 0) direction1 = &#39;b&#39;;
+    if (Required_rpml == 0) direction1 = &#39;s&#39;;
+    if (PWM_val2 &gt; 0) direction2 = &#39;f&#39;;
+    else if (PWM_val2 &lt; 0) direction2 = &#39;b&#39;;
+    if (Required_rpmr == 0) direction2 = &#39;s&#39;;
+
+    PWM_val1 = abs(PWM_val1);
+    PWM_val2 = abs(PWM_val2);
+
+    if ( direction1 == &#39;f&#39;)
+    {
+      digitalWrite(LH_Directionf, HIGH);
+      digitalWrite(LH_Directionb, LOW);
+      analogWrite(LH_Pwm, PWM_val1);
+    }
+    else if ( direction1 == &#39;b&#39;)
+    {
+      digitalWrite(LH_Directionf, LOW);
+      digitalWrite(LH_Directionb, HIGH);
+      analogWrite(LH_Pwm, PWM_val1);
+
+    }
+    else if (direction1 == &#39;s&#39;)
+    {
+      digitalWrite(LH_Directionf, LOW);
+      digitalWrite(LH_Directionb, LOW);
+      analogWrite(LH_Pwm, PWM_val1);
+    }
+
+    if ( direction2 == &#39;f&#39;)
+    {
+      digitalWrite(RH_Directionf, HIGH);
+      digitalWrite(RH_Directionb, LOW);
+      analogWrite(RH_Pwm, PWM_val2);
+    }
+    else if ( direction2 == &#39;b&#39;)
+    {
+      digitalWrite(RH_Directionf, LOW);
+      digitalWrite(RH_Directionb, HIGH);
+      analogWrite(RH_Pwm, PWM_val2);
+    }
+    else if (direction2 == &#39;s&#39;)
+    {
+      digitalWrite(RH_Directionf, LOW);
+      digitalWrite(RH_Directionb, LOW);
+      analogWrite(RH_Pwm, PWM_val2);
+    }
+
+    publishRPM(tim - lastMilli);
+    lastMilli = tim;
+
+  }
+  if (tim - lastMilliPub &gt;= LOOPTIME)
+  {
+    lastMilliPub = tim;
+  }
+}
+
+void publishRPM(unsigned long tim)
+{
+  rpm_msg.header.stamp = nh.now();
+  rpm_msg.vector.x = RPM_left;
+  rpm_msg.vector.y = RPM_right;
+  rpm_msg.vector.z = double(tim) / 1000;
+  rpm_pub.publish(&amp;rpm_msg);
+  nh.spinOnce();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/42408">kallivalli</a> on 2019-10-28 22:54:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

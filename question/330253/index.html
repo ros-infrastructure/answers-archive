@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Robot_localization: fuse absolute with relative measurements - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/330253">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Robot_localization: fuse absolute with relative measurements</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/92887/robot-localization-fuse-absolute-with-relative-measurements">https://robotics.stackexchange.com/questions/92887/robot-localization-fuse-absolute-with-relative-measurements</a>.</p>
+        <p>I want to fuse global pose from tag pose estimation with visual odometry and IMU.</p>
+
+<p>I am using:</p>
+
+<ul>
+<li>a RealSense D435i with realsense-ros that provides all the transformations between each sensor</li>
+<li>and rtab_map for the visual odometry</li>
+</ul>
+
+<p>Fusing relative measurements (visual odometry and IMU) looks correct with rviz:</p>
+
+<p><code>ekf_local.yaml</code>:</p>
+
+<pre><code>frequency: 30
+sensor_timeout: 0.1
+publish_tf: true
+map_frame: map
+odom_frame: odom
+base_link_frame: camera_link
+world_frame: odom
+
+odom0: /odom
+odom0_config: [true,  true,  true,
+               true,  true,  true,
+               true,  true,  true,
+               true,  true,  true,
+               true,  true,  true]
+odom0_differential: false
+odom0_relative: true
+
+imu0: /imu/data
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false, false,
+              true,  true,  true,
+              true,  true,  true]
+
+imu0_differential: true
+imu0_relative: false
+imu0_remove_gravitational_acceleration: true
+</code></pre>
+
+<p>I am not able to fuse absolute pose with visual odometry and IMU.
+I want to use something like this:</p>
+
+<p><code>ekf_global.yaml</code>:</p>
+
+<pre><code>frequency: 30
+sensor_timeout: 0.1
+publish_tf: true
+map_frame: map
+odom_frame: odom
+base_link_frame: camera_link
+world_frame: map
+
+odom0: /odom
+odom0_config: [true,  true,  true,
+               true,  true,  true,
+               true,  true,  true,
+               true,  true,  true,
+               true, true, true]
+
+odom0_differential: false
+odom0_relative: true
+
+odom1: /tag_pose
+
+odom1_config: [true,  true,  true,
+               true,  true,  true,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+
+odom1_differential: false
+odom1_relative: false
+
+imu0: /imu/data
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false, false,
+              true,  true,  true,
+              true,  true,  true]
+
+imu0_differential: true
+imu0_relative: false
+imu0_remove_gravitational_acceleration: true
+</code></pre>
+
+<p><code>odom0</code> is the output of <code>rtab_map</code>:</p>
+
+<pre><code>frame_id: &quot;odom&quot;
+child_frame_id: &quot;camera_link&quot;
+</code></pre>
+
+<p><code>imu0</code> is:</p>
+
+<pre><code>frame_id: &quot;camera_imu_optical_frame&quot;
+</code></pre>
+
+<p>(Realsense ROS publishes all the transformations between the camera<em>link and for instance camera</em>imu<em>optical</em>frame.)</p>
+
+<p>What should be the transformation for <code>odom1</code>?</p>
+
+<p>Is it the transformation between the map (frame<em>id) and the camera</em>link (so the raw transformation between the tag and the camera)? Is it the transformation between the map (frame<em>id) and the odom? Since I have another ekf</em>node that fuses the continuous data (vo and IMU), I can transform the raw tag pose.</p>
+
+<p>The output of the local ekf is clear. It is the transformation between the odom and the camera_link. The odom frame is the initial position of the sensor when launching the nodes.</p>
+
+<p>What is the output of the global ekf (<code>/ekf_global/odometry/filtered</code>)? From the doc it should be the transformation between the map and odom. But from my understanding:</p>
+
+<ul>
+<li>map frame is fixed and corresponds in my case to the tag frame</li>
+<li>odom frame is the initial pose of the sensor and the transformation map / odom should be fixed</li>
+<li>camera_link is the free floating camera frame</li>
+</ul>
+
+<p>So does the ekf (<code>/ekf_global/odometry/filtered</code>) estimates the map --&gt; odom transformation and I have to use the <code>/ekf_local/odometry/filtered</code> to get the transformation between the tag/map and the camera_link?</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<p>I did some tests, recapped here.</p>
+
+<p>The homogeneous transformation <code>a_T_b</code> means: <code>X_a = a_T_b . X_b</code>.</p>
+
+<p>The vision library detects the tag and estimates the transformation <code>camlink_T_tag</code>. The goal was to still have the transformation <code>camlink_T_tag</code> when the tag is not detected (occlusion, ...).</p>
+
+<p>Option 1:</p>
+
+<ul>
+<li><code>map</code> and <code>tag</code> frames are the same</li>
+<li><code>ekf_local/odometry/filtered</code> estimates <code>odom_T_camlink</code></li>
+<li><code>ekf_global/odometry/filtered</code> estimates <code>map_T_camlink</code></li>
+<li>when the tag is detected, the transformation <code>map_T_camlink</code> is published</li>
+<li>when the tag is not detected, you have to publish the transformation <code>map_T_camlink</code> using the fixed transformation <code>map_T_odom</code></li>
+<li><code>ekf_global/odometry/filtered</code> is used to get the filtered tag pose</li>
+<li><a href="https://imgur.com/3pSIgSG">result</a></li>
+</ul>
+
+<p>Option 2:</p>
+
+<ul>
+<li><code>map</code> and <code>odom</code> frames are the same, you have to publish a static identity transform <code>map_T_odom</code></li>
+<li><code>ekf_local/odometry/filtered</code> estimates <code>odom_T_camlink</code></li>
+<li><code>ekf_global/odometry/filtered</code> estimates <code>map_T_camlink</code></li>
+<li>so both nodes (kind of) estimate the same transformation</li>
+<li>when the tag is detected, the transformation <code>map_T_camlink = map_T_tag . tag_T_camlink</code> is published with <code>map_T_tag</code> being a static transform computed at the first tag detection</li>
+<li>there is nothing to publish when the tag is not detected since <code>map</code> and <code>odom</code> are the same</li>
+<li>but to have the transformation <code>camlink_T_tag</code>, you need the static transform <code>tag_T_map</code> to be published</li>
+<li><a href="https://imgur.com/SXVWtdO">result</a></li>
+</ul>
+
+<p>Option 3:</p>
+
+<ul>
+<li>filter only relative measurements</li>
+<li><code>ekf_local/odometry/filtered</code> estimates <code>odom_T_camlink</code></li>
+<li>when the tag is detected, you use the raw pose from the vision library</li>
+<li>when the tag is not detected, you have <code>camlink_T_tag = camlink_T_odom . odom_T_tag</code> with <code>odom_T_tag</code> being a static transformation that must be computed when the tag is detected and with the output of <code>ekf_local/odometry/filtered</code></li>
+<li><a href="https://imgur.com/b56xEuv">result</a></li>
+</ul>
+
+<p>I had not the time to test the three approaches on the same sequence, so this is just to have an idea.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/44640">cv_ros_user</a> on 2019-08-08 10:31:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>OK, there&#39;s a lot to unpack here.</p>
+
+<p>First, please always include a full sample message from every sensor input.</p>
+
+<p>Second, both the <em>map</em> and <em>odom</em> frame are world-fixed frames. If you were to feed the same inputs to both EKF instances, you&#39;d have the exact same output from both filters.</p>
+
+<p>The <em>odom</em>-frame EKF is generating the <em>odom</em>-&gt;<em>camera_link</em> transform in your case. The <em>map</em> frame EKF is <strong>technically</strong> producing the <em>map</em>-&gt;<em>camera_link</em> transform. So it&#39;s producing the pose of the camera in the <em>map</em> frame, and the <em>odom</em> EKF is giving you the pose of the camera in the <em>odom</em> frame.</p>
+
+<p>The problem is that <code>tf</code> doesn&#39;t permit re-parenting of frames, so the <em>map</em> frame EKF has to take its (internal) <em>map</em>-&gt;<em>camera_link</em> transform, and multiply it by the inverse of the <em>odom</em>-&gt;<em>camera_link</em> transform, which generates the <em>map</em>-&gt;<em>odom</em> transform. But all of that should be transparent: all you care about is that you can obtain the pose of the camera in the <em>map</em> and <em>odom</em> frames, and you can carry out transforms along that chain.</p>
+
+<p>As for your tag poses, the only packages I&#39;ve used all give the pose of the tag in the camera frame. If you want to fuse tag poses, you need some sort of data store that contains the map-frame poses of all the AR tags and serves them up as, e.g., static transforms. That, or you can have a special node that looks up the tag pose in the map frame, and uses the current detection to compute the map-frame pose of the robot, which then goes to the EKF.</p>
+
+<p>How do you get the map-frame poses of the AR tags? You can try recording them during mapping, or you can manually measure their locations and add them to your data store. But there&#39;s no way the EKF can just take a relative AR tag pose and somehow work with it. It has to be grounded to something.</p>
+
+<p>EDIT: also, is there any reason you are fusing every single variable for <code>odom0</code>? And I&#39;d ditch both yaw and linear acceleration from the IMU, if I were you. I know you have it in differential mode, but magnetometers are awful.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3384"></a> on 2019-09-25 04:29:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the answer. I have edited my questions to add the tests I did.</p>
+
+<p>Yes in my case I assume the tag does not move.</p>
+
+<p>For <code>odom0</code>, I don&#39;t recall why I did this (I changed the values until having something that kind of work...). I think it should be at least:</p>
+
+<p><code>
+odom0_config: [true,  true,  true,
+               true,  true,  true,
+               true,  true,  true,
+               true,  true,  true,
+               false,  false,  false]
+</code></p>
+
+<p>since I use <code>rtab_map</code> in <code>rgbd_odometry</code> mode.</p>
+
+<p>Noted for the IMU. The RealSense uses the <a href="https://www.bosch-sensortec.com/bst/products/all_products/bmi055">Bosch BMI055</a> that should have an accelerometer and a gyroscope.</p>
+
+<p>Is it better to use the raw <code>odom0</code> and <code>imu0</code> for <code>ekf_global</code> or to use directly the output of <code>ekf_local/odometry/filtered</code>? I have seen some contradictory info.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44640">cv_ros_user</a> on 2019-09-25 10:31:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, I think I have understood what you said about the IMU. I use the ROS Madgwick filter btw. Not sure what absolute orientation could be reliably estimated with the accelerometer? Most likely the configuration for the IMU should be the angular velocity and the linear acceleration.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44640">cv_ros_user</a> on 2019-09-27 11:18:44 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

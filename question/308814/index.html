@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Costmap2D: Observation layer's laser scan callback is never called with a low publication rate - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/308814">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Costmap2D: Observation layer's laser scan callback is never called with a low publication rate</h2>
+      <div class="question">
+        <p>Hi, I&#39;m facing an issue (that seems to be) related to the navigation stack&#39;s costmap.</p>
+
+<p>Summary of the problem: The obstacle layer&#39;s laser scanner callback is never called with a low publication frequency of the laser scanner. Everything runs fine with a higher publication frequency, although Gazebo publishes at the correct rate.   </p>
+
+<p>I&#39;m running ROS Melodic on Ubuntu 18.04 with a simulated Turtlebot 3 Burger in Gazebo. Localization is based on AMCL and for navigation I use move<em>base. I use to the following resources to spawn the robot: <a href="https://github.com/ROBOTIS-GIT/turtlebot3/tree/master/turtlebot3">https://github.com/ROBOTIS-GIT/turtlebot3/tree/master/turtlebot3</a></em>description/urdf.</p>
+
+<p>If I run the <strong>laser scanner</strong> with the normal frequency at <strong>5 Hz</strong> (<code>&lt;update_rate&gt;5&lt;/update_rate&gt;</code>)  the <strong>observation buffer</strong> of the costmap is <strong>not updated at all</strong>. If I increase the update rate to <strong>25 Hz everything runs fine</strong> - just as expected.</p>
+
+<p><strong>UPDATE</strong>:
+I still did&#39;t figure out  why the callback is not working. However, it seems to be related to the transforms. When I reduce the transform frequency of the <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/kinetic-devel/gazebo_plugins/src/gazebo_ros_diff_drive.cpp">differential drive plugin</a> from 30 Hz to only 5 Hz the laser scanner callback sometimes updates the scans. After some time the timeouts don&#39;t occur anymore at all or just rarely and the laser callback is called. From this, I assume that this is somehow related to the <code>tf2_ros::MessageFilter</code> where the callback is <a href="https://github.com/ros-planning/navigation/blob/9a91c74748debfccd30c650d39e82c580688c174/costmap_2d/plugins/obstacle_layer.cpp#L161">registered</a> . I guess that the future stamped transforms from the robot<em>pose</em>publisher and AMCL play a role as well.</p>
+
+<p><strong>UPDATE 2</strong>:
+After fiddling around with a lot of parameters, I think that the reason for the observed behavior comes somewhere from the   <code>tf2_ros::MessageFilter</code> and <code>costmap_2d::ObservationBuffer</code> . I noticed that when I run the differential drive plugin at 5 Hz and the laser scanner at 6 Hz, then the callback updates the values.  I am still just guessing, but there is some relation between the publication frequencies of the differential drive plugin (that also boradcasts the transforms for the odom frame), the publication frequency of the laser scanner and the tf2 message filter. Unfortunately, I&#39;m not too familiar with these libraries - but perhaps all this information helps someone running into the same problem.</p>
+
+<p>My first guess was that the laser scanner messages are not published at the right rate or Gazebo can&#39;t keep up with the speed. However, <code>rostopic hz /scan</code> and <code>gz topic --hz /scan</code> tell me that the publication frequency is 5 Hz. Additionally, I compared the timestamps of the scan messages with the values of the <code>/clock</code> topic (<code>/use_sim_time</code> is true) - there aren&#39;t any large deviations. So it looks like like the problem isn&#39;t related to Gazebo. </p>
+
+<p>Even with a rather generous <code>expected_update_rate: 0.50</code> and a <code>transforms_tolerance: 0.50</code> the observation buffer is not updated at all. AMCL runs fine and all the transforms in the transform tree look good. The scan messages are fine as well and correctly displayed in rviz.</p>
+
+<p>So I went ahead, uninstalled the move<em>base package and reinstalled it from source to check what is happening internally.
+I noticed that the <code>ObstacleLayer::laserScanValidInfCallback</code> (or any other callback) where the observation buffer is <a href="https://github.com/ros-planning/navigation/blob/9a91c74748debfccd30c650d39e82c580688c174/costmap_2d/plugins/obstacle_layer.cpp#L303">updated</a> is never called. Hence, <code>ObservationBuffer::bufferCloud</code> is not called and `last</em>updated<em><code>isn&#39;t 
+[updated](https://github.com/ros-planning/navigation/blob/9a91c74748debfccd30c650d39e82c580688c174/costmap_2d/src/observation_buffer.cpp#L185) as well. If the laser scanner publishes messages at 25 Hz the callback is called and I don&#39;t encounter the &quot;The /scan observation buffer has not been updated for XY seconds, and it should be updated every XY seconds.&quot; warnings. I thought that the map update loop was maybe running too fast but decreasing the</code>map</em>update_rate` didn&#39;t help as well.</p>
+
+<p><strong>So why or how is the callback for the laser scanner messages related to the publication frequency of the sensor?</strong> Did someone encounter this or a similar problem or has an idea where this comes from? </p>
+
+<p>The global costmap is configured to use the map provided from the map server, which is also used by AMCL, as static layer. Additionally, the obstacle layer shall be updated based on new laser scans since there may be new dynamic or non-dynamic obstacles in the environment. The local costmap should do the same with a rolling window. Both costmaps use the inflation layer. With a 25 Hz sensor this works perfectly fine and the Turtlebot reaches its goal.</p>
+
+<p>Here are the parameters I use:</p>
+
+<p>common_costmap.yaml:</p>
+
+<pre><code>obstacle_range: 3.0
+raytrace_range: 3.5
+transform_tolerance: 0.5
+footprint: [[-0.105, -0.105], [-0.105, 0.105], [0.041, 0.105], [0.041, -0.105]]
+map_type: costmap
+inflation_layer:
+  inflation_radius: 0.55
+
+obstacle_layer:
+  observation_sources: base_scan
+  base_scan: {sensor_frame: scan_frame, data_type: LaserScan, topic: scan, marking: true, clearing: true, expected_update_rate: 0.50, inf_is_valid: true}
+  #track_unknown_space: true
+</code></pre>
+
+<p>global_costmap.yaml:</p>
+
+<pre><code>global_costmap:
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 5.0
+  static_map: true
+  #width: 80
+  #height: 80
+  #origin_x: -40
+  #origin_y: -40
+
+  plugins:
+   - {name: static_layer,       type: &quot;costmap_2d::StaticLayer&quot;}
+   - {name: obstacle_layer, type: &quot;costmap_2d::ObstacleLayer&quot;}
+   - {name: inflation_layer, type: &quot;costmap_2d::InflationLayer&quot;}
+</code></pre>
+
+<p>local_costmap.yaml:</p>
+
+<pre><code>local_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 10.0
+  static_map: false
+  rolling_window: true
+  width: 6.0
+  height: 6.0
+  origin_x: -12
+  origin_y: -12
+
+
+  plugins:
+   - {name: obstacle_layer, type: &quot;costmap_2d::ObstacleLayer&quot;}
+   - {name: inflation_layer, type: &quot;costmap_2d::InflationLayer&quot;}
+</code></pre>
+
+<p>The parameters in the launch file for the move base node look like this:</p>
+
+<pre><code>&lt;node pkg=&quot;move_base&quot; type=&quot;move_base&quot; respawn=&quot;false&quot; name=&quot;move_base&quot; output=&quot;screen&quot;&gt;
+    &lt;remap from=&quot;scan&quot; to=&quot;/scan&quot;/&gt;
+    &lt;remap from=&quot;odom&quot; to=&quot;/odom&quot;/&gt;
+    &lt;remap from=&quot;cmd_vel&quot; to=&quot;/cmd_vel&quot;/&gt;
+
+    &lt;rosparam file=&quot;$(arg base_dir)/yaml/move_base.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;param name=&quot;base_local_planner&quot; value=&quot;dwa_local_planner/DWAPlannerROS&quot; /&gt;
+    &lt;rosparam file=&quot;$(arg base_dir)/yaml/dwa_local_planner.yaml&quot; command=&quot;load&quot; /&gt;
+
+    &lt;rosparam file=&quot;$(arg base_dir)/yaml/common_costmap.yaml&quot; command=&quot;load&quot; ns=&quot;global_costmap&quot; /&gt;
+    &lt;param name=&quot;global_costmap/obstacle_layer/base_scan/topic&quot; value=&quot;/scan&quot;/&gt;
+    &lt;rosparam file=&quot;$(arg base_dir)/yaml/global_costmap.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;param name=&quot;global_costmap/obstacle_layer/base_scan/sensor_frame&quot; value=&quot;base_scan&quot;/&gt;
+    &lt;param name=&quot;global_costmap/robot_base_frame&quot; value=&quot;base_link&quot;/&gt;
+    &lt;param name=&quot;global_costmap/global_frame&quot; value=&quot;map&quot;/&gt;
+    &lt;param name=&quot;global_costmap/static_layer/map_topic&quot; value=&quot;/map&quot;/&gt;
+
+    &lt;rosparam file=&quot;$(arg base_dir)/yaml/common_costmap.yaml&quot; command=&quot;load&quot; ns=&quot;local_costmap&quot; /&gt;
+    &lt;rosparam file=&quot;$(arg base_dir)/yaml/local_costmap.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;param name=&quot;local_costmap/obstacle_layer/base_scan/topic&quot; value=&quot;/scan&quot;/&gt;
+    &lt;param name=&quot;local_costmap/obstacle_layer/base_scan/sensor_frame&quot; value=&quot;base_scan&quot;/&gt;
+    &lt;param name=&quot;local_costmap/robot_base_frame&quot; value=&quot;base_link&quot;/&gt;
+    &lt;param name=&quot;local_costmap/global_frame&quot; value=&quot;odom&quot;/&gt;
+  &lt;/node&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/38588">S17</a> on 2018-11-17 07:25:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This is really a guess, but if any kind of time synchronisation is used from <code>message_filters</code> and the buffers are too short then a 5 Hz and 25 Hz topic may always just be too far apart for any synchronised callback to be called.</p>
+
+<p>But again: really a guess.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-11-17 07:42:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your guess! I took a look at the used <code>message_filters</code> and noticed the <code>tf2_ros::MessageFilter</code>. Transforms are published at a way higher rate (static: 1000 Hz &amp; the rest ~ 30 Hz) - might that cause some issues? But that shouldn&#39;t be a problem as the timestamps don&#39;t deviate too much.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38588">S17</a> on 2018-11-17 13:42:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Well as I wrote, it was really just a guess. I&#39;m not into navigation or <code>costmap2d</code> at all.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-11-17 14:53:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It may not be any help, but have you tried having the topics as &quot;scan&quot; rather than &quot;/scan&quot;?  In your common params you define the topic as &quot;scan&quot; as expected, but in your launch file you use &quot;/scan&quot;, I wonder if there is some odd conflict under the hood, resulting in the buffer getting confused?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32333">Andy West</a> on 2018-11-20 13:21:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I dont think that would be the case or else it would never work. I&#39;d also make sure your transform tolerance is in the right namespace to be picked up. That configuration file looks suspect... If the default tolerance is used, its not shocking to me this is happening.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2018-11-20 13:48:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the ideas. The <code>transform_tolerance</code> is interpreted correctly - the param server returns the specified value and if I set it to 0.0 all tf lookups fail as expected.
+I tried running everything without renaming the topics in the launch file but that didn&#39;t affect the problem as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38588">S17</a> on 2018-11-21 04:44:28 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

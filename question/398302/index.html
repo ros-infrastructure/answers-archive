@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Software architecture with micro-ROS and asynchronous events - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/398302">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Software architecture with micro-ROS and asynchronous events</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/101433/software-architecture-with-micro-ros-and-asynchronous-events">https://robotics.stackexchange.com/questions/101433/software-architecture-with-micro-ros-and-asynchronous-events</a>.</p>
+        <p>Hello everyone,</p>
+
+<p>I have a question regarding the software architecture with micro-ROS and asynchronous events, for example interrupts.</p>
+
+<p>For example an interrupt indicates when new data is present. Now I want to send this data with a publisher.
+How can this be realized within the micro-ROS framework? Is there an intended concept here?</p>
+
+<p>I also have a question about the sample code / concept on the website:</p>
+
+<p><a href="https://micro.ros.org/docs/concepts/client_library/execution_management/">https://micro.ros.org/docs/concepts/client_library/execution_management/</a></p>
+
+<p>A code snippet for the example in Fig. 1 is shown at the bottom of that website.
+Here, the data pipeline is described with three executors.
+How is the communication between the executors realized? In the code are subscribers for data collection defined, where consequently the data must be sent from the preceding block by a publisher (over a topic)?
+That means that the communication within the node is realized by topics?
+Furthermore, the logic of the three blocks is implemented with callback functions. What happens, if something relatively computationally intensive is executed in a callback which takes a long time to compute?</p>
+
+<p>Thank you for addressing my questions!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/100869">markushehn</a> on 2022-03-31 08:15:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi @dr-mh, </p>
+
+<blockquote>
+<p>first question: how to handle asynchronous events in micro-ROS</p>
+</blockquote>
+
+<p>To implement an asynchronous call in micro-ROS you can use a guard_condition.</p>
+
+<p>in micro-ROS you can register handles at the Executor, like subscriptions and publishers. There is also a handle, called guard condition, e.g. <a href="https://docs.ros2.org/beta1/api/rcl/guard__condition_8h.html">https://docs.ros2.org/beta1/api/rcl/guard__condition_8h.html</a>, This is similar to a mutex and conditional wait if you are familiar with multi-threading. 
+First you initialize a guard condition and add this guard_condition to the rclc_executor (<a href="https://github.com/ros2/rclc/blob/3e5e219ebb5f2c7b3da74f5838349a7969676c81/rclc/include/rclc/executor.h#L563">https://github.com/ros2/rclc/blob/3e5e219ebb5f2c7b3da74f5838349a7969676c81/rclc/include/rclc/executor.h#L563</a>). Then, you can use this guard_condition in the interrupt. When the interrupt is called you trigger the guard condition. (rcl_trigger_guard_condition). Now, in the micro-ROS application, the rclc_executor_spin_some() function will internally call rcl_wait() checking for new data or ready events at DDS queue. When it returns, then this guard_condition is ready and its callback is executed. </p>
+
+<p>Limitation. We might have to check on micro-ROS, whether the rcl_wait() returns immediately if only a guard condition is &quot;ready&quot;. To my knowlegde, the rcl_wait() in micro-ROS only returns if some other handle is ready (e.g. topic received, timer ready) or the timeout is reached. So it is not the expected behavior, that if the interrupt triggers the guard_condtion, that the rcl_wait() will immediately return and call its callback. We could improve here. </p>
+
+<p>Workaround: use a short timout.</p>
+
+<blockquote>
+<p>question regarding sense-plan-act pipeline</p>
+</blockquote>
+
+<p>I guess you are refering to the sense-plan-act pipeline Example (<a href="https://micro.ros.org/docs/concepts/client_library/execution_management/#sense-plan-act-pipeline-in-robotics-example">https://micro.ros.org/docs/concepts/client_library/execution_management/#sense-plan-act-pipeline-in-robotics-example</a>). </p>
+
+<p>First, the purpose of this pipelining is, that e..g the plan-phase does not start before all callbacks in the sense phase have finished to ensure e.g. to work on the most recent sensor data. </p>
+
+<blockquote>
+<p>How is the communication between the executors realized? </p>
+</blockquote>
+
+<p>There is no communication between executors. In micro-ROS you program directly communication with publishers and subscibers. The rclc library does not have the same node concept as rclcpp (e.g. standard ROS 2). You can add subscriptions of multiple nodes to the same executor for instance. </p>
+
+<p>As a user you only have to define your cause-effect chains in terms of publisher and subscribers (you can add them to one node or multiple nodes - that has no effect regarding the execution of the callbacks). </p>
+
+<p>Communication between multiple subscribers on the micro-controller is not locally. It used to be that a publisher had to communicate always to the Agent and then back to the Client. This has been resolved now. So communication on the micro-controller is now direct.</p>
+
+<blockquote>
+<p>In the code are subscribers for data collection defined, where consequently the data must be sent from the preceding &gt;block by a publisher (over a topic)? That means that the communication within the node is realized by topics? </p>
+</blockquote>
+
+<p>Yes, communication between different subscribers are realized with a topic. But there is no &quot;node&quot; concept in micro-ROS, which gathers all handles (e.g. subs, publishers, services, clients, ...) you have to individually add the handles to the executor. </p>
+
+<blockquote>
+<p>Furthermore, the logic of the three blocks is implemented with callback functions. </p>
+</blockquote>
+
+<p>Yes</p>
+
+<blockquote>
+<p>What happens, if something relatively &gt;computationally intensive is executed in a callback which takes a long time to &gt;compute?</p>
+</blockquote>
+
+<p>subscriptions in later phases are delayed, yes. This is the indented behavior of a phased-execution. </p>
+
+<p>We have published a paper (<a href="https://arxiv.org/abs/2105.05590">https://arxiv.org/abs/2105.05590</a>) about a multi-threaded real-time executor, in which you can execute your callbacks in threads with different priorities in parallel. Then the operating system is doing the scheduling and you could seperate between real-time and non real-time critical functions. </p>
+
+<p>The current micro-ROS stack is thread-safe. That means you can, even now, create two threads with different priorities and define an rclc_executor in each thread. Then All callbacks handled by those executors will be scheduled according to priority of the underlying thread. </p>
+
+<p>Hope this clarified a bit. If sth is misleading or unclear, most welcome to reach out. 
+Jan</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/100928">JanStaschulat</a> on 2022-04-01 03:26:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for the detailed and helpful answers! This helps me alot!</p>
+
+<p>That means that the communication within a micro-controller is completely independent from the micro-ROS agent?
+Therefore, a publisher-subscriber pair which communicates within a micro-controller with a high rate would not produce a bottle-neck at the communication with the agent? Do I need for that communication mode any configuration in colcon-meta?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/100869">markushehn</a> on 2022-04-03 12:25:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>When micro-ROS uses the Micro XRCE-DDS middleware (via rmw_microxrcedds) there is a mode where the local publisher and local subscribers can communicate with no need of doing a back and forth way to the micro-ROS Agent. You can take a look <a href="https://github.com/eProsima/Micro-XRCE-DDS-Client/blob/9b9278c0b3a633aa7ad634bda2fd2c4f04093dcf/CMakeLists.txt#L68">here</a>.</p>
+
+<p>But XRCE-DDS is a wire protocol that enables the MCU environment to have access to the DDS world. That means that if you have a pub and a sub in the MCU and they are matched (topic/type compatible), the data that the pub publishes will reach the sub directly, but also will need to be transmitted to the micro-ROS agent (in order to retransmit it to other possible ROS 2 nodes).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62986">Pablogs</a> on 2022-04-04 05:39:11 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

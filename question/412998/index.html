@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Odometery jumps back and forth with 10hz frequency in RVIZ - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/412998">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Odometery jumps back and forth with 10hz frequency in RVIZ</h2>
+      <div class="question">
+        <p>Hello, so i have been trying to use ekf ros package on ROS MELODIC, i have successfully implemented MPU 6050 using this code <a href="https://github.com/fsteinhardt/mpu6050_serial_to_imu">MPU 6050 ROSSERIAL NODE</a>. My tf tree looks like this
+<img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1677674521295800.png" alt="image description"></p>
+
+<p>my ekf.yaml file looks like this</p>
+
+<p>##</p>
+
+<pre><code> frequency: 10
+
+two_d_mode: true
+
+publish_tf: true
+
+odom_frame: odom
+
+base_link_frame: base_link
+
+world_frame: odom
+
+odom0: /odom
+
+odom0_config: [false,false,false,false,false,false,true,true,false,false,false,true,false,false,false,]
+
+odom0_differential: false
+
+imu0: /imu/data
+
+imu0_config: [false,false,false,false,false,true,false,false,false,false,false,true,false,false,false,]
+
+
+imu0_differential: false
+</code></pre>
+
+<p>##</p>
+
+<p>here is my controller.cpp  file</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/Vector3.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;cmath&gt;
+
+double radius = 0.06;                              //Wheel radius, in m
+double wheelbase = 0.42;                          //Wheelbase, in m
+double two_pi = 6.28319;
+double speed_act_left = 0.0;
+double speed_act_right = 0.0;
+double speed_req1 = 0.0;
+double speed_req2 = 0.0;
+double speed_dt = 0.0;
+double x_pos = 0.0;
+double y_pos = 0.0;
+double theta = 0.0;
+ros::Time current_time;
+ros::Time speed_time(0.0);
+
+void handle_speed( const geometry_msgs::Vector3Stamped&amp; speed) {
+  speed_act_left = trunc(speed.vector.x*100)/100;
+  ROS_INFO(&quot;speed left : %f&quot;, speed_act_left);
+  speed_act_right = trunc(speed.vector.y*100)/100;
+  ROS_INFO(&quot;speed right : %f&quot;, speed_act_right);
+  speed_dt = speed.vector.z;
+  speed_time = speed.header.stamp;
+}
+
+int main(int argc, char** argv){
+  ros::init(argc, argv, &quot;xbotreal_controller&quot;);
+  ros::NodeHandle n;
+  ros::NodeHandle nh_private_(&quot;~&quot;);
+  ros::Subscriber sub = n.subscribe(&quot;speed&quot;, 50, handle_speed);
+  ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 50);
+  tf::TransformBroadcaster broadcaster;  
+
+  double rate = 10.0;
+  double linear_scale_positive = 1.0;
+  double linear_scale_negative = 1.0;
+
+  double angular_scale_positive = 1.0;
+  double angular_scale_negative = 1.0;
+  bool publish_tf = false; // default = true
+  double dt = 0.0;
+  double dx = 0.0;
+  double dy = 0.0;
+  double dth = 0.0;
+  double dxy = 0.0;
+  double vx = 0.0;
+  double vy = 0.0;
+  double vth = 0.0;
+  char base_link[] = &quot;base_link&quot;;
+  char odom[] = &quot;odom&quot;;
+  //char kinect[] = &quot;/kinect&quot;;
+  //char camera_link[] = &quot;/camera_link&quot;;
+  ros::Duration d(1.0);
+  nh_private_.getParam(&quot;publish_rate&quot;, rate);
+  nh_private_.getParam(&quot;publish_tf&quot;, publish_tf);
+  nh_private_.getParam(&quot;linear_scale_positive&quot;, linear_scale_positive);
+
+  nh_private_.getParam(&quot;linear_scale_negative&quot;, linear_scale_negative);
+  nh_private_.getParam(&quot;angular_scale_positive&quot;, angular_scale_positive);
+  nh_private_.getParam(&quot;angular_scale_negative&quot;, angular_scale_negative);
+
+  ros::Rate r(rate);
+  while(n.ok()){
+    ros::spinOnce();
+    current_time = speed_time;
+    dt = speed_dt;                  //Time in s
+    ROS_INFO(&quot;dt : %f&quot;, dt);
+    dxy = (speed_act_left+speed_act_right)*dt/2;
+    ROS_INFO(&quot;dxy : %f&quot;, dxy);
+    dth = ((speed_act_right-speed_act_left)*dt)/wheelbase;
+
+    if (dth &gt; 0) dth *= angular_scale_positive;
+    if (dth &lt; 0) dth *= angular_scale_negative;
+    if (dxy &gt; 0) dxy *= linear_scale_positive;
+    if (dxy &lt; 0) dxy *= linear_scale_negative;
+
+    dx = cos(dth) * dxy;
+    dy = sin(dth) * dxy;
+
+    x_pos += (cos(theta) * dx - sin(theta) * dy);
+    y_pos += (sin(theta) * dx + cos(theta) * dy);
+    theta += dth;
+
+    if(theta &gt;= two_pi) theta -= two_pi;
+    if(theta &lt;= -two_pi) theta += two_pi;
+
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(theta);
+    geometry_msgs::Quaternion empty_quat = tf::createQuaternionMsgFromYaw(0);
+
+    if(publish_tf) {
+      geometry_msgs::TransformStamped t;
+      geometry_msgs::TransformStamped k;
+
+      t.header.frame_id = odom;
+      t.child_frame_id = base_link;
+      t.transform.translation.x = x_pos;
+      t.transform.translation.y = y_pos;
+      t.transform.translation.z = 0.0;
+      t.transform.rotation = odom_quat;
+      t.header.stamp = current_time;
+
+      //k.header.frame_id = kinect;
+      //k.child_frame_id = camera_link;
+      //k.transform.translation.x = 0.0;
+      //k.transform.translation.y = 0.0;
+      //k.transform.translation.z = 0.0;
+      //k.transform.rotation = empty_quat;
+      //k.header.stamp = current_time;
+
+      broadcaster.sendTransform(t);
+      //broadcaster.sendTransform(k);
+    }
+
+    nav_msgs::Odometry odom_msg;
+    odom_msg.header.stamp = current_time;
+    odom_msg.header.frame_id = odom;
+    odom_msg.pose.pose.position.x = x_pos;
+    odom_msg.pose.pose.position.y = y_pos;
+    odom_msg.pose.pose.position.z = 0.0;
+    odom_msg.pose.pose.orientation = odom_quat;
+    if (speed_act_left == 0 &amp;&amp; speed_act_right == 0){
+      odom_msg.pose.covariance[0] = 1e-9;
+      odom_msg.pose.covariance[7] = 1e-3;
+      odom_msg.pose.covariance[8] = 1e-9;
+      odom_msg.pose.covariance[14] = 1e6;
+      odom_msg.pose.covariance[21] = 1e6;
+      odom_msg.pose.covariance[28] = 1e6;
+      odom_msg.pose.covariance[35] = 1e-9;
+      odom_msg.twist.covariance[0] = 1e-9;
+      odom_msg.twist.covariance[7] = 1e-3;
+      odom_msg.twist.covariance[8] = 1e-9;
+      odom_msg.twist.covariance[14] = 1e6;
+      odom_msg.twist.covariance[21] = 1e6;
+      odom_msg.twist.covariance[28] = 1e6;
+      odom_msg.twist.covariance[35] = 1e-9;
+    }
+    else{
+      odom_msg.pose.covariance[0] = 1e-3;
+      odom_msg.pose.covariance[7] = 1e-3;
+      odom_msg.pose.covariance[8] = 0.0;
+      odom_msg.pose.covariance[14] = 1e6;
+      odom_msg.pose.covariance[21] = 1e6;
+      odom_msg.pose.covariance[28] = 1e6;
+      odom_msg.pose.covariance[35] = 1e3;
+      odom_msg.twist.covariance[0] = 1e-3;
+      odom_msg.twist.covariance[7] = 1e-3;
+      odom_msg.twist.covariance[8] = 0.0;
+      odom_msg.twist.covariance[14] = 1e6;
+      odom_msg.twist.covariance[21] = 1e6;
+      odom_msg.twist.covariance[28] = 1e6;
+      odom_msg.twist.covariance[35] = 1e3;
+    }
+    vx = (dt == 0)?  0 : (speed_act_left+speed_act_right)/2;
+    vth = (dt == 0)? 0 : (speed_act_right-speed_act_left)/wheelbase;
+    odom_msg.child_frame_id = base_link;
+    odom_msg.twist.twist.linear.x = vx;
+    odom_msg.twist.twist.linear.y = 0.0;
+    odom_msg.twist.twist.angular.z = dth;
+
+    odom_pub.publish(odom_msg);
+    r.sleep();
+  }
+}
+</code></pre>
+
+<p>I am getting a strange behaviour where  /odom is jumping back and forth, i think between what is published by controller node vs published by ekf node. however as you see i have turned off published tf to false , even in my launch file as a parameter.
+*<em>I am attaching bag file for the same *</em></p>
+
+        <div class="owner"><p>Asked by <a href="/users/56480">Rahulwashere</a> on 2023-03-01 12:49:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

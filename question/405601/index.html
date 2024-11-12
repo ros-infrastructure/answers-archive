@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Program flow not correct with ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/405601">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Program flow not correct with ROS</h2>
+      <div class="question">
+        <p>This is an AI object detection routine for the Oak-D camera. It worked perfectly before I tried to add ROS to the program so that the camera AI image could be adjusted according to the machine speed. The camera will be instructed to use one of three slices of the image according to the number in &quot;distance_value&quot;. </p>
+
+<p>This uses Ubuntu 20.04, Python 3.8, OpenCV, and ROS Noetic. It&#39;s to run on a Raspberry Pi but this version will run on a laptop. I don&#39;t think I&#39;m calling my functions properly or at the right time. When I run it, it&#39;s stuck in a loop and doesn&#39;t show an image until I hit CTRL-C, then it must be ended with CTRL-Z. Can an expert please help?</p>
+
+<pre><code>#!/usr/bin/env python3
+&quot;&quot;&quot;
+The code is edited from docs (https://docs.luxonis.com/projects/api/en/latest/samples/Yolo/tiny_yolo/)
+We add parsing from JSON files that contain configuration.
+&quot;&quot;&quot;
+from pathlib import Path
+import sys
+import cv2
+import depthai as dai
+import numpy as np
+import time
+import argparse
+import json
+import blobconverter
+import rospy
+from std_msgs.msg import String
+from time import sleep
+# import RPi.GPIO as GPIO
+# from gpiozero import Servo
+
+z = ([0,0,0,0,0,0,0,0])
+r = ([0,0,0,0,0,0,0,0])
+
+# parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument(&quot;-m&quot;, &quot;--model&quot;, help=&quot;Provide model name or model path for inference&quot;,
+                    default=&#39;/home/steve/wide-weeds/openvino/result_openvino_2021.4_6shave.blob&#39;, type=str)
+parser.add_argument(&quot;-c&quot;, &quot;--config&quot;, help=&quot;Provide config path for inference&quot;,
+                    default=&#39;/home/steve/wide-weeds/openvino/result.json&#39;, type=str)
+args = parser.parse_args()
+
+# parse config
+configPath = Path(args.config)
+if not configPath.exists():
+    raise ValueError(&quot;Path {} does not exist!&quot;.format(configPath))
+
+with configPath.open() as f:
+    config = json.load(f)
+nnConfig = config.get(&quot;nn_config&quot;, {})
+
+# parse input shape
+if &quot;input_size&quot; in nnConfig:
+    W, H = tuple(map(int, nnConfig.get(&quot;input_size&quot;).split(&#39;x&#39;)))
+
+# extract metadata
+metadata = nnConfig.get(&quot;NN_specific_metadata&quot;, {})
+classes = metadata.get(&quot;classes&quot;, {})
+coordinates = metadata.get(&quot;coordinates&quot;, {})
+anchors = metadata.get(&quot;anchors&quot;, {})
+anchorMasks = metadata.get(&quot;anchor_masks&quot;, {})
+iouThreshold = metadata.get(&quot;iou_threshold&quot;, {})
+confidenceThreshold = metadata.get(&quot;confidence_threshold&quot;, {})
+
+print(metadata)
+
+# parse labels
+nnMappings = config.get(&quot;mappings&quot;, {})
+labels = nnMappings.get(&quot;labels&quot;, {})
+
+# get model path
+nnPath = args.model
+if not Path(nnPath).exists():
+    print(&quot;No blob found at {}. Looking into DepthAI model zoo.&quot;.format(nnPath))
+    nnPath = str(blobconverter.from_zoo(args.model, shaves = 6, zoo_type = &quot;depthai&quot;, use_cache=True))
+# sync outputs
+syncNN = True
+
+# Create pipeline
+pipeline = dai.Pipeline()
+
+# Define sources and outputs
+camRgb = pipeline.create(dai.node.ColorCamera)
+detectionNetwork = pipeline.create(dai.node.YoloDetectionNetwork)
+
+# Properties
+camRgb.setPreviewSize(1280, 672)
+camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+camRgb.setInterleaved(False)
+camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+# camRgb.setVideoSize(1920, 320)
+camRgb.setFps(15)
+# Faster video not needed, I think, at this point.
+
+manip = pipeline.create(dai.node.ImageManip)
+camRgb.preview.link(manip.inputImage)
+configIn = pipeline.create(dai.node.XLinkIn)
+xout = pipeline.create(dai.node.XLinkOut)
+
+configIn.setStreamName(&#39;config&#39;)
+xout.setStreamName(&quot;out1&quot;)
+manip.out.link(xout.input)
+
+# choose from one of three slices of preview image, according to machine speed
+manip.initialConfig.setCropRect(0, 0.66666, 1, 1)
+manip.setMaxOutputFrameSize(1280 * 672 * 3)
+
+# Linking
+configIn.out.link(manip.inputConfig)
+
+# xoutRgb = pipeline.create(dai.node.XLinkOut)
+nnOut = pipeline.create(dai.node.XLinkOut)
+
+# xoutRgb.setStreamName(&quot;rgb&quot;)
+nnOut.setStreamName(&quot;nn&quot;)
+
+# Network specific settings
+detectionNetwork.setConfidenceThreshold(confidenceThreshold)
+detectionNetwork.setNumClasses(classes)
+detectionNetwork.setCoordinateSize(coordinates)
+detectionNetwork.setAnchors(anchors)
+detectionNetwork.setAnchorMasks(anchorMasks)
+detectionNetwork.setIouThreshold(iouThreshold)
+detectionNetwork.setBlobPath(nnPath)
+detectionNetwork.setNumInferenceThreads(2)
+detectionNetwork.input.setBlocking(False)
+
+# Linking
+manip.out.link(detectionNetwork.input) # line changed
+detectionNetwork.passthrough.link(xout.input) # line changed
+detectionNetwork.out.link(nnOut.input)
+
+# Connect to device and start pipeline
+with dai.Device(pipeline) as device:
+
+    # Output queues will be used to get the rgb frames and nn data from the outputs defined above
+    t0 = time.time()
+    tm = str(t0)
+    print(&#39;Time = &#39;,tm)
+    # qRgb = device.getOutputQueue(name=&quot;rgb&quot;, maxSize=4, blocking=False)
+    qDet = device.getOutputQueue(name=&quot;nn&quot;, maxSize=4, blocking=False)
+    q = device.getOutputQueue(name=&quot;out1&quot;, maxSize=4, blocking=False)
+    configQueue = device.getInputQueue(configIn.getStreamName())
+    sendCamConfig = False
+
+    frame = None
+    detections = []
+    startTime = time.monotonic()
+    counter = 0
+    color2 = (255, 255, 255)
+
+    def callback(msg):
+        rospy.loginfo(rospy.get_caller_id() + &quot;distance_value= %s&quot;, msg.data)
+        y1 = 0.333333
+        y2 = 0.666666
+        if msg.data &gt; 5:
+            y1 = 0
+            y2 = 0.333333
+
+        elif msg.data &lt; 3:
+            y1 = 0.6666666
+            y2 = 1
+
+        sendCamConfig = True
+        cfg = dai.ImageManipConfig()
+        cfg.setCropRect(0, y1, 1, y2)
+        configQueue.send(cfg)
+        sendCamConfig = False
+
+    def listener():
+        rospy.init_node(&#39;listener&#39;, anonymous=False)
+        sub = rospy.Subscriber(&quot;distance_value&quot;, Int32, callback)
+        rospy.spin()
+
+    # nn data, being the bounding box locations, are in &lt;0..1&gt; range - they need to be normalized with frame width/height
+    def frameNorm(frame, bbox):
+        normVals = np.full(len(bbox), frame.shape[0])
+        normVals[::2] = frame.shape[1]
+        return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
+
+    def displayFrame(name, frame, detections):
+        color = (255, 0, 0)
+        global z
+        global r
+        z = ([0,0,0,0,0,0,0,0])
+        r = ([0,0,0,0,0,0,0,0])
+        tz = 0
+        for detection in detections:
+            bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+            aim = (detection.xmin + detection.xmax) / 2
+            aim = int(aim * 19) - 10
+            aim = int(aim) /10
+            if aim &lt; -1: aim = -1
+            if aim &gt; 0.8: aim = 0.8
+            z[tz] = aim
+            cv2.putText(frame, labels[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.putText(frame, f&quot;{int(detection.confidence * 100)}%&quot;, (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            r[tz] = (detection.confidence)
+            tz = tz + 1 # get eight values for confidence, select largest one to decide aim value
+            if tz &gt; 7 :
+                print(&quot; Slow down!&quot;)
+                break
+            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+        # Show the frame
+        cv2.imshow(name, frame)
+
+    while True:
+        # inRgb = qRgb.get()
+        inDet = qDet.get()
+        in1 =q.tryGet()
+        listener()
+
+        if in1 is not None:
+            frame = in1.getCvFrame()
+            cv2.putText(frame, &quot;NN fps: {:.2f}&quot;.format(counter / (time.monotonic() - startTime)),
+                        (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color2)
+
+        if inDet is not None:
+            detections = inDet.detections
+            counter += 1
+            # print(&quot;Counter =&quot;,counter)
+            max_value = None
+            max_idx = None
+            for idx, num in enumerate(r):
+                if (max_value is None or num &gt; max_value):
+                    max_value = num
+                    max_idx = idx
+
+            confidence = max_value
+            aim = z[max_idx] # Pluck proper aim value from list
+            if confidence &gt; 0.6 :
+                # servo.value = aim
+                print(&quot;Servo aim=  &quot;, aim, &quot;  Spraying... &quot;, &quot;Counter= &quot;, counter)
+
+            else :
+                print(&quot;No weeds found... &quot;)
+
+        # rospy.spin()
+        if frame is not None:
+            displayFrame(&quot;out1&quot;, frame, detections)
+            # print(&quot;Only grass... &quot;)
+
+        if cv2.waitKey(1) == ord(&#39;q&#39;):
+            t0 = time.time()
+            tm = str(t0)
+            print(&#39;Time = &#39;,tm)
+            break
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/18431">Rodolfo8</a> on 2022-08-27 16:30:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>I hit CTRL-C, then it must be ended with CTRL-Z.</p>
+</blockquote>
+
+<p>Sorry, the code is too long to see. Based on the <kbd>CTRL</kbd>+<kbd>C</kbd> issue, I suggest you try Matplotlib. Especially the <code>cv2.imshow( ... )</code> function causes problems. It can be replaced by <code>plt.imshow( ... )</code>. <a href="https://matplotlib.org/stable/tutorials/introductory/images.html">Please see here</a> for a tutorial on using displaying images using Matplotlib.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-08-27 22:16:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>What I doubt is how I included the relevant ROS commands, and where. The first half of the program is just setting up things and the image pipeline. But the final half, as indentation starts, are complicated.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18431">Rodolfo8</a> on 2022-08-28 08:39:49 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>In the function <code>listener</code>, you make a call to <code>rospy.spin()</code>. This function blocks until the node is terminated, so <code>listener</code> is blocked. CTRL-C caused <code>spin()</code> to return, but you then also get stuck inside the <code>while True</code> loop. The overall control flow of this program needs rework, and I recommend doing a refresher run through the ROS tutorial series to review concepts such as spinning.</p>
+
+<p>Also, CTRL-Z suspends the process rather than terminating it.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/110453">BlakeAnderson</a> on 2022-08-28 16:50:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes, I took out the spin line and moved ROS routines up the script, one indentation less. Now it works well. Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18431">Rodolfo8</a> on 2022-09-06 20:26:29 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

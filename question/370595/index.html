@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2-foxy nodes can't communicate through docker container border - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/370595">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2-foxy nodes can't communicate through docker container border</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98161/ros2-foxy-nodes-cant-communicate-through-docker-container-border">https://robotics.stackexchange.com/questions/98161/ros2-foxy-nodes-cant-communicate-through-docker-container-border</a>.</p>
+        <p>I&#39;m new to ROS2.
+I&#39;ve got a somewhat weird setup that I&#39;m trying to launch.
+My issue is that minimal publisher and subscriber from examples don&#39;t hear each other.</p>
+
+<p>I&#39;ve got a docker container, based on Ubuntu 18.04, with ROS2 Foxy installed from sources. This container has installed environment that I have to use, namely, CUDA 10.0 and some software using it.</p>
+
+<p>This container is run on Ubuntu 20.04 host. This host has also installed ROS2 Foxy from Debian packages.</p>
+
+<p>I run the container with <code>--net host</code>, then launch minimal subscriber from examples in it. 
+Then I run minimal publisher on the host. </p>
+
+<p>That is on host:</p>
+
+<pre><code>$ docker run --rm -it --net host container
+</code></pre>
+
+<p>In container:</p>
+
+<pre><code># ros2 run examples_rclpy_minimal_subscriber subscriber_member_function
+</code></pre>
+
+<p>On host in another terminal:</p>
+
+<pre><code>$ source /opt/ros/foxy/setup.zsh
+$ ros2 run examples_rclpy_minimal_publisher publisher_local_function
+</code></pre>
+
+<p>The issue is that the subscriber doesn&#39;t hear anything from the publisher.
+The same issue is observed, if I swap subscriber and publisher, that is run publisher in the container and subscriber on the host.</p>
+
+<p>If I execute both subscriber and publisher in the container, subscriber hears it. On host:</p>
+
+<pre><code>docker exec -it container /bin/bash
+</code></pre>
+
+<p>In container:</p>
+
+<pre><code>ros2 run examples_rclpy_minimal_publisher publisher_local_function
+</code></pre>
+
+<p>And subscriber prints &quot;I heard hello&quot;.</p>
+
+<p>At the same time, multicast messages (<code>ros2 multicast send</code>, <code>ros2 multicast receive</code>) are sent and received successfully.</p>
+
+<p>If I run the container without <code>--net</code> key, then the subscriber running in it, sees messages from the publisher.
+However, this limits usage of the container. It won&#39;t be seen from another PC.</p>
+
+<p>I&#39;ve pasted the minimal Dockerfile illustrating the issue at the bottom of this message (unfortunately, I cannot attach it).</p>
+
+<p>I&#39;ve also pushed image to the dockerhub, and it can be downloaded with the command <code>docker pull wl2776/nvidia-ros:latest</code></p>
+
+<p>What I&#39;ve also checked.</p>
+
+<ol>
+<li><p>Running netcat both in container and on host shows that the traffic is passed through the container boundary.
+If I replace subsriber in the container with netcat it prints several packets.
+That is, on host:</p>
+
+<pre><code>$ docker run --rm -it --net host container
+$ docker cp /bin/nc.openbsd container:/tmp
+</code></pre>
+
+<p>In container:</p>
+
+<pre><code># /tmp/nc.openbsd -l -u -p 7400 | od -
+</code></pre>
+
+<p>On host in another terminal:</p>
+
+<pre><code>$ source /opt/ros/foxy/setup.zsh
+$ ros2 run examples_rclpy_minimal_publisher publisher_local_function
+</code></pre>
+
+<p>And I see several dumps from <code>nc</code></p></li>
+<li><p>I&#39;ve also tried the experiment with minimal publisher and subscriber using docker image tagged <code>osrf/ros:foxy-desktop</code> from dockerhub.
+Everything has worked perfectly.</p></li>
+<li><p>When minimal subscriber runs in the container, its node and topic are seen on the host.
+On host, while subscriber in the container is running:</p>
+
+<pre><code>$ ros2 topic list
+/parameter_events
+/rosout
+/topic
+$ ros2 node list
+/minimal_subscriber
+</code></pre>
+
+<p>If I stop minimal subsriber in the container with Ctrl-C, then it disappears from <code>ros2 node list</code></p></li>
+<li><p>Sniffing packets with <code>tcpdump</code> shows that subscriber in OSRF&#39;s container sends RTPS packets with version 2.3, but mine - with version 2.2. They also have different sizes (252 bytes from OSRF&#39;s container and 308 bytes from mine). Could these differences be the reason of the issue?</p></li>
+<li><p><code>ros2 doctor --report</code> prints that RMW middleware is &quot;fastrtps_cpp&quot;, both in container and on host. It also prints 3 network interfaces (docker0, ethernet and loopback) both on host and in container. docker and ethernet interfaces have MULTICAST enabled. </p></li>
+<li><p>If I run in parrallel my container and the container, published by OSRF, then subscriber in the latter hears &quot;Hello&#39;s&quot; from the publisher in the former.
+On host: <code>docker run --rm -it --net host wl2776/nvidia-ros:latest</code>, in the container: <code>ros2 run examples_rclpy_minimal_publisher publisher_local_function</code></p>
+
+<p>On host in another terminal: <code>docker run --rm -it --net host osrg/ros:foxy-desktop</code>, in the container: <code>export ROS_DOMAIN_ID=142 &amp;&amp; ros2 run examples_rclpy_minimal_subscriber subscriber_member_function</code></p></li>
+</ol>
+
+<p>The Dockerfile</p>
+
+<pre><code>FROM nvidia/cuda:10.0-devel-ubuntu18.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ &amp;&amp; apt-get install -y --no-install-recommends locales curl gnupg2 lsb-release apt-transport-https ca-certificates gnupg software-properties-common \
+ &amp;&amp; rm -rf /var/lib/apt/lists/* 
+
+RUN locale-gen en_US en_US.UTF-8 &amp;&amp; update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+ENV LANG=en_US.UTF-8
+
+RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add -
+RUN echo &quot;deb [arch=$(dpkg --print-architecture)] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main&quot; &gt; /etc/apt/sources.list.d/ros2-latest.list
+
+RUN apt-add-repository ppa:lttng/stable-2.11 
+
+# ROS2 build uses `target_library_directories` that appeared in 3.13
+# Original image already contains CMake, but its version is too old, 3.10.
+# Therefore install more recent cmake.
+# Latest version, 3.19, appears too noisy, it outputs many deprecation warnings, 
+# therefore we install 3.18
+RUN curl -s https://apt.kitware.com/keys/kitware-archive-latest.asc | gpg --dearmor - &gt; /etc/apt/trusted.gpg.d/kitware.gpg 
+
+RUN apt-add-repository &#39;deb https://apt.kitware.com/ubuntu/ bionic main&#39; \
+ &amp;&amp; apt-get update \
+ &amp;&amp; apt-get install -y --no-install-recommends cmake-data=3.18.4-0kitware1 cmake=3.18.4-0kitware1 
+
+RUN apt-get install -y --no-install-recommends \
+ adwaita-icon-theme build-essential clang-format clang-format-6.0 clang-tidy \
+ clang-tidy-6.0 cppcheck dconf-gsettings-backend dconf-service dh-python \
+ fonts-liberation gazebo9 git google-mock googletest graphviz libann0 libapr1 \
+ libapr1-dev libaprutil1 libaprutil1-dev libasio-dev libassimp-dev libassimp4 \
+ libbenchmark-dev libboost-dev libboost-filesystem-dev libboost-test-dev \
+ libboost-thread-dev libbullet-dev libcdt5 libcgraph6 libconsole-bridge-dev \
+ libcppunit-1.14-0 libcppunit-dev libcunit1-dev libcurl4-openssl-dev \
+ libeigen3-dev libexpat1-dev libfreetype6-dev libgazebo9-dev libgl1-mesa-dev \
+ libglfw3-dev libglu1-mesa-dev libgtest-dev libgtk-3-dev libgts-0.7-5 libgts-bin \
+ libice-dev libldap2-dev liblog4cxx-dev liblog4cxx10v5 liblttng-ctl0 \
+ liblttng-ust-dev liboctomap-dev libopencv-calib3d-dev libopencv-core-dev \
+ libopencv-dev libopencv-features2d-dev libopencv-flann-dev \
+ libopencv-imgcodecs-dev libopencv-imgproc-dev libopencv-ml-dev \
+ libopencv-photo-dev libopencv-shape-dev libopencv-superres-dev \
+ libopencv-video-dev libopencv-videoio-dev libopencv-videostab-dev \
+ libopencv-viz-dev libpcl-* libpython3-dev libpython3.6 libpython3.6-dev \
+ libqt5designer5 libqt5help5 libqt5opengl5 libqt5svg5 libsm-dev libspdlog-dev \
+ libsqlite3-dev libssl-dev libtinyxml-dev libtinyxml2-dev liburcu6 \
+ libusb-1.0-0-dev libxaw7-dev libxml2-utils libxmu-dev libxmu-headers libxpm-dev \
+ libxrandr-dev libxrender-dev libxslt1.1 libxt-dev libyaml-dev libzstd-dev \
+ lttng-modules-dkms lttng-tools ntp openssh-client pkg-config pydocstyle pyflakes pyflakes3 \
+ pyqt5-dev python-pkg-resources python-pyflakes python3-asn1crypto \
+ python3-babeltrace python3-bs4 python3-cffi-backend python3-chardet \
+ python3-colcon-common-extensions python3-cryptography python3-dev \
+ python3-flake8 python3-html5lib python3-idna python3-ifcfg python3-lark-parser \
+ python3-lttng python3-lxml python3-matplotlib python3-mock python3-mypy \
+ python3-netifaces python3-nose python3-numpy python3-pip python3-psutil \
+ python3-pydocstyle python3-pydot python3-pygments python3-pygraphviz \
+ python3-pyqt5 python3-pyqt5.qtsvg python3-pytest-cov python3-pytest-mock \
+ python3-rosdep python3-setuptools python3-sip python3-sip-dev \
+ python3-snowballstemmer python3-vcstool python3-webencodings qtbase5-dev \
+ sip-dev uncrustify x11proto-randr-dev \
+  &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --upgrade --no-cache-dir pip
+RUN pip3 install -U --no-cache-dir argcomplete wheel
+RUN pip3 install -U --no-cache-dir flake8-blind-except flake8-builtins flake8-class-newline flake8-comprehensions flake8-deprecated \
+ flake8-docstrings flake8-import-order flake8-quotes pytest-repeat pytest-rerunfailures pytest \
+ tensorflow==1.14.0 numpy Pillow opencv-python pycuda \
+ &amp;&amp; rm -rf /tmp/*
+
+WORKDIR /root
+RUN mkdir -p ~/ros2_foxy/src &amp;&amp; cd ~/ros2_foxy &amp;&amp; curl https://raw.githubusercontent.com/ros2/ros2/foxy/ros2.repos | vcs import src
+
+WORKDIR /root/ros2_foxy
+RUN rosdep init &amp;&amp; rosdep update &amp;&amp; \
+ rosdep install --from-paths src --ignore-src --rosdistro foxy -y --skip-keys &quot;console_bridge fastcdr fastrtps rti-connext-dds-5.3.1 urdfdom_headers&quot; \
+ &amp;&amp; rm -rf /var/lib/apt/lists/* 
+
+WORKDIR /root
+RUN colcon build --merge-install --install-base=/opt/ros/foxy \
+ &amp;&amp; rm -rf /var/lib/apt/lists/* /root/build /root/.ros /root/log
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/68917">wl</a> on 2021-01-29 07:14:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I tried to reproduce on top of an 18.04 docker container, but the examples work for me (publishing from host and subscribing from inside the Docker container). Here&#39;s the <a href="https://github.com/jacobperron/ros2-dev-docker/blob/foxy-bionic/Dockerfile">Dockerfile I used</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26373">jacobperron</a> on 2021-02-04 19:36:22 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve built an image from your Dockerfile. Still the same issue. 
+Did you use <code>--net host</code>? It is important. </p>
+
+<p>Everything works <strong>without <code>--net host</code></strong>, but fails, if network isolation is turned off.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/68917">wl</a> on 2021-02-05 11:10:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Did you find a solution or could you isolate the problem? I have the same issue. Without --net host the communication works, but of course only isolated and not together with another computer in the network.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/51444">mschratter</a> on 2021-02-11 08:53:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think, the issue is in FastRTPS. If at least one of nodes (host or containerized, no matter) switches to CycloneDDS, the &quot;hello&quot; messages become heard.
+Here is the link to discussion on Github: <a href="https://github.com/eProsima/Fast-DDS/issues/1698">https://github.com/eProsima/Fast-DDS/issues/1698</a>
+They have deleted my comment that everything works, if I switch to CycloneDDS.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/68917">wl</a> on 2021-02-11 08:59:47 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The last releases of Fast-DDS come with SharedMemory transport by default. Using <code>--net=host</code> implies both DDS participants believe they are in the same machine and they try to communicate using SharedMemory instead of UDP. Fast-DDS team will work in to implement a mechanism to detect this kind of situation. Meanwhile, I can give you two solutions:</p>
+
+<ul>
+<li>Using a XML to disable SharedMemory transport in one of the DDS participants.</li>
+</ul>
+
+<p>XML:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; ?&gt;
+&lt;profiles xmlns=&quot;http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles&quot; &gt;
+    &lt;transport_descriptors&gt;
+        &lt;transport_descriptor&gt;
+            &lt;transport_id&gt;CustomUdpTransport&lt;/transport_id&gt;
+            &lt;type&gt;UDPv4&lt;/type&gt;
+        &lt;/transport_descriptor&gt;
+    &lt;/transport_descriptors&gt;
+
+    &lt;participant profile_name=&quot;participant_profile&quot; is_default_profile=&quot;true&quot;&gt;
+        &lt;rtps&gt;
+            &lt;userTransports&gt;
+                &lt;transport_id&gt;CustomUdpTransport&lt;/transport_id&gt;
+            &lt;/userTransports&gt;
+
+            &lt;useBuiltinTransports&gt;false&lt;/useBuiltinTransports&gt;
+        &lt;/rtps&gt;
+    &lt;/participant&gt;
+&lt;/profiles&gt;
+</code></pre>
+
+<ul>
+<li>Enable SharedMemory between host and container. For this you should share /dev/shm:<br/>
+<code>docker run -ti --net host -v /dev/shm:/dev/shm &lt;DOCKER_IMAGE&gt;</code><br/>
+Also, both applications should be run with the same UID. In my case, my docker container&#39;s user is <code>root</code> (UID=0). Then I had to run the host application as root.</li>
+</ul>
+
+<p>I hope this helps you.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/49978">richiware</a> on 2021-02-12 03:37:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@richiware.  So by using XML way can we avoid using <code>--net=host</code> . Because using host network for containers will compromise lot of security.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28829">BhanuKiran.Chaluvadi</a> on 2022-01-06 04:35:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I had the same issue between two docker containers. 
+Mounting the shared memory on both with <code>-v /dev/shm:/dev/shm</code> solved the problem. Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/390">Markus Bader</a> on 2022-09-20 09:01:23 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>As described <a href="https://github.com/eProsima/Fast-DDS/issues/1698#issuecomment-778039676">here</a>, &quot;the last releases of Fast-DDS come with SharedMemory transport by default. Using <code>--net=host</code> implies both DDS participants believe they are in the same machine and they try to communicate using SharedMemory instead of UDP&quot;.</p>
+
+<p>Can be solved with additional XML config, disabling shared memory:</p>
+
+<ol>
+<li><code>$ cat &gt; fastrtps-profile.xml</code>  and paste XML from the link above</li>
+<li><code>$ export FASTRTPS_DEFAULT_PROFILES_FILE=$(pwd)/fastrtps-profile.xml</code></li>
+</ol>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/68917">wl</a> on 2021-02-12 04:07:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>If you&#39;d like to use shared memory transport between node in separate containers, then you could adjust the PID (Process) Namespace mode for the containers as explained in this answer from a previous question: </p>
+
+<p>&quot;ROS2 connectivity across Docker containers via Host Driver&quot;<br>
+<a href="https://answers.ros.org/question/296828/ros2-connectivity-across-docker-containers-via-host-driver/?answer=298320#post-id-298320">https://answers.ros.org/question/296828/ros2-connectivity-across-docker-containers-via-host-driver/?answer=298320#post-id-298320</a></p>
+
+<p>Perhaps @richiware might know how to set a different RTPS App ID for each DDS participant to avoid the confusion of duplicate IDs from separate PID spaces on a shared host, or what advantage manually mounting the /dev/shm volume would have over using the pid and ipc options in docker.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5234"></a> on 2021-02-17 16:48:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>The problem still exists on humble. Mapping /dev/shm in one of the containers resolves it. 
+I conclude that the nodes indeed use shm transport which is actually nice in my case.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/110004"></a> on 2022-08-10 03:14:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

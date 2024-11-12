@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Test a node that subscribes and publishes to other nodes - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/329349">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Test a node that subscribes and publishes to other nodes</h2>
+      <div class="question">
+        <p>Hi,
+I have to test that a truck goes over a set of points that are provided in a JSON file. My ROS2 project contains several packages like State Machine, Planning Problem or Simulation. I currently have a node in planning<em>problem that receives current location of the truck from the state machine and publishes next goal location after asking the user where he/she wants to go. In order to test the whole system I have thought about creating a node very similar to this one but that already has a set of points saved and call it instead of the original one. So I would subscribe to the state machine topic to know my current location, assert that is the desired one and publish the new one until reaching the goal. The problem is how to combine subscribers, publishers and tests at the same time. 
+My new node `process</em>node.py` looks like this:</p>
+
+<pre><code>#!/usr/bin/env python
+import sys
+import unittest
+import json
+
+from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
+import rclpy
+
+from custom_msg.msg import CustomMsg
+from gui_pkg.gui_window import gui_hpp
+
+class ProcessNode(unittest.TestCase):
+    def __init__(self, *args):
+        rclpy.init(args=*args)
+        self.node = rclpy.create_node(&#39;process_node&#39;)    
+        # publish goal pose
+        self._plan_prob_publisher = self.node.create_publisher(Float32MultiArray, &#39;send_goal_pose&#39;)
+        self.gui_window = gui_hpp()  # another class useful for some methods it contains 
+        self.current_loc = []
+        self.answered = False
+        with open(&quot;../../launch/launch/system_test/test_positions.json&quot;) as json_file:
+            self.manual_positions = json.load(json_file)
+        self.obtain_array_positions()
+        self.next_pose = [0, 0, 0, 0]
+
+    def obtain_array_positions(self):
+        self.gui_window.multiple_path = []  # where we concatenate all the positions that required to be done for that slot
+        for coordinate in self.manual_positions:
+            self.gui_window.multiple_path.append(
+                [
+                    float(coordinate[&quot;x&quot;]),
+                    float(coordinate[&quot;y&quot;]),
+                    float(coordinate[&quot;orientation&quot;]),
+                    float(coordinate[&quot;h_angle&quot;])
+                ]
+            )
+
+    def listener_callback(self, msg):
+        self.current_loc = msg.coordinates
+        self.answered = True
+
+    def test_correct_positions(self):
+        self._cur_loc_subscriber = self.node.create_subscription(CustomMsg, &#39;request_user_ip&#39;, self.listener_callback)
+        while self.gui_window.is_multiple_path(): # iterate for all the steps
+            self.node.loop.run_until_complete(self.wait_user_ip_callback()) # wait until receiving current location from SM
+            self.assertEqual(self.current_loc, self.next_pose) # assert current location is equal to the goal position from previous step
+            self.next_pose = self.gui_window.get_next_pose() # I get the next goal and remove the previous one from memory
+            self.answered = False
+            self.publish(self.next_pose) # publish the new goal
+
+    # keep checking if message is received
+    async def check_user_status(self):
+        await asyncio.sleep(0.5)
+        while not self.answered: pass
+
+    # wait until user input is given
+    async def wait_user_ip_callback(self): await self.check_user_status()
+
+    def publish(self, user_ip):
+        # publish goal location
+        msg = Float32MultiArray()
+        msg.data = user_ip
+        self._plan_prob_publisher.publish(msg) # send the goal position
+        self.get_logger().info(&#39;User input responded under the topic: respond_user_ip, Data: {0}&#39;.format(user_ip))
+
+
+if __name__ == &#39;__main__&#39;:  # main()
+    import rostest
+
+    rostest.rosrun(PKG, &#39;process_node&#39;, ProcessNode, sys.argv)
+</code></pre>
+
+<p>And I would like to launch it as when I use the actual node but changing it for the testing one, my <code>test_sm.launch.py</code>:</p>
+
+<pre><code># ROS imports
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    ld = LaunchDescription([
+        Node(package=&#39;gui_pkg&#39;, node_executable=&#39;process_node&#39;, output=&#39;screen&#39;),
+        Node(package=&#39;planning_prob_pkg&#39;, node_executable=&#39;planning_prob_node&#39;, output=&#39;screen&#39;),
+        Node(package=&#39;planner_pkg&#39;, node_executable=&#39;planner_node&#39;, output=&#39;screen&#39;),
+        Node(package=&#39;simulation_pkg&#39;, node_executable=&#39;simulation_node&#39;, output=&#39;screen&#39;),
+        Node(package=&#39;state_machine_pkg&#39;, node_executable=&#39;state_machine_node&#39;, output=&#39;screen&#39;)
+    ])
+    return ld
+
+
+if __name__ == &#39;__main__&#39;:
+    generate_launch_description()
+</code></pre>
+
+<p>I would appreciate if somebody can:</p>
+
+<ul>
+<li><p>When I run the presented structure <code>ros2 launch launch test_sm.launch.py</code> I get the error <code>AttributeError: module &#39;gui_pkg.process_node&#39; has no attribute &#39;main&#39;</code> which makes sense so I would like to know how to launch all the nodes as always and the process_node as a test node which includes all the Node functionalities to interact with the rest of nodes and still be able to <code>assert</code></p></li>
+<li><p>Another possibility that comes into my mind is leaving all the nodes as they are and just create a node that subscribes to the topic where I publish my current location and asserts that is corrected but again I do not know how to launch a testing node.</p></li>
+</ul>
+
+<p>I am using Ubuntu 18.04; ROS2 Crystal and Python 3.6.2</p>
+
+        <div class="owner"><p>Asked by <a href="/users/38874">hect1995</a> on 2019-07-26 08:37:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

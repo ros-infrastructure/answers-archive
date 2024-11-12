@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How do I deploy a rosdep mirror? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/338122">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How do I deploy a rosdep mirror?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93883/how-do-i-deploy-a-rosdep-mirror">https://robotics.stackexchange.com/questions/93883/how-do-i-deploy-a-rosdep-mirror</a>.</p>
+        <p>Github is starting to throttle my requests to <a href="https://raw.githubusercontent.com/ros/rosdistro">https://raw.githubusercontent.com/ros/rosdistro</a> . How do I deploy a mirror of such a package index and tell <code>rosdep</code> to consume it?</p>
+
+<p>Edit: responding the obvious question; it&#39;s probably in the neighborhood of 5000 invocations daily from my employer&#39;s office. I&#39;ve already taken steps eliminate the ones I make during sundry container initialization, but there are some that I can&#39;t eliminate --- notably the one issued by <code>bloom-release</code> when I bloom my projects.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/38175">rubicks</a> on 2019-11-20 13:09:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just to get some sense of scale here: how many package (re)builds are you running? Or how many packages are you building per time-unit?</p>
+
+<p>I&#39;m not aware of <code>build.ros.org</code> using any mirror or cache for <code>ros/rosdistro</code> specifically, so I&#39;m wondering what it would take for Github to start throttling you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-20 14:58:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Wow, that&#39;s a lot of calls. Can you confirm which operations are problematic, is it the rosdep updates that are failing? Those should not be necessary to call that often as the rosdep database doesn&#39;t change that often. Most rosdistro operations are designed to use the cache. </p>
+
+<p>It would be possible to add an enhancement to rosdep to use a github token to do authenticated fetching with a much higher limit. And bloom could also be enhanced to do the same as well as pass the credentials through.</p>
+
+<p>For reference <a href="https://github.com/Microsoft/vscode/issues/3708">this</a> implies that this is governed by the unauthenticated API rate limit of 60/hour, Authenticating will get you up to 5000/hour. <a href="https://developer.github.com/v3/#rate-limiting">GitHub API rate limiting </a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2019-11-20 18:24:26 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>it&#39;s probably in the neighborhood of 5000 invocations daily from my employer&#39;s office</p>
+</blockquote>
+
+<p>can you say anything about what you&#39;re actually doing that requires that many <code>rosdep update</code>s?</p>
+
+<blockquote>
+<p>there are some that I can&#39;t eliminate --- notably the one issued by <code>bloom-release</code> when I bloom my projects.</p>
+</blockquote>
+
+<p>5000 <code>bloom-release</code>s per day (?).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-21 10:37:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>There&#39;s about 50 invocations to <code>bloom-release</code> daily. I&#39;ve been able to eliminate all other invocations to <code>rosdep update</code>. Now, I <code>rosdep update</code> as <code>root</code> during the construction of a build environment and then copy <code>~root/.ros</code> to <code>~luser</code> when I wish to build catkin projects.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38175">rubicks</a> on 2019-11-21 12:11:45 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>As a direct answer to your question you can setup your own rosdep sources. See the documentation here: <a href="https://docs.ros.org/independent/api/rosdep/html/sources_list.html">https://docs.ros.org/independent/api/rosdep/html/sources_list.html</a></p>
+
+<p>But I have to agree with @gvdhoorn that we have used this a lot and have not experienced throttling from github on our CI setups. How often are you calling rosdep update?</p>
+
+<p>I put together a quick Dockerfile to demo how to use a local copy: </p>
+
+<pre><code>FROM ros
+# pull a copy of the rosdistro
+RUN mkdir -p /cache &amp;&amp; cd /cache &amp;&amp; git clone https://github.com/ros/rosdistro.git -b master --depth 1
+# Update it to self reference
+RUN sed -i s#https://raw.githubusercontent.com/ros/rosdistro/master/#file:///cache/rosdistro/# /cache/rosdistro/rosdep/sources.list.d//20-default.list
+# Tell the local environment to use the local instance of rosdistro
+ENV ROSDISTRO_INDEX_URL=&quot;file:///cache/rosdistro/index-v4.yaml&quot;
+# Tell rosdep where to look for sources
+ENV ROSDEP_SOURCE_PATH=/cache/rosdistro/rosdep/sources.list.d
+# Clear system sources for clarity. They will be overridden anyway, but to show for this demo they&#39;re not being used.
+RUN rm -rf /etc/ros/rosdep
+
+# Show rosdep working using local resources
+CMD rosdep update
+</code></pre>
+
+<p>You can host the clone of the rosdistro anywhere you want. it&#39;s convenient for this demo to be on the filesystem.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2019-11-20 15:11:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I can certainly replace the default list...</p>
+
+<pre><code>https://github.com/ros/rosdistro/blob/master/rosdep/sources.list.d/20-default.list
+</code></pre>
+
+<p>...with something that references the same gbpdistro and yaml content under <code>file:///</code> URIs instead of <code>https://</code> URIs. But when I try that trick with the <code>DEFAULT_INDEX_URL</code>...</p>
+
+<p><a href="https://github.com/ros-infrastructure/rosdistro/blob/838099d161b15940eb102c0c13d99675f6752562/src/rosdistro/__init__.py#L68">https://github.com/ros-infrastructure/rosdistro/blob/838099d161b15940eb102c0c13d99675f6752562/src/rosdistro/__init__.py#L68</a></p>
+
+<p>...it errors out looking for non-existent files on my host. Any ideas what&#39;s happening there?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38175">rubicks</a> on 2019-11-20 18:26:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What are you doing to change the DEFAULT_INDEX_URL? What are you running? And what are the errors?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2019-11-20 18:35:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Here&#39;s a <code>Dockerfile</code> demonstrating what I mean: <a href="https://hastebin.com/raw/ocitiqujeg">https://hastebin.com/raw/ocitiqujeg</a></p>
+
+<p>The error produced is as follows:</p>
+
+<pre><code>    ERROR: error loading sources list:
+    &lt;urlopen error &lt;urlopen error [Errno 2] No such file or directory: &#39;/var/lib/rosdep/crystal/distribution.yaml&#39;&gt;(file:///var/lib/rosdep/crystal/distribution.yaml)&gt;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38175">rubicks</a> on 2019-11-21 12:07:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I saw your hastebin posting this morning, but now it&#39; won&#39;t load on a heroku error </p>
+
+<p>Application error
+An error occurred in the application and your page could not be served. If you are the application owner, check your logs for details. You can do this from the Heroku CLI with the command
+heroku logs --tail</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2019-11-21 19:27:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Shucks. Try this one: <a href="https://gist.github.com/rubicks/0a9e2ad9f08a22acd23ac95ee3f2648e">https://gist.github.com/rubicks/0a9e2ad9f08a22acd23ac95ee3f2648e</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38175">rubicks</a> on 2019-11-22 10:00:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I updated my answer with an example of how to use rosdep using a local copy of the rosdistro in a Dockerfile</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2019-11-22 17:53:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That will certainly work for my purposes --- thanks very much.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38175">rubicks</a> on 2019-11-25 09:42:11 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>As a counterpart, I present my maximally sneaky and invasive implementation:</p>
+
+<pre><code># frozen-rosdep.dockerfile
+FROM ros
+ENV ROSDISTRO_INDEX_URL=&quot;file:///etc/ros/index-v4.yaml&quot;
+RUN set -eu \
+  &amp;&amp; apt -y update \
+  &amp;&amp; apt -y install curl \
+  &amp;&amp; curl -fsSL https://github.com/ros/rosdistro/archive/master.tar.gz \
+       | tar -C /etc/ros --strip-components 1 -xzf- \
+  &amp;&amp; sed -i s,https://raw.githubusercontent.com/ros/rosdistro/master,file:///etc/ros,g \
+       /etc/ros/rosdep/sources.list.d/20-default.list \
+  &amp;&amp; rosdep update --verbose \
+  &amp;&amp; true
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/38175">rubicks</a> on 2019-12-13 12:27:07 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

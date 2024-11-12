@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>When should laser scan data be converted to Point Cloud? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/396616">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>When should laser scan data be converted to Point Cloud?</h2>
+      <div class="question">
+        <p>I&#39;m trying to digest <code>safety_node</code>  code(below) which uses <code>TimeToCollision</code>(TTC) metric to enable <code>automatic emergency braking</code> (AEB) to prevent car from hitting obstacle <a href="https://f1tenth-coursekit.readthedocs.io/en/latest/assignments/labs/lab2.html">more on TTC here</a></p>
+
+<p>The node subscribes to <code>\scan</code> topic of <code>LaserScan</code> message type and converts the message type class <code>ranges</code> data member to a <code>PointCloud</code> message type. And I do not understand the purpose of doing this. Why not use the <code>ranges</code> data type to find TTC. Is it a standard practice to convert <code>LaserScan</code> to <code>PointCloud</code>? Why do we do this?</p>
+
+<p><code>\scan</code> subscriber callback code (main doubt in this part of the code)</p>
+
+<pre><code>void scan_callback(const sensor_msgs::LaserScan::ConstPtr &amp;scan_msg) {
+        double v_x = v_car - 0;
+        vector&lt;float&gt; scan_ranges = scan_msg-&gt;ranges;
+        vector&lt;float&gt; TTC = scan_ranges;
+        float angle_increment = scan_msg-&gt;angle_increment;
+        float angle_min = scan_msg-&gt;angle_min;
+        float ttc_threshold = 0.32;
+        // ROS_INFO_STREAM(scan_msg-&gt;header.frame_id);
+
+        sensor_msgs::PointCloud cloud;
+        tf_listener.waitForTransform(scan_msg-&gt;header.frame_id, &quot;/center&quot;, scan_msg-&gt;header.stamp + ros::Duration().fromSec(scan_msg-&gt;ranges.size()*scan_msg-&gt;time_increment), ros::Duration(1.0));
+
+       \\ WHY HAVE THEY DONE THIS?
+        projector.transformLaserScanToPointCloud(&quot;center&quot;, *scan_msg, cloud, tf_listener, 0x02);
+        vector&lt;float&gt; shifted_ind = cloud.channels[0].values;
+        vector&lt;float&gt; shifted_scan_ranges = scan_ranges;
+
+        // calculate the TTC
+        for(int ind = 0; ind &lt; shifted_ind.size(); ind++){
+            // ROS_INFO_STREAM(cloud);
+            double shifted_scan_range = sqrt(pow(cloud.points[ind].x, 2) + pow(cloud.points[ind].y, 2));
+            shifted_scan_ranges[shifted_ind[ind]] = shifted_scan_range;
+            if(!isnan(shifted_scan_range) &amp;&amp; !isnan(shifted_scan_range)){
+                // double ttc = scan_ranges[ind] / max(v_x * cos(angle_min + angle_increment * ind), 0.0);
+                double ttc = shifted_scan_range / max(v_x * cos(atan2(cloud.points[ind].y, cloud.points[ind].x)), 0.0);
+                if(ttc &lt; 0){
+                    TTC[ind] = numeric_limits&lt;double&gt;::infinity();
+                }else{
+                    TTC[ind] = ttc;
+                }
+            }else{
+                TTC[ind] = numeric_limits&lt;double&gt;::infinity();
+            }
+            // ROS_INFO_STREAM(TTC[ind]);
+        }
+
+        float min_ttc = *min_element(TTC.begin(), TTC.end());
+        if(min_ttc &lt; ttc_threshold){
+            Bool_msg.data = true;
+        }else if(min_ttc &gt; 1){
+            Bool_msg.data = false;
+        }
+        if(Bool_msg.data == true){
+            Bool_msg.data = true;
+            ackermann_msg.drive.speed = 0.0;
+            brake_bool_pub.publish(Bool_msg);
+            brake_pub.publish(ackermann_msg);
+        }
+
+        if(min_ttc &lt; 1){
+            ROS_INFO_STREAM(min_ttc);
+        }
+
+    }
+</code></pre>
+
+<p>Entire safety_node code (note I&#39;m not the author of this code):</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &quot;std_msgs/Bool.h&quot;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+#include &lt;ackermann_msgs/AckermannDriveStamped.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;laser_geometry/laser_geometry.h&gt;
+#include &lt;sensor_msgs/PointCloud.h&gt;
+#include &lt;geometry_msgs/Point32.h&gt;
+
+#include &lt;vector&gt;
+#include &lt;algorithm&gt;
+#include &lt;cmath&gt;
+// #include &lt;iostream&gt; 
+using namespace std;
+
+// Solution based on submission of Zirui Zang
+
+class Safety {
+// The class that handles emergency braking
+private:
+    ros::NodeHandle n;
+    double v_car;
+
+    ros::Subscriber laser_sub;
+    ros::Subscriber odom_sub;
+    ros::Publisher brake_pub;
+    ros::Publisher brake_bool_pub;
+    laser_geometry::LaserProjection projector;
+    tf::TransformListener tf_listener;
+
+    std_msgs::Bool Bool_msg;
+    // Bool_msg.data = false;
+    ackermann_msgs::AckermannDriveStamped ackermann_msg;
+
+public:
+
+    Safety() {
+        n = ros::NodeHandle();
+        v_car = 0.0;
+        /*
+        One publisher should publish to the /brake topic with an
+        ackermann_msgs/AckermannDriveStamped brake message.
+
+        One publisher should publish to the /brake_bool topic with a
+        std_msgs/Bool message.
+
+        You should also subscribe to the /scan topic to get the
+        sensor_msgs/LaserScan messages and the /odom topic to get
+        the nav_msgs/Odometry messages
+
+        The subscribers should use the provided odom_callback and 
+        scan_callback as callback methods
+
+        NOTE that the x component of the linear velocity in odom is the speed
+        */
+
+        laser_sub = n.subscribe(&quot;/scan&quot;, 1000, &amp;Safety::scan_callback, this);
+        odom_sub = n.subscribe(&quot;/odom&quot;, 1000, &amp;Safety::odom_callback, this);
+        brake_bool_pub = n.advertise&lt;std_msgs::Bool&gt;(&quot;/brake_bool&quot;, 1000);
+        brake_pub = n.advertise&lt;ackermann_msgs::AckermannDriveStamped&gt;(&quot;/brake&quot;, 1000);        
+
+    }
+    void odom_callback(const nav_msgs::Odometry::ConstPtr &amp;odom_msg) {
+        v_car = odom_msg-&gt;twist.twist.linear.x;
+        // ROS_INFO_STREAM(v_car);
+    }
+
+    void scan_callback(const sensor_msgs::LaserScan::ConstPtr &amp;scan_msg) {
+        double v_x = v_car - 0;
+        vector&lt;float&gt; scan_ranges = scan_msg-&gt;ranges;
+        vector&lt;float&gt; TTC = scan_ranges;
+        float angle_increment = scan_msg-&gt;angle_increment;
+        float angle_min = scan_msg-&gt;angle_min;
+        float ttc_threshold = 0.32;
+        // ROS_INFO_STREAM(scan_msg-&gt;header.frame_id);
+
+        sensor_msgs::PointCloud cloud;
+        tf_listener.waitForTransform(scan_msg-&gt;header.frame_id, &quot;/center&quot;, scan_msg-&gt;header.stamp + ros::Duration().fromSec(scan_msg-&gt;ranges.size()*scan_msg-&gt;time_increment), ros::Duration(1.0));
+        projector.transformLaserScanToPointCloud(&quot;center&quot;, *scan_msg, cloud, tf_listener, 0x02);
+        vector&lt;float&gt; shifted_ind = cloud.channels[0].values;
+        vector&lt;float&gt; shifted_scan_ranges = scan_ranges;
+
+        // calculate the TTC
+        for(int ind = 0; ind &lt; shifted_ind.size(); ind++){
+            // ROS_INFO_STREAM(cloud);
+            double shifted_scan_range = sqrt(pow(cloud.points[ind].x, 2) + pow(cloud.points[ind].y, 2));
+            shifted_scan_ranges[shifted_ind[ind]] = shifted_scan_range;
+            if(!isnan(shifted_scan_range) &amp;&amp; !isnan(shifted_scan_range)){
+                // double ttc = scan_ranges[ind] / max(v_x * cos(angle_min + angle_increment * ind), 0.0);
+                double ttc = shifted_scan_range / max(v_x * cos(atan2(cloud.points[ind].y, cloud.points[ind].x)), 0.0);
+                if(ttc &lt; 0){
+                    TTC[ind] = numeric_limits&lt;double&gt;::infinity();
+                }else{
+                    TTC[ind] = ttc;
+                }
+            }else{
+                TTC[ind] = numeric_limits&lt;double&gt;::infinity();
+            }
+            // ROS_INFO_STREAM(TTC[ind]);
+        }
+
+        float min_ttc = *min_element(TTC.begin(), TTC.end());
+        if(min_ttc &lt; ttc_threshold){
+            Bool_msg.data = true;
+        }else if(min_ttc &gt; 1){
+            Bool_msg.data = false;
+        }
+        if(Bool_msg.data == true){
+            Bool_msg.data = true;
+            ackermann_msg.drive.speed = 0.0;
+            brake_bool_pub.publish(Bool_msg);
+            brake_pub.publish(ackermann_msg);
+        }
+
+        if(min_ttc &lt; 1){
+            ROS_INFO_STREAM(min_ttc);
+        }
+
+    }
+
+};
+int main(int argc, char ** argv) {
+    ros::init(argc, argv, &quot;safety_node&quot;);
+    Safety sn;
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/84774">abhijelly</a> on 2022-02-23 12:16:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Most probably because it handles the conversion into euclidean space that can be more easily used to represent collision boxes or other non-radial-range defined shapes. However, from glancing at the code, I fully agree with you, for what they&#39;re doing, there&#39;s no reason I can discern for it. They&#39;re backing out the range from X and Y components and backing out the angle; both were simply given in the laser scan message. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25940"></a> on 2022-02-23 14:40:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

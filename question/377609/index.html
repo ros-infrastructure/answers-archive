@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS C++ Publishing from Class using threads - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377609">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS C++ Publishing from Class using threads</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I&#39;ve tried to set up a class where I am able to publish and process ROS messages using callback queues on separate threads. The following is done to set up the Class:</p>
+
+<p>Declare the following in my class header:</p>
+
+<pre><code>/// \brief Node used for ROS transport.
+private: std::unique_ptr&lt;ros::NodeHandle&gt; rosNode;
+
+/// \brief ROS Generalized Coordinates Subscriber.
+private: ros::Subscriber genCoordSub;
+
+/// \brief ROS Generalized Coordinates Subscriber.
+private: ros::Subscriber genVelSub;
+
+/// \brief ROS Joint State Publisher
+private: ros::Publisher jointStatePub;
+
+/// \brief ROS callbackque that helps process messages.
+private: ros::CallbackQueue rosProcessQueue;
+
+/// \brief ROS callbackque that helps publish messages.
+private: ros::CallbackQueue rosPublishQueue;
+
+/// \brief Thread running the rosProcessQueue.
+private: std::thread rosProcessQueueThread;
+
+/// \brief Thread running the rosPublishQueue.
+private: std::thread rosPublishQueueThread;
+</code></pre>
+
+<p>Setup the following in my class cpp file:</p>
+
+<pre><code>if (!ros::isInitialized())
+{
+    int argc = 0;
+    char **argv = NULL;
+    ros::init(
+        argc,
+        argv,
+        &quot;gait_control_node&quot;,
+        ros::init_options::NoSigintHandler
+    );
+}
+
+this-&gt;rosNode.reset(new ros::NodeHandle(&quot;gait_control_node&quot;));
+
+ros::SubscribeOptions gen_coord_so = 
+    ros::SubscribeOptions::create&lt;std_msgs::Float64MultiArray&gt;(
+        &quot;/my_robot/gen_coord&quot;,
+        1,
+        boost::bind(&amp;GaitControl::OnGenCoordMsg, this, _1),
+        ros::VoidPtr(),
+        &amp;this-&gt;rosProcessQueue
+        );
+
+ros::SubscribeOptions gen_vel_so = 
+    ros::SubscribeOptions::create&lt;std_msgs::Float64MultiArray&gt;(
+        &quot;/my_robot/gen_vel&quot;,
+        1,
+        boost::bind(&amp;GaitControl::OnGenVelMsg, this, _1),
+        ros::VoidPtr(),
+        &amp;this-&gt;rosProcessQueue
+        );
+
+ros::AdvertiseOptions joint_state_ao =
+    ros::AdvertiseOptions::create&lt;sensor_msgs::JointState&gt;(
+        &quot;/my_robot/joint_state_cmd&quot;,
+        1,
+        ros::SubscriberStatusCallback(),
+        ros::SubscriberStatusCallback(),
+        ros::VoidPtr(),
+        &amp;this-&gt;rosPublishQueue
+    );
+
+this-&gt;genCoordSub = this-&gt;rosNode-&gt;subscribe(gen_coord_so);
+
+this-&gt;genVelSub = this-&gt;rosNode-&gt;subscribe(gen_vel_so);
+
+this-&gt;jointStatePub = this-&gt;rosNode-&gt;advertise(joint_state_ao);
+
+this-&gt;rosPublishQueueThread = std::thread(
+    std::bind(&amp;GaitControl::PublishQueueThread, this)
+);
+
+this-&gt;rosProcessQueueThread = std::thread(
+    std::bind(&amp;GaitControl::ProcessQueueThread, this)
+);
+</code></pre>
+
+<p>with the thread functions defined as:</p>
+
+<pre><code> // Setup thread to process messages
+ void GaitControl::ProcessQueueThread()
+{
+     static const double timeout = 0.01;
+     while (this-&gt;rosNode-&gt;ok())
+     {
+           this-&gt;rosProcessQueue.callAvailable(ros::WallDuration(timeout));
+     }
+ }
+
+ // Setup thread to process messages 
+ void GaitControl::PublishQueueThread()
+ {
+      static const double timeout = 0.01;
+      while (this-&gt;rosNode-&gt;ok())
+      {
+         this-&gt;rosPublishQueue.callAvailable(ros::WallDuration(timeout));
+      }
+ }
+</code></pre>
+
+<p>The problem i have is whenever I try to create another class functions and for instance publish a message within the function as for example:</p>
+
+<pre><code> void GaitControl::PublishSomeRandomMessage()
+ { 
+       sensor_msgs::JointState joint_state_msg;
+
+       this-&gt;jointStatePub.publish(joint_state_msg);
+ }
+</code></pre>
+
+<p>I seem to not be able to publish onto the topic. I find this odd as if i publish messages within for instance one of the subscribers callbacks, it works perfectly fine. Also, if i publish from within the PublishQueueThread() function it also works fine, e.g.,</p>
+
+<pre><code> void GaitControl::PublishQueueThread()
+ {
+      ros::Rate loop_rate(100);
+      while (this-&gt;rosNode-&gt;ok())
+      {
+           sensor_msgs::JointState joint_state_msg;
+
+           this-&gt;jointStatePub.publish(joint_state_msg);
+
+           loop_rate.sleep();
+      }
+ }
+</code></pre>
+
+<p>Is there any specific reasons why the publishing would suddenly stop working as soon as I do it in another class function which is not an callback or the thread function?</p>
+
+<p>The full code is found in the two following files:</p>
+
+<p><a href="https://github.com/Pathorse/Tetrapod-Robot/blob/kinematics-feature/catkin_ws/src/control/kinematics/include/kinematics/gait_control.h">https://github.com/Pathorse/Tetrapod-Robot/blob/kinematics-feature/catkin_ws/src/control/kinematics/include/kinematics/gait_control.h</a></p>
+
+<p><a href="https://github.com/Pathorse/Tetrapod-Robot/blob/kinematics-feature/catkin_ws/src/control/kinematics/src/gait_control.cpp">https://github.com/Pathorse/Tetrapod-Robot/blob/kinematics-feature/catkin_ws/src/control/kinematics/src/gait_control.cpp</a></p>
+
+<p>Any input is appreciated, thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/60512">Paal</a> on 2021-05-04 03:02:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>'Goal failed to cancel' in ROS 2 Rolling - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407352">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>'Goal failed to cancel' in ROS 2 Rolling</h2>
+      <div class="question">
+        <p>After installing ROS 2 Rolling and playing with <code>turtlesim</code>, I downloaded further examples. I am having problems running the example <code>client_cancel.py</code> and <code>server.py</code>. It does not cancel the goal on the server successfully. </p>
+
+<p>I followed <a href="https://docs.ros.org/en/rolling/Tutorials/Beginner-Client-Libraries/Colcon-Tutorial.html">the instructions</a> and downloaded examples with git using the following command:</p>
+
+<pre><code>git clone https://github.com/ros2/examples src/examples -b rolling
+</code></pre>
+
+<p>Is there something further that needs to be done to make it work? I saw <a href="https://answers.ros.org/question/361666/ros2-action-goal-canceling-problem/">this post</a> but didn&#39;t get anything out of it. Below are the files:</p>
+
+<p>client_cancel.py:</p>
+
+<pre><code># license removed for brevity
+
+from example_interfaces.action import Fibonacci
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+
+
+class MinimalActionClient(Node):
+    def __init__(self):
+        super().__init__(&quot;minimal_action_client&quot;)
+        self._action_client = ActionClient(self, Fibonacci, &quot;fibonacci&quot;)
+
+    def cancel_done(self, future):
+        cancel_response = future.result()
+        if len(cancel_response.goals_canceling) &gt; 0:
+            self.get_logger().info(&quot;Goal successfully canceled&quot;)
+        else:
+            self.get_logger().info(&quot;Goal failed to cancel&quot;)
+        rclpy.shutdown()
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info(&quot;Goal rejected :(&quot;)
+            return
+
+        self._goal_handle = goal_handle
+        self.get_logger().info(&quot;Goal accepted :)&quot;)
+
+        # Start a 2 second timer
+        self._timer = self.create_timer(2.0, self.timer_callback)
+
+    def feedback_callback(self, feedback):
+        self.get_logger().info(&quot;Received feedback: {0}&quot;.format(feedback.feedback.sequence))
+
+    def timer_callback(self):
+        self.get_logger().info(&quot;Canceling goal&quot;)
+        # Cancel the goal
+        future = self._goal_handle.cancel_goal_async()
+        future.add_done_callback(self.cancel_done)
+
+        # Cancel the timer
+        self._timer.cancel()
+
+    def send_goal(self):
+        self.get_logger().info(&quot;Waiting for action server...&quot;)
+        self._action_client.wait_for_server()
+        goal_msg = Fibonacci.Goal()
+        goal_msg.order = 10
+        self.get_logger().info(&quot;Sending goal request...&quot;)
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    action_client = MinimalActionClient()
+    action_client.send_goal()
+    rclpy.spin(action_client)
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<p>server.py:</p>
+
+<pre><code># license removed for brevity
+
+import time
+
+from example_interfaces.action import Fibonacci
+
+import rclpy
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+
+
+class MinimalActionServer(Node):
+    def __init__(self):
+        super().__init__(&quot;minimal_action_server&quot;)
+
+        self._action_server = ActionServer(
+            self,
+            Fibonacci,
+            &quot;fibonacci&quot;,
+            execute_callback=self.execute_callback,
+            callback_group=ReentrantCallbackGroup(),
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback,
+        )
+
+    def destroy(self):
+        self._action_server.destroy()
+        super().destroy_node()
+
+    def goal_callback(self, goal_request):
+        &quot;&quot;&quot;Accept or reject a client request to begin an action.&quot;&quot;&quot;
+        # This server allows multiple goals in parallel
+        self.get_logger().info(&quot;Received goal request&quot;)
+        return GoalResponse.ACCEPT
+
+    def cancel_callback(self, goal_handle):
+        &quot;&quot;&quot;Accept or reject a client request to cancel an action.&quot;&quot;&quot;
+        self.get_logger().info(&quot;Received cancel request&quot;)
+        return CancelResponse.ACCEPT
+
+    async def execute_callback(self, goal_handle):
+        &quot;&quot;&quot;Execute a goal.&quot;&quot;&quot;
+        self.get_logger().info(&quot;Executing goal...&quot;)
+
+        # Append the seeds for the Fibonacci sequence
+        feedback_msg = Fibonacci.Feedback()
+        feedback_msg.sequence = [0, 1]
+
+        # Start executing the action
+        for i in range(1, goal_handle.request.order):
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+                self.get_logger().info(&quot;Goal canceled&quot;)
+                return Fibonacci.Result()
+
+            # Update Fibonacci sequence
+            feedback_msg.sequence.append(feedback_msg.sequence[i] + feedback_msg.sequence[i - 1])
+            self.get_logger().info(&quot;Publishing feedback: {0}&quot;.format(feedback_msg.sequence))
+
+            # Publish the feedback
+            goal_handle.publish_feedback(feedback_msg)
+
+            # Sleep for demonstration purposes
+            time.sleep(1)
+
+        goal_handle.succeed()
+
+        # Populate result message
+        result = Fibonacci.Result()
+        result.sequence = feedback_msg.sequence
+        self.get_logger().info(&quot;Returning result: {0}&quot;.format(result.sequence))
+        return result
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    minimal_action_server = MinimalActionServer()
+
+    # Use a MultiThreadedExecutor to enable processing goals concurrently
+    executor = MultiThreadedExecutor()
+    rclpy.spin(minimal_action_server, executor=executor)
+    minimal_action_server.destroy()
+    rclpy.shutdown()
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<p>Execution:</p>
+
+<p>After <code>colcon build --symlink-install</code> and sourcing the packages i executed <code>ros2 run examples_rclpy_minimal_action_server server</code> and <code>ros2 run examples_rclpy_minimal_action_client client_cancel</code></p>
+
+<p>Output on server side:</p>
+
+<pre><code>[INFO] [1665904936.230794265] [minimal_action_server]: Received goal request
+[INFO] [1665904936.231638391] [minimal_action_server]: Executing goal...
+[INFO] [1665904936.231872544] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1])
+[INFO] [1665904937.234087895] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2])
+[INFO] [1665904938.236406191] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3])
+[INFO] [1665904939.238750288] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5])
+[INFO] [1665904940.241102316] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8])
+[INFO] [1665904941.243432982] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13])
+[INFO] [1665904942.245741341] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21])
+[INFO] [1665904943.247994186] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
+[INFO] [1665904944.250271245] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55])
+[INFO] [1665904945.253059441] [minimal_action_server]: Returning result: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55])
+</code></pre>
+
+<p>Output on client side:</p>
+
+<pre><code>[INFO] [1665904935.966929974] [minimal_action_client]: Waiting for action server...
+[INFO] [1665904936.218430440] [minimal_action_client]: Sending goal request...
+[INFO] [1665904936.231534465] [minimal_action_client]: Goal accepted :)
+[INFO] [1665904936.232283331] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1])
+[INFO] [1665904937.235916634] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2])
+[INFO] [1665904938.232744034] [minimal_action_client]: Canceling goal
+[INFO] [1665904938.237996185] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3])
+[INFO] [1665904939.240413786] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5])
+[INFO] [1665904940.242826158] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8])
+[INFO] [1665904941.245216231] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13])
+[INFO] [1665904942.247427880] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21])
+[INFO] [1665904943.249521452] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
+[INFO] [1665904944.251843465] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55])
+[INFO] [1665904945.256133147] [minimal_action_client]: Goal failed to cancel
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/119845">hane_ruttel</a> on 2022-10-04 05:30:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>anyone? i guess ros2 is not suited for python.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/119845">hane_ruttel</a> on 2022-10-13 03:22:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>We need more information. Therefore can you please post the commands you have used and a <a href="https://en.wikipedia.org/wiki/Minimal_reproducible_example">minimal reproducible example</a>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-10-14 05:07:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>thanks for the response, i edited my first entry</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/119845">hane_ruttel</a> on 2022-10-16 02:34:24 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I tested your code on ROS Galactic and found it working. Therefore, I suggest using Galactic or Humble if you want to stay updated. However, please note that I have not tested your code in Humble.</p>
+
+<p>Below are the results reported in the terminal:</p>
+
+<ul>
+<li><p>Server:</p>
+
+<pre><code>$ ros2 run examples_rclpy_minimal_service service
+[INFO] [1666000409.550238114] [minimal_action_server]: Received goal request
+[INFO] [1666000409.551262021] [minimal_action_server]: Executing goal...
+[INFO] [1666000409.551549517] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1])
+[INFO] [1666000410.552772896] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2])
+[INFO] [1666000411.561754895] [minimal_action_server]: Received cancel request
+[INFO] [1666000411.562464815] [minimal_action_server]: Publishing feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3])
+[INFO] [1666000412.566019658] [minimal_action_server]: Goal canceled
+</code></pre></li>
+<li><p>Client:</p>
+
+<pre><code>$ ros2 run examples_rclpy_minimal_client client
+[INFO] [1666000409.539484246] [minimal_action_client]: Waiting for action server...
+[INFO] [1666000409.539845804] [minimal_action_client]: Sending goal request...
+[INFO] [1666000409.550877363] [minimal_action_client]: Goal accepted :)
+[INFO] [1666000409.551996243] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1])
+[INFO] [1666000410.553445095] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2])
+[INFO] [1666000411.552878882] [minimal_action_client]: Canceling goal
+[INFO] [1666000411.563110901] [minimal_action_client]: Received feedback: array(&#39;i&#39;, [0, 1, 1, 2, 3])
+[INFO] [1666000411.563414815] [minimal_action_client]: Goal successfully canceled
+</code></pre></li>
+</ul>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25207"></a> on 2022-10-17 05:02:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It works in Humble as well, thank you for your answer. </p>
+
+<p>By any chance, do you know what changed? </p>
+
+<p>I found the function to cancel the server exists in earlier ros2 versions. What can users do who can&#39;t use humble/galactic? Is updating the only way?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/119845">hane_ruttel</a> on 2022-10-17 06:44:39 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>By any chance, do you know what changed?</p>
+</blockquote>
+
+<p>It may take a while because first, I have to confirm your claim by installing Rolling. Right now, I don&#39;t know the answer to your question.</p>
+
+<blockquote>
+<p>.... who can&#39;t use humble/galactic?</p>
+</blockquote>
+
+<p>Sorry, can you please elaborate more? What made you pick Rolling instead of Humble or Galactic?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-10-17 08:09:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>My post is about &#39;rolling&#39;, because i thought it has the latest bug fixes and features built in. I installed it only to test the functionality of new features. This was obviously a fallacy. </p>
+
+<p>On my Project I have to use an older ros2 version because i am bound to ubuntu 18 (its eloquent). Now it seems i cant use the client cancel with python?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/119845">hane_ruttel</a> on 2022-10-17 08:48:29 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>i guess ros2 is not suited for python. [..] This was obviously a fallacy.  [..] Now it seems i cant use the client cancel with python?</p>
+</blockquote>
+
+<p>Could I ask you to please stop jumping to conclusions and act a little more in good faith?</p>
+
+<p>You&#39;ve run into a snag with one particular piece of functionality, on your specific machine, with a specific version of ROS 2 (or, more precisely: with a specific version of a specific package, so a tiny part of ROS 2). That doesn&#39;t translate to &quot;ROS 2 can&#39;t do X&quot; or &quot;this is all wrong, I can&#39;t do X&quot;.</p>
+
+<p>Let&#39;s just keep it to the facts and try to diagnose what&#39;s going on, which I believe @ravijoshi is doing a pretty good job of.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-10-17 09:25:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>thank you, i will avoid this general assumptions. i am grateful for the help</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/119845">hane_ruttel</a> on 2022-10-18 03:13:45 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

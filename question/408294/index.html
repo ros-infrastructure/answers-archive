@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rclc node fails to initialize multiple services - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/408294">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rclc node fails to initialize multiple services</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102592/rclc-node-fails-to-initialize-multiple-services">https://robotics.stackexchange.com/questions/102592/rclc-node-fails-to-initialize-multiple-services</a>.</p>
+        <p>Hi everyone,</p>
+
+<p>I&#39;ve gotten myself into another (programming) pickle here and would kindly ask for your expert advise.</p>
+
+<p>Attempting to continue building the examples library, I have successfully created the following examples, which all work
+subscriber
+publisher and subscriber
+service (addTwoInts)
+publisher, subscriber, service (addTwoInts)</p>
+
+<p>Now I&#39;m attempting to add another service, but for some reason it fails, upon attempting to initialise the second service.
+Instead of creating the service, it gets stuck inside the error_handler and flashes the LED for ever.</p>
+
+<p>This is the line that fails.</p>
+
+<pre><code>RCCHECK(rclc_service_init_default(&amp;service_setBool, &amp;node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, SetBool), &quot;/setbool&quot;));
+</code></pre>
+
+<p>Callback, service instance and executor have all been added as it should.</p>
+
+<p>Would you kindly take a look at the source code below and let me know what I am missing.
+Would appreciate your help.</p>
+
+<p>Thank you!</p>
+
+<p>Complete source code:</p>
+
+<pre><code>#include &lt;Arduino.h&gt;
+#include &lt;Wire.h&gt;
+#include &lt;micro_ros_platformio.h&gt;
+#include &lt;example_interfaces/srv/add_two_ints.h&gt;
+#include &lt;example_interfaces/srv/set_bool.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;rcl/error_handling.h&gt;
+#include &lt;rcl/rcl.h&gt;
+#include &lt;rclc/rclc.h&gt;
+#include &lt;rclc/executor.h&gt;
+#include &lt;std_msgs/msg/int32.h&gt;
+#include &lt;std_msgs/msg/int64.h&gt;
+#include &lt;std_msgs/msg/bool.h&gt;
+
+#if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
+#error This example is only avaliable for Arduino framework with serial transport.
+#endif
+
+// ============================================================================
+// INSTANCES, OBJECTS
+// ============================================================================
+// publisher and subscriber common
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rclc_executor_t executor;
+rcl_timer_t timer;
+unsigned int num_handles = 4;   // 1 subscriber, 1 publisher, 2 service
+
+// service addTwoInts
+rcl_service_t service_addTwoInts;
+
+// service setBool
+rcl_service_t service_setBool;
+
+rcl_wait_set_t wait_set;
+
+//publisher
+rcl_publisher_t publisher;
+std_msgs__msg__Int32 msg_pub;
+
+// subscriber
+rcl_subscription_t subscriber;
+std_msgs__msg__Int32 msg_sub;
+
+example_interfaces__srv__AddTwoInts_Response res;
+example_interfaces__srv__AddTwoInts_Request req;
+
+example_interfaces__srv__SetBool_Response res_setBool;
+example_interfaces__srv__SetBool_Request req_setBool;
+
+
+// ============================================================================
+// DEFINES
+// ============================================================================
+// I/O - Definitions
+#define LED_PIN 13
+
+// cleartext substitutions
+// debug
+#ifndef DebugMonitor
+#define DebugMonitor Serial6
+#endif
+
+#define debug(x) DebugMonitor.print(x)
+#define debugln(x) DebugMonitor.println(x)
+
+// ============================================================================
+// FUNCTION PROTOTYPES
+// ============================================================================
+#define RCCHECK(fn){rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){error_loop();}}
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
+
+// Error handle loop
+void error_loop() {
+  while(1) {
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    delay(500);
+  }
+}
+// --------------------------------------------------------
+// timer callback (currently just increments msg_pub.data)
+void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
+  RCLC_UNUSED(last_call_time);
+  if (timer != NULL) {
+    RCSOFTCHECK(rcl_publish(&amp;publisher, &amp;msg_pub, NULL));
+    msg_pub.data++;
+  }
+}
+// --------------------------------------------------------
+// subscriber callback
+void subscription_callback(const void * msgin) {  
+  const std_msgs__msg__Int32 * msg = (const std_msgs__msg__Int32 *)msgin;
+  digitalWrite(LED_PIN, (msg-&gt;data == 0) ? LOW : HIGH);  
+}
+// --------------------------------------------------------
+// srv.addTwoInts callback
+void service_addTwoInts_callback(const void * req, void * res) {
+  example_interfaces__srv__AddTwoInts_Request * req_in = (example_interfaces__srv__AddTwoInts_Request *) req;
+  example_interfaces__srv__AddTwoInts_Response * res_in = (example_interfaces__srv__AddTwoInts_Response *) res;
+
+  //printf(&quot;Service request value: %d + %d.\n&quot;, (int) req_in-&gt;a, (int) req_in-&gt;b);
+
+  res_in-&gt;sum = req_in-&gt;a + req_in-&gt;b;
+}
+// --------------------------------------------------------
+// srv.setBool callback
+void service_setBool_callback(const void * req_setBool, void * res_setBool) {
+  bool previousState = digitalRead(LED_PIN);
+  example_interfaces__srv__SetBool_Request * req_in = (example_interfaces__srv__SetBool_Request *) req_setBool;
+  example_interfaces__srv__SetBool_Response * res_in = (example_interfaces__srv__SetBool_Response *) res_setBool;
+
+  digitalWrite(LED_PIN, (req_in-&gt;data == 0) ? LOW:HIGH);
+
+  if (previousState != digitalRead(LED_PIN)) {
+    res_in-&gt;success = true;
+  }
+  else {
+    res_in-&gt;success = false;
+  }
+}
+
+// ============================================================================
+// SETUP
+// ============================================================================
+void setup() {
+  set_microros_serial_transports(Serial);
+
+  // Debug
+  DebugMonitor.begin(115200);
+
+  // I/O setup
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); 
+
+  delay(1000); 
+
+  allocator = rcl_get_default_allocator();
+
+  // create init_options
+  RCCHECK(rclc_support_init(&amp;support, 0, NULL, &amp;allocator));
+
+  // create node
+  RCCHECK(rclc_node_init_default(&amp;node, &quot;uros_platformio_node&quot;, &quot;&quot;, &amp;support));
+
+  // create service addTwoInts
+  RCCHECK(rclc_service_init_default(&amp;service_addTwoInts, &amp;node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, AddTwoInts), &quot;/addtwoints&quot;));
+
+  // create service setBool
+  RCCHECK(rclc_service_init_default(&amp;service_setBool, &amp;node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, SetBool), &quot;/setbool&quot;));
+
+  // create publisher
+  RCCHECK(rclc_publisher_init_default(&amp;publisher, &amp;node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), &quot;micro_ros_platformio_node_publisher&quot;));
+
+  // create subscriber
+  RCCHECK(rclc_subscription_init_default(&amp;subscriber, &amp;node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), &quot;micro_ros_platformio_node_subscriber&quot;));
+
+  // create timer,
+  const unsigned int timer_timeout = 1000;
+  RCCHECK(rclc_timer_init_default(&amp;timer, &amp;support, RCL_MS_TO_NS(timer_timeout), timer_callback));
+
+  // create executor
+  //RCCHECK(rclc_executor_init(&amp;executor, &amp;support.context, 1, &amp;allocator));
+  RCCHECK(rclc_executor_init(&amp;executor, &amp;support.context, num_handles, &amp;allocator));  
+  RCCHECK(rclc_executor_add_service(&amp;executor, &amp;service_addTwoInts, &amp;req, &amp;res, service_addTwoInts_callback));
+  RCCHECK(rclc_executor_add_service(&amp;executor, &amp;service_setBool, &amp;req_setBool, &amp;res_setBool, service_setBool_callback));
+  RCCHECK(rclc_executor_add_subscription(&amp;executor, &amp;subscriber, &amp;msg_sub, &amp;subscription_callback, ON_NEW_DATA));   
+  RCCHECK(rclc_executor_add_timer(&amp;executor, &amp;timer));
+
+  msg_pub.data = 0;
+}
+
+// ============================================================================
+// MAIN LOOP
+// ============================================================================
+void loop() {
+  delay(100);
+  RCSOFTCHECK(rclc_executor_spin_some(&amp;executor, RCL_MS_TO_NS(100))); 
+}
+</code></pre>
+
+<p>EDIT:
+I have added some debug code to get to the bottom of this problem, as per the <code>RCCHECK</code>. See below for details:</p>
+
+<pre><code>#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){debugln(temp_rc); error_loop();}}
+</code></pre>
+
+<p>The output I receive in the debug console is </p>
+
+<pre><code>1
+</code></pre>
+
+<p>Tracing RCL<em>RET</em>OK back to where it is defined, I found the following in file types.h:</p>
+
+<pre><code>/// Success return code.
+#define RCL_RET_OK RMW_RET_OK
+/// Unspecified error return code.
+#define RCL_RET_ERROR RMW_RET_ERROR
+/// Timeout occurred return code.
+#define RCL_RET_TIMEOUT RMW_RET_TIMEOUT
+/// Failed to allocate memory return code.
+#define RCL_RET_BAD_ALLOC RMW_RET_BAD_ALLOC
+/// Invalid argument return code.
+#define RCL_RET_INVALID_ARGUMENT RMW_RET_INVALID_ARGUMENT
+/// Unsupported return code.
+#define RCL_RET_UNSUPPORTED RMW_RET_UNSUPPORTED
+</code></pre>
+
+<p>Hovering with the mouse over the individual #defines, the tooltip revealed the &quot;1&quot; seen in my debug output resolves to</p>
+
+<pre><code>RMW_RET_ERROR
+</code></pre>
+
+<p>with the comment above:</p>
+
+<pre><code>/// Unspecified error return code.
+</code></pre>
+
+<p>Not really helpful, but with some luck somebody in the community has been across this and is willing to provide some insight.</p>
+
+<p>Much appreciated!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/73699">PointCloud</a> on 2022-10-20 18:32:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Added an edit to post, too long for comment here.</p>
+
+<p>Basically traced RCCHECK back to </p>
+
+<pre><code>/// Unspecified error return code.
+RMW_RET_ERROR
+</code></pre>
+
+<p>Anyone kind enough here to provide some insight why this fails?
+Thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73699">PointCloud</a> on 2022-10-21 00:04:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Just did a test to verify that both services are able to run. Commenting one or the other out and compiling / downloading the code works without issues.
+So I&#39;m guessing there is an issue with the way the second service is initialized.
+Nothing in the source code tells me that these functions need to be unique, or that they would interfere with one another. Here is, how both services are initialized:</p>
+
+<pre><code>RCCHECK(rclc_service_init_default(&amp;service_addTwoInts, &amp;node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, AddTwoInts), &quot;/addtwoints&quot;));
+
+RCCHECK(rclc_service_init_default(&amp;service_setBool, &amp;node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, SetBool), &quot;/setbool&quot;));
+</code></pre>
+
+<p>Any thoughts?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73699">PointCloud</a> on 2022-10-21 01:54:30 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Answer to this is adding a custom .meta file. This is done by declaring it in the platfomio.ini as so:</p>
+
+<pre><code>board_microros_user_meta = custom.meta
+</code></pre>
+
+<p>Here the entire platformio.ini:</p>
+
+<pre><code>[env:teensy41]
+platform = teensy
+board = teensy41
+framework = arduino
+board_microros_transport = serial
+monitor_port = /dev/ttyUSB0
+board_microros_distro = humble
+
+board_microros_user_meta = custom.meta
+
+lib_deps =
+    https://github.com/micro-ROS/micro_ros_platformio
+</code></pre>
+
+<p>The the file needs to be created in the root directory of the project</p>
+
+<pre><code>(&lt;workspace&gt;/custom.meta)
+</code></pre>
+
+<p>The contents can be copied from an example found in the documentation and should look like the below:
+{</p>
+
+<pre><code>    &quot;names&quot;: {
+        &quot;rmw_microxrcedds&quot;: {
+            &quot;cmake-args&quot;: [
+                &quot;-DRMW_UXRCE_MAX_NODES=1&quot;,
+                &quot;-DRMW_UXRCE_MAX_PUBLISHERS=10&quot;,
+                &quot;-DRMW_UXRCE_MAX_SUBSCRIPTIONS=5&quot;,
+                &quot;-DRMW_UXRCE_MAX_SERVICES=2&quot;,
+                &quot;-DRMW_UXRCE_MAX_CLIENTS=1&quot;,
+                &quot;-DRMW_UXRCE_MAX_HISTORY=4&quot;,
+                &quot;-DRMW_UXRCE_TRANSPORT=custom&quot;
+            ]
+        }
+    }
+}
+</code></pre>
+
+<p>This can be found in the documentation under <a href="https://github.com/micro-ROS/micro_ros_platformio#other-configuration">https://github.com/micro-ROS/micro_ros_platformio#other-configuration</a></p>
+
+<p><strong>Note:</strong> the common.meta file makes general adjustments to the library and shall not be modified by the user.
+Same applies to the colcon.meta. These should NOT be modified manually. AFAIK.</p>
+
+<p>Will sanitize this combined subscriber, publisher, and 2x service example before creating pull request to main.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/73699">PointCloud</a> on 2022-10-21 03:47:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

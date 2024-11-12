@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS Threading, AsyncSpinners and Control - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/241561">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS Threading, AsyncSpinners and Control</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/75750/ros-threading-asyncspinners-and-control">https://robotics.stackexchange.com/questions/75750/ros-threading-asyncspinners-and-control</a>.</p>
+        <p>Hello everybody,</p>
+
+<p>I am a relatively new ROS user (but I&#39;ve spent years working with other middlewares), and up to now I am generally happy about it. I have a doubt related to my software framework I would like to clarify. To this end, I will describe the framework I have, so that some more experienced ROS user can tell me where I am doing wrong:</p>
+
+<ul>
+<li>I have a node that is composed of two controllers (one for each of the Baxter&#39;s arms). Each controller subscribes to a variety of topics and publishes to a variety of topics. They are implemented as classes, and they both use an AsyncSpinner.</li>
+<li><p>This is a pseudo-code of my framework. In the main:</p>
+
+<pre><code>int main()
+{
+    Controller c1(&quot;left&quot;);
+    Controller c2(&quot;right&quot;);
+
+    ros::spin();
+}
+</code></pre>
+
+<p>in the constructors:</p>
+
+<pre><code>Controller::Controller(string limb): _limb(limb), spinner(4)
+{
+    ...
+
+    spinner.start();
+}
+</code></pre></li>
+</ul>
+
+<p>Question 1: <em>is this a correct initialization of an AsyncSpinner?</em> Right now I have two AsyncSpinners that are initialized in the same process/node. Question 2: <em>Do they share the same 4 threads?</em> I am not using custom callback queues.
+ * A part from subscribing to topics, both controllers have a main control loop that I implemented as a <code>pthread</code>, which runs in parallel with everything else. It is crucial for my <code>pthread</code>s to have a constant control rate of at least 100Hz, but at the same time I would like to update the information coming from the subscribers while the thread is doing its job. What I did to this end was the following pseudo code related to the <code>run()</code> of the thread:</p>
+
+<pre><code>    pthread_run()
+    {
+        while(ros::ok())
+        {
+            ...
+
+            ros::spinOnce();
+            ros::Rate(100).sleep();
+        }
+    }
+</code></pre>
+
+<p>Question 3: <em>with the presence of an AsyncSpinner, is the <code>ros::spinOnce()</code> necessary, or can I remove it?</em> As far as I understood I should not need a <code>ros::spinOnce()</code>, because my callback queue is guaranteed to be emptied in the other three threads I fed the spinner with. Is it correct?
+ * No matter what I try, some times I experience dropped frames in my <code>pthread</code>s, which negatively affect my control loop. The reasons for this might be multiple (delays in the network, etc), but here is my Question 4: <em>is this issue related to how I implemented my code</em>? As a matter of fact, this is the main reason for which created this question. I am sure it is not a CPU load problem.
+ * I was thinking of dropping altogether the <code>pthread</code>s and implementing the control loops as callbacks that I would then add to the <code>ros::getGlobalCallbackQueue()</code> so that I do not have to take care of the threading at all. Question 5: <em>does this make any sense, or is it going to solve my problem?</em></p>
+
+<p>Thank you for your help. I know that some of this questions might seems stupid, but I didn&#39;t find anything useful online, and I would like to use ROS to the best of its capabilities.</p>
+
+<p><strong>Answer to kramer:</strong> thank you for your detailed explaination. I ran a bit of testing in the past few days, and here is my report (plus some answers to your questions).</p>
+
+<ol>
+<li>With <em>dropped frames</em> I mean exactly as you said, i.e. that the loop runs slower than 100hz. The problem is not necessarily related to the fact that sometimes I have 20ms delays, but it is mainly due to the fact that sometimes I have delays as big as 300ms or even 1 second, which I cannot afford in my control loop.</li>
+<li>I&#39;m measuring delays only in my <code>pthread</code> control loop (the only part I care about this). Plus, my callbacks theoretically should be always faster than 10ms since I only assign some internal variables (doubles, etc). Also, the ros::Rate is only in my <code>pthread_run()</code> function, and not in the callbacks.</li>
+<li>I never wait for messages to come, as I am always saving the last one that I received from the topics I subscribed to.</li>
+<li>I removed the <code>spinOnce()</code>, and it did not affect the code. Thanks for clarifying that to me!</li>
+<li>I changed my code in the <code>pthread<em>run()</code> as you explained. Also this one did not affect my controllers. I honestly don&#39;t understand why the creation of the object <code>ros::Rate r(100)</code> _inside</em> the loop should slow down things: is there something else I am missing?</li>
+<li>I tried to instantiate a <code>MultiThreadedSpinner</code> into the <code>main()</code> function and get rid of the <code>AsyncSpinner</code>s as you suggested, but that solution didn&#39;t work. I think it does not apply to my case because my <code>pthread_run()</code> are triggered from a callback the controllers subscribe to (basically, other nodes can request actions to the controllers, which then trigger the <code>pthread</code> if needed).</li>
+<li>I will take a look at the <code>Timers</code>. Thank you for that, I was not aware of them. But as you said, I don&#39;t think that my problem would be solved by using them. FYI the most complex thing my controllers do is publishing joint configurations on a topic.</li>
+</ol>
+
+        <div class="owner"><p>Asked by <a href="/users/27723">alecive</a> on 2016-08-11 09:26:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I think this is much more complicated than it needs to be, particularly since you&#39;re not using custom callback queue(s). As I see it, the key concept to latch onto here is that all received messages go through a callback queue, each processed when a <em>spin</em> occurs. The primary simplifying factor here is that you only have a single callback queue (the global callback queue), with the result that a single <code>ros::spin()</code>, <code>MultiThreadedSpinner::spin()</code>, or <code>AsyncSpinner.start()</code> will process all queued messages as quickly as possible (that is, when a thread is available; <strong>not</strong> <code>spinOnce</code>). </p>
+
+<p>One minor digression: it&#39;s not clear to me what <em>dropped frames</em> means here (in the <code>pthreads</code> loop). I&#39;m guessing it means the loop sometimes runs slower than 100Hz, but it could mean you&#39;re occasionally dropping or missing message data. I think either might be the case:</p>
+
+<ol>
+<li>The former makes some sense to me, as a <code>spinOnce</code> will block while a callback is performed; if the callback takes longer than 10ms, it&#39;ll throw off your timing. Actually, as your code is written, I&#39;m pretty sure it <strong>will</strong> throw off you timing, since you instantiate a new <code>ros::Rate</code> <em>inside</em> the loop. If I have this right, the time for a given loop iteration will be the sum of the time to process a callback, assuming there is one, <em>plus</em> a 10ms sleep.</li>
+<li>The latter also seems possible to me, as a callback handled by one of the <code>AsyncSpinner</code> threads <em>in its entirety</em> while blocked on the <code>spinOnce</code> might appear to be lost (depending on your data handling).</li>
+</ol>
+
+<p>Pulling back out of the digression, it seems to me you might be better served by using a <code>MultiThreadedSpinner</code>, removing the <code>AsyncSpinner</code> from the <code>Controller</code> class, like so:
+<pre><code>int main() {
+    Controller c1(&quot;left&quot;);
+    Controller c2(&quot;right&quot;);
+    // start controller threads
+    ros::MultiThreadedSpinner spinner(8); // 8 = 4 per controller
+    spinner.spin();
+}
+</code></pre>
+The <code>Controller</code> class can retain its thread (which would need to be started prior to calling <code>spinner.spin()</code>), but modified like so:
+<pre><code>pthread_run() {
+    ros::Rate r(100);
+    while(ros::ok()) {
+        ...
+        r.sleep();
+    }
+}
+</code></pre>
+You might also want to look at (recommended) using <a href="http://wiki.ros.org/roscpp_tutorials/Tutorials/Timers">Timers</a> instead of <code>ros::Rate</code> (which utilize the callback queue -- see (5) below). Now, to your questions:</p>
+
+<ol>
+<li>Yes, correct initialization (as described, maybe not as desired)</li>
+<li>No, they use different threads</li>
+<li>The <code>spinOnce</code> can be removed</li>
+<li>I think item (1) in my discussion of dropped frames is the issue; if so, then yes, it&#39;s your implementation</li>
+<li>Since I don&#39;t know what is in your control loops, I don&#39;t know if it makes sense to put that functionality in callbacks. But it&#39;s plausible -- for instance, it could be done with a <code>Timer</code>&#39;s callback method.</li>
+</ol>
+
+<p>Honestly, though, I think just moving the <code>ros::Rate</code> instantiation outside the loop will solve your most important issue.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/2050">kramer</a> on 2016-08-11 18:30:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hello kramer, thank you for the reply! I answered to you by editing my first post.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27723">alecive</a> on 2016-08-17 11:05:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ll try to get back to this later, but I wanted to explain: having the <code>ros::Rate</code> instantiation inside the loop will <em>always</em> sleep ~10ms; having it outside the loop will cause the sleep to be ~10ms minus the prior time in the loop. Inside: 10ms+callback (callback may be ~0); outside: ~10ms.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2050">kramer</a> on 2016-08-17 23:49:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I should say that I expected there to be maybe an extra 10ms in your loop (dependent, of course, on what the <code>...</code> represents). I didn&#39;t expect up to 1s delays, which seems...odd, to say the least.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2050">kramer</a> on 2016-08-17 23:57:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Without seeing actual code, I&#39;m not able to add much. I now think your <code>pthread</code> execution operates differently than I expected, so can&#39;t help more.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2050">kramer</a> on 2016-08-19 09:37:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>kramer, sorry for the delay: I wanted to perform some more testing before coming back to you. I&#39;m starting to think that the 1s delays are caused by spikes in the network usage that top up the bandwidth. I am changing my code in order to address this. I&#39;ll answer you when I will have more info.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27723">alecive</a> on 2016-08-19 18:34:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@kramer , I dug deeper into the issue. Apparently, it was not an issue in my code, nor the network: rather, the service request I was asking (that is, an IK call for the Baxter robot), some times got stuck into its computation. Changing the IK solver solved the issue altogether. Thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27723">alecive</a> on 2016-12-05 12:06:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Check collision between robot and environment using MoveIt! checkCollision - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/321281">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Check collision between robot and environment using MoveIt! checkCollision</h2>
+      <div class="question">
+        <p>Hi,
+I am trying to detect a collision between a robot and its environment. I have created an object and published it so that it is visible in RViz. &quot;checkSelfCollision&quot; works as intended, and check the robot according to &quot;joint<em>state</em>publisher&quot;, but &quot;checkCollision&quot; does not detect any collision between robot and wall.</p>
+
+<p>What am I missing?</p>
+
+<p>Running; Ros Kinetic, Ubuntu 16.04</p>
+
+<pre><code>#include &lt;moveit/robot_model_loader/robot_model_loader.h&gt;
+#include &lt;moveit/planning_interface/planning_interface.h&gt;
+#include &lt;moveit/planning_scene/planning_scene.h&gt;
+#include &lt;moveit/planning_scene_monitor/planning_scene_monitor.h&gt;
+#include &lt;moveit/kinematic_constraints/utils.h&gt;
+#include &lt;moveit_msgs/DisplayTrajectory.h&gt;
+#include &lt;moveit_msgs/PlanningScene.h&gt;
+#include &lt;moveit_visual_tools/moveit_visual_tools.h&gt;
+
+#include &lt;boost/scoped_ptr.hpp&gt;
+
+// Environment stuff
+#include &lt;moveit/move_group_interface/move_group_interface.h&gt;
+#include &lt;moveit/planning_scene_interface/planning_scene_interface.h&gt;
+#include &lt;moveit_msgs/AttachedCollisionObject.h&gt;
+#include &lt;moveit_msgs/CollisionObject.h&gt;
+
+
+int main(int argc, char** argv)
+{
+    const std::string node_name = &quot;dfr1500_moveit_motion_planning&quot;;
+    ros::init(argc, argv, node_name);
+    ros::NodeHandle nh;
+    ros::AsyncSpinner spinner(1);
+    spinner.start();
+
+
+
+    const std::string PLANNING_GROUP = &quot;dfr1500_full&quot;;
+    robot_model_loader::RobotModelLoaderPtr robot_model_loader
+                (new robot_model_loader::RobotModelLoader(&quot;robot_description&quot;));
+    robot_model::RobotModelPtr robot_model = robot_model_loader-&gt;getModel();
+
+    moveit::planning_interface::MoveGroupInterface move_group(PLANNING_GROUP);
+    moveit::planning_interface::PlanningSceneInterface planning_scene_interface;
+
+    const robot_state::JointModelGroup* joint_model_group =   
+             move_group.getCurrentState()-&gt;getJointModelGroup(PLANNING_GROUP);
+
+    ////////////////////////////////////////////////////////////
+    // Adding object
+    ////////////////////////////////////////////////////////////
+
+    // Define a collision object ROS message.
+    moveit_msgs::CollisionObject collision_object;
+    std::vector&lt;moveit_msgs::CollisionObject&gt; collision_objects;
+
+    // Create Wall
+    collision_object.header.frame_id = move_group.getPlanningFrame();
+    collision_object.id = &quot;wall&quot;;
+
+    shape_msgs::SolidPrimitive primitive;
+    primitive.type = primitive.BOX;
+
+    primitive.dimensions.resize(3);
+    primitive.dimensions[0] = 6;
+    primitive.dimensions[1] = 0.3;
+    primitive.dimensions[2] = 4;
+
+    geometry_msgs::Pose box_pose;
+    box_pose.position.x = 2.95;
+    box_pose.position.y = -0.9;
+    box_pose.position.z = 1.95;
+
+    collision_object.primitives.push_back(primitive);
+    collision_object.primitive_poses.push_back(box_pose);
+    collision_object.operation = collision_object.ADD;
+
+    collision_objects.push_back(collision_object);
+
+    // Add the collision object into the world
+    ROS_INFO_NAMED(&quot;tutorial&quot;, &quot;Add an object into the world&quot;);
+    planning_scene_interface.addCollisionObjects(collision_objects);
+
+
+    ////////////////////////////////////////////////////////////
+    // Check collisions
+    ////////////////////////////////////////////////////////////
+
+    /* Create a RobotState and JointModelGroup to keep track of the current robot pose and planning group*/
+    robot_state::RobotStatePtr robot_state(new robot_state::RobotState(robot_model));
+
+    const std::vector&lt;std::string&gt;&amp; joint_names = joint_model_group-&gt;getVariableNames();
+    std::vector&lt;double&gt; joint_values;
+
+    //ROS_INFO_STREAM(&quot;Fetching joint values, num = &quot; &lt;&lt; joint_model_group.getJointModel(&quot;R1&quot;));
+
+    // Using the :moveit_core:`RobotModel`, we can construct a
+    // :planning_scene:`PlanningScene` that maintains the state of
+    // the world (including the robot).
+    planning_scene::PlanningScenePtr planning_scene(new planning_scene::PlanningScene(robot_model));
+
+    //planning_scene.addCollisionObjects(collision_objects);
+    // With the planning scene we create a planing scene monitor that
+    // monitors planning scene diffs and applys them to the planning scene
+    planning_scene_monitor::PlanningSceneMonitorPtr psm(new planning_scene_monitor::PlanningSceneMonitor(planning_scene, robot_model_loader));
+    psm-&gt;startPublishingPlanningScene(planning_scene_monitor::PlanningSceneMonitor::UPDATE_SCENE);
+    psm-&gt;startStateMonitor();
+    psm-&gt;startSceneMonitor();
+
+    sleep(1); // Need to slepp to update links
+
+    // Update joints
+    robot_state::RobotState r = psm-&gt;getPlanningScene()-&gt;getCurrentState();
+    r.copyJointGroupPositions(joint_model_group, joint_values); // Update joint positions
+
+    ROS_INFO_STREAM(&quot;Fetching joint values, num = &quot; &lt;&lt; joint_names.size());
+    // Print out current joint values
+    for (std::size_t i = 0; i &lt; joint_names.size(); ++i){
+        ROS_INFO(&quot;Joint %s: %f&quot;, joint_names[i].c_str(), joint_values[i]);
+    }
+
+    // Check self collision
+    collision_detection::CollisionRequest collision_request;
+    collision_detection::CollisionResult collision_result;
+
+    planning_scene-&gt;checkSelfCollision(collision_request, collision_result);
+    ROS_INFO_STREAM(&quot;Test 1: Current state is &quot; &lt;&lt; (collision_result.collision ? &quot;in&quot; : &quot;not in&quot;) &lt;&lt; &quot; self collision&quot;);
+
+    // Check environment collision
+    collision_result.clear();
+    planning_scene-&gt;checkCollision(collision_request, collision_result);
+    ROS_INFO_STREAM(&quot;Test 2: Current state is &quot; &lt;&lt; (collision_result.collision ? &quot;in&quot; : &quot;not in&quot;) &lt;&lt; &quot; self collision&quot;);
+
+    ros::shutdown();
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/39980">MRRobot</a> on 2019-04-17 05:09:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

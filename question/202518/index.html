@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Getting external callbacks (SDK) called in a ROS node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/202518">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Getting external callbacks (SDK) called in a ROS node</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/65637/getting-external-callbacks-sdk-called-in-a-ros-node">https://robotics.stackexchange.com/questions/65637/getting-external-callbacks-sdk-called-in-a-ros-node</a>.</p>
+        <p>Hello all;</p>
+
+<p>I am trying to integrate a new sensor in a robot. This sensor provides an SDK and the way of acquiring its data is by using a callback, everytime that there are data available, the callback is called. Inside the callback it is possible to access the data.
+The program with the SDK has been tested and works fine, accesing the sensor callback.
+The problem comes when trying to integrate all thi code in ROS. ROS is attending to  its framework and callbacks, and the sensor callback is not being executed. Due to the characteristics of the SDK of the sensor, I can not call the callback explicitly when I want to collect data.
+The library is a Windows SDK, there is not a Linux Version, so, we are using WinROS with this node...</p>
+
+<p>Is there any way to make ROS attend callbacks that are not from its own environment??</p>
+
+<p>UPDATE. CODE ATTACHED</p>
+
+<pre><code>#include&lt;smart_ray/smart_ray.h&gt;
+
+void smartRayControlCb(const std_msgs::BoolConstPtr &amp;msg)
+{
+
+    if(msg-&gt;data)
+    {
+        initSmartRaySensor();
+        //captura
+        startSmartRayCapture();
+    }
+    else
+    {
+        stopSmartRaySensor();
+    }
+
+}
+
+
+int CBunknownCommand(CAMDESC* cd) 
+{
+
+    char msg[260];
+    sprintf (msg, &quot;unknown data received. command no: 0x%02x&quot;, cd-&gt;command); 
+
+    return 0;
+
+}
+
+int CBstatusMsg (CAMDESC* cd, int msgType, int msgdata1, int msgdata2, char *msg)
+{
+    int Laserlight;
+    int Laserstatus;
+    int digIn[4];
+    int digOut[2];
+    int FPS;
+
+    if(msg==NULL) //No message data available
+        return -1;
+
+    if (msgType == MSGTYPE_CONNECTION) //Ethernet connection messages
+    {
+        if(msgdata1 == CAMERA_CONNECTED) // TCP/IP connection established
+        {
+            printf(&quot;%s.\n&quot;,msg);
+            sensor.connectionstate = STATE_CAMERA_CONNECTED;
+            return(0);
+        }
+        else // disconnected
+        {
+            printf(&quot;%s.\n&quot;,msg);
+            sensor.connectionstate = STATE_CAMERA_CLOSED;
+            return(0);
+        }
+    }
+    else if (msgType == MSGTYPE_INFO)   // Info messages
+    {
+        printf(&quot;%s.\n&quot;,msg);
+        return(0);
+    }
+    else if (msgType == MSGTYPE_ERROR)  // Error messages
+    {
+        printf(&quot;%s&quot;,msg);
+        return(1);
+    }
+    // Sensor IO and general data (sensor sends this every 200ms) 
+    else if (msgType == MSGTYPE_DATA &amp;&amp; msgdata1 == DATATYPE_IO)
+    {
+        digIn[0] = cd-&gt;digio_in[0];
+        digIn[1] = cd-&gt;digio_in[1];
+        digIn[2] = cd-&gt;digio_in[2];
+        digIn[3] = cd-&gt;digio_in[3];
+        // Digital output status (via CAMDESC* cd e.g. cd-&gt;digio_out[0] = DigOut0)
+        digOut[0] = cd-&gt;digio_out[0];
+        digOut[1] = cd-&gt;digio_out[1];
+        // Laser Status (enabled - disabled) 
+        Laserstatus = cd-&gt;laser_status;
+        // Laser light on/off
+        Laserlight = cd-&gt;laserlight;
+        // Frames per second (current/last INTERNAL! framerate of the sensor)
+        FPS = cd-&gt;fps;
+    }
+
+    return 0;
+}
+
+int CBprofileImageCallback (CAMDESC* cd, int dattyp, int startX, int height, int width, void* pdata)
+{
+    int i=0;
+    int k=0;
+    unsigned short* data = NULL;
+    //~ unsigned short* pDataProf = NULL;
+    //~ unsigned short* pDataInten = NULL;
+
+    std::vector&lt;int16_t&gt; pDataProf;
+    std::vector&lt;int16_t&gt; pDataInten;
+    //memory reservation
+    //~ pDataProf = (unsigned short *)malloc(width*height*sizeof(unsigned short));
+    //~ pDataInten = (unsigned short *)malloc(width*height*sizeof(unsigned short));
+
+    // data contents depends on settings of parameter in PROFILE_SETUP and ACQUIRE module
+    data = (unsigned short*) pdata;
+    // data includes just contour info
+    if (dattyp == DATATYPE_PROFILE)
+    {
+        for (i=0;i&lt;width*height;i++)
+        {
+            pDataProf.push_back(data[i]);
+        }
+    }
+
+    else if (dattyp == DATATYPE_INTENSITY)
+    {
+        for (i=0;i&lt;width*height;i++)
+        {
+            pDataInten.push_back(data[i]);
+        }
+    }
+    // data includes contour AND intensity info
+    // and must be separated
+    else if (dattyp == DATATYPE_PROFILE_PLUS_INTENSITY)
+    {
+        for (i=0;i&lt;width*height;i+=2)
+        {
+            pDataInten.push_back(data[i+1]);
+            pDataProf.push_back(data[i]);
+            k++;
+        }
+
+        //recover platform pose
+
+        //publish msg
+        smart_ray::SmartRay msg;
+
+        msg.header.stamp = ros::Time::now();
+
+        msg.intensity.resize(pDataInten.size());
+        msg.intensity = pDataInten;
+
+        msg.prof.resize(pDataProf.size());
+        msg.prof = pDataProf;
+
+        smart_ray_data_pub_.publish(msg);
+
+        // update new width
+        width /= 2;
+    }
+    else
+    {
+        return -1;
+    }
+    return 0;
+}
+
+int initSmartRaySensor(void)
+{
+    char *API_version;
+    char *result;
+    int res;
+
+    printf(&quot;Initializing SmartRay API\n&quot;);
+    API_version = SR_API_GetAPIVersion();
+    printf(&quot;API version: %s.\n&quot;,API_version);
+    res = SR_API_Init (CBstatusMsg);
+    SR_API_RegisterUserCB (SRCB_CAMDATAMODE, DEFAULT_PROFILEIMAGE_CHANNEL, CBprofileImageCallback);
+    sensor.cam_index = 0;
+    strcpy(sensor.name,&quot;sensor0&quot;);
+    strcpy(sensor.IPAdr, IP_ADDR);
+    sensor.portnum = PORT_NUMBER;
+    sensor.usercbf = CBunknownCommand;
+
+    res = SR_API_StartCameraConnectionManagement(&amp;sensor);
+    while (sensor.connectionstate != STATE_CAMERA_CONNECTED)
+    {
+        Sleep(100);
+    }
+    // Load parameters
+    res = SR_API_ReadCamParsFromFile(&quot;.\\Pars700\\SR700_3D_frame_single_exposure.par&quot;); 
+    if(res &lt; 0)
+    {
+        if(res == -2)
+            printf(&quot;The parameters are not compatible to this API.\n&quot;);
+        else
+            printf(&quot;The parameters could not be loaded.\n&quot;);
+        return res;
+    }
+    // Send parameter to sensor
+    result = SR_API_SendParsToCam (&amp;sensor);  
+    if (result != NULL)
+        printf(&quot;%s\n&quot;,result);
+    else printf(&quot;Parameters loaded. \n&quot;);
+
+
+    return(0);
+}
+
+int startSmartRayCapture(void)
+{
+    int res;
+
+    if (sensor.connectionstate != STATE_CAMERA_CONNECTED)
+    {
+        printf(&quot;The camera is not connected.\n&quot;);
+        return -1;
+    }
+
+    res = SR_API_StartCam (&amp;sensor);
+    //check whether the sensor can start
+    if(res == 0)
+    {
+        printf(&quot;Camera Started.\n&quot;);
+        return 0;
+    }
+    else
+    {
+        printf(&quot;Error starting the sensor.\n&quot;);
+        return -2;
+    }
+}
+
+int stopSmartRaySensor(void)
+{
+    SR_API_StopCameraConnectionManagement(&amp;sensor);
+    SR_API_StopCam(&amp;sensor);
+    SR_API_Exit();
+    return(0);
+}
+
+/* The main function */
+int main(int argc, char** argv)
+{   
+    ros::init(argc, argv, &quot;smart_ray_node&quot;);
+
+    ros::NodeHandle nh;
+
+    // Create publishers/subscribers
+  smart_ray_data_pub_ = nh.advertise&lt;smart_ray::SmartRay&gt;(&quot;smart_ray_data&quot;, 1);
+  smart_ray_control_sub_ = nh.subscribe(&quot;smart_ray_control&quot;, 10, smartRayControlCb);
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>Thank you very much in advance,</p>
+
+<p>Alberto</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4898">altella</a> on 2015-02-05 05:33:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Could you post some example code of your node with the callback that does not get called?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3675">BennyRe</a> on 2015-02-05 06:26:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Code posted...there you can have a look at the &quot;Non-ROS&quot; callbacks, which are not working...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4898">altella</a> on 2015-02-06 07:34:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The first answer to <a href="http://answers.ros.org/question/11887/significance-of-rosspinonce/">Significance of ros::spinOnce()</a> will probably help you. Also: <a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning">roscpp/Overview/Callbacks and Spinning</a> from <code>roscpp</code>.</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<pre><code>int main(int argc, char** argv)
+{   
+    ...
+
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>The <code>ros::spin()</code> will never return, and is probably why your other callbacks aren&#39;t being serviced. As you can read in the <a href="http://answers.ros.org/question/11887/significance-of-rosspinonce/">Significance of ros::spinOnce()</a> answer, replacing it with something like:</p>
+
+<pre><code>int main(int argc, char** argv)
+{
+    ...
+
+    ros::Rate loop_rate(10);
+
+    while (ros::ok() &amp;&amp; smart_ray_ok())
+    {
+        // let the smart ray event loop do its thing
+        process_smart_ray_events()
+
+        // let ros do its things
+        ros::spinOnce();
+
+        // sleep some (only if needed)
+        loop_rate.sleep();
+    }
+</code></pre>
+
+<p>Will give the smart ray SDK a chance to process its incoming data (and call the registered <em>UserCB</em>).</p>
+
+<p>As I have no experience with that particular SDK, I cannot say what <code>smart_ray_ok()</code> and <code>process_smart_ray_events()</code> should really be (or if they even exist), that is something you&#39;ll have to figure out yourself.</p>
+
+<p>As an alternative to the above, you could use an <code>AsyncSpinner</code>, which would remove the need for the <code>while</code> loop and the <code>ros::spinOnce()</code>. See the linked  <a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning">roscpp/Overview/Callbacks and Spinning</a> page for more information on that.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2015-02-05 06:39:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hello all;
+Thanks for the tips. The thing is that I cannot explicitily call the data acquistion function in the SmartRay Library. It is a free running callback, and the problem is that it is not being called....</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4898">altella</a> on 2015-02-09 03:50:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Well without access to the smartray sdk I can only speculate. Are you sure you have actually started the smart ray processing loop? Are your events / samples getting through/generated? There might also be some incompatibility between ROS and the sdk, but again, that is speculation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-02-09 04:08:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Also: you could see whether just converting to the while loop with <code>ros::spinOnce()</code> and the <code>loop_rate.sleep()</code> avoids any thread starvation issues. I doubt it though, as afaik, the <code>select()</code> call is a cancellation point (from <a href="http://stackoverflow.com/a/434139">this</a>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-02-09 04:11:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>ok...
+things to check. In fact, the SDK is only for windows, and we are using winROS...so, I do not feel confident at all. Tanks for your quick responses.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4898">altella</a> on 2015-02-09 04:29:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@altella: I&#39;ve taken the liberty to rephrase the question&#39;s title. I think it better reflects what is going on. Also: could you add which version of WinROS you are using (based on Groovy, Hydro or Indigo)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-02-09 06:22:26 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Velodyne UDP packets, ROS messages, and PCD files: Where does the time go? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/201004">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Velodyne UDP packets, ROS messages, and PCD files: Where does the time go?</h2>
+      <div class="question">
+        <p>Here is what I understand about the tool chain that turns Velodyne UDP packets into PCD files:</p>
+
+<ol>
+<li>(<a href="https://github.com/ros-drivers/velodyne/blob/master/velodyne_driver/src/lib/input.cc#L88">input.cc</a>) ROS sits in a poll() loop and collects Velodyne UDP packets from the network. It wraps each packet payload in a VelodynePacket object and sets the time stamp on the new object to the time the payload was received.</li>
+<li>(<a href="https://github.com/ros-drivers/velodyne/blob/master/velodyne_driver/src/driver/driver.cc#L106">driver.cc</a>) Many VelodynePacket objects are buffered before sending them on as a VelodyneScan object. The new object gets the time stamp of the <em>last</em> VelodynePacket that it holds.</li>
+<li>(convert.cc, transform.cc) Various subscribers receive the VelodyneScan objects and re-publish them as PointCloud2 objects, one per scan. They all do pretty much the same thing: Iterate over the scan -- oldest to newest -- while calling RawData::unpack() on every VelodynePacket. The final PointCloud2 objects contain points ordered from oldest to newest -- minus some filtering; see next -- and are guaranteed not to contain any partial UDP payloads. Their time stamps are copied from their respective VelodyneScan objects.</li>
+<li>(<a href="https://github.com/ros-drivers/velodyne/blob/master/velodyne_pointcloud/src/lib/rawdata.cc#L111">rawdata.cc</a>) The unpack() method is where the UDP payloads actually get parsed. The payloads contain each laser return in terms of distance, and unpack() turns distance into (x, y, z) location. Not all the points in each payload are reported as some violate angle and range constraints. </li>
+<li>(<a href="https://github.com/ros-perception/perception_pcl/blob/master/pcl_ros/tools/bag_to_pcd.cpp">bag<em>to</em>pcd.cc</a>) This executable pulls PointCloud2 messages off a ROS bag and turns them into PCD files. No substantive processing is involved; it&#39;s all I/O. Each PCD file represents a single PointCloud2 message, with its time stamp given in the PCD file name.</li>
+</ol>
+
+<p><strong>Questions</strong></p>
+
+<ul>
+<li>Have I misunderstood anything in here?</li>
+<li>How meaningful are the PCD file names -- eg, the VelodyneScan time stamps -- in a realtime sense?</li>
+</ul>
+
+        <div class="owner"><p>Asked by <a href="/users/21360">brianthelion</a> on 2015-01-14 14:12:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p><strong>OP&#39;s Analysis</strong></p>
+
+<p>In our system, the PCD file names are all about 0.1s apart. Given a published packet rate of 1808 packets/s for our Velodyne device (32E), this means that each PCD file should span roughly 180 packets. The temporal error that we&#39;re interested in is the per-point error within a given PCD file, <code>e[i, j] = T-t[i, j]</code>, where <code>T</code> is the time stamp reported in the PCD file name and <code>t[i, j]</code> is the actual time that point <code>i, j</code> was recorded by the device. Here, <code>i</code> means packet <code>i</code> out of 180 and <code>j</code> means point <code>j</code> out of 384 in the packet. (384 points = 12 firings * each of 32 lasers.)</p>
+
+<p>If my understanding of the tool chain is right, <code>e[i, j]</code> is a function of primarily of (1) the construction of each packet in the Velodyne device, (2) transmission latency, (3) buffering in the kernel and ROS code, (4) and re-stamping of the VelodyneScan object with the received time of the <em>last</em> packet in its buffer. It seems to me that <code>max(e[i, j])</code> is basically the interval between between one PCD time stamp and the next, plus transmission and buffering latency.</p>
+
+<p>We can&#39;t model network latency and buffering too well, so I&#39;ll give a lower bound: In my case, <code>max(e[i, j])</code> is <em>at least</em> 0.1s.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21360">brianthelion</a> on 2015-01-14 14:14:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>The Velodyne driver <a href="https://github.com/ros-drivers/velodyne/blob/master/velodyne_driver/src/lib/input.cc#L164">estimates the time for each packet</a> using the average of system time before and after reading it. Each packet <a href="http://docs.ros.org/api/velodyne_msgs/html/msg/VelodynePacket.html">contains its own time stamp</a>.</p>
+
+<p>That estimate is not very accurate, but it does work for all the supported devices. Models providing their own time stamps could theoretically do better, but would require a relatively complex Phase Locked Loop for converting device time into system time compatible with other ROS components.</p>
+
+<p>The big error comes from converting VelodynePacket data to a PointCloud2, which has only a single time stamp for the entire cloud. While you can set <code>npackets=1</code> so each packet is published as a separate point cloud preserving its estimated time, many users find it convenient to combine all the data for a complete rotation into a single cloud. 
+Since the usual device speed is 600 RPM or 10Hz, the average time error for the points in a complete rotation is somewhere around half a rotation, or 50 msec.</p>
+
+<p>The most obvious place where that causes problems is when transforming the point cloud into odometric coordinates while the device is moving. That is why transform.cc <a href="https://github.com/ros-drivers/velodyne/blob/master/velodyne_pointcloud/src/conversions/transform.cc#L90">transforms each packet</a> using its own time stamp and appends the result to the output cloud. While the time stamp of the output cloud has all the inaccuracies mentioned already, the positions of the points at least reflect the <code>base_link-&gt;odom</code> transform published by odometry at whatever accuracy and frequency those updates are provided.</p>
+
+<p>In summary, if you need relatively accurate real time processing at the point cloud level, you should probably set <code>npackets</code> to some relatively small number.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25">joq</a> on 2015-01-22 16:45:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

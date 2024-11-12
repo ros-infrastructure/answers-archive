@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to get  linear velocity from the linear acceleration using Euler integration in ORB_SLAM3? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417548">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to get  linear velocity from the linear acceleration using Euler integration in ORB_SLAM3?</h2>
+      <div class="question">
+        <p>Hi
+I would like to estimate linear velocity using Euler integration from the IMU data (linear acceleration) in ORB<em>SLAM3 so can publish the odometry message. I modified the stereo-inertial node from the ORB</em>SLAM3 package so can get the linear velocity. Im using ROS2 humble and C++.</p>
+
+<p>So I modified SyncWithImu() function to estimating velocity using Euler integration from IMU linear acceleration data. But I got some errors. Here is the code</p>
+
+<pre><code>#include &quot;monocular-slam-node.hpp&quot;
+#include &lt;opencv2/core/core.hpp&gt;
+#include &lt;geometry_msgs/msg/pose_stamped.hpp&gt;
+//#include &quot;nav_msgs/msg/odometry.hpp&quot;
+
+using std::placeholders::_1;
+
+MonocularSlamNode::MonocularSlamNode(ORB_SLAM3::System* pSLAM)
+    : Node(&quot;ORB_SLAM3_ROS2&quot;)
+{
+    m_SLAM = pSLAM;
+    m_image_subscriber = this-&gt;create_subscription&lt;ImageMsg&gt;(&quot;camera&quot;,10, std::bind(&amp;MonocularSlamNode::GrabImage, this, std::placeholders::_1));
+    m_imu_subscriber = this-&gt;create_subscription&lt;ImuMsg&gt;(&quot;imu&quot;,10, std::bind(&amp;MonocularSlamNode::GrabImu, this, std::placeholders::_1));
+    syncThread_ = new std::thread(&amp;MonocularSlamNode::SyncWithImu, this);
+    odometry_publisher = this-&gt;create_publisher&lt;nav_msgs::msg::Odometry&gt;(&quot;odom&quot;, 10);
+    //m_velocity_pub = this-&gt;create_publisher&lt;geometry_msgs::Twist&gt;(&quot;lin_velocity&quot;, 10);
+}
+
+MonocularSlamNode::~MonocularSlamNode()
+{
+    // Delete sync thread
+    syncThread_-&gt;join();
+    delete syncThread_;
+
+    // Stop all threads
+    m_SLAM-&gt;Shutdown();
+
+    // Save camera trajectory
+    m_SLAM-&gt;SaveKeyFrameTrajectoryTUM(&quot;KeyFrameTrajectory.txt&quot;);
+}
+
+void MonocularSlamNode::GrabImu(const ImuMsg::SharedPtr msg)
+{
+    bufImuMutex_.lock();
+    imuBuf_.push(msg);
+    bufImuMutex_.unlock();
+}
+
+void MonocularSlamNode::GrabImage(const ImageMsg::SharedPtr msg)
+{
+    bufImgMutex_.lock();
+
+    if (!imgBuf_.empty())
+        imgBuf_.pop();
+    imgBuf_.push(msg);
+
+    bufImgMutex_.unlock();
+}
+cv::Mat MonocularSlamNode::GetImage(const ImageMsg::SharedPtr msg)
+{
+    // Copy the ros image message to cv::Mat.
+    cv_bridge::CvImageConstPtr cv_ptr;
+
+    try
+    {
+        cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+    }
+    catch (cv_bridge::Exception &amp;e)
+    {
+        RCLCPP_ERROR(this-&gt;get_logger(), &quot;cv_bridge exception: %s&quot;, e.what());
+    }
+
+    if (cv_ptr-&gt;image.type() == 0)
+    {
+        return cv_ptr-&gt;image.clone();
+    }
+    else
+    {
+        std::cerr &lt;&lt; &quot;Error image type&quot; &lt;&lt; std::endl;
+        return cv_ptr-&gt;image.clone();
+    }
+}
+
+void MonocularSlamNode::SyncWithImu()
+{
+    const double maxTimeDiff = 0.01;
+
+    // Initialize variables for velocity estimation
+    cv::Point3f velocity(0, 0, 0);  // Initial velocity (x, y, z)
+    double prevTime = 0;           // Previous IMU timestamp
+
+    while (1)
+    {
+        cv::Mat im;
+        double tIm = 0;
+        if (!imgBuf_.empty() &amp;&amp; !imuBuf_.empty())
+        {
+            tIm = Utility::StampToSec(imgBuf_.front()-&gt;header.stamp);
+
+            bufImgMutex_.lock();
+            while (imgBuf_.size() &gt; 1)
+            {
+                imgBuf_.pop();
+                tIm = Utility::StampToSec(imgBuf_.front()-&gt;header.stamp);
+            }
+            bufImgMutex_.unlock();
+
+            if (tIm &gt; Utility::StampToSec(imuBuf_.back()-&gt;header.stamp))
+                continue;
+
+            bufImgMutex_.lock();
+            im = GetImage(imgBuf_.front());
+            imgBuf_.pop();
+            bufImgMutex_.unlock();
+
+            vector&lt;ORB_SLAM3::IMU::Point&gt; vImuMeas;
+            bufImuMutex_.lock();
+            if (!imuBuf_.empty())
+            {
+                // Load imu measurements from buffer
+                vImuMeas.clear();
+                while (!imuBuf_.empty() &amp;&amp; Utility::StampToSec(imuBuf_.front()-&gt;header.stamp) &lt;= tIm)
+                {
+                    double t = Utility::StampToSec(imuBuf_.front()-&gt;header.stamp);
+                    cv::Point3f acc(imuBuf_.front()-&gt;linear_acceleration.x, imuBuf_.front()-&gt;linear_acceleration.y, imuBuf_.front()-&gt;linear_acceleration.z);
+                    cv::Point3f gyr(imuBuf_.front()-&gt;angular_velocity.x, imuBuf_.front()-&gt;angular_velocity.y, imuBuf_.front()-&gt;angular_velocity.z);
+                    vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc, gyr, t));
+                    imuBuf_.pop();
+                }
+            }
+            bufImuMutex_.unlock();
+
+            if (bClahe_)
+            {
+                clahe_-&gt;apply(im, im);
+            }
+
+            cv::remap(im, im, M1_, M2_, cv::INTER_LINEAR);
+
+            // Estimate velocity using Euler integration
+            if (!vImuMeas.empty())
+            {
+                // Initialize variables for velocity estimation
+                cv::Point3f linearAcc(0, 0, 0);  // Accumulated linear acceleration
+                double deltaTime = 0;           // Time difference between consecutive IMU measurements
+
+                // Loop through IMU measurements and perform Euler integration for velocity estimation
+                for (size_t i = 1; i &lt; vImuMeas.size(); ++i)
+                {
+                    // Calculate time difference between consecutive IMU measurements
+                    deltaTime = vImuMeas[i].t - vImuMeas[i - 1].t;
+
+                    // Integrate linear accelerations to update velocity
+                    velocity.x += (vImuMeas[i].acc.x + vImuMeas[i - 1].acc.x) * deltaTime / 2.0;
+                    velocity.y += (vImuMeas[i].acc.y + vImuMeas[i - 1].acc.y) * deltaTime / 2.0;
+                    velocity.z += (vImuMeas[i].acc.z + vImuMeas[i - 1].acc.z) * deltaTime / 2.0;
+                }
+            }
+
+            // Publish the estimated velocity
+            geometry_msgs::msg::Twist velocity_msg;
+            velocity_msg.linear.x = velocity.x;
+            velocity_msg.linear.y = velocity.y;
+            velocity_msg.linear.z = velocity.z;
+
+            //m_velocity_pub-&gt;publish(velocity_msg);
+
+            // Update previous time with the last IMU measurement timestamp
+            prevTime = vImuMeas.back().t;
+
+            m_SLAM-&gt;TrackMonocular(im, tIm, vImuMeas);
+            std::chrono::milliseconds tSleep(1);
+            std::this_thread::sleep_for(tSleep);
+        }
+    }
+}
+</code></pre>
+
+<p>So when run it I got the following errors</p>
+
+<pre><code>monocular-inertial-slam-node.cpp:150:48: error: ‘__gnu_cxx::__alloc_traits&lt;std::allocator&lt;ORB_SLAM3::IMU::Point&gt;, ORB_SLAM3::IMU::Point&gt;::value_type’ {aka ‘class ORB_SLAM3::IMU::Point’} has no member named ‘acc’
+  150 |                     velocity.x += (vImuMeas[i].acc.x + vImuMeas[i - 1].acc.x) * deltaTime / 2.0;
+</code></pre>
+
+<p>Or can use it this way</p>
+
+<pre><code>cv::Point3f velocity(0, 0, 0);  //  linear acceleration
+double deltaTime = 0;       
+
+cv::Point3f acc(imuBuf_.front()-&gt;linear_acceleration.x, imuBuf_.front()-&gt;linear_acceleration.y, imuBuf_.front()-&gt;linear_acceleration.z);
+
+for (size_t i = 1; i &lt; vImuMeas.size(); ++i)
+                                {
+                                    // Calculate time difference between consecutive IMU measurements
+                                    deltaTime = vImuMeas[i].t - vImuMeas[i - 1].t;
+                                    // Integrate linear accelerations to update velocity
+                                    velocity.x += acc.x  * deltaTime;
+                                }
+</code></pre>
+
+<p>Any help? Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2023-07-19 00:05:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

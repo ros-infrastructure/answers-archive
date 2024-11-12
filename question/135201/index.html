@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>why is my code slower online than offline? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/135201">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>why is my code slower online than offline?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/57637/why-is-my-code-slower-online-than-offline">https://robotics.stackexchange.com/questions/57637/why-is-my-code-slower-online-than-offline</a>.</p>
+        <p>This is a rather intricate problem. I&#39;ve spent quite some time on it already. First I&#39;ll describe the setup, then some observations, and some possible explanations. There is no precise question here, but I am hoping somebody will be able to shed some light on this issue.</p>
+
+<p>I have some code to process velodyne data to detect and track obstacles. I can run it offline, for profiling and debugging purpose, or online.</p>
+
+<p>Offline means that I get the data from a bag. I collect all the required data: the actual points, the necessary transforms, etc., and when all the data is ready I pass it to my obs_detect function. This does not use any ros messaging. A single process reads the data from the bag, and processes it.</p>
+
+<p>Online, the data comes from the sensors (or bag files that I am playing back). I&#39;m using multiple processes to preprocess the raw velodyne data and create the TF data. The obstacle detection node subscribes to the velodyne points in the main thread, cumulates them to for a whole spin, transforms it to my fixed frame (think /odom). The actual obstacle detection happens in a separate thread, that gets notified using a condition variable that a spin is available for processing. I&#39;m using shared pointers to pass the data between the 2 threads. Here is a short synopsis of what the node does:</p>
+
+<pre><code>tf::TransformListener tf_listener;
+ObstacleDetector obs_detector(&amp;tf_listener);
+pcl::PointCloud&lt;VelodynePointType&gt;::ConstPtr spinToProcess;
+
+void callback(const pcl::PointCloud&lt;VelodynePointType&gt;::ConstPtr &amp; spin)
+{
+  // cumulate the points to form a spin
+  // transform the spin to the desired frame
+  // store in spinToProcess
+  // notify the main thread
+}
+
+void thread_func()
+{
+  while(ros::ok()) {
+    // wait for the condition variable
+
+    obs_detector.detect(spinToProcess);
+
+    // publish the results
+  }
+}
+
+main() {
+  boost::thread thread(thread_func);
+
+  // subscribe to the velodyne data, etc.
+
+  ros::spin();
+}
+</code></pre>
+
+<p>NOTE: I also tried using a multithreaded spinner but it did not help.</p>
+
+<p>Here are some experimental results and my interpretation:</p>
+
+<p>1- Offline it takes 40ms. Online, the same section of code takes 55ms (about 40% more)!</p>
+
+<p>I&#39;m measuring wall time. Looking at the timing of all the operations that go into detecting the obstacles, I can see that all of them are a fraction slower online than offline. So the slowness is distributed over the whole computation. And those timings do not consider the deserialization of the message.</p>
+
+<p>I also measured the CPU time for the processing thread with &quot;getrusage(RUSAGE_THREAD, &amp;usage)&quot;. Offline there is no much difference between wall time and cpu time. Online, cpu time is about 10ms less.</p>
+
+<p>That seems to indicate that the processing thread is interrupted.</p>
+
+<p>2- If I run the offline version and the online version concurrently, the offline code takes about 60ms and the online code 70ms (using a total of 6 cores out of 8).</p>
+
+<p>This could be the result of competing access to some hardware resources, like SSE registers, cache, ... Which could be the reason why the processing thread is interrupted.</p>
+
+<p>3- Last year (around may) we were running more or less the same code under fuerte, on the same machine and same data, and it was taking 40ms online and there was no difference between online and offline. Now if I run that code in fuerte again, it takes 60ms online.</p>
+
+<p>This could be due to something that has changed in ROS, on fuerte between May 2013 and now, probably backported from hydro... These are the ROS packages and libraries that are involved in our code: eigen, libpcl, message<em>filters, message</em>runtime, nodelet, pcl<em>ros, rosconsole, roscpp, tf, tf</em>conversions.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/597">brice rebsamen</a> on 2014-03-03 16:06:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It doesn&#39;t look like the version of ros_comm (roscpp, rosconsole, message_filters) that was released into Fuerte has changed since May of last year ( <a href="https://github.com/ros/ros_comm/commits/fuerte-devel">https://github.com/ros/ros_comm/commits/fuerte-devel</a> ), and even then, the most recent changes were mostly limited to python libraries and some small bits of the C++ service implementation.</p>
+
+<p>I don&#39;t think the message generation has changed in a very long time.</p>
+
+<p>That leaves TF, PCL and Eigen as the primary culprits here.</p>
+
+<ul>
+<li>The version of TF in Hydro was reimplemented on top of TF2. It&#39;s a pretty major rewrite, so it&#39;s possible that TF is slower in Hydro. I don&#39;t believe this port made it back to Groovy or Fuerte, so I&#39;m not sure it&#39;s causing your slowdown there. In theory, TF2 should be faster than TF.</li>
+<li>It looks like PCL was last released into Fuerte <a href="https://github.com/ros/rosdistro/commit/a277a5adccfb13431ed77536c48eb0dd7e34ff8e">6 months ago</a>, and from digging through the release repository history, it looks like <a href="https://github.com/ros-gbp/pcl-fuerte-release/commit/f29174a8547be89d67d1ddea894e46dc5b1a5619">SSE was disabled</a> in PCL around May 28th.</li>
+<li>If you&#39;ve changed Ubuntu versions, it&#39;s possible that you&#39;re using a newer version of Eigen that is somehow slower. Given that Eigen is a stable, established library, this seems unlikely.</li>
+</ul>
+
+<p>Given those options, the most obvious change here is the patch disabling SSE in PCL.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2014-03-03 20:09:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>One issue that would be pretty easy to check/modify is reducing the tf poll time for waitForTransform calls that you probably are using (explicitely or implicitely). By default, the poll time is 0.01s/10ms (see <a href="http://wiki.ros.org/tf/Overview/Using%20Published%20Transforms#waitForTransform">here</a>). This means that tf only checks if a transform is available every 10ms. In some usage scenarios, this can have significant impact on the amount of data that can be processed in the thread where the waitForTransform is used.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/57"></a> on 2014-03-03 21:28:12 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

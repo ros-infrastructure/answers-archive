@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS Nodelet receive and processing in parallel - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/259725">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS Nodelet receive and processing in parallel</h2>
+      <div class="question">
+        <p>Hallo community,</p>
+
+<p>what is the best way to provide a heavy/slow process always 
+the newest message when the process is ready to start the work 
+again with new data?</p>
+
+<p>My scenario is the following:
+- long term image processing that is slower as the depth and rgb image publishing rate</p>
+
+<p>So how is it now possible to provide the newest combined message ( depth and rgb image)
+to the processing at any time the image processing has finished the old job.  </p>
+
+<p>Is it necessary to write code that handle the receiving part in a own thread and share the 
+newest combined message with the processing thread or is there already a ROS implementation
+which handles such problems?</p>
+
+<p><strong>Additional Question</strong></p>
+
+<p>Will it be possible to publish in the processing thread or 
+better how is it possible to publish form the processing thread?</p>
+
+<p>Everything is implemented in a nodelet class like as nlamprian
+suggests.</p>
+
+<p>For example:</p>
+
+<pre><code>std::shared_ptr&lt;image_transport::ImageTransport&gt; it_;
+image_transport::Publisher resultPub_;
+
+it_.reset(new image_transport::ImageTransport(nh));
+resultPub_ = it_-&gt;advertise(&quot;result_image&quot;, 1);
+
+std::thread processingThread;
+processingThread = std::thread(std::bind(&amp;processingLoop, this));
+
+void processingLoop() {
+  while (ros::ok()) {
+    std::unique_lock&lt;std::mutex&gt; lock(img_mutex);
+    if (has_new_data.load()) {
+      // do heavy processing
+      resultPub_,publish(result_msg);
+    }
+    has_new_data.store(false);
+    processing_cv.wait(lock, [&amp;] { return has_new_data.load(); });
+  }
+}
+</code></pre>
+
+<p>Best,</p>
+
+<p>Manuel</p>
+
+        <div class="owner"><p>Asked by <a href="/users/22211">Mondi</a> on 2017-04-20 06:06:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>For making sure the newest message is used, you should set your topic history queues to 1. That way, every time a new message is received it will overwrite the previous one, so only the most recent is available at all times.</p>
+
+<p>For synchronising the depth and rgb images, you can use the <a href="http://wiki.ros.org/message_filters#Time_Synchronizer">Time Synchronizer message filter</a>. I&#39;m not sure how this filter handles history, so you might need to experiment to make sure it only passes the most recent of both the image and depth topics.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20134"></a> on 2017-04-20 20:26:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>First of all, you can&#39;t do the processing in the callback, because it will (potentially) block the other nodelets.</p>
+
+<p>Here is what you can do:</p>
+
+<ol>
+<li>Create a <a href="http://wiki.ros.org/message_filters#ApproximateTime_Policy">Synchronizer</a> of queue size 1.</li>
+<li>Create your own thread to do the processing. It will contain a loop and will be waiting to be notified in order to start the processing.</li>
+<li>In the callback, you should check if data are being currently processed. If yes, discrard the received data. Otherwise, store the data and notify the processing loop.</li>
+</ol>
+
+<p>Some libraries of interest are <a href="http://en.cppreference.com/w/cpp/thread">thread, mutex, atomic, and condition variable</a>. Here is how this could translate to code:</p>
+
+<pre><code>void processingLoop() {
+  while (ros::ok()) {
+    std::unique_lock&lt;std::mutex&gt; lock(img_mutex);
+    if (has_new_data.load()) {
+      // do heavy processing
+    }
+    has_new_data.store(false);
+    processing_cv.wait(lock, [&amp;] { return has_new_data.load(); });
+  }
+}
+
+void callback(const RgbConstPtr&amp; rgb, const DepthConstPtr&amp; depth) {
+  std::unique_lock&lt;std::mutex&gt; lock(img_mutex, std::try_to_lock);
+  if (!lock.owns_lock()) return;
+
+  img_rgb = rgb;
+  img_depth = depth;
+  has_new_data.store(true);
+
+  lock.unlock();
+  processing_cv.notify_one();
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20033"></a> on 2017-04-21 01:48:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you, that is exactly what I&#39;ve been looking for.</p>
+
+<p>Perhaps you can also answer my addition.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22211">Mondi</a> on 2017-04-22 08:59:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Given that everything is inside the nodelet class (and so the publisher is a member variable), there isn&#39;t much to consider. Just call <code>publish</code> from within your <em>processing</em> method.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20033">nlamprian</a> on 2017-04-22 15:45:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

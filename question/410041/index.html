@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 LaunchService() run() as non-blocking - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/410041">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 LaunchService() run() as non-blocking</h2>
+      <div class="question">
+        <p>I am writing a service to launch a launch file using LaunchService(). When ls.run() is executed, It blocks all code so the service will never response. Is there any way to execute ls.run() without blocking the following code. </p>
+
+<pre><code>from amr_interface.srv import StartStop
+import asyncio
+import osrf_pycommon
+
+import rclpy
+from rclpy.node import Node
+
+import os
+import sys
+import time
+from launch import LaunchDescription
+from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
+from ament_index_python.packages import get_package_share_directory
+import launch_ros
+from launch import LaunchDescription
+from launch import LaunchService
+
+
+
+class StartStopService(Node):
+
+def __init__(self):
+    super().__init__(&#39;minimal_service&#39;)
+    self.loop = osrf_pycommon.process_utils.get_loop()
+    self.srv = self.create_service(StartStop, &#39;start_stop_launch&#39;, self.start_stop_callback)
+
+    self.ls = LaunchService()
+    config_witmotion = &#39;/home/pi/amr_config/wt61c.yml&#39;
+    ekf_config_path = &#39;/home/pi/amr_config/ekf.yaml&#39;
+
+    serial_port = LaunchConfiguration(&#39;serial_port&#39;, default=&#39;/dev/ttyUSB0&#39;)
+    serial_baudrate = LaunchConfiguration(&#39;serial_baudrate&#39;, default=&#39;256000&#39;) #for A3 is 256000
+    frame_id = LaunchConfiguration(&#39;frame_id&#39;, default=&#39;laser&#39;)
+    inverted = LaunchConfiguration(&#39;inverted&#39;, default=&#39;false&#39;)
+    angle_compensate = LaunchConfiguration(&#39;angle_compensate&#39;, default=&#39;true&#39;)
+    scan_mode = LaunchConfiguration(&#39;scan_mode&#39;, default=&#39;Sensitivity&#39;)
+
+    use_sim_time = LaunchConfiguration(&#39;use_sim_time&#39;, default=&#39;false&#39;)
+    urdf = &#39;/home/pi/amr_config/eru.urdf&#39;
+
+    # Major refactor of the robot_state_publisher
+    # Reference page: https://github.com/ros2/demos/pull/426
+    with open(urdf, &#39;r&#39;) as infp:
+        robot_desc = infp.read()
+
+    rsp_params = {&#39;robot_description&#39;: robot_desc}
+
+    self.ld = LaunchDescription([
+        launch_ros.actions.Node(
+            package=&#39;rplidar_ros2&#39;,
+            executable=&#39;rplidar_scan_publisher&#39;,
+            name=&#39;rplidar_scan_publisher&#39;,
+            parameters=[{&#39;serial_port&#39;: serial_port, 
+                        &#39;serial_baudrate&#39;: serial_baudrate, 
+                        &#39;frame_id&#39;: frame_id,
+                        &#39;inverted&#39;: inverted, 
+                        &#39;angle_compensate&#39;: angle_compensate, 
+                        &#39;scan_mode&#39;: scan_mode}],
+            output=&#39;screen&#39;),
+        launch_ros.actions.Node(
+            package=&#39;micro_ros_agent&#39;,
+            executable=&#39;micro_ros_agent&#39;,
+            name=&#39;micro_ros_agent&#39;,
+            arguments=[&quot;serial&quot;, &quot;--dev&quot;, &quot;/dev/ttyACM0&quot;, &quot;-v6&quot;]
+        ),
+        launch_ros.actions. Node(
+            package = &#39;witmotion_ros&#39;,
+            executable = &#39;witmotion_ros_node&#39;,
+            parameters = [config_witmotion]
+        ),
+        launch_ros.actions.Node(
+            package=&#39;robot_localization&#39;,
+            executable=&#39;ekf_node&#39;,
+            name=&#39;ekf_filter_node&#39;,
+            output=&#39;screen&#39;,
+            parameters=[
+                ekf_config_path
+            ],
+            remappings=[(&quot;odometry/filtered&quot;, &quot;odom&quot;)]
+        ),
+        DeclareLaunchArgument(
+            &#39;serial_port&#39;,
+            default_value=serial_port,
+            description=&#39;Specifying usb port to connected lidar&#39;),
+
+        DeclareLaunchArgument(
+            &#39;serial_baudrate&#39;,
+            default_value=serial_baudrate,
+            description=&#39;Specifying usb port baudrate to connected lidar&#39;),
+
+        DeclareLaunchArgument(
+            &#39;frame_id&#39;,
+            default_value=frame_id,
+            description=&#39;Specifying frame_id of lidar&#39;),
+
+        DeclareLaunchArgument(
+            &#39;inverted&#39;,
+            default_value=inverted,
+            description=&#39;Specifying whether or not to invert scan data&#39;),
+
+        DeclareLaunchArgument(
+            &#39;angle_compensate&#39;,
+            default_value=angle_compensate,
+            description=&#39;Specifying whether or not to enable angle_compensate of scan data&#39;),
+
+        DeclareLaunchArgument(
+            &#39;scan_mode&#39;,
+            default_value=scan_mode,
+            description=&#39;Specifying scan mode of lidar&#39;),
+
+        DeclareLaunchArgument(
+            &#39;use_sim_time&#39;,
+            default_value=&#39;false&#39;,
+            description=&#39;Use simulation (Gazebo) clock if true&#39;),
+        launch_ros.actions.Node(
+            package=&#39;robot_state_publisher&#39;,
+            executable=&#39;robot_state_publisher&#39;,
+            output=&#39;screen&#39;,
+            parameters=[rsp_params, {&#39;use_sim_time&#39;: use_sim_time}])
+    ])
+    self.ls.include_launch_description(self.ld)
+
+
+
+
+def start_stop_callback(self, request, response):
+    response.result = True
+    self.get_logger().info(&#39;Incoming request\nin: %d&#39; % (request.startstop))
+    if request.startstop == True:
+        self.get_logger().info(&#39;Incoming request to Start&#39;)
+        self.ls.run()
+    else:
+        self.get_logger().info(&#39;Incoming request to Stop&#39;)
+        self.ls.shutdown()
+
+    return response
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    minimal_service = StartStopService()
+
+    rclpy.spin(minimal_service)
+
+    rclpy.shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/125591">Eru</a> on 2022-11-30 08:39:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

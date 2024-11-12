@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Arduino ROS communication using dc motor with encoder - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/275080">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Arduino ROS communication using dc motor with encoder</h2>
+      <div class="question">
+        <p>Hi,
+I obtained 3d pointcloud data from 2d laser scanner using servo motor. But now, I want to use dc motor with encoder.Now the dc motor is turning 360 degrees continuously, And I get 360 degrees angle data from encoder The angle data coming from the encoder and the angle data coming from the ROS do not match.So a ridiculous image is formed.How do I pair this two angles? Please say an easy method to solve this problem. Thanks in advance.</p>
+
+<h2>Here the code . I communicated this code with ROS.But when the motor turns, I get a very poorly spaced image.</h2>
+
+<pre><code>#if (ARDUINO &gt;= 100)
+ #include &lt;Arduino.h&gt;
+#else
+ #include &lt;WProgram.h&gt;
+#endif
+#include &lt;math.h&gt;
+#include &lt;ros.h&gt;
+#include &lt;sensor_msgs/JointState.h&gt;
+
+int enA = 10;
+int in1 = 9;
+int in2 = 8;
+
+long pulse = 0;
+double ang_arduino = 0;
+double angle=0;
+int encoder_a = 2; // A Pin connect to digital pin 2
+int encoder_b = 3; // B Pin connect to digital pin 3
+float encoder_resolution = 8400;
+ros::NodeHandle  nh;
+long new_time = 0;
+long old_time = 0;
+long old_pulse = 0;
+double error = 0;
+double error_der = 0;
+double old_error = 0;
+double sinyal = 0;
+int sinyal_int = 0;
+double velocity[2] = {0,0};
+double velocity_filt[2] = {0,0};
+double v_ref = 24;
+double Kp = 0.4;
+double Kd = 0.0000;
+long dt = 0;
+int sayac = 0;
+
+void servo_cb(const sensor_msgs::JointState&amp; cmd_msg){
+  angle=radiansToDegrees(cmd_msg.position[0]);
+  }
+ros::Subscriber&lt;sensor_msgs::JointState&gt; sub(&quot;joint_states&quot;, &amp;servo_cb);
+
+
+void setup()
+{
+  nh.initNode();
+  nh.subscribe(sub);  
+  // delay(100);                                                 // Wait for everything to be powered up
+  //Serial.begin(57600);    // Communication baudrate
+  // Create interrupt : Function name --&gt; encoder_interrupt_a the function is called on each changing edge
+  // note that you should connect A pin of encoder to digital pin 2
+  attachInterrupt(1, encoder_kesme_a, CHANGE);
+  attachInterrupt(0, encoder_kesme_b, CHANGE);
+
+
+
+
+pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+
+  old_time = micros();
+
+}
+void loop()
+{
+  ang_arduino = ((pulse / encoder_resolution) * 360.0); // calculate angel according to pulse count
+  ang_arduino = fmod(ang_arduino, 360.0);    // get mode acoording to a cycle  ( i.e 365 --&gt; 5 degree)
+  if (sayac &gt;= 1)
+  {
+    new_time = micros();
+    dt = new_time - old_time;
+    if (pulse &lt; old_pulse) velocity[1] = 1000000 * (8400 + pulse - old_pulse) / dt;
+    else velocity[1] = 1000000 * (pulse - old_pulse) / dt;
+    velocity[1] = velocity[1] * 360 / 8400;
+
+    velocity_filt[1] =  0.9 * velocity_filt[0] + 0.1 * velocity[0];
+
+error = v_ref - velocity_filt[1]; // derece/saniye cinsinden
+error_der = 1000000 * (error - old_error) / dt;
+
+sinyal = Kp * error + Kd * error_der; // voltaj cinsinden
+if (sinyal &lt; -10) sinyal = -10;
+else if (sinyal &gt; 10) sinyal = 10;
+
+if (sinyal &lt; 0)
+{
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, HIGH);
+}
+else
+{
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+}
+sinyal = 25.5 * abs(sinyal);
+analogWrite(enA, sinyal);
+
+    velocity_filt[0] = velocity_filt[1];
+    velocity[0] = velocity[1];
+    old_error = error;
+    old_pulse = pulse;
+    old_time = new_time;
+    //Serial.println(velocity_filt[1]);
+    sayac = 0;
+  }
+  sayac++;
+
+  nh.spinOnce();
+  delay(1);
+}
+
+// Interrupt Function is created
+void encoder_kesme_a()
+{
+  if (digitalRead(encoder_a) == digitalRead(encoder_b))
+  {
+    if ( pulse == 0) pulse = 8400;  // (Counter Clock Wise)
+    else pulse--;                                // (Clock Wise)
+  }
+  else
+  {
+    if (pulse == 8400) pulse = 0;
+    else pulse++;
+  }
+}
+
+void encoder_kesme_b()
+{
+  if (digitalRead(encoder_b) == digitalRead(encoder_a))
+  {
+    if (pulse == 8400) pulse = 0;
+    else pulse++;
+  }
+  else
+  {
+    if (pulse == 0) pulse = 8400;
+    else pulse--;
+  }
+}
+double radiansToDegrees(float position_radians)
+{
+
+  //position_radians = position_radians;
+  return position_radians * 57.2958;
+</code></pre>
+
+<p>}</p>
+
+<p>automate.py code: Angle from TF frame</p>
+
+<pre><code>#!/usr/bin/env python
+import rospy
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Header
+import numpy as np
+import time
+
+def servo_angle_control():
+    pub=rospy.Publisher(&#39;joint_states&#39;,JointState,queue_size=10)
+    rospy.init_node(&#39;joint_state_publisher&#39;)
+    r=rospy.Rate(10)
+    angle_pos=np.arange(0.0,6.28,0.00098)
+    angle=JointState()
+    angle.header=Header()
+    angle.name=[&#39;base_tilt_joint&#39;]
+    angle.velocity=[]
+    angle.effort=[]
+    while not rospy.is_shutdown():
+        for i in angle_pos:
+            angle.header.stamp=rospy.Time.now()
+            angle.position=[i]
+            pub.publish(angle)
+            time.sleep(0.01)
+        r.sleep()
+
+if __name__==&#39;__main__&#39;:
+    try:
+        servo_angle_control()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/30895">Mekateng</a> on 2017-11-06 06:03:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you share the part of the code that reads the encoder? Are you using any example code? Without that it would be a bit difficult to debug this issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10481">Gary Servin</a> on 2017-11-07 10:13:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>First of all thank you for your answer Mr. Servin. Can I send the code to your mail address if it&#39;s okay for you? :/</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30895">Mekateng</a> on 2017-11-07 12:46:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You can add it to your original post, there is an icon (with 1 and 0s) to format the code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10481">Gary Servin</a> on 2017-11-07 13:25:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I added Mr. Servin. Please look at it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30895">Mekateng</a> on 2017-11-07 14:18:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Mekateng: I moved the information from your answer to your question. In the future, please only update your question, don&#39;t use answers to give more information.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26450">jayess</a> on 2017-11-14 04:46:57 UTC</p></div>
+</div>
+<div class="comment">
+              <p>do you have any idea???</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30895">Mekateng</a> on 2017-11-20 04:59:39 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

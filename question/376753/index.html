@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>DWA local planner as a stand alone C++ library - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/376753">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>DWA local planner as a stand alone C++ library</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am trying to write a C++ library that uses the DWA local planner C++ API. Basically, the there would be a function in the library that accepts the global waypoints, robot current position and velocity, local occupancy grid and a set of costmap and planner configuration; the function outputs the command velocity. This library will abstract away the ROS communication part of the DWA ROS C++ API. Later, I will make the library and use it as an external function to work in an python program.</p>
+
+<p>Currently, I am writing a C++ node to test the DWA function. I follows the DWA ROS C++ API implementation and made some modifications. All the data are correctly passed into the DWA C++ API, but it is unable to plan a path, returning negative path cost. I have also tried planning using an empty occupancy grid, but the result is same, unable to find a apth. What could be some possible problem? Any help is appreciated! I have attached the code and the terminal output. Please let me know if I can provide more informations.</p>
+
+<p>The terminal output has:</p>
+
+<pre><code>dwa_local_planner Received a transformed plan with 128 points.
+vel
+[ERROR] [1619110115.088004617, 16.700000000]: Best: 0.00, 0.00, 0.00, -7.00
+Evaluated 315 trajectories, found 0 validcmd
+0  0 (cmd_vel)
+received plan of length 208
+</code></pre>
+
+<p>The code:</p>
+
+<pre><code>#include &lt;sensor_msgs/Image.h&gt;
+#include &lt;sensor_msgs/Imu.h&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+#include &lt;sensor_msgs/NavSatFix.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &quot;ros/ros.h&quot;
+
+#include &lt;iostream&gt;
+#include &lt;cstring&gt;
+#include &lt;math.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;sstream&gt;
+
+#include &lt;dwa_local_planner/dwa_planner.h&gt;
+#include &lt;base_local_planner/goal_functions.h&gt;
+#include &lt;nav_core/base_local_planner.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/buffer.h&gt;
+#include &lt;costmap_2d/static_layer.h&gt;
+#include &lt;cmath&gt;
+
+#include &lt;boost/shared_ptr.hpp&gt;
+#include &lt;boost/thread.hpp&gt;
+
+#include &lt;tf2_ros/buffer.h&gt;
+
+#include &lt;dynamic_reconfigure/server.h&gt;
+#include &lt;dwa_local_planner/DWAPlannerConfig.h&gt;
+
+#include &lt;angles/angles.h&gt;
+
+#include &lt;vector&gt;
+
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;nav_msgs/Path.h&gt;
+#include &lt;nav_msgs/OccupancyGrid.h&gt;
+
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;geometry_msgs/Point.h&gt;
+
+#include &lt;tf2/convert.h&gt;
+#include &lt;tf2/utils.h&gt;
+#include &lt;tf2_geometry_msgs/tf2_geometry_msgs.h&gt;
+
+#include &lt;costmap_2d/costmap_2d_ros.h&gt;
+#include &lt;costmap_2d/footprint.h&gt;
+#include &lt;nav_core/base_local_planner.h&gt;
+#include &lt;base_local_planner/latched_stop_rotate_controller.h&gt;
+
+#include &lt;dwa_local_planner/dwa_planner.h&gt;
+
+using namespace dwa_local_planner;
+
+geometry_msgs::Twist cmd_vel;
+geometry_msgs::PoseStamped robot_vel;
+tf2_ros::Buffer tf_;
+nav_msgs::OccupancyGrid::ConstPtr og;
+ros::Publisher costmap_pub;
+std::string name = &quot;dwa_planner&quot;;
+std::vector&lt;geometry_msgs::PoseStamped&gt; global_plan;
+std::string global_frame_ = &quot;map&quot;;
+std::string robot_base_frame_ = &quot;base_link&quot;;
+bool receivedPlan = false;
+
+/*
+given costmap, global reference path, current cmd_vel, find best cmd_vel and publish
+*/
+
+/*
+local costmap callback
+*/
+void localCostmapCallback(const nav_msgs::OccupancyGrid::ConstPtr&amp; msg) {
+    std::cout&lt;&lt; &quot;costmap callback!&quot; &lt;&lt; std::endl;
+    if (!receivedPlan) return;
+    og = msg;
+
+    base_local_planner::LocalPlannerUtil planner_util_;
+    costmap_2d::Costmap2D* costmap = new costmap_2d::Costmap2D(msg);
+
+    planner_util_.initialize(&amp;tf_, costmap, &quot;map&quot;);
+    DWAPlanner* dp_ = new DWAPlanner(name, &amp;planner_util_);
+
+    costmap_2d::Costmap2D* cm = planner_util_.getCostmap();
+
+    // set dwa planner config
+    DWAPlannerConfig config;
+    config.sim_time = 1.7;
+    config.sim_granularity = 0.025;
+    config.angular_sim_granularity = 0.1;
+    config.path_distance_bias = 24;
+    config.goal_distance_bias = 32;
+    config.occdist_scale = 0.01;
+    config.twirling_scale = 0.0;
+    config.stop_time_buffer = 0.2;
+    config.oscillation_reset_dist = 0.05;
+    config.oscillation_reset_angle = 0.2;
+    config.forward_point_distance = 0.325;
+    config.scaling_speed = 0.25;
+    config.max_scaling_factor = 0.2;
+    config.vx_samples = 3;
+    config.vy_samples = 10;
+    config.vth_samples = 20;
+    config.use_dwa = true;
+    config.restore_defaults = false;
+
+    printf(&quot;config\n&quot;);
+    // std::cout &lt;&lt; config.vx_samples &lt;&lt; &quot; &quot; &lt;&lt; config.vy_samples &lt;&lt; &quot; &quot; &lt;&lt; config.vth_samples &lt;&lt; std::endl;
+    // std::cout &lt;&lt; config.sim_time &lt;&lt; &quot; &quot; &lt;&lt; config.sim_granularity &lt;&lt; &quot; &quot; &lt;&lt; config.path_distance_bias &lt;&lt; std::endl;
+
+    // update generic local planner params
+    base_local_planner::LocalPlannerLimits limits;
+    limits.max_vel_trans = 0.65;
+    limits.min_vel_trans = 0.1;
+    limits.max_vel_x = 0.65;
+    limits.min_vel_x = 0.0;
+    limits.max_vel_y = 0.1;
+    limits.min_vel_y = -0.1;
+    limits.max_vel_theta = 1.0;
+    limits.min_vel_theta = 0.4;
+    limits.acc_lim_x = 2.5;
+    limits.acc_lim_y = 2.5;
+    limits.acc_lim_theta = 3.2;
+    limits.acc_lim_trans = 2.5;
+    limits.xy_goal_tolerance = 0.2;
+    limits.yaw_goal_tolerance = 0.17;
+    limits.prune_plan = false;
+    limits.trans_stopped_vel = 0.01;
+    limits.theta_stopped_vel = 0.01;
+    planner_util_.reconfigureCB(limits, config.restore_defaults);
+
+    std::cout &lt;&lt; limits.max_vel_trans &lt;&lt; &quot; &quot; &lt;&lt; limits.min_vel_trans &lt;&lt; &quot; &quot; &lt;&lt; limits.max_vel_x &lt;&lt; std::endl;
+
+    // update dwa specific configuration
+    dp_-&gt;reconfigure(config);
+
+    dp_-&gt;setPlan(global_plan);
+
+    // get current pose
+    bool gotPose = false;
+    geometry_msgs::PoseStamped current_pose_;
+    geometry_msgs::PoseStamped robot_pose;
+    robot_pose.header.frame_id = robot_base_frame_;
+    robot_pose.header.stamp = ros::Time();
+    ros::Time current_time = ros::Time::now();
+
+    try {
+        if (tf_.canTransform(global_frame_, robot_base_frame_, current_time))
+        {
+            geometry_msgs::TransformStamped transform = tf_.lookupTransform(global_frame_, robot_base_frame_, current_time);
+            tf2::doTransform(robot_pose, current_pose_, transform);
+        }
+        // use the latest otherwise
+        else
+        {
+            tf_.transform(robot_pose, current_pose_, global_frame_);
+        }   
+        gotPose = true;
+        std::cout &lt;&lt; current_pose_.pose.position.x &lt;&lt; &quot;  &quot; &lt;&lt; current_pose_.pose.position.y &lt;&lt; &quot; &quot; &lt;&lt; current_pose_.pose.position.z &lt;&lt; std::endl;
+    }
+    catch (tf2::LookupException&amp; ex)
+    {
+        ROS_ERROR_THROTTLE(1.0, &quot;No Transform available Error looking up robot pose: %s\n&quot;, ex.what());
+    }
+    catch (tf2::ConnectivityException&amp; ex)
+    {
+        ROS_ERROR_THROTTLE(1.0, &quot;Connectivity Error looking up robot pose: %s\n&quot;, ex.what());
+    }
+    catch (tf2::ExtrapolationException&amp; ex)
+    {
+        ROS_ERROR_THROTTLE(1.0, &quot;Extrapolation Error looking up robot pose: %s\n&quot;, ex.what());
+    }
+
+    //transformed plan
+    bool gotPlan = false;
+    std::vector&lt;geometry_msgs::PoseStamped&gt; transformed_plan;
+    if ( ! planner_util_.getLocalPlan(current_pose_, transformed_plan)) {
+      ROS_ERROR(&quot;Could not get local plan&quot;);
+    } else {
+        gotPlan = true;
+    }
+
+    if(transformed_plan.empty()) {
+      ROS_WARN_NAMED(&quot;dwa_local_planner&quot;, &quot;Received an empty transformed plan.&quot;);
+    }
+
+    printf(&quot;dwa_local_planner Received a transformed plan with %zu points.\n&quot;, transformed_plan.size());
+
+
+    // robot foot print
+    std::string foorprint = &quot;[[-0.1,-0.1], [0.1,-0.1], [0.1,0.1], [-0.1,0.1]]&quot;;
+    double padding = 0.01;
+    std::vector&lt;geometry_msgs::Point&gt; padded_footprint_;
+    costmap_2d::makeFootprintFromString(foorprint, padded_footprint_);
+    costmap_2d::padFootprint(padded_footprint_, padding);
+
+    if (gotPose &amp;&amp; gotPlan) {
+        dp_-&gt;updatePlanAndLocalCosts(current_pose_, transformed_plan, padded_footprint_);
+
+        // compute velocity command
+        geometry_msgs::PoseStamped drive_cmds;
+        drive_cmds.header.frame_id = &quot;base_link&quot;;
+
+        printf(&quot;vel\n&quot;);
+        std::cout &lt;&lt; robot_vel.pose.position.x &lt;&lt; &quot;  &quot; &lt;&lt; robot_vel.pose.position.y &lt;&lt; &quot; &quot; &lt;&lt; robot_vel.pose.position.z &lt;&lt; std::endl;
+
+        // call with updated footprint
+        base_local_planner::Trajectory path = dp_-&gt;findBestPath(current_pose_, robot_vel, drive_cmds);
+        ROS_ERROR(&quot;Best: %.2f, %.2f, %.2f, %.2f&quot;, path.xv_, path.yv_, path.thetav_, path.cost_);
+
+        //pass along drive commands
+
+        cmd_vel.linear.x = drive_cmds.pose.position.x;
+        cmd_vel.linear.y = drive_cmds.pose.position.y;
+        cmd_vel.angular.z = tf2::getYaw(drive_cmds.pose.orientation);
+
+        printf(&quot;cmd\n&quot;);
+        std::cout &lt;&lt; drive_cmds.pose.position.x &lt;&lt; &quot;  &quot; &lt;&lt; drive_cmds.pose.position.y &lt;&lt; std::endl;
+        //std::cout &lt;&lt; cmd_vel.linear.x &lt;&lt; &quot;  &quot; &lt;&lt; cmd_vel.linear.y &lt;&lt; &quot; &quot; &lt;&lt; cmd_vel.angular.z &lt;&lt; std::endl;
+    }
+
+    delete costmap;
+    delete dp_;
+}
+
+/*
+global plan callback
+*/
+void globalPlanCallback(const nav_msgs::PathConstPtr &amp;msg) {
+    global_plan = msg-&gt;poses;
+    std::cout &lt;&lt; &quot;received plan of length &quot; &lt;&lt; global_plan.size() &lt;&lt; std::endl;
+    receivedPlan = true;
+}
+
+/*
+Odom callback
+*/
+void odomCallback(const nav_msgs::Odometry::ConstPtr&amp; msg) {
+    robot_vel.pose.position.x = msg-&gt;twist.twist.linear.x;
+    robot_vel.pose.position.y = msg-&gt;twist.twist.linear.y;
+    robot_vel.pose.position.z = 0;
+    robot_vel.header.frame_id = msg-&gt;child_frame_id;
+    tf2::Quaternion q;
+    q.setRPY(0, 0, msg-&gt;twist.twist.angular.z);
+    tf2::convert(q, robot_vel.pose.orientation);
+    robot_vel.header.stamp = ros::Time();
+    //printf(&quot;vel\n&quot;);
+    //std::cout &lt;&lt; robot_vel.pose.position.x &lt;&lt; &quot;  &quot; &lt;&lt; robot_vel.pose.position.y &lt;&lt; &quot; &quot; &lt;&lt; robot_vel.pose.position.z &lt;&lt; std::endl;
+}
+
+int main(int argc, char **argv) {
+    ros::init(argc, argv, &quot;dwa_test&quot;);
+    ros::NodeHandle n;
+    ros::Publisher dwa_plan_pub = n.advertise&lt;geometry_msgs::Twist&gt;(&quot;/cmd_vel&quot;, 50); //
+    costmap_pub = n.advertise&lt;nav_msgs::OccupancyGrid&gt;(&quot;/local_costmap&quot;, 50);
+    ros::Subscriber costmapSub = n.subscribe(&quot;/move_base/local_costmap/costmap&quot;, 100, localCostmapCallback);
+    ros::Subscriber globalPlanSub = n.subscribe(&quot;/move_base/GlobalPlanner/plan&quot;, 100, globalPlanCallback);
+    ros::Subscriber odomSub = n.subscribe(&quot;/odom&quot;, 100, odomCallback);
+
+    ros::Rate loop_rate(60);
+
+    cmd_vel.linear.x = 0.0;
+    cmd_vel.linear.y = 0;
+    cmd_vel.angular.z = 0;
+
+    // tf listener
+    tf2_ros::TransformListener tfListener(tf_);
+
+    while (ros::ok()) {
+        //printf(&quot;publishing\n&quot;);
+        dwa_plan_pub.publish(cmd_vel);
+
+        ros::spinOnce(); 
+        loop_rate.sleep();
+    }
+    return 0;
+
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/62922">lancezzz</a> on 2021-04-22 11:57:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to correctly build an OctoMap using a series of registered point clouds - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/252632">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to correctly build an OctoMap using a series of registered point clouds</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/78504/how-to-correctly-build-an-octomap-using-a-series-of-registered-point-clouds">https://robotics.stackexchange.com/questions/78504/how-to-correctly-build-an-octomap-using-a-series-of-registered-point-clouds</a>.</p>
+        <p>Hi Guys,
+I hope you can help me with this one, i&#39;m quite new with ROS/PCL/OctoMap. It just look like a long question, but it is really simple question... I just give some extra details.
+So I have a RGBD recording of a camera mounted on a robot, traversing through a corridor inside a building, and I want to build from the RGBD point-clouds I record an OctoMap of the traversed path.
+In order to do so, I have built with PCL a point cloud registration pipeline. Now, I want to use this pipeline in order to build an OctoMap. Here is what I tried to do:</p>
+
+<pre><code>Iterate through the point-cloud array of the recorded point-clouds, and for each adjacent point clouds, do the following:
+
+ 1. Find the registration transformation matrix (using my pipeline) between the two adjacent point clouds, where point cloud X is used as the source point cloud for registration, and point cloud X-1 is used as the target point cloud for registration.
+ 2. Transform the source point cloud using the transformation matrix from the last step.
+ 3. Add the transformed source point cloud to octomap.
+</code></pre>
+
+<p>However, it doesn&#39;t work, I suspect that I am doing something wrong in step 3. here an example source code of what I am trying to do:</p>
+
+<pre><code>octomap::OcTree octree_map(0.05);
+for(int i = start; i &lt; end; i += 1)
+{
+    // PART 1 - Process the source point cloud (noise removal, down sampling, etc...)
+    point_cloud_processing_pipline_source = inference_factory.createPointCloudProcessingPipeline(inference_configuration_file, point_cloud_processing_pipeline_configuration_file);
+    point_cloud_processing_pipline_source-&gt;setInputCloud(pointCloud2ConstPtrVector[i]);
+
+    // PART 2 - Process the target point cloud (noise removal, down sampling, etc...)
+    point_cloud_processing_pipline_target = inference_factory.createPointCloudProcessingPipeline(inference_configuration_file, point_cloud_processing_pipeline_configuration_file);
+    point_cloud_processing_pipline_target-&gt;setInputCloud(pointCloud2ConstPtrVector[i - 1]);
+
+    // PART 3 - Create point cloud registration pipeline
+    auto point_cloud_registration_pipeline = inference_factory.createPointCloudRegistrationPipeline(inference_configuration_file, point_cloud_registration_pipeline_configuration_file);
+
+    // PART 4 - Set the source and target point clouds of the registration pipeline
+    point_cloud_registration_pipeline-&gt;setSourcePointCloudProcessingPipeline(point_cloud_processing_pipline_source);
+    point_cloud_registration_pipeline-&gt;setTargetPointCloudProcessingPipeline(point_cloud_processing_pipline_target);
+
+    // PART 5 - Find the trasformation matrix that transforms source into target (matrix type is Eigen::Matrix4f)
+    auto transformation_matrix = point_cloud_registration_pipeline-&gt;estimateTransformation();
+
+    // PART 6 - Transform the source point cloud with the registration&#39;s transformation matrix
+    auto point_cloud_2 = boost::make_shared&lt;sensor_msgs::PointCloud2&gt;();
+    auto source_point_cloud_transformed = boost::make_shared&lt;pcl::PointCloud&lt;PointType&gt;&gt;();
+    pcl::transformPointCloud (*point_cloud_processing_pipline_source-&gt;getPoints(), *source_point_cloud_transformed, transformation_matrix);
+    pcl::toROSMsg(*source_point_cloud_transformed, *point_cloud_2); 
+
+    // PART 7 - Add the transformed source point cloud to octomap
+    octomap::point3d sensor_origin = octomap::point3d(0, 0, 0);
+    double maxrange = 30;
+    bool lazy_eval = false;
+    bool discretize = false;
+    octomap::Pointcloud octomap_scan;
+    octomap::pointCloud2ToOctomap(*point_cloud_2, octomap_scan);
+    octree_map.insertPointCloud(octomap_scan, sensor_origin, maxrange, lazy_eval, discretize);
+    octree_map.write(&quot;test.ot&quot;);
+}
+</code></pre>
+
+<p>There is no need to understand the full code, let&#39;s just assume that the registration matrix <code>transformation_matrix</code> that I get from my registration pipeline is correct, and let&#39;s concentrate only on <code>PART 7</code> in the code. Am I adding the transformed source point cloud correctly to octomap? Am I passing all the other parameters correctly? For some reason It looks like that the octomap I get (when i visualize it with octovis), has all the point clouds I added placed at the same point (it looks like they are all placed one on the other). I guess it is because I set <code>sensor_origin</code> to <code>(0,0,0)</code>... but I don&#39;t understand how to calculate <code>sensor_origin</code> correctly.</p>
+
+<p>I will be grateful for any help.</p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29135">xenomarz</a> on 2017-01-22 08:29:38 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi, might be a bit too late for a reply but if that&#39;s the case I&#39;ll leave this comment for future reference.
+I&#39;ve been working a bit with this combo (PCL+ROS+Octomap) and it really isn&#39;t intuitive some of the functions.</p>
+
+<p>Your problem seems to originate in that you transform the point clouds by the transform between two sequential point clouds (e.g T: PC[k]-&gt;PC[k+1]). If you are going to add them in the way you uses now you&#39;ll have to calculate the absolute transform from the first point cloud to the current (e.g recursively T[k+1] = T_(k+1|k) * T[k], where T_(k+1|k) is the transform you currently calculate.</p>
+
+<p>Alternative approach:
+You can also skip the transformation step in PCL and just calculate the absolute transform, this can be used in the following function call.</p>
+
+<pre><code>void octomap::OccupancyOcTreeBase&lt; NODE &gt;::insertPointCloud(const Pointcloud &amp; scan,
+        const point3d &amp; sensor_origin, const pose6d &amp; frame_origin,
+        double maxrange, bool lazy_eval, bool discretize) 
+</code></pre>
+
+<p>Note that the <em>sensor origin</em> actually is set to (0,0,0) in most applications, unsure why though..</p>
+
+<p>One more note is that the <em>maxrange</em> sets how far from the <em>sensor origin</em> the nodes can be added (e.g if you use this in a SLAM system, the biggest map you can get will be a sphere with 30m radius.</p>
+
+<p>Hope the explanation makes sense, if anyone has a clearer grasp of the purpose of <em>sensor origin</em> and <em>maxrange</em> please add a comment.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29754">LostInTheWoods</a> on 2017-03-23 06:48:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi. I am also facing the same problem. I am using the function below, but it does not work</p>
+
+<pre><code>void octomap::OccupancyOcTreeBase&lt; NODE &gt;::insertPointCloud (   const Pointcloud &amp;  scan,
+const octomap::point3d &amp;    sensor_origin,
+double  maxrange = -1.,
+bool    lazy_eval = false,
+bool    discretize = false 
+)
+</code></pre>
+
+<p>Can you explain a little bit about the difference of this function and your function? Specifially I am not very sure what sensor_origin and frame_origin stands for</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50329">zhefan</a> on 2020-01-18 12:15:27 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

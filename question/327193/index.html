@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How have a static map to understand its GPS coordinates? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/327193">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How have a static map to understand its GPS coordinates?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/92242/how-have-a-static-map-to-understand-its-gps-coordinates">https://robotics.stackexchange.com/questions/92242/how-have-a-static-map-to-understand-its-gps-coordinates</a>.</p>
+        <p>I am using rviz, gazebo, and a Clearpath Husky with GPS, IMU, encoders, and LIDAR to simulate autonomous navigation in an outdoor environment. </p>
+
+<p>Using robot localization I have an ekf<em>odom and ekf</em>map node combined with a navsat_transform working like a charm to localize me in the GPS world. These setup outputs the transforms from map-&gt;odom-&gt;baselink nicely.</p>
+
+<p>The problem I have been running into over the past couple days is how do I properly specify a static map/map_server so that it overlays my gazebo 3D world and so that each time a spawn the robot it is properly localized within the static map in rviz. This is not well documented in and tutorial and has been quite frustrating. </p>
+
+<p>I think it has something to do with the datum, or a static transform for the map from the UTM frame but I cannot be sure, and messing around with the launch files for a week has not gotten me any closer to the answer. If you need to see any launch files let me know and I&#39;ll update the post ASAP.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40162">JackB</a> on 2019-06-27 14:54:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Below is the launch file, which I call hybrid_localization because it allows you to have pose in two different map referenced frames fused into a single ekf. I know that is bad practice to have to absolute position&#39;s fused together because it causes jitter.</p>
+
+<p>This however is predicated on the fact that where you have GPS you will not be able to use AMCL and where you have AMCL you will not have GPS. In my experience on a university campus this holds true, and I have found this setup very useful. </p>
+
+<p>I would like to pretend that the launch and config files &quot;explain themselves&quot;, but I understand they probably do not, and therefore will be happy to field questions, or provide more information to anyone who is interested.</p>
+
+<p>hybrid_localization.launch
+    &lt;?xml version=&quot;1.0&quot;?&gt;</p>
+
+<pre><code>&lt;launch&gt;
+   &lt;arg name=&quot;amcl_map_frame&quot; default=&quot;map_amcl&quot;/&gt;
+       &lt;arg name=&quot;map_file&quot; default=&quot;/home/administrator/philbart_config/maps/pma_23_09_2020_8_15.yaml&quot;/&gt;
+   &lt;arg name=&quot;ekf_localization_map_file&quot; default=&quot;/home/administrator/philbart_config/ekf_localization_map.yaml&quot;/&gt;
+   &lt;arg name=&quot;navsat_transform_file&quot; default=&quot;/home/administrator/philbart_config/navsat_transform.yaml&quot;/&gt;
+
+   &lt;!---Static Transform world-to-map_amcl --&gt;
+       &lt;node pkg=&quot;tf2_ros&quot; type=&quot;static_transform_publisher&quot; name=&quot;world_to_map_amcl_broadcaster&quot; args=&quot;-13.62 19.02 0 -0.121 0 0 world $(arg amcl_map_frame)&quot; /&gt;
+
+      &lt;!---Static Transform world-to-map --&gt;
+      &lt;node pkg=&quot;tf2_ros&quot; type=&quot;static_transform_publisher&quot; name=&quot;world_to_map_broadcaster&quot; args=&quot;0 0 0 0 0 0 world map&quot; /&gt;
+
+     &lt;!---AMCL Map --&gt;
+     &lt;node name=&quot;map_server_amcl&quot; pkg=&quot;map_server&quot; type=&quot;map_server&quot; args=&quot;$(arg map_file)&quot;&gt;
+           &lt;param name=&quot;frame_id&quot; value=&quot;$(arg amcl_map_frame)&quot; /&gt;
+           &lt;remap from=&quot;map&quot; to=&quot;$(arg amcl_map_frame)&quot;/&gt;
+          &lt;remap from=&quot;map_metadata&quot; to=&quot;$(arg amcl_map_frame)_metadata&quot;/&gt;
+     &lt;/node&gt;
+
+     &lt;!---AMCL Node --&gt;
+    &lt;include file=&quot;$(find husky_navigation)/launch/amcl.launch&quot;&gt;
+          &lt;arg name=&quot;global_frame_id&quot; default=&quot;$(arg amcl_map_frame)&quot;/&gt;
+          &lt;arg name=&quot;map_topic&quot; default=&quot;$(arg amcl_map_frame)&quot;/&gt;
+          &lt;arg name=&quot;tf_broadcast&quot; default=&quot;false&quot;/&gt;
+    &lt;/include&gt;
+
+    &lt;!--- Global EKF --&gt;
+   &lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_localization_map&quot; output=&quot;screen&quot;&gt;
+        &lt;rosparam command=&quot;load&quot; file=&quot;$(arg ekf_localization_map_file)&quot; /&gt;
+       &lt;remap from=&quot;/odometry/filtered&quot; to=&quot;/odometry/filtered_map&quot;/&gt;
+    &lt;/node&gt;
+
+    &lt;!--- Navsat Transform Node--&gt;
+    &lt;node pkg=&quot;robot_localization&quot; type=&quot;navsat_transform_node&quot; name=&quot;navsat_transform&quot; output=&quot;screen&quot;&gt;
+          &lt;rosparam command=&quot;load&quot; file=&quot;$(arg navsat_transform_file)&quot; /&gt;
+          &lt;remap from=&quot;odometry/filtered&quot; to=&quot;odometry/filtered_map&quot;/&gt;
+          &lt;remap from=&quot;gps/fix&quot; to=&quot;/piksi_reference/piksi/navsatfix_best_fix&quot;/&gt;
+    &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Where ekf_localization_map.yaml is:</p>
+
+<pre><code> map_frame: map
+ odom_frame: odom
+ base_link_frame: base_link
+ world_frame: map
+
+ imu0: /gx5/imu/data
+ imu0_config: [false, false, false,
+          true,  true,  false,
+          false, false, false,
+          true,  true,  true,
+          true,  true,  true]
+imu0_nodelay: true
+imu0_differential: false
+imu0_relative: false
+imu0_queue_size: 10
+imu0_remove_gravitational_acceleration: true
+
+odom0: /husky_velocity_controller/odom
+odom0_config: [false, false, false,
+           false, false, false,
+           true,  true,  true,
+           false, false, true,
+           false, false, false]
+odom0_queue_size: 10
+odom0_nodelay: true
+odom0_differential: false
+odom0_relative: false
+
+odom1: odometry/gps
+odom1_config: [true,  true,  false,
+           false, false, false,
+           false, false, false,
+           false, false, false,
+           false, false, false]
+odom1_queue_size: 10
+odom1_nodelay: true
+odom1_differential: false
+odom1_relative: false
+odom1_rejection_threshold: 2.0
+
+pose0: /amcl_pose
+pose0_config: [true, true, false,
+          false, false, true,
+          false, false, false,
+          false, false, false,
+          false, false, false]
+pose0_queue_size: 10
+pose0_nodelay: true
+pose0_differential: false
+pose0_relative: false
+pose0_rejection_threshold: 2.0
+
+use_control: false
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40162">JackB</a> on 2020-10-02 07:57:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

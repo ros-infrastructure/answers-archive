@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Have any flag from Gazebo or ROS can make the simulation deterministic? Or can it only be customized by hand? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/340320">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Have any flag from Gazebo or ROS can make the simulation deterministic? Or can it only be customized by hand?</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>Does anyone know whether exist a flag or parameter in ROS or Gazebo can make the simulation avoid message drop? Meaning, all messages in specify topic would definitely process in the subscriber node.</p>
+
+<p>Platform:</p>
+
+<ul>
+<li><p>Ubuntu 16.04</p></li>
+<li><p>ROS: Kinetic</p></li>
+<li><p>Gazebo: 7</p></li>
+</ul>
+
+<p>Currently, I make an experiment to avoid message drop and try to perform like a &quot;deterministic&quot; manner. The following are some features:</p>
+
+<ol>
+<li>Using the <strong>turtlebot (kobuki)</strong> in simulation.</li>
+<li><p>In Gazebo .world file, <strong>max<em>step</em>size=0.001</strong>; 
+                                   <strong>real<em>time</em>factor=1</strong>;
+                                   <strong>real<em>time</em>update_rate=1000</strong>;</p></li>
+<li><p>Publisher node publishes (with <strong>1000 Hz</strong>) odometry message to <strong>/odom topic</strong> ( with <strong>queue size = 1</strong>). Actually, the publisher node is the <strong>gazebo node</strong> and using the plugin to publish odometry message.</p></li>
+<li><p>Subscriber node subscribes <strong>/odom topic</strong> (with <strong>queue size = 10</strong>).</p></li>
+<li><p>need to pause/unpause the simulation to wait for the processing of callback function. In my experiment, I let it sleep enough to wait to process.</p></li>
+</ol>
+
+<p>The following is my code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;std_srvs/Empty.h&gt;
+#include &lt;std_msgs/Header.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+
+bool g_unpause = true;
+
+bool pauseWorld() {
+    ros::NodeHandle n;
+    ros::ServiceClient pause = n.serviceClient&lt;std_srvs::Empty&gt;(&quot;/gazebo/pause_physics&quot;);
+    std_srvs::Empty empty;
+    pause.call(empty);
+    return true;
+}
+
+bool unpauseWorld() {
+    ros::NodeHandle n;
+    ros::ServiceClient unpause = n.serviceClient&lt;std_srvs::Empty&gt;(&quot;/gazebo/unpause_physics&quot;);
+    std_srvs::Empty empty;
+    unpause.call(empty);
+    return true;
+}
+
+class OdomListener {
+    ros::NodeHandle nh_;
+    ros::Subscriber sub_;
+
+    double last_time_;
+    double cur_time_;
+    double dt_;
+
+    int last_seq_;
+    int cur_seq_;
+    int dseq_;
+    public:
+    OdomListener():last_seq_(-1),last_time_(-1) {
+            sub_ = nh_.subscribe(&quot;odom&quot;,10,&amp;OdomListener::waitConsumerCB,this);
+    }
+
+    void waitConsumerCB(const nav_msgs::Odometry::ConstPtr&amp; msg) {
+            g_unpause = false;
+
+            cur_time_ = msg-&gt;header.stamp.toSec();
+            cur_seq_ = msg-&gt;header.seq;
+
+            if (last_time_ &gt; 0) {
+              dt_ = cur_time_ - last_time_;
+              dseq_ = cur_seq_ - last_seq_;
+              if (dt_ &gt;= 0.002) { // in the header.stamp jump case
+                ROS_INFO_STREAM(&quot; == msgs time step : &quot; &lt;&lt; cur_time_ &lt;&lt; &quot; &quot; &lt;&lt; last_time_ &lt;&lt; &quot; &quot; &lt;&lt; dt_);
+              }
+
+              if (dseq_ &gt;= 2) { // in the header.seq jump case
+                ROS_INFO_STREAM(&quot; == msgs seq step : &quot; &lt;&lt; cur_seq_ &lt;&lt; &quot; &quot; &lt;&lt; last_seq_ &lt;&lt; &quot; &quot; &lt;&lt; dseq_);
+              }
+
+              ROS_INFO_STREAM(&quot; ============== Just the Flag ================= &quot;);
+            }
+
+            last_time_ = cur_time_;
+            last_seq_ = cur_seq_;
+    }
+};
+
+int main(int argc, char **argv) {
+    ros::init(argc, argv, &quot;odom_listener&quot;);
+
+    OdomListener ol;
+
+    while(ros::ok()) {
+            if (g_unpause) {
+                    //ROS_INFO(&quot;In unpause&quot;);
+                    unpauseWorld();
+            }
+
+            if (!g_unpause) {
+                    //ROS_INFO(&quot;In pause&quot;);
+                    pauseWorld();
+                    ros::WallDuration(3).sleep();
+                    g_unpause = true;
+            }
+            ros::spinOnce();
+
+    }
+
+    return 0;
+}
+</code></pre>
+
+<p>Finally, even it works but I think this not robust because it still needs to consider the frequency of message and subscriber queue in each case and so on.</p>
+
+<p>Also, what if the situation going to be sophistication. Like leverage move_base node to do navigation, is it appropriate to integrate into this case? How do I know when I can unpause the simulation?</p>
+
+<p>Or in multiple subscribers node case. Because it needs to consider the unpause condition (need to monitor all subscribers node whether finishing their processing or not), right?</p>
+
+<p>I will be very thankful if anyone can help me =)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/50394">FH</a> on 2019-12-19 01:59:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This is probably better asked at <a href="http://answers.gazebosim.org/questions/">http://answers.gazebosim.org/questions/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/12141">ct2034</a> on 2019-12-19 13:42:25 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

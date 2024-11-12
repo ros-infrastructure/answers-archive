@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf_prefix in fake_localization and move_base - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/124296">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf_prefix in fake_localization and move_base</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/56934/tf-prefix-in-fake-localization-and-move-base">https://robotics.stackexchange.com/questions/56934/tf-prefix-in-fake-localization-and-move-base</a>.</p>
+        <p>I&#39;ve been examining a strange issue with multiple robots in stage and move<em>base. Move</em>base and costmap2D use <code>tf::resolve</code> with <code>tf_prefix</code> to resolve global frames. However fake_localization does not - this leads to the message:</p>
+
+<pre><code>Waiting on transform from robot_0/base_link to robot_0/map to become available before running costmap, tf error:
+</code></pre>
+
+<p>A few people have had trouble with this. I have examined fake<em>localization and I believe the following lines (as done in costmap</em>2d_ros.cpp) need to be added:</p>
+
+<pre><code>// get our tf prefix
+ros::NodeHandle prefix_nh;
+std::string tf_prefix = tf::getPrefixParam(prefix_nh);
+global_frame_id_ = tf::resolve(tf_prefix, global_frame_id_);
+base_frame_id_ = tf::resolve(tf_prefix, base_frame_id_);
+odom_frame_id_ = tf::resolve(tf_prefix, odom_frame_id_);
+</code></pre>
+
+<p>Furthermore I had another problem in move<em>base. `tf</em>prefix<code>is resolved too many times in the</code>Costmap2D<code>and</code>NavFN`. Here is the exact situation in navfn_ros.cpp::makePlan()</p>
+
+<pre><code>ros::NodeHandle n;
+costmap_2d::Costmap2D* costmap = costmap_ros_-&gt;getCostmap();
+std::string global_frame = costmap_ros_-&gt;getGlobalFrameID();
+
+//until tf can handle transforming things that are way in the past... we&#39;ll require the goal to be in our global frame
+if(tf::resolve(tf_prefix_, goal.header.frame_id) != tf::resolve(tf_prefix_, global_frame)){
+  ROS_ERROR(&quot;The goal pose passed to this planner must be in the %s frame.  It is instead in the %s frame.&quot;, tf::resolve(tf_prefix_, global_frame).c_str(), tf::resolve(tf_prefix_, goal.header.frame_id).c_str());
+  return false;
+}
+
+if(tf::resolve(tf_prefix_, start.header.frame_id) != tf::resolve(tf_prefix_, global_frame)){
+  ROS_ERROR(&quot;The start pose passed to this planner must be in the %s frame.  It is instead in the %s frame.&quot;, tf::resolve(tf_prefix_, global_frame).c_str(), tf::resolve(tf_prefix_, start.header.frame_id).c_str());
+  return false;
+}
+</code></pre>
+
+<p>What happens is that <code>global_frame</code> has already been resolved (removed preceding slash) inside the <code>Costmap2D</code> class. Now we resolve again, and since the slash is gone it appends the prefix. Thus we get <code>/robot_0/robot_0/map</code> I do not have a solution for this as I expect that this might be done on purpose?</p>
+
+<p>Are there any thoughts on the problems presented here and a possible solution to the over resolving? Thanks!</p>
+
+<hr>
+
+<p>Here&#39;s an example launch file for one robot of a multi robot stage sim. Note that under fake<em>localization I can adjust the global</em>frame_id via parameter. However, this is a hacky fix.</p>
+
+<pre><code>&lt;launch&gt;
+  &lt;!-- BEGIN ROBOT 0 --&gt;
+  &lt;group ns=&quot;robot_0&quot;&gt;
+    &lt;param name=&quot;tf_prefix&quot; value=&quot;robot_0&quot;/&gt;
+
+    &lt;arg name=&quot;map_file&quot; default=&quot;$(find some_path)/launch/move_base_config/cost_map.yaml&quot;/&gt;
+    &lt;node pkg=&quot;map_server&quot; type=&quot;map_server&quot; name=&quot;map_server&quot; args=&quot;$(arg map_file)&quot;&gt;
+        &lt;param name=&quot;frame_id&quot; value=&quot;map&quot;/&gt;
+    &lt;/node&gt;
+
+    &lt;node pkg=&quot;fake_localization&quot; type=&quot;fake_localization&quot; name=&quot;fake_localization&quot; respawn=&quot;false&quot; output=&quot;screen&quot;&gt;
+        Uncomment here for success - without making above changes
+      &lt;!--param name=&quot;global_frame_id&quot; value=&quot;/robot_0/map&quot;/--&gt;
+       &lt;param name=&quot;global_frame_id&quot; value=&quot;map&quot; /&gt; Need this to be in a relative frame
+    &lt;/node&gt;
+
+    &lt;node pkg=&quot;move_base&quot; type=&quot;move_base&quot; respawn=&quot;false&quot; name=&quot;move_base_node&quot; output=&quot;screen&quot;&gt;
+      &lt;param name=&quot;controller_frequency&quot; value=&quot;10.0&quot;/&gt;
+      &lt;param name=&quot;recovery_behavior_enabled&quot; value=&quot;true&quot;/&gt;
+      &lt;param name=&quot;oscillation_timeout&quot; value=&quot;5.0&quot;/&gt;
+      &lt;param name=&quot;oscillation_distance&quot; value=&quot;1.0&quot;/&gt;
+      &lt;rosparam file=&quot;$(find some_path)/launch/move_base_config/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;global_costmap&quot;  /&gt;
+      &lt;rosparam file=&quot;$(find some_path)/launch/move_base_config/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;local_costmap&quot;  /&gt;
+      &lt;rosparam file=&quot;$(find some_path)/launch/move_base_config/global_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+      &lt;rosparam file=&quot;$(find some_path)/launch/move_base_config/local_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+      &lt;rosparam file=&quot;$(find some_path)/launch/move_base_config/base_global_planner_params.yaml&quot; command=&quot;load&quot; ns=&quot;NavfnROS&quot; /&gt;
+    &lt;/node&gt;
+  &lt;/group&gt;
+&lt;/launch&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/911">Constantin S</a> on 2014-01-29 11:56:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>As far as I&#39;m aware, tf_prefix isn&#39;t supported any more, and has been removed or deprecated in tf2.</p>
+
+<p>From what I understand, most packages (something like 80-90%) didn&#39;t use it, and of the packages that did try to use it, most of the didn&#39;t use it correctly, so it was dropped.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2014-01-29 19:28:21 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Well that&#39;s good to know - is this documented anywhere? Also what&#39;s the new approach for having multiple robots in stage with move_base? Also while deprecated, it still seems to be used in the navigation_stack.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/911">Constantin S</a> on 2014-01-30 06:13:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>For the change in tf2, it&#39;s documented in the <a href="http://wiki.ros.org/tf2/Migration#Removal_of_support_for_tf_prefix">migration</a> doc.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/875">130s</a> on 2015-06-29 19:48:47 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

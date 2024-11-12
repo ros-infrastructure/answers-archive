@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 : How to call a service from the callback function of a subscriber ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/302037">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 : How to call a service from the callback function of a subscriber ?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88791/ros2-how-to-call-a-service-from-the-callback-function-of-a-subscriber">https://robotics.stackexchange.com/questions/88791/ros2-how-to-call-a-service-from-the-callback-function-of-a-subscriber</a>.</p>
+        <p>Hello,</p>
+
+<p>This question is actually related to : <a href="https://answers.ros.org/question/301872/ros2-service-spin_until_future_complete-blocking-when-calling-a-service-that-calls-another-service/">https://answers.ros.org/question/301872/ros2-service-spin_until_future_complete-blocking-when-calling-a-service-that-calls-another-service/</a></p>
+
+<p>But I wrote a minimal example and wanted to have your feedback on how to fix this.</p>
+
+<p>So I&#39;m using ROS2 Bouncy, built from source on Ubuntu 18.04.
+I have a node that subscribe to a topic and in the callback function of the sub, I get stuck if I try to <code>rclpy.spin_once(self)</code>.</p>
+
+<p>I wrote a minimal package to show the problem, which can be found here : <a href="https://github.com/MarcTestier/test_repo/tree/ros2_spin_bug_test">https://github.com/MarcTestier/test_repo/tree/ros2_spin_bug_test</a></p>
+
+<p>I was actually trying to call a service from the callback function but got stuck when doing <code>rclpy.spin_until_future_complete(node, future)</code> to get the answer form the service.</p>
+
+<p>So any idea how to call a service from the callback function of a subscriber ?? Maybe threads ??</p>
+
+<p>Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36681">Marc Testier</a> on 2018-08-30 04:38:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Here is the solution proposed by @codebot to call a service from the callback of a sub : <a href="https://github.com/codebot/ros2_patterns/blob/master/sub_calling_service.py">https://github.com/codebot/ros2_patterns/blob/master/sub_calling_service.py</a></p>
+
+<p>Here is what he said about the solution though : </p>
+
+<blockquote>
+<p>The key issue is that calling a service synchronously from within a subscriber callback is usually not a good design, because it&#39;s possible that the inbound messages will be coming more quickly than the service can process them, which could result in an uncontrolled message queue forming. The general pattern is that topic callbacks should be &quot;fast&quot;. </p>
+</blockquote>
+
+<p>Anyway, if you still want to try :</p>
+
+<blockquote>
+<p>To accomplish this in rclpy, we can asynchronously issue the service request. Then in the main <code>spin()</code> loop, we can look at the array of futures and, whenever one is completed, we can read its result.</p>
+
+<p>So the way I threw that together will also result in an unbounded request queue if the inbound message stream is coming really fast and the service is slow but you could control that by looking at the length of <code>self.client_futures</code> and not adding to it if it&#39;s already larger than some threshold.</p>
+</blockquote>
+
+<pre><code>#!/usr/bin/env python3
+import sys
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+from test_msgs.srv import Empty
+
+class SubscriberClientAsync(Node):
+
+    def __init__(self):
+        super().__init__(&#39;sub_client_node&#39;)
+        self.client = self.create_client(Empty, &#39;service&#39;)
+        self.sub = self.create_subscription(String, &#39;topic&#39;, self.topic_cb)
+        self.client_futures = []
+
+    def topic_cb(self, msg):
+        print(&quot;sub_cb({})&quot;.format(msg.data))
+        self.client_futures.append(self.client.call_async(Empty.Request()))
+
+    def spin(self):
+        while rclpy.ok():
+            rclpy.spin_once(self)
+            incomplete_futures = []
+            for f in self.client_futures:
+                if f.done():
+                    res = f.result()
+                    print(&quot;received service result: {}&quot;.format(res))
+                else:
+                    incomplete_futures.append(f)
+            self.client_futures = incomplete_futures
+
+if __name__ == &#39;__main__&#39;:
+    rclpy.init()
+    node = SubscriberClientAsync()
+node.spin()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/36681">Marc Testier</a> on 2018-08-30 21:12:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@Marc Testier</p>
+
+<blockquote>
+<p>The key issue is that calling a service synchronously from within a subscriber callback is usually not a good design</p>
+</blockquote>
+
+<p>what should I do if I wanna call a service synchronously due to the msg from a subscriber callback? Can you give me an idea what I should look into?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50033">lin404</a> on 2020-01-28 03:33:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>just in case if link mentioned in msg above doesn&#39;t works, here is the new one. (<a href="https://github.com/codebot/ros2_patterns/blob/master/nested_services/sub_calling_service.py">https://github.com/codebot/ros2_patterns/blob/master/nested_services/sub_calling_service.py</a>)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73435">aarsh_t</a> on 2021-10-29 02:02:09 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Dear ROS developers,</p>
+
+<p>If you want a solution in C++, check out <a href="https://github.com/IntelligentRoboticsLabs/BICA/blob/ros2/bica/src/bica/Component.cpp">THIS</a>. Pieces of code for illustrating the solution:</p>
+
+<pre><code>struct ActivationFuture
+{
+  std::shared_future&lt;std::shared_ptr&lt;bica_msgs::srv::ActivateComponent_Response_&lt;std::allocator&lt;void&gt;&gt;&gt;&gt; future;
+  std::string component;
+};
+
+class MyNode : public rclcpp::Node
+{
+  rclcpp::Service&lt;bica_msgs::srv::ActivateComponent&gt;::SharedPtr activation_service_; 
+  std::vector&lt;ActivationFuture&gt; pending_act_futures_;
+
+  void
+  MyNode::activateDependency(const std::string &amp; dep)
+  {
+    auto client = this-&gt;create_client&lt;bica_msgs::srv::ActivateComponent&gt;(&quot;/&quot; + dep + &quot;/activate&quot;);
+
+    if (!client-&gt;wait_for_service(100ms)) {
+      RCLCPP_ERROR(get_logger(), &quot;Service %s is not available.&quot;,
+        client-&gt;get_service_name());
+      return;
+    }
+
+    auto request = std::make_shared&lt;bica_msgs::srv::ActivateComponent::Request&gt;();
+    request-&gt;activator = get_name();
+
+    auto future = client-&gt;async_send_request(request);
+    pending_act_futures_.push_back(ActivationFuture{future, dep});
+  }
+
+  bool
+  MyNode::ok()
+  {
+    if (rclcpp::ok()) {
+      while(!pending_act_futures_.empty()) {
+        auto pending_future = pending_act_futures_.back();
+        if ((rclcpp::spin_until_future_complete(this-&gt;get_node_base_interface(), pending_future.future)) !=
+          rclcpp::executor::FutureReturnCode::SUCCESS)
+        {
+          RCLCPP_WARN(get_logger(), &quot;Component [%s] failed to activate&quot;, pending_future.component.c_str());
+        }
+        pending_act_futures_.pop_back();
+      }
+    }
+
+    return rclcpp::ok();
+  }
+
+  void
+  MyNode::execute()
+  {
+    while (this-&gt;ok()) {
+      rclcpp::spin_some(this-&gt;get_node_base_interface());
+      rate_.sleep();
+    }
+}
+</code></pre>
+
+<p>The bad thing is that you need a different vector for each type of future. Any ideas?</p>
+
+<p>I hope it helps!!!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/13346">fmrico</a> on 2019-12-13 14:16:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>The problem is, that you can&#39;t use the spin_node_until_future_complete() command inside the outer callback. 
+The solution is to use an MultiThreadedExecutor and different callback groups.
+Then you can call the inner service by giving it a callback function (instead of waiting for the return code with spin_node_until_future_complete).</p>
+
+<p>If you want to wait for the result from the inner service call before the outer service callback finishes you need to block the thread with a while(return_from_inner_service == false) loop.
+This is important if your outer callback is from a service, because then you want to receive the inner service result and use it to compute the result of the outer service.
+But this is bad design, because you block the spin() call from the outer service. 
+Luckily we can still handle other callbacks with the MultiThreadedExecutor as long as we assign them to a different callback group.
+If the outer callback is from a topic you don&#39;t want to block the callback, just handle the inner service call inside the assigned callback function. It will execute asynchronous.</p>
+
+<p>Here is some code example in C++
+(assuming all necessary headers included and ROS services created)</p>
+
+<p>Create the MultiThreadedExecuter and an instance of the Node in main:</p>
+
+<pre><code>int main(int argc, char *argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor executor;
+    auto node = std::make_shared&lt;Communication&gt;();
+    executor.add_node(node);
+    executor.spin();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Create seperate Callback group and assign it to the inner service client (inside the Node/class constructor):</p>
+
+<pre><code>callback_group_input_ = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::MutuallyExclusive);
+get_input_client_ = this-&gt;create_client&lt;petra_core::srv::GetInput&gt;(&quot;GetInput&quot;, rmw_qos_profile_services_default, callback_group_input_);
+</code></pre>
+
+<p>Inside the outer callback from a topic or service, send the inner_request and define a callback for it:</p>
+
+<pre><code>int choice = -1;
+    auto inner_client_callback = [&amp;,this](rclcpp::Client&lt;petra_core::srv::GetInput&gt;::SharedFuture inner_future)
+        { 
+            auto result = inner_future.get();
+            choice = stoi(result-&gt;input);
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;[inner service] callback executed&quot;);
+        };
+    auto inner_future_result = get_input_client_-&gt;async_send_request(inner_request, inner_client_callback);
+</code></pre>
+
+<p>If it is necessary to wait inside the outer callback for the result block the thread:</p>
+
+<pre><code>// Wait for the result.
+    while (choice &lt; 0 &amp;&amp; rclcpp::ok())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+</code></pre>
+
+<p>I hope it helps you, or whoever has the same problem. I was stuck with this for weeks...</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/53868">Andreas Z</a> on 2020-05-18 05:56:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I was stuck on this for whole day, so I&#39;m adding my solution in case anyone else runs into a similar problem. The previously mentioned solutions are on the right track, but they are incomplete. There is an official solution in <a href="https://docs.ros.org/en/foxy/How-To-Guides/Using-callback-groups.html">the ros docs</a>, which I am pasting here just in case the link breaks.</p>
+
+<p>Note that this problem is not unique to calling a service client from within a subscriber callback. This problem occurs whenever you have to call a callback from within a callback. Therefore the example of calling a service from within the timer callback is effectively the same as calling a service from within a subscription callback, or calling a service from within a service callback.</p>
+
+<p>The solution is to put your nested callbacks in different callback groups (see the link above) and to use <code>std::future::wait_for()</code> instead of <code>rclcpp::spin_until_future_complete()</code>.</p>
+
+<pre><code>#include &lt;chrono&gt;
+#include &lt;memory&gt;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_srvs/srv/empty.hpp&quot;
+
+using namespace std::chrono_literals;
+
+namespace cb_group_demo
+{
+class DemoNode : public rclcpp::Node
+{
+public:
+    DemoNode() : Node(&quot;client_node&quot;)
+    {
+        client_cb_group_ = this-&gt;create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        timer_cb_group_ = this-&gt;create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        client_ptr_ = this-&gt;create_client&lt;std_srvs::srv::Empty&gt;(&quot;test_service&quot;, rmw_qos_profile_services_default,
+                                                                client_cb_group_);
+        timer_ptr_ = this-&gt;create_wall_timer(1s, std::bind(&amp;DemoNode::timer_callback, this),
+                                            timer_cb_group_);
+    }
+
+private:
+    rclcpp::CallbackGroup::SharedPtr client_cb_group_;
+    rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
+    rclcpp::Client&lt;std_srvs::srv::Empty&gt;::SharedPtr client_ptr_;
+    rclcpp::TimerBase::SharedPtr timer_ptr_;
+
+    void timer_callback()
+    {
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Sending request&quot;);
+        auto request = std::make_shared&lt;std_srvs::srv::Empty::Request&gt;();
+        auto result_future = client_ptr_-&gt;async_send_request(request);
+
+        // Do this instead of rclcpp::spin_until_future_complete()
+        std::future_status status = result_future.wait_for(10s);  // timeout to guarantee a graceful finish
+        if (status == std::future_status::ready) {
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;Received response&quot;);
+            std::shared_ptr&lt;ServiceT::Response&gt; response = result_future.get();
+            // Do something with response 
+        }
+    }
+};  // class DemoNode
+}   // namespace cb_group_demo
+
+int main(int argc, char* argv[])
+{
+    rclcpp::init(argc, argv);
+    auto client_node = std::make_shared&lt;cb_group_demo::DemoNode&gt;();
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(client_node);
+
+    RCLCPP_INFO(client_node-&gt;get_logger(), &quot;Starting client node, shut down with CTRL-C&quot;);
+    executor.spin();
+    RCLCPP_INFO(client_node-&gt;get_logger(), &quot;Keyboard interrupt, shutting down.\n&quot;);
+
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/145201">ld_returned_1</a> on 2023-04-13 14:43:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Do you know how to perform or whether it is possible such a service call, when a node is configured as a component and loaded as a composable node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64564">aserbremen</a> on 2023-06-07 02:19:53 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

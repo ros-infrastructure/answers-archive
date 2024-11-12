@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Problems with rclcpp executor as class member. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/376698">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Problems with rclcpp executor as class member.</h2>
+      <div class="question">
+        <h2>The Problem (in short)</h2>
+
+<p>I am trying to write a large piece of code that needs to set up subscribers, look up transforms, and call spin<em>some, spin</em>once etc in the body of code. I am encountering a number of very vague and inconsistent crashes that I suspect are all tied back to the executor and how I&#39;m using it. So, I am trying to establish the <strong>correct</strong> use of the executor as a class member, using the minimal compiling example below. </p>
+
+<p>I&#39;m using ROS2 Foxy for reference.</p>
+
+<h2>The Problem (in full)</h2>
+
+<p>Node executors are, in most examples I have found, used outside the body of the node, like so (from the <a href="https://docs.ros.org/en/foxy/Tutorials/Writing-A-Simple-Cpp-Publisher-And-Subscriber.html">ROS2 C++ subscriber tutorial</a>):</p>
+
+<pre><code>int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared&lt;MinimalNode&gt;());
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>I know that spin works under the hood by calling up an executor, assigning the node to it, and then spinning it. However I want to be able to call functions like <code>spin</code>, <code>spin_once</code> etc from within the body of the node. In the process of looking for a solution, I came up with this method:</p>
+
+<pre><code>#include &lt;string&gt;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+
+class MinimalNode : public rclcpp::Node
+{
+    rclcpp::executors::SingleThreadedExecutor executor;
+
+    public:
+        MinimalNode() : Node(&quot;minimal_node&quot;)
+        {
+            executor.add_node(this-&gt;get_node_base_interface());
+            executor.spin_some();
+            printf(&quot;Hello world\n&quot;);
+            executor.spin();
+        }
+};
+
+int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    auto node_ptr = std::make_shared&lt;MinimalNode&gt;();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Where the executor exists as a class member, the constructor adds the node interface, calls node <code>spin_some</code>, <code>spin</code> etc. This works, it compiles, runs, prints &quot;Hello world&quot; and then spins quietly until I kill it with Ctrl+C. However things go sideways from here. Remember, this minimal example roughly replicates a large body of code which I cannot share publically.</p>
+
+<p>My questions are:</p>
+
+<ol>
+<li>Is this a legitimate way to use the executor and achieve the goal of having the node be able to call things like <code>spin</code> internally? I haven&#39;t seen this use case in any of the example ROS2 code I can find. If not, what is the proper way to do this?</li>
+<li>If I comment out the <code>executor.add_node</code> line in this example, everything still works. But I&#39;m not sure if it should, because how does the executor know what node it is supposed to spin?</li>
+<li>In my larger body of code, this doesn&#39;t even work. I get a crash at the <code>executor.add_node</code> line, and the error message: &quot;Node has already been added to an executor.&quot; Why don&#39;t I get that error with the minimal example?</li>
+<li>In my larger body of code, it will compile and run ONLY if I comment out the <code>executor.add_node</code> line. But again, I don&#39;tknow if this should work, and it only partially seems to work, because my node exists normally and doesn&#39;t stop at <code>executor.spin();</code></li>
+<li>In my larger body of code, if I launch the node via launch file rather than via <code>ros2 run...</code> again the node seems to partially work, but then when it gets to <code>executor.spin();</code> it crashes with a &quot;process has died&quot; error message.</li>
+</ol>
+
+<p>Questions 1,2 are general enough that I hope a more experienced member of the community can answer them. Questions 3-5 are likely specific to the parts of code I can&#39;t share, but I&#39;m hoping are related enough to the executor and this minimal example that someone can still offer advice or suggestions. Thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26592">M@t</a> on 2021-04-21 22:01:51 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hello M@t!
+I seem to be having a very similar problem to question 3. Did you manage to solve this?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/81361">ccpjBoss</a> on 2022-03-15 11:45:40 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I&#39;m still getting a grip on executors, they changed subtly fairly recently and there&#39;s a lot of indirection to make old design patterns just work (which occasionally gets in the way.)</p>
+
+<p>As I understand it, executors allow you to split node callbacks into separate queues, and manipulate the execution order and threading model with very fine-grained control.  You can have multiple executors, and I think you can put one callback into multiple executors.  Docs are very thin on the ground, and very few public nodes seem to be complex enough to need control of their threading models.</p>
+
+<p>Executors allow you to shard your node&#39;s subscriptions and timers into separate callback-groups, and then add the callback-groups to multiple executors.
+This gets deeply into thread-safety territory very quickly.</p>
+
+<p>In <a href="https://github.com/BrettRD/ros-gst-bridge">https://github.com/BrettRD/ros-gst-bridge</a>, I use an executor to host the entire node and all of its callbacks because the thread is owned by gstreamer and needs to do other work. This means that referring to any information in the gstreamer class during a node (executor thread) callback is not thread-safe without a lock.</p>
+
+<p>I think in 2. you&#39;re running into some of that automagic config stuff; An executor without a context argument makes a call to get_global_default_context() - the same context as the default-constructed node. I suspect that&#39;s the code-path that is silently adding your node to the default executor</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/55733">BrettRD</a> on 2021-10-31 22:18:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

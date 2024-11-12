@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf2_sensor_msgs in ROS Galactic: ModuleNotFoundError - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/397011">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf2_sensor_msgs in ROS Galactic: ModuleNotFoundError</h2>
+      <div class="question">
+        <p>Hi all,
+I am somewhat new to ROS. I have installed ROS Galactic from the official Debian/Ubuntu packages. I managed to write a few simple nodes in Python that subscribe to or publish PointCloud2 messages.</p>
+
+<p>Now I am trying to transform a PointCloud2. I found this example: <a href="https://github.com/lucasw/transform_point_cloud/blob/master/scripts/transform_point_cloud_py.py">https://github.com/lucasw/transform_point_cloud/blob/master/scripts/transform_point_cloud_py.py</a></p>
+
+<p>The magic line is: <code>from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud</code></p>
+
+<p>Even though I apt installed ros-galactic-tf2-sensor-msgs, the module is not found when I try to run the script:</p>
+
+<pre><code>ModuleNotFoundError: No module named &#39;tf2_sensor_msgs&#39;
+</code></pre>
+
+<p>What else do I need to install to get do<em>transform</em>cloud()?
+If this is the wrong approach: How to correctly transform a PointCloud2 in Python on ROS Galactic?</p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/98675">sebastianb</a> on 2022-03-03 05:27:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Did you try to install <code>sudo apt-get install ros-galactic-geometry2</code>/build it from sources? This package is in <code>geometry2</code> set of ROS packages. Maybe there was some hidden dependency with installing only one of these packages. You can try to use <code>rosdep install --from-paths src --ignore-src -r -y</code> in your workspace too.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63587">ljaniec</a> on 2022-03-04 06:20:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think I have all the dependencies installed:</p>
+
+<pre><code>$ sudo apt-get install ros-galactic-geometry2
+Reading package lists... Done
+Building dependency tree       
+Reading state information... Done
+ros-galactic-geometry2 is already the newest version (0.17.2-1focal.20220203.030151).
+0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+$ grep tf2_sensor_msgs src/target_transformer/package.xml 
+  &lt;exec_depend&gt;tf2_sensor_msgs&lt;/exec_depend&gt;
+$ rosdep install --from-paths src --ignore-src -r -y
+#All required rosdeps installed successfully
+</code></pre>
+
+<p>Should tf2_sensor_msgs exist and work in Galatic or is it something old and deprecated?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/98675">sebastianb</a> on 2022-03-04 06:34:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It seems you have everything, right. I will write down more in the answer in a moment, this comment section is a bit small.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63587">ljaniec</a> on 2022-03-04 06:58:15 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hi all,</p>
+
+<p>I figured out how to manually transform my points on by one. This way tf2_sensor_msgs is not needed. Maybe this will help someone.</p>
+
+<p>Note that in C++, pcl_ros::transformPointCloud() can be used to achieve the same thing with less code and in a small fraction of the time... I just couldn&#39;t figure out how to call pcl_ros::transformPointCloud from Python.</p>
+
+<pre><code>import numpy as np
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Header
+from sensor_msgs.msg import PointCloud2
+import sensor_msgs_py.point_cloud2 as pc2
+from geometry_msgs.msg import Point
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+import tf_transformations
+
+
+def transform_point(trans, pt):
+    # https://answers.ros.org/question/249433/tf2_ros-buffer-transform-pointstamped/
+    quat = [
+        trans.transform.rotation.x,
+        trans.transform.rotation.y,
+        trans.transform.rotation.z,
+        trans.transform.rotation.w
+    ]
+    mat = tf_transformations.quaternion_matrix(quat)
+    pt_np = [pt.x, pt.y, pt.z, 1.0]
+    pt_in_map_np = np.dot(mat, pt_np)
+
+    pt_in_map = Point()
+    pt_in_map.x = pt_in_map_np[0] + trans.transform.translation.x
+    pt_in_map.y = pt_in_map_np[1] + trans.transform.translation.y
+    pt_in_map.z = pt_in_map_np[2] + trans.transform.translation.z
+
+    return pt_in_map
+
+
+class FrameListener(Node):
+
+    def __init__(self):
+        super().__init__(&#39;target_transformer&#39;)
+
+        self.subscription = self.create_subscription(PointCloud2, &#39;pc2_raw&#39;, self.listener_callback, 10)
+        self.publisher = self.create_publisher(PointCloud2, &#39;pc2_transformed&#39;, 10)
+
+        self.declare_parameter(&#39;target_frame&#39;, &#39;base_link&#39;)
+        self.target_frame = self.get_parameter(&#39;target_frame&#39;).get_parameter_value().string_value
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+
+    def listener_callback(self, msg):
+
+        timestamp = msg.header.stamp
+        source_frame = msg.header.frame_id
+
+        # Look up for the transformation between target_frame and source_frame
+        # frames at a specific time
+        try:
+            trans = self.tf_buffer.lookup_transform(
+                self.target_frame,
+                source_frame,
+                timestamp)
+        except TransformException as ex:
+            self.get_logger().info(f&#39;Could not transform {source_frame} to {self.target_frame}: {ex}&#39;)
+            pass
+
+        new_points = []
+
+        # walk through list of points and transform each point one by one
+        for x, y, z in pc2.read_points(msg, field_names=(&#39;x&#39;, &#39;y&#39;, &#39;z&#39;)):
+
+            pt = Point()
+            pt.x, pt.y, pt.z = x, y, z
+
+            new_pt = transform_point(trans, pt)
+            new_points.append((new_pt.x, new_pt.y, new_pt.z))
+
+        # stick transformed point into new PointCloud2 message for easy visualization
+        # in the actual application, the points would be transformed and used locally
+        header = Header()
+        header.stamp = msg.header.stamp
+        header.frame_id = self.target_frame
+        pc_relative = pc2.create_cloud_xyz32(header=header, points=new_points)
+        self.publisher.publish(pc_relative)
+
+
+def main():
+    rclpy.init()
+    node = FrameListener()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+
+    rclpy.shutdown()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/98675">sebastianb</a> on 2022-03-04 01:58:18 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Well, your example code for a PointCloud2 is for ROS1 by info from the <a href="https://github.com/lucasw/transform_point_cloud/blob/master/scripts/transform_point_cloud_py.py">README.md on this repository</a>. </p>
+
+<p>Your best shot would be use of PCL (Point Cloud Library) ROS interface stack:</p>
+
+<ul>
+<li><p><a href="https://index.ros.org/p/pcl_ros/">https://index.ros.org/p/pcl_ros/</a> </p></li>
+<li><p><a href="https://github.com/ros-perception/perception_pcl">https://github.com/ros-perception/perception_pcl</a> (it is up-to-date for sure). </p></li>
+</ul>
+
+<p>For your question in the comments about deprecation of <code>tf2_sensor_msgs</code> - it is still used widely, good example would be <a href="https://github.com/SteveMacenski/slam_toolbox">https://github.com/SteveMacenski/slam_toolbox</a> (look in <a href="https://github.com/SteveMacenski/slam_toolbox/blob/ros2/CMakeLists.txt">the CMakeLists.txt there</a>). It is C++ only for now as far as I know. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/63587"></a> on 2022-03-04 07:03:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your help! So I guess trying to get tf2_sensor_msgs to work with Python is out of the question.</p>
+
+<p>Would you have an example on how to transform a point to a different reference frame using PCL and Python? I am having trouble figuring out how to use the library. All the examples are for ROS1 and/or in C++. </p>
+
+<p>As a workaround, I managed to get the correct rotation using another code snippet from lucasw (<a href="https://answers.ros.org/question/249433/tf2_ros-buffer-transform-pointstamped/">https://answers.ros.org/question/249433/tf2_ros-buffer-transform-pointstamped/</a>). But having to do the rotation by hand feels very wrong.</p>
+
+<p>I&#39;ll keep searching for PCL+Python examples.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/98675">sebastianb</a> on 2022-03-04 09:15:07 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

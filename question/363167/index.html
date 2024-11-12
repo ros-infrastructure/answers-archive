@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>diff drive controller velocity limit - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/363167">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>diff drive controller velocity limit</h2>
+      <div class="question">
+        <p>How does diff drive limits the maximum and minimum velocity limits exactly? I have set the max linear velocity of robot as 0.5 cm which has wheel radius of 0.05 m. When i debug the hardware interface and check the maximum angular velocity at full throttle it shows me w=v/r = 10 rad/sec which i have converted to range i.e [0,255] for pulse wide modulation of dc motors.
+Here the wheel encoders are sending the wheel angular velocity as 200 rad/sec to the hardware interface at same time.
+Now how is this actual velocity i.e 200 rad/sec going to be used by diff drive controller and the input velocity i.e 10 rad/sec be controlled ? Cas my robot is colliding with obstacle due to this large velocity of robot.
+Here are my parameters for the diff drive controller:</p>
+
+<pre><code>base_controller:
+  type        : &quot;diff_drive_controller/DiffDriveController&quot;
+  left_wheel  : &#39;wheel_left_joint&#39;
+  right_wheel : &#39;wheel_right_joint&#39;
+  publish_rate: 50.0               # default: 50
+  pose_covariance_diagonal : [0.001, 0.001, 1000000.0, 1000000.0, 1000000.0, 1000.0]
+  twist_covariance_diagonal: [0.001, 0.001, 1000000.0, 1000000.0, 1000000.0, 1000.0]
+  # Wheel separation and diameter. These are both optional.
+  # diff_drive_controller will attempt to read either one or both from the
+  # URDF if not specified as a parameter
+  wheel_separation : 1.0
+  wheel_radius : 0.049
+
+  # Wheel separation and radius multipliers
+  wheel_separation_multiplier: 1.0 # default: 1.0
+  wheel_radius_multiplier    : 1.0 # default: 1.0
+
+  # Velocity commands timeout [s], default 0.5
+  cmd_vel_timeout: 0.25
+
+  # Base frame_id
+  base_frame_id: base_link #default: base_link
+
+  # Velocity and acceleration limits
+  # Whenever a min_* is unspecified, default to -max_*
+  linear:
+    x:
+      has_velocity_limits    : true
+      max_velocity           : 0.5  # m/s
+      min_velocity           : -0.5 # m/s
+      has_acceleration_limits: true
+      max_acceleration       : 0.2  # m/s^2
+      min_acceleration       : -0.2 # m/s^2
+      has_jerk_limits        : true
+      max_jerk               : 1.0  # m/s^3
+  angular:
+    z:
+      has_velocity_limits    : true
+      max_velocity           : 1  # rad/s
+      has_acceleration_limits: false
+      max_acceleration       : 1.5  # rad/s^2
+      has_jerk_limits        : false
+      max_jerk               : 2.5  # rad/s^3
+</code></pre>
+
+<p>Here is the hardware interface:</p>
+
+<pre><code>#include &lt;medicbot_control/medicbot_hw_interface.h&gt;
+#include &lt;exception&gt;
+#include &lt;algorithm&gt;
+#include &lt;iostream&gt;
+
+#include &lt;bits/stdc++.h&gt; 
+#include &lt;boost/algorithm/string.hpp&gt;
+
+namespace rrbot_control
+{
+
+float myMap(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+std::string to_format(const int number,int decPlace) {
+    std::stringstream ss;
+    ss &lt;&lt; std::setw(decPlace) &lt;&lt; std::setfill(&#39;0&#39;) &lt;&lt; number;
+    return ss.str();
+}
+
+RRBotHWInterface::RRBotHWInterface(ros::NodeHandle &amp;nh, urdf::Model *urdf_model)
+  : ros_control_boilerplate::GenericHWInterface(nh, urdf_model)
+{
+    ROS_INFO_NAMED(&quot;rrbot_hw_interface&quot;, &quot;RRBotHWInterface Ready.&quot;);
+    Setup();
+}
+
+void RRBotHWInterface::read(ros::Duration &amp;elapsed_time)
+{
+    const char* enc_ticks = Read();
+    std::vector&lt;std::string&gt; result; 
+    boost::split(result, enc_ticks, boost::is_any_of(&quot;,&quot;)); 
+    for (int joint_id = 0; joint_id &lt; result.size(); joint_id++) {
+         float ang_vel = atof(result[joint_id].c_str());
+         joint_velocity_[joint_id] = ang_vel*0.049;
+         joint_position_[joint_id] += joint_velocity_[joint_id] * elapsed_time.toSec();
+   }
+   std::cout&lt;&lt;&quot;joint_velocity_got:&quot;&lt;&lt;joint_velocity_[0]&lt;&lt;&quot;\t&quot;&lt;&lt;joint_velocity_[1]&lt;&lt;std::endl;
+   //std::cout&lt;&lt;&quot;got data:&quot;&lt;&lt;enc_ticks&lt;&lt;std::endl;
+
+}
+
+void RRBotHWInterface::write(ros::Duration &amp;elapsed_time)
+{
+  // Safety
+  enforceLimits(elapsed_time);
+
+  // ----------------------------------------------------
+  // ----------------------------------------------------
+  // ----------------------------------------------------
+  //
+  // FILL IN YOUR WRITE COMMAND TO USB/ETHERNET/ETHERCAT/SERIAL ETC HERE
+  //
+  // FOR A EASY SIMULATION EXAMPLE, OR FOR CODE TO CALCULATE
+  // VELOCITY FROM POSITION WITH SMOOTHING, SEE
+  // sim_hw_interface.cpp IN THIS PACKAGE
+  //
+  // DUMMY PASS-THROUGH CODE
+  if(joint_velocity_command_[0] &lt; -1) 
+      joint_velocity_command_[0] = -1;
+  if(joint_velocity_command_[0] &gt; 1)
+      joint_velocity_command_[0] = 1;
+  if(joint_velocity_command_[1] &lt; -1)
+          joint_velocity_command_[1] = -1;
+  if(joint_velocity_command_[1] &gt; 1)
+      joint_velocity_command_[1] = 1;
+
+  std::cout&lt;&lt;&quot;joint_velocity:&quot;&lt;&lt;joint_velocity_command_[0]&lt;&lt;&quot;\t&quot;&lt;&lt;joint_velocity_command_[1]&lt;&lt;std::endl; 
+  float joint1_vel = myMap(joint_velocity_command_[0],-1,1,-255,255);
+  float joint2_vel = myMap(joint_velocity_command_[1],-1,1,-255,255);
+
+  std::string data = to_format(joint1_vel,4)+to_format(joint2_vel,4);
+  const char *res = data.c_str();
+  if(data.length()==8) {
+    Write(res);
+    //std::cout&lt;&lt;&quot;sent data:&quot;&lt;&lt;res&lt;&lt;std::endl;
+    usleep(10000);
+  }
+  // END DUMMY CODE
+  //
+  // ----------------------------------------------------
+  // ----------------------------------------------------
+  // ----------------------------------------------------
+}
+</code></pre>
+
+<p>eg. output:</p>
+
+<blockquote>
+<p>joint velocity: 10 10 joint velocity
+got: 200 200</p>
+</blockquote>
+
+<p>Now this actual velocity of robot i.e 200 rad/sec measured from the rotary wheel encoders are not affected by the max linear velocity parameter. 
+<a href="https://www.servocity.com/5202-series-yellow-jacket-planetary-gear-motor-19-2-1-ratio-312-rpm-3-3-5v-encoder.%20/?fbclid=IwAR1umJXe9y6oedfAFdt0v6MojK4P37OJpp87hcoNm_7HvDelN_oOVhtdEIE">This</a> is the dc motor and rotary encoders used. Here is the robot: <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16023332096356078.jpg" alt="image description">
+os: ubuntu server 20.04
+ros version: noetic</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26847">dinesh</a> on 2020-10-10 07:34:03 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The link to the motor says it is 312RPM which would have a no-load max RPM of 32rad/sec. Your encoder however is likely on the motor end of the gear box and not on the wheel end, so you need to add in the gearing conversion before you try to convert encoder values to wheel rotation.</p>
+
+<p>Then after you sort out how the gearing will impact encoder speed to wheel speed, you should take another look at this:</p>
+
+<pre><code> if(joint_velocity_command_[0] &lt; -1) 
+      joint_velocity_command_[0] = -1;
+  if(joint_velocity_command_[0] &gt; 1)
+      joint_velocity_command_[0] = 1;
+  if(joint_velocity_command_[1] &lt; -1)
+          joint_velocity_command_[1] = -1;
+  if(joint_velocity_command_[1] &gt; 1)
+      joint_velocity_command_[1] = 1;
+
+
+
+float myMap(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+ float joint1_vel = myMap(joint_velocity_command_[0],-1,1,-255,255);
+</code></pre>
+
+<p>This limits inputs to -1 through +1, but you&#39;re attempting to input 10. By my accounting then the output from the equation should be 255 to the PWM &lt;-- just as fast as it can go - so as far as I can tell, everything seems to be working correctly. Or rather, it&#39;s doing just what you told it to.</p>
+
+<p>BTW: Regarding you&#39;re question about why ROS is not limiting speed to the max and min you set in the YAML file, it doesn&#39;t work the way you&#39;re thinking. It will limit the the path planning velocities(CMD_VEL) to the max and min in the YAML file but it is up to the HW driver to respond properly to the CMD_VEL.  The path planner will not actively scale CMD_VEL if the HW is out of control.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26871">billy</a> on 2020-10-10 12:48:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>so what is the best practice to make the actual linear velocity of robot to fit in min, max velocity range? And i found that the linear velocity is converted to angular velocity i.e joint velocity inside the hardware interfce.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26847">dinesh</a> on 2020-10-11 00:41:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You have encoder feed back. I suggest you use PID control the speed.   Feed the CMD_VEL topic into a conversion to give you velocity requirements for each wheel and and then feed those velocity requirements into your PID functions, which will output the PWM values.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-10-11 11:33:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Isn&#39;t their PID control feature in the diff drive controller itself? I thought their is. So i have to make a function for this than?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26847">dinesh</a> on 2020-10-11 12:22:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ve not used it, so can&#39;t be sure but I just looked at this page and see no mention of anything related to tight closed loop control of the motors like PID. <a href="http://wiki.ros.org/diff_drive_controller">http://wiki.ros.org/diff_drive_controller</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2020-10-11 22:03:03 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Ok i think i got the better answer and best approach. i.e ros control toolbox package already provides the classes for pid controller just needs to use them. <a href="http://docs.ros.org/en/jade/api/control_toolbox/html/classcontrol__toolbox_1_1Pid.html">http://docs.ros.org/en/jade/api/control_toolbox/html/classcontrol__toolbox_1_1Pid.html</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26847">dinesh</a> on 2020-10-17 12:24:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

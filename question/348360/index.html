@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>GMapping package does not generate map - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/348360">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>GMapping package does not generate map</h2>
+      <div class="question">
+        <p>I am building a differential drive robot with encoders and a RPLidar on-board. I am getting the wheel encoder data and publishing it to /odom and /tf using this python script below. All the codes compile ok and I can view the /tf, /scan on rviz. When I run gmapping, it creates first iteration of the map. But as i drive the robot, the laser scan moves with it in rviz, but the map does not get added. I am using ROS Kinetic.</p>
+
+<p>Python code to get wheels encoder data and do /tf broadcast</p>
+
+<pre><code>import math
+from math import sin, cos, pi
+import sys
+#import serial
+#import time
+import rospy
+import tf
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Point, Pose, Quaternion, Twist, Vector3
+
+rospy.init_node(&#39;pub_odom&#39;)
+
+odom_pub = rospy.Publisher(&quot;odom&quot;, Odometry, queue_size=50)
+odom_broadcaster = tf.TransformBroadcaster()
+
+x = 0.0
+y = 0.0
+th = 0.0
+
+vx = 0.0
+vy = 0
+vth = 0.0
+_PreviousLeftEncoderCounts = 0
+_PreviousRightEncoderCounts = 0
+
+DistancePerCount = 0.00133  #24 tick per rev, 12.3 ratio| 24x12.3=295.2 ticks for Pix0.125=0.3927m distance 
+lengthBetweenTwoWheels = 0.4
+
+
+current_time = rospy.Time.now()
+last_time = rospy.Time.now()
+
+r = rospy.Rate(20.0)
+
+while not rospy.is_shutdown():
+
+    with open(&quot;/home/omar/catkin_ws/src/read_position/scripts/publish_odom.txt&quot;, &quot;r&quot;) as f: 
+        content = f.readlines()  #encoder values are stored in this txt file
+
+
+    try:
+        data_odom = content[0].split(&quot;,&quot;)
+        tick_x = int(data_odom [1]) #left encoder value
+        tick_y = int (data_odom [0]) #right encoder value
+
+        deltaLeft = tick_x - int(_PreviousLeftEncoderCounts) #delta distance
+        deltaRight = tick_y - _PreviousRightEncoderCounts
+        current_time = rospy.Time.now()
+        dt = (current_time - last_time).to_sec()    
+
+        omega_left = (deltaLeft * DistancePerCount) / dt #left speed
+        omega_right = (deltaRight * DistancePerCount) / dt #right speed
+
+        vx = (omega_left + omega_right) / 2 #average speed
+        vth = (omega_left - omega_right)/lengthBetweenTwoWheels #heading angle
+
+        delta_x = (vx * math.cos(th)) * dt
+        delta_y = (vx * math.sin(th)) * dt
+        delta_th = vth * dt
+
+        x += delta_x
+        y += delta_y
+        th += delta_th
+
+        # since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+        odom_quat = tf.transformations.quaternion_from_euler(0, 0, th)
+
+        # first, we&#39;ll publish the transform over tf
+        odom_broadcaster.sendTransform(
+        (x, y, 0.),
+        odom_quat,
+        current_time,
+        &quot;base_link&quot;,
+        &quot;odom&quot;
+        )
+
+        # next, we&#39;ll publish the odometry message over ROS
+        odom = Odometry()
+        odom.header.stamp = current_time
+        odom.header.frame_id = &quot;odom&quot;
+
+        # set the position
+        odom.pose.pose = Pose(Point(x, y, 0.), Quaternion(*odom_quat))
+
+        # set the velocity
+        odom.child_frame_id = &quot;base_link&quot;
+        odom.twist.twist = Twist(Vector3(vx, vy, 0), Vector3(0, 0, vth))
+
+        # publish the message
+        odom_pub.publish(odom)
+
+
+        _PreviousLeftEncoderCounts = tick_x
+        _PreviousRightEncoderCounts = tick_y
+        last_time = current_time
+
+
+    except:
+        pass    
+
+
+
+    r.sleep()
+</code></pre>
+
+<p>Here is my GMapping launch file:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;launch&gt;
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_link_to_laser&quot;
+args=&quot;0.0 0.0 0.0 0.0 0.0 0.0 /base_link /laser 40&quot; /&gt;
+
+&lt;!-- Run RPlidar --&gt;
+  &lt;node name=&quot;rplidarNode&quot;          pkg=&quot;rplidar_ros&quot;  type=&quot;rplidarNode&quot; output=&quot;screen&quot;&gt;
+  &lt;param name=&quot;serial_port&quot;         type=&quot;string&quot; value=&quot;/dev/ttyUSB0&quot;/&gt;  
+  &lt;param name=&quot;serial_baudrate&quot;     type=&quot;int&quot;    value=&quot;115200&quot;/&gt;
+  &lt;param name=&quot;frame_id&quot;            type=&quot;string&quot; value=&quot;laser&quot;/&gt;
+  &lt;param name=&quot;inverted&quot;            type=&quot;bool&quot;   value=&quot;false&quot;/&gt;
+  &lt;param name=&quot;angle_compensate&quot;    type=&quot;bool&quot;   value=&quot;true&quot;/&gt;
+  &lt;param name=&quot;motor_pwm&quot;           type=&quot;int&quot;    value=&quot;1000&quot;/&gt;
+  &lt;/node&gt;
+
+
+&lt;arg name=&quot;scan_topic&quot; default=&quot;scan&quot; /&gt; 
+
+&lt;!-- Defining parameters for slam_gmapping node --&gt; 
+
+  &lt;node pkg=&quot;gmapping&quot; type=&quot;slam_gmapping&quot; name=&quot;slam_gmapping&quot; output=&quot;screen&quot;&gt; 
+    &lt;param name=&quot;base_frame&quot; value=&quot;base_link&quot;/&gt; 
+    &lt;param name=&quot;odom_frame&quot; value=&quot;odom&quot;/&gt; 
+    &lt;param name=&quot;map_update_interval&quot; value=&quot;1.0&quot;/&gt; 
+    &lt;param name=&quot;maxUrange&quot; value=&quot;6.0&quot;/&gt; 
+    &lt;param name=&quot;maxRange&quot; value=&quot;8.0&quot;/&gt; 
+    &lt;param name=&quot;sigma&quot; value=&quot;0.05&quot;/&gt; 
+    &lt;param name=&quot;kernelSize&quot; value=&quot;1&quot;/&gt; 
+    &lt;param name=&quot;lstep&quot; value=&quot;0.05&quot;/&gt; 
+    &lt;param name=&quot;astep&quot; value=&quot;0.05&quot;/&gt; 
+    &lt;param name=&quot;iterations&quot; value=&quot;5&quot;/&gt; 
+    &lt;param name=&quot;lsigma&quot; value=&quot;0.075&quot;/&gt; 
+    &lt;param name=&quot;ogain&quot; value=&quot;3.0&quot;/&gt; 
+    &lt;param name=&quot;lskip&quot; value=&quot;0&quot;/&gt; 
+    &lt;param name=&quot;minimumScore&quot; value=&quot;100&quot;/&gt; 
+    &lt;param name=&quot;srr&quot; value=&quot;0.01&quot;/&gt; 
+    &lt;param name=&quot;srt&quot; value=&quot;0.02&quot;/&gt; 
+    &lt;param name=&quot;str&quot; value=&quot;0.01&quot;/&gt; 
+    &lt;param name=&quot;stt&quot; value=&quot;0.02&quot;/&gt; 
+    &lt;param name=&quot;linearUpdate&quot; value=&quot;0.5&quot;/&gt; 
+    &lt;param name=&quot;angularUpdate&quot; value=&quot;0.436&quot;/&gt; 
+    &lt;param name=&quot;temporalUpdate&quot; value=&quot;-1.0&quot;/&gt; 
+    &lt;param name=&quot;resampleThreshold&quot; value=&quot;0.5&quot;/&gt; 
+    &lt;param name=&quot;particles&quot; value=&quot;80&quot;/&gt;  
+    &lt;param name=&quot;delta&quot; value=&quot;0.05&quot;/&gt; 
+    &lt;param name=&quot;llsamplerange&quot; value=&quot;0.01&quot;/&gt; 
+    &lt;param name=&quot;llsamplestep&quot; value=&quot;0.01&quot;/&gt; 
+    &lt;param name=&quot;lasamplerange&quot; value=&quot;0.005&quot;/&gt; 
+    &lt;param name=&quot;lasamplestep&quot; value=&quot;0.005&quot;/&gt; 
+    &lt;remap from=&quot;scan&quot; to=&quot;$(arg scan_topic)&quot;/&gt; 
+  &lt;/node&gt; 
+
+&lt;!-- Run Rviz --&gt;
+  &lt;node name=&quot;rviz&quot; pkg=&quot;rviz&quot; type=&quot;rviz&quot; args=&quot;-d $(find rplidar_ros)/rviz/rplidar.rviz&quot; /&gt;
+
+
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>And my tf<em>frame view from top to bottom is:
+map&gt;odom&gt;base</em>link&gt;laser</p>
+
+<p>When I run the same gmapping launch file and use laser<em>scan</em>matcher method to get /odom and /tf, I get the same tf_frame tree as above and it generates the room map perfectly. 
+Any help to guide me to the right direction would be really helpful.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/53200">omar_09</a> on 2020-04-03 17:06:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You could compare the output of /tf and /odom between laser_scan_matcher and your node. Maybe provider bag-files of both?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21851">Humpelstilzchen</a> on 2020-04-05 02:15:21 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

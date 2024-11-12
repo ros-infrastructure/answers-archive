@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Spawned hector quadrotor cannot move - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/259971">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Spawned hector quadrotor cannot move</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80383/spawned-hector-quadrotor-cannot-move">https://robotics.stackexchange.com/questions/80383/spawned-hector-quadrotor-cannot-move</a>.</p>
+        <p>Hi everyone</p>
+
+<p>Currently, I am learning how to dynamically spawn a hector quadrotor duirng the simulation in C++. But I found a problem with it. I can call spawn<em>urdf</em>model service to generate a new UAV. But when I check topic list, I did not found the cmd_vel topic under the namespace of spawnd robot.</p>
+
+<p>When I go back to check the spawn<em>quadrotor.launch, which is a basic launch file for generating a robot, except for the model, it still create some nodes for other stuff (tf, controller and so). Therefore, even I successfully spawn a new hector quadrotor in the c++ file, it does not have nesscessary topic for me to control it. Does anyone meet with the similar situations? Or does anyone know how to add topic to a robot in c++ file or in urdf file? I only need cmd</em>vel for controlling the movement and ground<em>truth</em>to_tf/pose for sensing the position.</p>
+
+<p>Thank you very much </p>
+
+        <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-23 01:14:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The <code>spawn_urdf_model</code> service just creates a model in Gazebo. It won&#39;t create any of the nodes you need to control it, as that is functionality outside of Gazebo. You will need to launch the nodes that control the simulated robot as well if you want to control it like a real robot. </p>
+
+<p>If your goal is just to make the quadrotor move around and behave as an obstacle for your robot, then you can use the <code>set_model_state</code> and related services to make models move around.</p>
+
+<p>If your goal is to have a simulated quadrotor that you can control from ROS, then you will need to do something more complex. One option is to use make a system command call to start <code>roslaunch</code> with a launch file that either creates the quadrotor and related nodes, or stops a running launch. This would work but I think it would be messy and hard to manage - you would need to keep track of PIDs and watch the roslaunch output to look for errors. If you were using Python this would be relatively easy using the <code>subprocess</code> package. I think that Poco provides something similar for C++ but I&#39;ve never used it.</p>
+
+<p>Another option is a package called <a href="http://wiki.ros.org/rosspawn">rosspawn</a>, which is intended to provide a ROS API for launching ROS nodes. It hasn&#39;t been updated since Electric, though, so it probably would require some work to make it usable.</p>
+
+<p>Finally, you could try editing the nodes that control the quadcopters to support dynamic_reconfigure, have the controller nodes always running, and dynamically reconfigure them to point them at new Gazebo models when you spawn them.</p>
+
+<p><em>Edit:</em> Having just seen one of your many other questions, I&#39;ve found out that the Hector quadrotor can use Gazebo controllers in simulation, which should provide the topics you need. So if you use the <code>spawn_sdf</code>model service and load the Gazebo simulation file, not just the URDF, then it should load all the control plugins for you as well.</p>
+
+<p><em>Another edit:</em></p>
+
+<p>I spent some time working with the hector_* packages, and I&#39;ve managed to get a handle on how the simulation part is set up.</p>
+
+<p>All the controllers that you want are implemented as ros_control controllers. This means that they work with the <a href="http://gazebosim.org/tutorials?tut=ros_control">Gazebo ros_control support</a>. The great thing about this for you is that you can call the <code>spawn_sdf_model</code> service and pass the contents of the <code>quadrotor.gazebo</code> file (which you need to generate by passing <code>hector_quadrotor_description/urdf/quadrotor.gazebo</code> to xacro) to spawn a new instance of the quadrotor model, ready to go. To start the controllers, all you need to do then is call the <code>controller_manager/load_controller</code> service. The name of the controller that subscribes to the <code>/cmd_vel</code> topic is <code>controller/twist</code>. From the command line, this looks like:</p>
+
+<pre><code>rosservice call /controller_manager/load_controller controller/twist
+</code></pre>
+
+<p>Do something similar from C++ by making a service client for that service and calling it with <code>controller/twist</code> as the name of the controller to load.</p>
+
+<p>So to sum up, this will be two service calls to spawn a new quadrotor and start its controller. One call to Gazebo&#39;s <code>spawn_sdf_model</code> service and one call to <code>/controller_manager/load_controller</code>.</p>
+
+<p>However, you will need to provide a bunch of parameters to allow the controller to work properly. Below is a cut-down launch file that I was using for testing. It loads all the necessary parameters. It may also load some unnecessary ones; experimentation will tell you which are necessary. The most important part is the loading of <code>controller.yaml</code>, which configures the controller&#39;s PID values, etc.</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;launch&gt;
+  &lt;include file=&quot;$(find gazebo_ros)/launch/empty_world.launch&quot;/&gt;
+
+  &lt;!-- send the robot XML to param server --&gt;
+  &lt;param name=&quot;robot_description&quot; command=&quot;$(find xacro)/xacro &#39;$(find hector_quadrotor_description)/urdf/quadrotor.gazebo.xacro&#39; base_link_frame:=base_link world_frame:=world&quot; /&gt;
+  &lt;param name=&quot;tf_prefix&quot; type=&quot;string&quot; value=&quot;&quot; /&gt;
+  &lt;param name=&quot;base_link_frame&quot; type=&quot;string&quot; value=&quot;/base_link&quot;/&gt;
+  &lt;param name=&quot;world_frame&quot; type=&quot;string&quot; value=&quot;world&quot;/&gt;
+
+  &lt;!-- push robot_description to factory and spawn robot in gazebo --&gt;
+  &lt;node name=&quot;spawn_robot&quot; pkg=&quot;gazebo_ros&quot; type=&quot;spawn_model&quot;
+        args=&quot;-param robot_description -urdf -model quadrotor&quot;
+        respawn=&quot;false&quot; output=&quot;screen&quot;/&gt;
+
+  &lt;arg name=&quot;motors&quot; default=&quot;robbe_2827-34_epp1045&quot; /&gt;
+  &lt;rosparam command=&quot;load&quot; file=&quot;$(find hector_quadrotor_model)/param/quadrotor_aerodynamics.yaml&quot; /&gt;
+  &lt;rosparam command=&quot;load&quot; file=&quot;$(find hector_quadrotor_model)/param/$(arg motors).yaml&quot; /&gt;
+
+  &lt;!-- spawn controller --&gt;
+  &lt;param name=&quot;controller/state_topic&quot; value=&quot;state&quot; /&gt;
+  &lt;param name=&quot;controller/imu_topic&quot; value=&quot;imu&quot; /&gt;
+  &lt;rosparam file=&quot;$(find hector_quadrotor_controller)/params/controller.yaml&quot; /&gt;
+
+  &lt;node name=&quot;controller_spawner&quot; pkg=&quot;controller_manager&quot; type=&quot;spawner&quot; respawn=&quot;false&quot; output=&quot;screen&quot; args=&quot;controller/twist --shutdown-timeout 3&quot;/&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>When you want to delete the model, don&#39;t forget to also shut down its controller using <code>controller_manager/unload_controller</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20134"></a> on 2017-04-23 20:51:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Geoff</p>
+
+<p>It sounds like the last suggestion is really promising for me. But I am not sure whether I am right or not. Originally, quadrotor is descripted by a .xacro file. And in .launch file, except for the model, some control node also spawned. I think this is why I cannot call cmd_vel.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 00:00:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>But, as you suggested, I can transfer a .launch file to a sdf file so that every control node will be included in the spawned model. Am I right about it? Because, I must use c++ to spawn a robot and the spawned robot should have exactly the same capability as initial launched robot.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 00:02:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So I am wondering whether there are some ways to launch a .launch file in c++. Do you have some ideas towards this? I am grateful for any reply from you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 00:02:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Or, do you know some ways to run multiple (maybe hundreds) simulations together? Because the aim for respawning robots is for reseting the experiments so that in on simulation actually I can run multiple simulation subsequently. Do you know some ways to realize this? Thank you very much</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 00:05:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You cannot copy nodes from a launch file to an sdf file. Gazebo SDF has nothing to do with ROS nodes. Gazebo does support controller plugins, but these are separate from ROS nodes which may provide other controllers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-24 00:42:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I think .urdf can do the similar thing. My urdf file is parsed from a .xacro file. I remember in that urdf file I see some plugin tags. But in my launch file, except for the model, it also include nodes for control stuff, such as ground_to_truth.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 01:41:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Excuse me sir, now I have .xacro file for descripting the hector_quadrotor and .launch file for spawning a hector quadrotor with all necessary control plugins. Do you know how to only use c++ code to spawn a real hector quadrotor robot that can be controlled. This is very important to me. </p>
+
+<p>Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 01:43:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Technically, URDF cannot do a similar thing, but it can contain the information used by Gazebo because most tools that use URDF will ignore the tags they don&#39;t understand. This makes it easy to put things like Gazebo plugins in the URDF and use a single file, which is convenient.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-24 02:38:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So, is there tutorials or examples that show to how to transform all stuff I need to  a sdf file? Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-24 03:52:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You don&#39;t need to. The Hector Quadrotor stuff already comes with an SDF file, <code>quadrotor.gazebo.xacro</code>. It&#39;s just that it&#39;s an xacro template, so you need to pass it to xacro before using it. The parameters, you can put in your launch file.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-24 17:35:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, I understand it. But in my simulation, under some conditions, each robot will remove from the space. When all robots are removed, the simulation terminate. But, based on my project, I need to run more than 1000 simulations.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-25 01:24:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So, I planned to respawn all removed robots and put them in original position. By this way, in one simulation I can always remove robots, then reset it so that in one simulation actually I can run multiple simulations</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-25 01:25:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The algorithm for robot is controlled by a c++ file as external node. All spawn and remove must happed there. That is why repawning a robot must fully happen there. Do you have some idea towards it, Sir?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-25 01:26:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have told you how to do it fully from C++. Gazebo terminating after deleting a model is probably a bug, and you should post a separate question about that with the complete error output and source that can be used to reproduce the error.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-25 01:49:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Actually I already solve the problem of the code above. My new problem is I can spawn a quadrotor during the simulation. But, that is just a mode. I cannot call topic service in c++ to move it. So, I am wondering how to spawn a really contollable quadrotor in c++</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-04-25 01:55:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Using the stuff I discussed in my answer, I was able to spawn a quadrotor in the simulation, move it using the /cmd_vel topic, and then delete it. What topics or services do you want to call that are not present?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-04-25 01:57:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi Geoff, could you tell me how to convert quadrotor.gazebo.xacro to .sdf file that I can use in spawn_sdf_model service? Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-10 05:41:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Run it through xacro, like this:</p>
+
+<p><code>rosrun xacro xacro quadrotor.gazebo.xacro &gt; quadrotor.gazebo.sdf</code></p>
+
+<p>By the way, if the above answer solves your problem please mark it as accepted, so that others who have the same problem know how to fix it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-07-10 18:44:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi Geoff, I meet with some issues for spawning a hector_quadrotor with spawn_sdf_model service. I think may I did not generate the right .sdf file. I use spawn_sdf_model service just for spawning a model without calling controlling service. But gazebo crashed. I do not know why.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-10 21:50:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>By using the same code. I downloaded a .sdf file from the website and tried it. It works. Is that I need to set parameters in C++ for .sdf file before I generate the model? Or some other reasons?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-10 21:52:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Which SDF file did you download?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-07-10 22:11:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>A very easy sdf file that just creates a box in the space. I downloaded it from ROS tutorial website. this is the link: <a href="http://gazebosim.org/tutorials?tut=build_model">http://gazebosim.org/tutorials?tut=build_model</a>. In my code, I only try to create a model from the file that is converted from .xacro to .sdf. Should I specify something more in C++</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-10 22:48:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi Geoff. Do you have time for having a look at my code? If you can, could you share your email with me so that I can send you the file. In comment field, I cannot include many characters. Thank you very much.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-10 23:56:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hello, Geoff. Just now, I found actually I can call spawn_urdf_model service to create a model with topics for it by including plugins in the .urdf file. But it seems like I need to specify parameters for each .so file. Do you know how to add cmd_vel and ground_to_truth/pose topic through this way.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-11 00:50:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Look at the last part of my answer. It&#39;s setting some of those parameters in the launch file. If you want to set them at runtime, you can use the parameter server API to do so. See <a href="http://wiki.ros.org/roscpp_tutorials/Tutorials/Parameters">this tutorial</a> for how to do that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-07-11 01:39:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you very much Geoff, I will try to handle them by myself.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-11 02:01:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi geoff. Does it mean I must set parameters value in C++ for every spawning of new robot?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-11 05:24:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Excuse me Geoff. Could you share your quadrotor.gazebo.sdf file with me? I still cannot solve the problem with .urdf file. Sorry for bothering you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-11 05:40:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If the parameters do not change, then you do not need to set the parameters for every spawning.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-07-11 20:34:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://gist.github.com/gbiggs/a4ca81ebb40dfa081c0e816fe50ab4c6">Here&#39;s the SDF file</a>, but I would like to point out that posting the one you are having trouble with so we can fix it will be more value to you in the long run.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20134">Geoff</a> on 2017-07-11 20:36:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks Geoff. I will make another post for uploading my incorrect .sdf file. Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30092">jasonwang538@gmail.com</a> on 2017-07-11 20:39:31 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

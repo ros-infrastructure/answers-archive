@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Putting log messages from non-ROS code into ROS logging system - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/29874">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Putting log messages from non-ROS code into ROS logging system</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/38752/putting-log-messages-from-non-ros-code-into-ros-logging-system">https://robotics.stackexchange.com/questions/38752/putting-log-messages-from-non-ros-code-into-ros-logging-system</a>.</p>
+        <p>I&#39;m writing two new classes:</p>
+
+<ul>
+<li>A class that controls a motor control board (mcb)</li>
+<li>A ROS node that contains an object of the mcb class. This node provides services to the rest of ROS that use the mcb.</li>
+</ul>
+
+<p>The mcb class will be used later on in non-ROS applications and needs to be stand alone.  That&#39;s not hard to do, but since I&#39;m using ROS now I&#39;d like to use the nice ROS_[INFO|ERROR] logging functionality.</p>
+
+<p>My idea was to have a logfunction function pointer in the mcb class that the caller could supply. That would give the caller the opportunity to print statements to standard output by supplying printf, to log to ROS with the ROS log stuff, or to log some other way by a custom function.</p>
+
+<p>The only problem is that ROS_[INFO|ERROR|etc.] are all macros, and can&#39;t be pointed to as far as I know.  I also can&#39;t wrap the logging macros in functions, because it&#39;s not possible to pass ellipses, right?</p>
+
+<p>Does anybody know of a way to provide the logging functionality through a pointer or a stream or something? Or is there any way to put outside log messages into the ROS logging system?</p>
+
+<p>Many thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1483">thebyohazard</a> on 2012-03-16 04:52:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As a simple form I use this header: <a href="http://alufr-ros-pkg.googlecode.com/svn/trunk/symbolic_planning/tfd_modules/downward/search/ros_printouts.h">ros_printouts.h</a></p>
+
+<pre>
+#ifndef ROS_PRINTOUTS_H
+#define ROS_PRINTOUTS_H
+
+/// Compatibility header for non-ros build
+
+#if ROS_BUILD
+    // Nothing to do, use the ROS functionality
+#else
+
+    #define ROS_DEBUG_STREAM(args) \
+    cout << args << endl;
+
+    #define ROS_INFO_STREAM(args) \
+    cout << args << endl;
+
+
+    #define ROS_DEBUG \
+        printf 
+
+    #define ROS_INFO \
+        printf 
+
+    #define ROS_WARN \
+        printf 
+
+    #define ROS_ERROR \
+        printf 
+
+    #define ROS_FATAL \
+        printf
+
+    #define ROS_ASSERT assert
+
+#endif
+
+#endif
+</pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2012-03-16 06:38:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I hadn&#39;t thought of that! The only downside is ROS logging functions append a newline character while printf doesn&#39;t.  So I&#39;d have everything on one line if not using newline in each statement or a bunch of skipped lines in the ROS log if I did. Really just annoying, tho - a definite possibility.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1483">thebyohazard</a> on 2012-03-16 07:01:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="http://octomap.sourceforge.net/doxygen/octomap__types_8h_source.html">http://octomap.sourceforge.net/doxygen/octomap__types_8h_source.html</a> is an example similar to this that handles the newline stuff as well as variadic arguments. Note that this makes more sense for a standalone lib if your logging defines are things like &quot;MYLIBRARY_DEBUG&quot; instead of &quot;ROS_DEBUG&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14">Eric Perko</a> on 2012-03-19 15:35:13 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>A quick summary, and then on to code samples:</p>
+
+<ol>
+<li>Build your driver node to be completely ROS-agnostic.  In your class, define a series of (private) function pointers to logging functions for you different levels, Debug, Info, Error, etc.</li>
+<li>In your class, define a few &quot;setters&quot; to update these function pointers.</li>
+<li>In your class, create some generic loggers (or use the logging system of your choice), and make these default in the constructor</li>
+<li>In your node, create some wrappers to the ROS functions.</li>
+<li>When constructing the driver object, make sure to also update the logging function pointers to your new ROS function pointers.</li>
+</ol>
+
+<p><strong>C++</strong></p>
+
+<p>I think a decent example of this is @wjwwood&#39;s libsegwayrmp library.</p>
+
+<p>To begin with, he typedef&#39;s a few functions:</p>
+
+<pre><code>typedef boost::function&lt;void(const std::string&amp;)&gt; DebugMsgCallback;
+typedef boost::function&lt;void(const std::string&amp;)&gt; InfoMsgCallback;
+typedef boost::function&lt;void(const std::string&amp;)&gt; ErrorMsgCallback;
+</code></pre>
+
+<p>And then creates private class variables in his hardware driver;</p>
+
+<pre><code>...
+private:
+   DebugMsgCallback debug;
+   InfoMsgCallback info;
+   ErrorMsgCallback error;
+</code></pre>
+
+<p>And he creates three public mutators to update these function pointers:</p>
+
+<pre><code>void setErrorMsgCallback(ErrorMsgCallback);
+void setInfoMsgCallback(InfoMsgCallback);
+void setDebugMsgCallback(DebugMsgCallback);
+</code></pre>
+
+<p>The logging functions can be called in your class by simply doing:</p>
+
+<pre><code>this-&gt;error(&quot;This is an error message&quot;)
+this-&gt;debug(&quot;This is a debug message&quot;)
+this-&gt;info(&quot;This is an info message&quot;)
+</code></pre>
+
+<p>So now, to use this WITHOUT ROS, you can create three simple callback functions that just log to the console, or modify these for your own logging suite:</p>
+
+<pre><code>inline void defaultDebugMsgCallback(const std::string &amp;msg) {
+    std::cerr &lt;&lt; &quot;SegwayRMP Debug: &quot; &lt;&lt; msg &lt;&lt; std::endl;
+}
+
+inline void defaultInfoMsgCallback(const std::string &amp;msg) {
+    std::cerr &lt;&lt; &quot;SegwayRMP Info: &quot; &lt;&lt; msg &lt;&lt; std::endl;
+}
+
+inline void defaultErrorMsgCallback(const std::string &amp;msg) {
+    std::cerr &lt;&lt; &quot;SegwayRMP Error: &quot; &lt;&lt; msg &lt;&lt; std::endl;
+}
+</code></pre>
+
+<p>Or, to use it WITH ROS, you can create some functions that wrap the macros:</p>
+
+<pre><code>void handleDebugMessages(const std::string &amp;msg) {ROS_DEBUG(&quot;%s&quot;,msg.c_str());}
+void handleInfoMessages(const std::string &amp;msg) {ROS_INFO(&quot;%s&quot;,msg.c_str());}
+void handleErrorMessages(const std::string &amp;msg) {ROS_ERROR(&quot;%s&quot;,msg.c_str());}
+</code></pre>
+
+<p>When you construct the device driver, you can then update these function pointers to your newly-wrapped functions:</p>
+
+<pre><code>this-&gt;segway_rmp-&gt;setDebugMsgCallback(handleDebugMessages);
+this-&gt;segway_rmp-&gt;setInfoMsgCallback(handleInfoMessages);
+this-&gt;segway_rmp-&gt;setErrorMsgCallback(handleErrorMessages);
+</code></pre>
+
+<p><strong>Python</strong></p>
+
+<p>You do a similar thing with Python.  I create my hardware interfaces to use the default Python <code>logging</code> built-in.  The signature for these functions is:</p>
+
+<pre><code>f(msg, *args)
+</code></pre>
+
+<p>Which happens to be the same as the ROS logging system.</p>
+
+<p>Using a similar strategy, I create a few function references as class variables:</p>
+
+<pre><code>class DriverObject(object):
+    def __init__(self, param1, param2, param3, debug=None, info=None, error=None):
+        self.debug = logging.debug                                                   
+        self.info = logging.info                                                     
+        self.error = logging.error                                                                                                                                         
+        if debug:                                                                    
+            self.debug = debug                                                       
+        if error:                                                                    
+            self.error = error                                                       
+        if info:                                                                     
+            self.info = info
+</code></pre>
+
+<p>And to use these functions throughout my class, I simply do:</p>
+
+<pre><code>self.debug(&quot;This is a debug message&quot;)
+self.error(&quot;This is an error message&quot;
+self.info(&quot;This is an info message&quot;)
+</code></pre>
+
+<p>And when I want to use the class within a ROS node:</p>
+
+<pre><code>import rospy
+from driver import DriverObject
+
+do = DriverObject(1,1,1,debug=rospy.logdebug, info=rospy.loginfo, error=rospy.logerr)
+</code></pre>
+
+<p>And now all the logging goes through the ROS logging system.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/9"></a> on 2012-03-16 06:43:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This is pretty much what I originally wanted to do, but I was only thinking in a c mindset, trying to wrap variadic functions like printf. Thanks for putting me in a c++ mindset. This worked great. For those who come after: boost::lexical_cast for the win.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1483">thebyohazard</a> on 2012-03-19 12:01:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah, I hope that wasn&#39;t too confusing.  I tried to dig through the code for the meaty bits for you, and it STILL came out as a wall of code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/9">mjcarroll</a> on 2012-03-19 14:08:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Wouldn&#39;t it be possible to use the python module <code>logging</code> in the agnostic code and let the wrapper somehow connect the own logger to the ROS logging? I&#39;m trying that but not that successful. Update: probably got that, await my answer..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/606">felix k</a> on 2013-12-11 04:40:21 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I&#39;ll propose a more <strong>pythonic</strong> way to merge a separate logging into roslogging. Feedback welcome!</p>
+
+<ol>
+<li>Pros</li>
+<li>Cons/Todos</li>
+<li>How To</li>
+</ol>
+
+<hr>
+
+<h2>1. Pros</h2>
+
+<ul>
+<li>Just use the <a href="http://docs.python.org/2/library/logging.html">standard python logging module</a>, featuring formatting, namespacing hierarchy, log levels etc. pp.</li>
+<li>If the library is used without modifying its logging like above, the logs are written to console in the given formatting</li>
+<li>If only the forwarding code above is executed, the logs are written to console using ROS (so the formatting matches the rest of the program)</li>
+<li>If additionally the wrapping/user code calls <code>rospy.init_node(..)</code>, the logs are automatically published on <code>/rosout</code></li>
+<li>The logging namespace hierarchy is viewable in the <a href="http://wiki.ros.org/rxloggerlevel">logger level GUIs</a> and for each namespace a level can be set, affecting console and rosout output as usual.</li>
+</ul>
+
+<h2>2. Cons/Todos</h2>
+
+<ul>
+<li>Logs issued right after <code>init_node</code> without any delay might not be published. I don&#39;t know where that buffer is missing, but have never experienced that with the default rospy logging (<code>rospy.log*</code>) so it could be fixable.</li>
+</ul>
+
+<h2>3. How To</h2>
+
+<p>In the ROS-agnostic library add:
+(named <em>rgoap</em> in this case, the file being <code>rgoap/__init__.py</code>):</p>
+
+<pre><code>## logging
+
+import logging
+_logger = logging.getLogger(&#39;rgoap&#39;)
+&quot;&quot;&quot;The logger used in this library&quot;&quot;&quot;
+_logger.setLevel(logging.INFO)
+
+# add default console output
+_loghandler = logging.StreamHandler()
+_loghandler.setLevel(logging.INFO)
+_loghandler.setFormatter(logging.Formatter(&#39;[%(levelname)s] %(message)s&#39;))
+_logger.addHandler(_loghandler)
+
+def remove_default_loghandler():
+    &quot;&quot;&quot;Call this to mute this library or to prevent duplicate messages
+    when adding another log handler to the logger named &#39;rgoap&#39;.&quot;&quot;&quot;
+    _logger.removeHandler(_loghandler)
+</code></pre>
+
+<p>In the library&#39;s code files just log via:</p>
+
+<pre><code>import logging
+_logger = logging.getLogger(&#39;rgoap&#39;) # you can also use dotted namespaces like &#39;rgoap.planner&#39;!
+
+def my_func():
+    _logger.info(&quot;Hello %s&quot;, &quot;World&quot;)
+</code></pre>
+
+<p>In the ROS-wrapper for that library add:
+(for example in <code>rgoap_ros/__init__.py</code>)</p>
+
+<pre><code>import rgoap
+import rospy
+
+### set up rgoap-ros interface
+
+## forward rgoap&#39;s logging to ROS
+import logging
+
+# ..for console output
+import rosgraph.roslogging as _rl
+logging.getLogger(&#39;rgoap&#39;).addHandler(_rl.RosStreamHandler())
+
+# ..for network output (/rosout)
+import rospy.impl.rosout as _ro
+logging.getLogger(&#39;rgoap&#39;).addHandler(_ro.RosOutHandler())
+
+# remove the default console output
+rgoap.remove_default_loghandler()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/606">felix k</a> on 2013-12-12 08:01:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for sharing this. About the cons: I experienced this also with the ROS logging functions. I think it is just a general limitation of publishers (when they start publishing directly after creation, subscribers are not yet ready to receive).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28762">Felix Widmaier</a> on 2018-10-12 07:50:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I wouldn&#39;t really say this a more pythonic way, but redirecting standard logging to ros logging seems to me just the most sensible thing to do. It saves you lots of hassle with callbacks and whatever.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/136267">oddbotwl</a> on 2023-04-20 05:24:42 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I ran into similar issues.  The ROS logging macros are numerous and defined 5 or more levels deep, so whenever you pass the wrong one of the plethora of stringy types in C++, you get several screenfulls of preprocessor error. </p>
+
+<p>If you&#39;re developing in C++11, you can use closures to bring back a measure of explicitly typed sanity:</p>
+
+<pre><code>    auto log_info =  [] (const std::string &amp; str) {ROS_INFO_STREAM(str);};
+    auto log_warning =  [] (const std::string &amp; str) {ROS_WARNING_STREAM(str);};
+    auto log_error =  [] (const std::string &amp; str) {ROS_ERROR_STREAM(str);};
+</code></pre>
+
+<p>There are probably many ways of defining the above closures; there may be a better one for your code.  Doing it this way decomposes the task of fixing the types in the call sites in your code from the much harder problem of figuring out which types will actually work in ROS&#39;s macros.  </p>
+
+<p>I&#39;m sure there are reasonable historical reasons for why ROS is code generating header files full of macros nested 5  levels deep, but IMHO it has resulted in an unreasonable level of complexity for something as simple as logging a string.  Perhaps someone can post an example of what all the macros actually boil down to in the end.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1742">drewm1980</a> on 2015-08-19 08:33:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

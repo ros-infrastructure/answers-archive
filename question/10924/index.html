@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>IK works in planning visualizer but often fails on real robot - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10924">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>IK works in planning visualizer but often fails on real robot</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/33694/ik-works-in-planning-visualizer-but-often-fails-on-real-robot">https://robotics.stackexchange.com/questions/33694/ik-works-in-planning-visualizer-but-often-fails-on-real-robot</a>.</p>
+        <p>Hello arm navigation gurus,</p>
+
+<p>I am running the latest and greatest Electric arm_navigation Debian packages on an Ubuntu 10.04 machine.  Using the planning wizard is a breeze and I have defined one kinematic group for my robot&#39;s 6-dof right arm (see <a href="http://pi-robot-ros-pkg.googlecode.com/svn/trunk/pi_description/urdf/pi_robot_right_arm_only_pedestal.urdf">here</a> for URDF).  Next I tried things out in the planning visualizer and the IK engine has no trouble finding solutions for random movements of the right hand (no gripper).</p>
+
+<p>Turning to the real robot, I am using the dynamixel<em>motor stack to drive the arm and I have successfully tested the basic topics and services that control the servos.  The joint states are published on the /joint</em>states topic at 20 Hz and moving the arm passively is reflected smoothly in RViz.</p>
+
+<p>I then wrote a simple move_arm test script in Python that mimics the C++ tutorial <a href="http://www.ros.org/wiki/move_arm/Tutorials/MoveArmPoseGoal">found here</a>.  I have included the script below.  The target pose in the script was taken from the FK when the arm was passively moved in front of the robot and slight bent.  I then moved the arm around into various joint positions and ran my test script manually to see if an IK solution could be found.</p>
+
+<p>In some cases, a solution is found and the arm moves over a smooth trajectory to place the hand correctly.  However, there seems to be only a small bubble around the desired pose where IK solutions can be found.  This is in contrast to the planning visualizer where solutions were not a problem.  I&#39;m guessing there is something missing from my test script related to initializing the environment scene but I&#39;m not sure how to do that with Python.</p>
+
+<p>Any thoughts?</p>
+
+<p>--patrick</p>
+
+<p>Here now is my test script:</p>
+
+<pre><code>#! /usr/bin/python
+import roslib
+roslib.load_manifest(&#39;pi_dynamixel_controller&#39;)
+
+import rospy
+import actionlib
+from actionlib_msgs.msg import *
+from pr2_controllers_msgs.msg import *
+from trajectory_msgs.msg import *
+from dynamixel_controllers.srv import TorqueEnable
+from arm_navigation_msgs.msg import *
+from control_msgs.msg import FollowJointTrajectoryAction
+
+def poseConstraintToPositionOrientationConstraints(pose_constraint):
+    position_constraint = PositionConstraint()
+    orientation_constraint = OrientationConstraint()
+    position_constraint.header = pose_constraint.header
+    position_constraint.link_name = pose_constraint.link_name
+    position_constraint.position = pose_constraint.pose.position
+    position_constraint.constraint_region_shape.type = 0
+    position_constraint.constraint_region_shape.dimensions.append(2*pose_constraint.absolute_position_tolerance.x)
+    position_constraint.constraint_region_shape.dimensions.append(2*pose_constraint.absolute_position_tolerance.y)
+    position_constraint.constraint_region_shape.dimensions.append(2*pose_constraint.absolute_position_tolerance.z)
+
+    position_constraint.constraint_region_orientation.x = 0.0
+    position_constraint.constraint_region_orientation.y = 0.0
+    position_constraint.constraint_region_orientation.z = 0.0
+    position_constraint.constraint_region_orientation.w = 1.0
+
+    position_constraint.weight = 1.0
+
+    orientation_constraint.header = pose_constraint.header
+    orientation_constraint.link_name = pose_constraint.link_name
+    orientation_constraint.orientation = pose_constraint.pose.orientation
+    orientation_constraint.type = pose_constraint.orientation_constraint_type
+
+    orientation_constraint.absolute_roll_tolerance = pose_constraint.absolute_roll_tolerance
+    orientation_constraint.absolute_pitch_tolerance = pose_constraint.absolute_pitch_tolerance
+    orientation_constraint.absolute_yaw_tolerance = pose_constraint.absolute_yaw_tolerance
+    orientation_constraint.weight = 1.0
+
+    return (position_constraint, orientation_constraint)
+
+
+def addGoalConstraintToMoveArmGoal(pose_constraint, move_arm_goal):
+    position_constraint, orientation_constraint = poseConstraintToPositionOrientationConstraints(pose_constraint);
+    move_arm_goal.motion_plan_request.goal_constraints.position_constraints.append(position_constraint)
+    move_arm_goal.motion_plan_request.goal_constraints.orientation_constraints.append(orientation_constraint)
+
+
+rospy.init_node(&#39;place_hand&#39;, anonymous=True)
+side = rospy.get_param(&quot;~side&quot;, &quot;right&quot;)
+
+move_arm = actionlib.SimpleActionClient(&quot;move_&quot; + side + &quot;_arm&quot;, MoveArmAction)
+
+dynamixel_namespace = &#39;/dynamixel_controller&#39;
+dynamixels = rospy.get_param(dynamixel_namespace + &#39;/dynamixels&#39;, dict())
+
+servo_torque_enable = list()
+
+for name in sorted(dynamixels):
+    torque_enable_service = dynamixel_namespace + &#39;/&#39; + name + &#39;_controller/torque_enable&#39;
+    rospy.wait_for_service(torque_enable_service)  
+    servo_torque_enable.append(rospy.ServiceProxy(torque_enable_service, TorqueEnable))
+
+move_arm.wait_for_server()
+rospy.loginfo(&quot;Connected to move_&quot;+side+&quot;_arm server&quot;)
+
+goal = MoveArmGoal()
+
+goal.motion_plan_request.group_name = side + &quot;_arm&quot;
+goal.motion_plan_request.num_planning_attempts = 1
+goal.motion_plan_request.allowed_planning_time = rospy.Duration(10.0)
+
+goal.motion_plan_request.planner_id = &quot;&quot;
+goal.planner_service_name = &quot;ompl_planning/plan_kinematic_path&quot;
+
+desired_pose = SimplePoseConstraint()
+desired_pose.header.frame_id = &quot;lower_torso_link&quot;
+desired_pose.link_name = side + &quot;_hand_link&quot;;
+desired_pose.pose.position.x = 0.248939291788;
+desired_pose.pose.position.y =  0.00880423979233;
+desired_pose.pose.position.z = -0.0346550990121;
+
+desired_pose.pose.orientation.x = 0.317800304267;
+desired_pose.pose.orientation.y = -0.541804275305;
+desired_pose.pose.orientation.z = 0.299045455395;
+desired_pose.pose.orientation.w = 0.71834734598;
+
+desired_pose.absolute_position_tolerance.x = 0.05;
+desired_pose.absolute_position_tolerance.y = 0.05;
+desired_pose.absolute_position_tolerance.z = 0.05;
+
+desired_pose.absolute_roll_tolerance = 0.2;
+desired_pose.absolute_pitch_tolerance = 0.2;
+desired_pose.absolute_yaw_tolerance = 0.2;
+
+addGoalConstraintToMoveArmGoal(desired_pose, goal)
+
+finished_within_time = False
+move_arm.send_goal(goal) 
+finished_within_time = move_arm.wait_for_result(rospy.Duration(200));
+if not finished_within_time:
+    move_arm.cancel_goal()
+    rospy.loginfo(&quot;Timed out achieving goal&quot;)
+else:
+    state = move_arm.get_state()
+    if state == GoalStatus.SUCCEEDED:
+      rospy.loginfo(&quot;Action succeeded!&quot;)
+    else:
+      rospy.loginfo(&quot;Action failed with error code: &quot; + str(state))
+
+# Relax all servos to give them a rest.
+for torque_enable in servo_torque_enable:
+    torque_enable(False)
+
+print &quot;Finished&quot;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-08-16 11:18:59 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Patrick, </p>
+
+<p>This is a shortcoming of the current plugin being used in arm_kinematics_constraint_aware.  As it&#39;s a numerical optimization solver, the KDL IK is very sensitive to the seed state at which the search begins.  It will generally find a good solution quickly when the seed state is close to the goal state - this is why the mode that you use in the planning_components_visualizer works so well, as we constantly update the seed state such that each new pose is only slightly different than the old pose.</p>
+
+<p>When you are invoking move_arm this will be set by default to the current state of the robot&#39;s arm - when you are dragging the arm further and further away from the desired pose the seed state gets worse and worse, and the numerical optimization may get stuck in a local minima. </p>
+
+<p>There are a couple parameters you can tune in the IK plugin that will make it try harder to find solutions.  The first is the &#39;max_solver_iterations&#39; - it&#39;s set to 500 by default, but you may get better performance increasing it to 1000 or more.  The second is &#39;max_search_iterations&#39; - currently set to 3 by default.  If KDL fails to converge by the requested number of iterations starting with the supplied seed state, it will randomly reseed the joints in between the limits and try again, repeating this process up to the requested number of search iterations.</p>
+
+<p>The side-effect of increasing these parameters is that when KDL doesn&#39;t find a solution it can take a long time to return.  On my machine the current time to return with no solution given the default parameters is about 10 milliseconds, which doesn&#39;t seem like a long time, but the PR2 analytic solver will return a failure in less than 10 microseconds.</p>
+
+<p>The last option is to explore OpenRAVE&#39;s ikfast, which should provide analytical solutions quickly but is not currently integrated into the wizard pipeline.  I&#39;ll be looking into integrating it but it probably won&#39;t make it into a release until F-turtle.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/82">egiljones</a> on 2011-08-17 04:36:33 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I thought I would be able to figure out where to change the max_solver_iterations and max_search_iterations parameters but no matter where I place them in the autogenerated arm navigation launch or config files, they have no effect, even when I set them really large (like 100000).  By &quot;no effect&quot; I mean that the arm planning terminal reports &quot;No IK solution found&quot; almost instantly even when I use very large parameter values.  So where exactly do I set these parameters?  Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-08-20 12:12:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks Gil--that clears it all up.  I&#39;ll play with the parameters you describe.  I have also successfully run OpenRAVE&#39;s ikfast with orrosplanning and it does indeed seem to find solutions in a larger configuration space.  Taken together, this should keep me busy until F-turtle. :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-08-17 04:51:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Is this the problem that all the ROS user who use arm_navigation utility will encounter? Can we solve the IK solver problem completely, such that the arm navigation can be stable?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1569">Albert K</a> on 2013-05-26 17:40:09 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Patrick - sorry, didn&#39;t see your comment until now.</p>
+
+<p>It&#39;s a little confusing to figure out how to set parameters for a the kdl_plugin - you have to set them in the node and then in the namespace for the group - this is so a node can have several different kinematics solvers.  Setting the following parameters for your arm makes IK take about 1.4 seconds when there&#39;s no solution on my desktop.  Not positive whether it&#39;ll work better for you in random poses, but it&#39;s worth a try:</p>
+
+<pre><code>  &lt;node pkg=&quot;arm_kinematics_constraint_aware&quot; type=&quot;arm_kinematics_constraint_aware&quot; name=&quot;pi_robot_right_arm_kinematics&quot;&gt;
+        &lt;param name=&quot;group&quot; type=&quot;string&quot; value=&quot;right_arm&quot; /&gt;
+        &lt;param name=&quot;right_arm/root_name&quot; type=&quot;string&quot; value=&quot;lower_torso_link&quot; /&gt;
+        &lt;param name=&quot;right_arm/tip_name&quot; type=&quot;string&quot; value=&quot;right_wrist_link&quot; /&gt;
+        &lt;param name=&quot;right_arm/max_solver_iterations&quot; type=&quot;int&quot; value=&quot;10000&quot; /&gt;
+        &lt;param name=&quot;right_arm/max_search_iterations&quot; type=&quot;int&quot; value=&quot;10&quot; /&gt;
+        &lt;param name=&quot;kinematics_solver&quot; type=&quot;string&quot; value=&quot;arm_kinematics_constraint_aware/KDLArmKinematicsPlugin&quot; /&gt;
+    &lt;/node&gt;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/82">egiljones</a> on 2011-08-24 05:57:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I got to this sooner than I expected.  The parameters definitely now make a difference to the time it takes the IK to fail but it doesn&#39;t seem to expand the solution space very much.  Perhaps this is just a limitation of the numerical solver.  I&#39;m finding the OpenRAVE analytic solver to be very good so I&#39;ll likely pursue that avenue for awhile.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-08-25 08:36:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks Gil--I hope to give it a try this weekend and will post back my results.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-08-24 13:26:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

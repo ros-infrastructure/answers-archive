@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to fuse Visual SLAM (ORB_SLAM2) with detected obstacle using 2D Lidar and IMU to obtain robot localization? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/413432">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to fuse Visual SLAM (ORB_SLAM2) with detected obstacle using 2D Lidar and IMU to obtain robot localization?</h2>
+      <div class="question">
+        <p>Hi</p>
+
+<p>I would like to fuse Visual SLAM (ORB<em>SLAM2) with detected obstacle using 2D Lidar and IMU to obtain robot localization(lateral position and heading angle of the robot). Already successfully detected the obstacles around using the 2D Lidar. So from my code I have the Center X,Y of the obstacle and also the angle. Here the obstacle detection code. Also the scan</em>matching node gives 2DPose</p>
+
+<pre><code>#include &quot;../include/obstacle_detector.h&quot;
+
+using namespace std;
+using namespace obstacle_detector;
+
+ObstacleDetector::ObstacleDetector() : nh_(&quot;&quot;), nh_local_(&quot;~&quot;) {
+  updateParams();
+
+  if (p_use_scan_)
+    scan_sub_ = nh_.subscribe(&quot;/scan&quot;, 1, &amp;ObstacleDetector::scanCallback, this);
+  else if (p_use_pcl_)
+    pcl_sub_ = nh_.subscribe(&quot;pcl&quot;, 10, &amp;ObstacleDetector::pclCallback, this);
+
+  obstacles_pub_ = nh_.advertise&lt;obstacle_detector::Obstacles&gt;(&quot;obstacles&quot;, 5);
+
+  ROS_INFO(&quot;Obstacle Detector [OK]&quot;);
+  ros::spin();
+}
+
+void ObstacleDetector::updateParams() {
+  nh_local_.param&lt;std::string&gt;(&quot;world_frame&quot;, p_world_frame_, &quot;world&quot;);
+  nh_local_.param&lt;std::string&gt;(&quot;scanner_frame&quot;, p_scanner_frame_, &quot;laser_frame&quot;);
+
+  nh_local_.param&lt;bool&gt;(&quot;use_scan&quot;, p_use_scan_, true);
+  nh_local_.param&lt;bool&gt;(&quot;use_pcl&quot;, p_use_pcl_, false);
+  nh_local_.param&lt;bool&gt;(&quot;transform_to_world&quot;, p_transform_to_world, true);
+  nh_local_.param&lt;bool&gt;(&quot;use_split_and_merge&quot;, p_use_split_and_merge_, false);
+
+  nh_local_.param&lt;int&gt;(&quot;min_group_points&quot;, p_min_group_points_, 3);
+
+  nh_local_.param&lt;double&gt;(&quot;max_group_distance&quot;, p_max_group_distance_, 0.100);
+  nh_local_.param&lt;double&gt;(&quot;distance_proportion&quot;, p_distance_proportion_, 0.006136);
+  nh_local_.param&lt;double&gt;(&quot;max_split_distance&quot;, p_max_split_distance_, 0.100);
+  nh_local_.param&lt;double&gt;(&quot;max_merge_separation&quot;, p_max_merge_separation_, 0.200);
+  nh_local_.param&lt;double&gt;(&quot;max_merge_spread&quot;, p_max_merge_spread_, 0.070);
+  nh_local_.param&lt;double&gt;(&quot;max_circle_radius&quot;, p_max_circle_radius_, 0.300);
+  nh_local_.param&lt;double&gt;(&quot;radius_enlargement&quot;, p_radius_enlargement_, 0.050);
+
+  nh_local_.param&lt;double&gt;(&quot;max_scanner_range&quot;, p_max_scanner_range_, 5.0);
+  nh_local_.param&lt;double&gt;(&quot;max_x_range&quot;, p_max_x_range_, 2.0);
+  nh_local_.param&lt;double&gt;(&quot;min_x_range&quot;, p_min_x_range_, -2.0);
+  nh_local_.param&lt;double&gt;(&quot;max_y_range&quot;, p_max_y_range_, 2.0);
+  nh_local_.param&lt;double&gt;(&quot;min_y_range&quot;, p_min_y_range_, -2.0);
+}
+
+void ObstacleDetector::scanCallback(const sensor_msgs::LaserScan::ConstPtr&amp; scan) {
+  initial_points_.clear();
+
+  double phi = scan-&gt;angle_min - scan-&gt;angle_increment;
+
+  for (const float r : scan-&gt;ranges) {
+    phi += scan-&gt;angle_increment;
+
+    if (r &gt;= scan-&gt;range_min &amp;&amp; r &lt;= scan-&gt;range_max &amp;&amp; r &lt;= p_max_scanner_range_)
+      initial_points_.push_back(Point::fromPoolarCoords(r, phi));
+  }
+
+  processPoints();
+}
+
+void ObstacleDetector::pclCallback(const sensor_msgs::PointCloud::ConstPtr&amp; pcl) {
+  initial_points_.clear();
+
+  for (const geometry_msgs::Point32&amp; p : pcl-&gt;points)
+    if (Point(p.x, p.y).lengthSquared() &lt;= pow(p_max_scanner_range_, 2.0))
+      initial_points_.push_back(Point(p.x, p.y));
+
+  processPoints();
+}
+
+void ObstacleDetector::processPoints() {
+  segments_.clear();
+  circles_.clear();
+
+  groupPointsAndDetectSegments();
+  mergeSegments();
+
+  detectCircles();
+  mergeCircles();
+
+  if (p_transform_to_world)
+    transformToWorld();
+
+  publishObstacles();
+}
+
+void ObstacleDetector::groupPointsAndDetectSegments() {
+  list&lt;Point&gt; point_set;
+
+  for (const Point&amp; point : initial_points_) {
+    if (point_set.size() != 0) {
+      double r = point.length();
+
+      if ((point - point_set.back()).lengthSquared() &gt; pow(p_max_group_distance_ + r * p_distance_proportion_, 2.0)) {
+        detectSegments(point_set);
+        point_set.clear();
+      }
+    }
+    point_set.push_back(point);
+  }
+
+  detectSegments(point_set); // Check the last point set too!
+}
+
+void ObstacleDetector::detectSegments(list&lt;Point&gt;&amp; point_set) {
+  if (point_set.size() &lt; p_min_group_points_)
+    return;
+
+  Segment segment(Point(0.0, 0.0), Point(1.0, 0.0));
+  if (p_use_split_and_merge_)
+    segment = fitSegment(point_set);
+  else // Use Iterative End Point Fit
+    segment = Segment(point_set.front(), point_set.back());
+
+  list&lt;Point&gt;::iterator set_divider;
+  double max_distance = 0.0;
+  double distance     = 0.0;
+
+  // Seek the point of division; omit first and last point of the set
+  for (auto point_itr = ++point_set.begin(); point_itr != --point_set.end(); ++point_itr) {
+    if ((distance = segment.distanceTo(*point_itr)) &gt;= max_distance) {
+      double r = (*point_itr).length();
+
+      if (distance &gt; p_max_split_distance_ + r * p_distance_proportion_) {
+        max_distance = distance;
+        set_divider = point_itr;
+      }
+    }
+  }
+
+  if (max_distance &gt; 0.0) { // Split the set
+    point_set.insert(set_divider, *set_divider);  // Clone the dividing point for each group
+
+    list&lt;Point&gt; subset1, subset2;
+    subset1.splice(subset1.begin(), point_set, point_set.begin(), set_divider);
+    subset2.splice(subset2.begin(), point_set, set_divider, point_set.end());
+
+    detectSegments(subset1);
+    detectSegments(subset2);
+  } else {  // Add the segment
+    if (!p_use_split_and_merge_)
+      segment = fitSegment(point_set);
+
+    if (segment.length() &gt; 0.0) {
+      segments_.push_back(segment);
+      segments_.back().point_set().assign(point_set.begin(), point_set.end());
+    }
+  }
+}
+
+void ObstacleDetector::mergeSegments() {
+  for (auto i = segments_.begin(); i != segments_.end(); ++i) {
+    auto j = i;
+    for (++j; j != segments_.end(); ++j) {
+      if (compareAndMergeSegments(*i, *j)) {  // If merged - a new segment appeared at the end of the list
+        auto temp_ptr = i;
+        i = segments_.insert(i, segments_.back()); // Copy new segment in place; i now points to new segment
+        segments_.pop_back();       // Remove the new segment from the back of the list
+        segments_.erase(temp_ptr);  // Remove the first merged segment
+        segments_.erase(j);         // Remove the second merged segment
+        if (i != segments_.begin())
+          i--;                      // The for loop will increment i so let it point to new segment in next iteration
+        break;
+      }
+    }
+  }
+}
+
+bool ObstacleDetector::compareAndMergeSegments(Segment&amp; s1, Segment&amp; s2) {
+  if (&amp;s1 == &amp;s2)
+    return false;
+
+  // Segments must be provided counter-clockwise
+  if (s1.first_point().cross(s2.first_point()) &lt; 0.0)
+    return compareAndMergeSegments(s2, s1);
+
+  if ((s1.last_point() - s2.first_point()).length() &lt; p_max_merge_separation_) {
+    list&lt;Point&gt; merged_points;
+    merged_points.insert(merged_points.begin(), s1.point_set().begin(), s1.point_set().end());
+    merged_points.insert(merged_points.end(), s2.point_set().begin(), s2.point_set().end());
+
+    Segment s = fitSegment(merged_points);
+
+    if (s.distanceTo(s1.first_point()) &lt; p_max_merge_spread_ &amp;&amp;
+        s.distanceTo(s1.last_point())  &lt; p_max_merge_spread_ &amp;&amp;
+        s.distanceTo(s2.first_point()) &lt; p_max_merge_spread_ &amp;&amp;
+        s.distanceTo(s2.last_point())  &lt; p_max_merge_spread_) {
+      segments_.push_back(s);
+      segments_.back().point_set().assign(merged_points.begin(), merged_points.end());
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void ObstacleDetector::detectCircles() {
+  for (const Segment&amp; s : segments_) {
+    Circle c(s);
+    c.setRadius(c.radius() + p_radius_enlargement_);
+
+    if (c.radius() &lt; p_max_circle_radius_)
+      circles_.push_back(c);
+  }
+}
+
+void ObstacleDetector::mergeCircles() {
+  for (auto i = circles_.begin(); i != circles_.end(); ++i) {
+    auto j = i;
+    for (++j; j != circles_.end(); ++j) {
+      if (compareAndMergeCircles(*i, *j)) {      // If merged - a new circle appeared at the end of the list
+        auto temp_ptr = i;
+        i = circles_.insert(i, circles_.back()); // i now points to new circle
+        circles_.pop_back();
+        circles_.erase(temp_ptr);
+        circles_.erase(j);
+        if (i != circles_.begin())
+          --i;
+        break;
+      }
+    }
+  }
+}
+
+bool ObstacleDetector::compareAndMergeCircles(Circle&amp; c1, Circle&amp; c2) {
+  // If circle c1 is fully inside c2 - merge and leave as c2
+  if (c1.radius() + (c2.center() - c1.center()).length() &lt;= c2.radius()) {
+    circles_.push_back(c2);
+    return true;
+  }
+
+  // If circle c2 is fully inside c1 - merge and leave as c1
+  if (c2.radius() + (c2.center() - c1.center()).length() &lt;= c1.radius()) {
+    circles_.push_back(c1);
+    return true;
+  }
+
+  // If circles intersect and are &#39;small&#39; - merge
+  if (c1.radius() + c2.radius() &gt;= (c2.center() - c1.center()).length()) {
+    Segment s(c1.center(), c2.center());
+    Circle c(s);
+    c.setRadius(c.radius() + max(c1.radius(), c2.radius()));
+
+    if (c.radius() &lt; p_max_circle_radius_) {
+      circles_.push_back(c);
+      return true;
+    }
+  }
+  return false;
+}
+
+void ObstacleDetector::transformToWorld() {
+  geometry_msgs::PointStamped point_l;  // Point in local (scanner) coordinate frame
+  geometry_msgs::PointStamped point_w;  // Point in global (world) coordinate frame
+
+  point_l.header.stamp = ros::Time::now();
+  point_l.header.frame_id = p_scanner_frame_;
+
+  point_w.header.stamp = ros::Time::now();
+  point_w.header.frame_id = p_world_frame_;
+
+  try {
+    tf_listener_.waitForTransform(p_world_frame_, p_scanner_frame_, ros::Time::now(), ros::Duration(3.0));
+
+    for (auto it = circles_.begin(); it != circles_.end(); ++it) {
+      if (it-&gt;center().x &lt; p_max_x_range_ &amp;&amp; it-&gt;center().x &gt; p_min_x_range_ &amp;&amp;
+          it-&gt;center().y &lt; p_max_y_range_ &amp;&amp; it-&gt;center().y &gt; p_min_y_range_)
+      {
+        point_l.point.x = it-&gt;center().x;
+        point_l.point.y = it-&gt;center().y;
+        tf_listener_.transformPoint(p_world_frame_, point_l, point_w);
+        it-&gt;setCenter(point_w.point.x, point_w.point.y);
+      }
+      else {
+        it = circles_.erase(it);
+        --it;
+      }
+    }
+
+    for (Segment&amp; s : segments_) {
+      point_l.point.x = s.first_point().x;
+      point_l.point.y = s.first_point().y;
+      tf_listener_.transformPoint(p_world_frame_, point_l, point_w);
+      s.setFirstPoint(point_w.point.x, point_w.point.y);
+
+      point_l.point.x = s.last_point().x;
+      point_l.point.y = s.last_point().y;
+      tf_listener_.transformPoint(p_world_frame_, point_l, point_w);
+      s.setLastPoint(point_w.point.x, point_w.point.y);
+    }
+  }
+  catch (tf::TransformException ex) {
+    ROS_ERROR(&quot;%s&quot;,ex.what());
+    ros::Duration(1.0).sleep();
+  }
+}
+
+void ObstacleDetector::publishObstacles() {
+  Obstacles obstacles;
+  obstacles.header.stamp = ros::Time::now();
+
+  if (p_transform_to_world)
+    obstacles.header.frame_id = p_world_frame_;
+  else
+    obstacles.header.frame_id = p_scanner_frame_;
+
+  for (const Segment&amp; s : segments_) {
+    obstacle_detector::SegmentObstacle segment;
+
+    segment.first_point.x = s.first_point().x;
+    segment.first_point.y = s.first_point().y;
+    segment.last_point.x = s.last_point().x;
+    segment.last_point.y = s.last_point().y;
+
+    obstacles.segments.push_back(segment);
+  }
+
+  for (const Circle&amp; c : circles_) {
+    obstacle_detector::CircleObstacle circle;
+
+    circle.center.x = c.center().x;
+    circle.center.y = c.center().y;
+    circle.radius = c.radius();
+
+    obstacles.circles.push_back(circle);
+  }
+
+  obstacles_pub_.publish(obstacles);
+}
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, &quot;obstacle_detector&quot;);
+  ObstacleDetector od;
+  return 0;
+</code></pre>
+
+<p>So now I would like to update the robot’s estimated pose by fusing the result with the Visual SLAM (ORB_SLAM2) , because the 2D LIDAR can’t estimate the longitudinal position.So with visual SLAM fusion will have information about the desired position in the isle.But Im not sure how to fuse them. Any help?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2023-03-15 04:18:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

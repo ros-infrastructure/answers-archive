@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>implementation problem of my EKF program in C++ - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/269219">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>implementation problem of my EKF program in C++</h2>
+      <div class="question">
+        <p>Hello, I implemented EKF in c++;But the output value (pitch, yaw ,roll ) is not correct . Please give me some advice if you find my code&#39;s problem.</p>
+
+<p>I used MPU9150 and I implemented EKF by referring to  the following URL;</p>
+
+<p><a href="https://github.com/gakuseishitsu/ExtendedKalmanFilterForIMU">https://github.com/gakuseishitsu/ExtendedKalmanFilterForIMU</a></p>
+
+<p>the following values are output of EKF  while MPU9150 is not moved and placed on the flat table .</p>
+
+<p>data.pitch<em>ekf:89.7621
+data.yaw</em>ekf: 85.745
+data.roll_ekf:-0.719216</p>
+
+<p>data.pitch<em>sens:-1.59499
+data.yaw</em>sens:7.9985
+data.roll_sens:0</p>
+
+<p>[my source code]</p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;vector&gt;
+#include &lt;fstream&gt; // ifstream, ofstream
+#include &lt;sstream&gt; // istringstream
+#include &lt;cmath&gt;
+#include &lt;eigen3/Eigen/Core&gt; 
+#include &lt;eigen3/Eigen/LU&gt;  
+#include &lt;sensor_msgs/Imu.h&gt;
+#include &lt;sensor_msgs/MagneticField.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;ros/ros.h&gt;
+#include &quot;my_simple_ekf/send_msg.h&quot;
+const int NUM_OF_IMU_DATA = 6;
+const double FIRST_TIME = 0.01;
+const double DT = 0.01;
+const double GRAV_ACC = 9.80665;
+const double TO_DEG = 57.2958; // rad -&gt; deg
+const double IMU_LPF = 0.07;
+const std::vector&lt;double&gt; coordinateModifyFactor{1.0, -1.0, 1.0, -1.0, 1.0, -1.0}; 
+const std::vector&lt;double&gt; BIAS{-0.037, 0.0, 0.0, -0.148, 0.046, 0.189}; 
+
+const std::vector&lt;double&gt; INIT_P{ 0.0001, 0.0001, 0.0001, 0.0001 };
+const std::vector&lt;double&gt; INIT_Q{ 0.01, 0.01, 0.01, 0.01 };
+const std::vector&lt;double&gt; INIT_R{ 1.0, 1.0, 10.0 };
+const std::vector&lt;double&gt; INIT_X { 0.0, 0.0, 0.0, 1.0 };
+const int SIZE_VECTOR_X = 4;
+const int SIZE_VECTOR_Y = 3;
+
+template&lt;typename T&gt;
+class u {
+private:
+T t;
+
+ros::NodeHandle nh;
+    ros::Subscriber ros_imu_sub; 
+    ros::Subscriber ros_mag_sub;
+
+
+public:
+u(const int num);
+~u() {};
+    std::vector&lt;T&gt; imuRawData;
+    std::vector&lt;T&gt; imuDataLPF;
+    std::vector&lt;T&gt; imuDataBias;
+void setImuDataBias(const std::vector&lt;T&gt;&amp; b);
+void setLPF(const T ft, const T lpf);
+    void setUData(const std::vector&lt;T&gt;&amp; f);
+    ros::Publisher  twist_pub;
+    ros::Publisher  data_pub;
+T getT() const { return t; };
+    void imuCallback(const sensor_msgs::Imu&amp; imu_msg);
+    void magCallback(const sensor_msgs::MagneticField&amp; msg);
+};
+
+// constructor of u
+template&lt;typename T&gt;
+u&lt;T&gt;::u(const int num)
+{
+   twist_pub = nh.advertise&lt;geometry_msgs::Twist&gt;(&quot;angle_simple_ekf&quot;,10);
+
+   data_pub = nh.advertise&lt;my_simple_ekf::send_msg&gt;(&quot;save_data&quot;,10);
+
+   ros_imu_sub = nh.subscribe(&quot;imu&quot;,100, &amp;u&lt;T&gt;::imuCallback,this);
+
+   ros_mag_sub = nh.subscribe(&quot;mag&quot;,100, &amp;u&lt;T&gt;::magCallback,this);
+
+   for (int i = 0; i &lt; num; ++i) {
+    imuRawData.push_back(static_cast&lt;T&gt;(0));
+imuDataBias.push_back(static_cast&lt;T&gt;(0));
+imuDataLPF.push_back(static_cast&lt;T&gt;(0));
+    }
+ }
+
+template&lt;typename T&gt;
+void u&lt;T&gt;::setImuDataBias(const std::vector&lt;T&gt;&amp; b) {
+
+for (int i = 0; i &lt; static_cast&lt;int&gt;(imuRawData.size()); i++)
+    imuDataBias[i] = imuRawData[i] - b[i];
+
+}
+
+template&lt;typename T&gt;
+void u&lt;T&gt;::setLPF(const T ft, const T lpf) {
+  for (int i = 0; i &lt; static_cast&lt;int&gt;(imuRawData.size()); i++)
+     imuDataLPF[i] = /*(lpf)**/imuDataBias[i];//+ (1.0 - lpf) * imuDataLPF[i];
+}
+
+template&lt;typename T&gt;
+void u&lt;T&gt;::setUData(const std::vector&lt;T&gt;&amp; f) {
+    for (int i = 0; i &lt; static_cast&lt;int&gt;(imuRawData.size()); i++)
+    imuRawData[i] = f[i] * imuRawData[i];
+}
+
+
+template&lt;typename T&gt;
+void u&lt;T&gt;::imuCallback(const sensor_msgs::Imu&amp; imu_msg)
+{
+
+  imuRawData[0] = imu_msg.linear_acceleration.x;
+  imuRawData[1] = imu_msg.linear_acceleration.y;
+  imuRawData[2] = imu_msg.linear_acceleration.z;
+  imuRawData[3] = imu_msg.angular_velocity.x;
+  imuRawData[4] = imu_msg.angular_velocity.y;
+  imuRawData[5] = imu_msg.angular_velocity.z;
+}
+
+template&lt;typename T&gt;
+std::ostream&amp; operator&lt;&lt;(std::ostream&amp; os, const u&lt;T&gt;&amp; udata);
+
+template&lt;typename T&gt;
+class myKalmanFilter {
+private:
+
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, 1&gt; xHatMinus;       // Advance estimate of the state valiable
+Eigen::Matrix&lt;T, SIZE_VECTOR_Y, 1&gt; y;           // Observation value
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, 1&gt; f;           // System Matrix
+Eigen::Matrix&lt;T, SIZE_VECTOR_Y, 1&gt; h;           // Transformation matrix from state valiable to observation value
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_X&gt; A;   // Linearized f
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_X&gt; AT;  // Transposition of A
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_Y&gt; C;   // Liniarized h
+Eigen::Matrix&lt;T, SIZE_VECTOR_Y, SIZE_VECTOR_X&gt; CT;  // Transposition of C
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_Y&gt; g;   // Kalman gain
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_X&gt; P;   // Covariance matrix
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_X&gt; PMinus;  // Advance covariance matrix
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_X&gt; Q;   // Variance matrix of w
+Eigen::Matrix&lt;T, SIZE_VECTOR_Y, SIZE_VECTOR_Y&gt; R;   // Variance matrix of v
+Eigen::Matrix&lt;T, SIZE_VECTOR_X, SIZE_VECTOR_X&gt; I;   // Unit Matrix
+public:
+myKalmanFilter(const std::vector&lt;T&gt;&amp; x, const std::vector&lt;T&gt;&amp; p, const std::vector&lt;T&gt;&amp; q, const std::vector&lt;T&gt;&amp; r);
+~myKalmanFilter() {};
+    Eigen::Matrix&lt;T, SIZE_VECTOR_X, 1&gt; xHat;        // Estimated value of the state valiable
+
+void prediction(std::vector&lt;T&gt;&amp; imu);
+void filter(std::vector&lt;T&gt;&amp; imu);
+
+void normXHat();
+};
+
+
+// constructor of myKalmanFilter
+template&lt;typename T&gt;
+myKalmanFilter&lt;T&gt;::myKalmanFilter(const std::vector&lt;T&gt;&amp; x, const std::vector&lt;T&gt;&amp; p, const std::vector&lt;T&gt;&amp; q, const             
+std::vector&lt;T&gt;&amp; r)
+{
+xHat &lt;&lt; x[0], 
+        x[1], 
+        x[2], 
+        x[3];
+
+P &lt;&lt; p[0]  , 0.0, 0.0, 0.0,
+     0.0, p[1]  , 0.0, 0.0,
+     0.0, 0.0, p[2]  , 0.0,
+     0.0, 0.0, 0.0  , p[3];
+
+Q &lt;&lt; q[0]  , 0.0, 0.0, 0.0,
+     0.0, q[1]  , 0.0, 0.0,
+     0.0, 0.0, q[2]  , 0.0,
+     0.0, 0.0, 0.0, q[3]  ;
+
+R &lt;&lt; r[0]  , 0.0, 0.0,
+     0.0, r[1]  , 0.0,
+     0.0, 0.0, r[2]  ;
+
+I &lt;&lt; 1.0, 0.0, 0.0, 0.0,
+     0.0, 1.0, 0.0, 0.0,
+     0.0, 0.0, 1.0, 0.0,
+     0.0, 0.0, 0.0, 1.0;
+
+// fill other matrix 0
+xHatMinus.setZero();
+y.setZero();
+f.setZero();
+h.setZero();
+PMinus.setZero();
+g.setZero();
+A.setZero();
+AT.setZero();
+C.setZero();
+CT.setZero();
+}
+
+
+template&lt;typename T&gt;
+void myKalmanFilter&lt;T&gt;::prediction(std::vector&lt;T&gt;&amp; imu)
+{
+
+std::vector&lt;T&gt; w,q;
+w.push_back(static_cast&lt;T&gt;(0));
+for (int i = 3; i &lt; 6; ++i)
+    w.push_back(imu[i]); // w[1]~w[3]
+
+A &lt;&lt;      1.0    ,  0.5*DT*w[3], -0.5*DT*w[2], 0.5*DT*w[1],
+     -0.5*DT*w[3],      1.0    ,  0.5*DT*w[1], 0.5*DT*w[2],
+      0.5*DT*w[2], -0.5*DT*w[1],      1.0    , 0.5*DT*w[3],
+     -0.5*DT*w[1], -0.5*DT*w[2], -0.5*DT*w[3],     1.0    ;
+
+    std::cout &lt;&lt; &quot;A:&quot; &lt;&lt; A &lt;&lt; std::endl;
+
+f = A * xHat;
+xHatMinus = f;
+
+q.push_back(static_cast&lt;T&gt;(0));
+for (int i = 0; i &lt; 4; ++i)
+    q.push_back(xHatMinus[i]); // q[1]~q[4]
+
+CT &lt;&lt;  2 * q[3] * GRAV_ACC, -2 * q[4] * GRAV_ACC, 2 * q[1] * GRAV_ACC, -2 * q[2] * GRAV_ACC,
+       2 * q[4] * GRAV_ACC,  2 * q[3] * GRAV_ACC, 2 * q[2] * GRAV_ACC,  2 * q[1] * GRAV_ACC,
+      -2 * q[1] * GRAV_ACC, -2 * q[2] * GRAV_ACC, 2 * q[3] * GRAV_ACC,  2 * q[4] * GRAV_ACC;
+
+    std::cout &lt;&lt; &quot;CT:&quot; &lt;&lt; CT &lt;&lt; std::endl;
+
+PMinus = A * P * A.transpose() + Q;
+
+}
+
+template&lt;typename T&gt;
+void myKalmanFilter&lt;T&gt;::filter(std::vector&lt;T&gt;&amp; imu) {
+std::vector&lt;T&gt; a, q;
+a.push_back(static_cast&lt;T&gt;(0));
+for (int i = 0; i &lt; 3; ++i)
+    a.push_back(imu[i]); // a[1]~a[3]
+q.push_back(static_cast&lt;T&gt;(0));
+for (int i = 0; i &lt; 4; ++i)
+    q.push_back(xHatMinus[i]); // q[1]~q[4]
+
+C = CT.transpose();
+
+g = PMinus * C * (CT * PMinus * C + R).inverse();
+
+y &lt;&lt; a[1],
+     a[2],
+     a[3];
+
+h &lt;&lt; 2 * (q[3] * q[1] - q[2] * q[4]) * GRAV_ACC,
+     2 * (q[2] * q[3] - q[1] * q[4]) * GRAV_ACC,
+     (q[3] * q[3] - q[1] * q[1] - q[2] * q[2] + q[4] * q[4]) * GRAV_ACC;
+
+xHat = xHatMinus + g * (y - h);
+//xHat = xHatMinus;
+
+P = ( I - g * CT ) * PMinus;
+}
+
+template&lt;typename T&gt;
+void myKalmanFilter&lt;T&gt;::normXHat() {
+T norm;
+norm = sqrt(xHat(0, 0)*xHat(0, 0) + xHat(1, 0)*xHat(1, 0) + xHat(2, 0)*xHat(2, 0) + xHat(3, 0)*xHat(3, 0));
+xHat /= norm;
+}
+
+
+
+template&lt;typename T&gt;
+Eigen::Matrix&lt;T, 3, 3&gt; getDCM(Eigen::Matrix&lt;T, SIZE_VECTOR_X, 1&gt;&amp; q);
+
+template&lt;typename T&gt;
+Eigen::Matrix&lt;T, 3, 1&gt; getEuler(Eigen::Matrix&lt;T, 3, 3&gt;&amp; dcm);
+
+template&lt;typename T&gt;
+Eigen::Matrix&lt;T, 3, 1&gt; getEulerFromAccData(std::vector&lt;T&gt;&amp; imu);
+
+int main(int argc, char** argv)
+{
+ros::init(argc,argv,&quot;my_simple_ekf&quot;);
+
+u&lt;double&gt; input(NUM_OF_IMU_DATA);
+myKalmanFilter&lt;double&gt; kalman(INIT_X, INIT_P, INIT_Q, INIT_R);
+
+// looped in 100Hz
+ros::Rate loop_rate(10);
+
+ geometry_msgs::Twist twist;
+ my_simple_ekf::send_msg data;
+while (ros::ok())
+{
+            ros::spinOnce(); 
+    // string data -&gt; vector, bias filter, LPF
+            input.setUData(coordinateModifyFactor);
+        input.setImuDataBias(BIAS);
+
+    input.setLPF(FIRST_TIME, IMU_LPF);
+    //  std::cout &lt;&lt; &quot;LFPdata: &quot; &lt;&lt; input &lt;&lt; std::endl &lt;&lt; std::/*
+    // kalman filter and normalize quaternion
+    kalman.prediction(input.imuDataLPF);//input.getImuDataLPF());
+    kalman.filter(input.imuDataLPF);
+    kalman.normXHat();
+    //std::cout &lt;&lt; input.getT() &lt;&lt; &quot;,&quot; &lt;&lt; kalman &lt;&lt; std::endl;
+    //out &lt;&lt; input.getT() &lt;&lt; &quot;,&quot; &lt;&lt; kalman &lt;&lt; std::endl;
+
+    // get DCM and Euler angles from quaternion
+    Eigen::Matrix&lt;double, 3, 3&gt; DCM = getDCM(kalman.xHat);
+    Eigen::Matrix&lt;double, 3, 1&gt; E = getEuler(DCM);
+
+            Eigen::Matrix&lt;double, 3, 1&gt; e = getEulerFromAccData(input.imuDataLPF);//input.getImuDataLPF());
+
+            twist.angular.x = E(0,0);     // pitch
+            twist.angular.y = E(1,0);     // yaw
+            twist.angular.z = E(2,0);     // roll   
+
+            input.twist_pub.publish(twist);
+
+            data.accelX = input.imuRawData[0];  // accel ax
+            data.accelY = input.imuRawData[1];  // accel ay
+            data.accelZ = input.imuRawData[2];  // accel az
+            data.gyroX  = input.imuRawData[3];  // angular velocity ωx
+            data.gyroY  = input.imuRawData[4];  // angular velocity ωy
+            data.gyroZ  = input.imuRawData[5];  // angular velocity ωz
+            data.magX   = input.imuRawData[6];  // magnatic mx
+            data.magY   = input.imuRawData[7];  // magnatic my
+            data.magZ   = input.imuRawData[8];  // magnatic mz
+            data.pitch  = E(0,0)*TO_DEG;         // pitch
+            data.yaw    = E(1,0)*TO_DEG;         // yaw
+            data.roll   = E(2,0)*TO_DEG;         // roll
+            input.data_pub.publish(data);
+
+
+    std::cout &lt;&lt; &quot;data.pitch_ekf: &quot; &lt;&lt; data.pitch &lt;&lt; std::endl ;
+    std::cout &lt;&lt; &quot;data.yaw_ekf: &quot; &lt;&lt; data.yaw &lt;&lt; std::endl ;
+    std::cout &lt;&lt; &quot;data.roll_ekf: &quot; &lt;&lt; data.roll &lt;&lt; std::endl ;
+    std::cout &lt;&lt; &quot;data.pitch_sens: &quot; &lt;&lt; e(0,0)*TO_DEG &lt;&lt; std::endl ;
+    std::cout &lt;&lt; &quot;data.yaw_sens: &quot; &lt;&lt; e(1,0)*TO_DEG &lt;&lt; std::endl ;
+    std::cout &lt;&lt; &quot;data.roll_sens: &quot; &lt;&lt; e(2,0)*TO_DEG &lt;&lt; std::endl ;
+
+            loop_rate.sleep();
+}
+
+return 0;
+}
+
+template&lt;typename T&gt;
+Eigen::Matrix&lt;T, 3, 3&gt; getDCM(Eigen::Matrix&lt;T, SIZE_VECTOR_X, 1&gt;&amp; x) {
+Eigen::Matrix&lt;T, 3, 3&gt; dcm;
+std::vector&lt;T&gt; q;
+q.push_back(static_cast&lt;T&gt;(0));
+for (int i = 0; i &lt; 4; ++i)
+    q.push_back(x(i,0)); // q[1]~q[4]
+
+dcm &lt;&lt; q[1] * q[1] - q[2] * q[2] - q[3] * q[3] + q[4] * q[4], 2 * (q[1] * q[2] + q[3] * q[4]), 2 * (q[3] * q[1] - q[2] * q[4]),
+    2 * (q[1] * q[2] - q[3] * q[4]), q[2] * q[2] - q[3] * q[3] - q[1] * q[1] + q[4] * q[4], 2 * (q[2] * q[3] + q[1] * q[4]),
+    2 * (q[3] * q[1] + q[2] * q[4]), 2 * (q[2] * q[3] - q[1] * q[4]), q[3] * q[3] - q[1] * q[1] - q[2] * q[2] + q[4] * q[4];
+std::cout &lt;&lt; &quot;dcm:&quot; &lt;&lt; dcm &lt;&lt;std::endl;
+return dcm;
+}
+
+template&lt;typename T&gt;
+Eigen::Matrix&lt;T, 3, 1&gt; getEuler(Eigen::Matrix&lt;T, 3, 3&gt;&amp; dcm) {
+Eigen::Matrix&lt;T, 3, 1&gt; euler;
+T pitch, yaw, roll;
+
+    pitch = atan(dcm(1,2)/dcm(2,2));
+yaw = atan(-dcm(0,2)/sqrt(dcm(1,2)*dcm(1,2)+dcm(2,2)*dcm(2,2)));
+roll =atan(dcm(0,1)/dcm(0,0));
+/*
+pitch=asin(-1.0 * dcm(0, 2));
+yaw = atan2(dcm(0, 1) / cos(pitch), dcm(0, 0) / cos(pitch));
+roll = atan2(dcm(1, 2) / cos(pitch), dcm(2, 2) / cos(pitch));
+*/
+euler &lt;&lt; roll,
+    pitch,
+    yaw;
+
+return euler;
+}
+
+
+template&lt;typename T&gt;
+Eigen::Matrix&lt;T, 3, 1&gt; getEulerFromAccData(std::vector&lt;T&gt;&amp; imu) {
+Eigen::Matrix&lt;T, 3, 1&gt; euler;
+
+
+std::cout &lt;&lt; &quot;imu[0]: &quot; &lt;&lt; imu[0] &lt;&lt; std::endl ;
+std::cout &lt;&lt; &quot;imu[1]: &quot; &lt;&lt; imu[1] &lt;&lt; std::endl ;
+std::cout &lt;&lt; &quot;imu[2]:&quot; &lt;&lt; imu[2] &lt;&lt; std::endl ;
+
+
+T roll, pitch, yaw, acc;
+
+acc = sqrt(imu[0] * imu[0] + imu[1] * imu[1] + imu[2] * imu[2]);
+/*
+pitch = asin(-1.0 * imu[0] / acc);
+yaw = static_cast&lt;T&gt;(0);
+if(imu[2] &gt; 0.0)
+    roll = atan2(imu[1] / acc / cos(pitch), imu[2] / acc / cos(pitch));
+else
+    roll = atan2(imu[1] / acc / cos(pitch), imu[2] / acc / cos(pitch));
+*/
+imu[0] = imu[0]/acc;
+imu[1] = imu[1]/acc;
+imu[2] = imu[2]/acc;
+yaw = static_cast&lt;T&gt;(0);
+pitch = atan(imu[0]/sqrt(imu[1]*imu[1]+imu[2]*imu[2]));
+roll = atan(imu[1]/imu[2]);
+euler &lt;&lt; roll,
+    pitch,
+    yaw;
+
+return euler;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/27743">sasadasd</a> on 2017-08-21 05:00:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This seems like it may be better suited for <a href="https://robotics.stackexchange.com/">Robotics Stack Exchange</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26450">jayess</a> on 2017-08-21 16:11:34 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your advice . I haven&#39;t  ever known the web site and I will try to ask my question  in the web site later .</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27743">sasadasd</a> on 2017-08-22 07:19:45 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

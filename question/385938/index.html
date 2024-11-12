@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Intraprocess zero-copy seems to be working for multiple subscribers - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/385938">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Intraprocess zero-copy seems to be working for multiple subscribers</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100045/intraprocess-zero-copy-seems-to-be-working-for-multiple-subscribers">https://robotics.stackexchange.com/questions/100045/intraprocess-zero-copy-seems-to-be-working-for-multiple-subscribers</a>.</p>
+        <p>When following instructions from <a href="https://docs.ros.org/en/galactic/Tutorials/Intra-Process-Communication.html#pipeline-with-two-image-viewers">Pipeline with two image viewers</a>, running</p>
+
+<p><code>
+ros2 run intra_process_demo image_pipeline_with_two_image_view
+</code></p>
+
+<p>the expected result is that the last pointer in image<em>view</em>node_2 has a different memory address. </p>
+
+<p><strong>However, all the memory addresses are the same.</strong> Does this mean zero-copy intraprocess communication works for multiple subscribers? Or is it my misunderstanding somewhere?</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16310105686671428.png" alt="image description"></p>
+
+<p>ps. ROS2 Galactic, DDS is left as default (CycloneDDS)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/73298"></a> on 2021-09-07 05:28:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I have tested this demo with foxy/galactic/humble, and only with humble it will work like your description.
+So my best guess is the demo you are using contains this <a href="https://github.com/ros2/demos/commit/d9c8dacaeddbb7fd8316b1e2bd9b04160f8c6a2c">commit</a>, which should only be available since humble.</p>
+
+<p>The <a href="https://docs.ros.org/en/humble/Tutorials/Demos/Intra-Process-Communication.html#pipeline-with-two-image-viewers">foxy/galactic document</a> is somehow wrong:</p>
+
+<blockquote>
+<p>This means the system deliveres the same shared_ptr to both callbacks. When the first intraprocess subscription is handled, the internally stored unique_ptr is promoted to a shared_ptr. Each of the callbacks will receive shared ownership of the same message.</p>
+</blockquote>
+
+<p><a href="https://github.com/ros2/demos/blob/26e048b88ac16b52523323bb3f193d0b83dabf76/intra_process_demo/include/image_pipeline/image_view_node.hpp#L40">The foxy/galactic demo&#39;s ImageViewNode callback</a> used type <code>const sensor_msgs::msg::Image::SharedPtr</code> as argument, and it&#39;s <strong>NOT</strong> shared ownership. Then the intra-process logic have to copy the message to make sure each ImageViewNode will have exclusive ownership of the message dispatched to them, which behaves the same as callbacks using type <code>const std::unique_ptr&lt;sensor_msgs::msg::Image&gt;</code>.</p>
+
+<p><a href="https://github.com/ros2/demos/blob/f258b8182c7ad680c8cceba38eac72e01fdb0a3c/intra_process_demo/include/image_pipeline/image_view_node.hpp#L44">The humble demo&#39;s ImageViewNode callback</a> changed the argument type to <code>sensor_msgs::msg::Image::ConstSharedPtr</code>, and now it really means shared ownership. Then the demo behaves like your description, so the humble&#39;s document should be updated to reflect this change.</p>
+
+<p>The intraprocess zero copy for multiple subscriber should always work since foxy, as long as you are using the correct signature for callbacks.</p>
+
+<p>The callback argument type and ownership relationship can be verified using this snippet:</p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;memory&gt;
+
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;sensor_msgs/msg/image.hpp&gt;
+
+template&lt;typename TCallback&gt;
+void PrintAnyCallbackSharedOrNot(TCallback&amp;&amp; cb) {
+  rclcpp::AnySubscriptionCallback&lt;sensor_msgs::msg::Image, std::allocator&lt;void&gt;&gt; acb{std::allocator&lt;void&gt;()};
+  acb.set(std::move(cb));
+  std::cout &lt;&lt; acb.use_take_shared_method() &lt;&lt; std::endl;
+}
+
+int main(int , char *[]) {
+  // false
+  PrintAnyCallbackSharedOrNot([](std::shared_ptr&lt;sensor_msgs::msg::Image&gt;){});
+  // false, same as const sensor_msgs::msg::Image::SharedPtr
+  PrintAnyCallbackSharedOrNot([](const std::shared_ptr&lt;sensor_msgs::msg::Image&gt;){});
+
+  // true, same as sensor_msgs::msg::Image::ConstSharedPtr
+  PrintAnyCallbackSharedOrNot([](std::shared_ptr&lt;const sensor_msgs::msg::Image&gt;){});
+  // true
+  PrintAnyCallbackSharedOrNot([](const std::shared_ptr&lt;const sensor_msgs::msg::Image&gt;){});
+  return 0;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/118701">tsingakbar</a> on 2023-03-14 06:30:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

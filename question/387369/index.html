@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Error publishing to rosserial node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387369">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Error publishing to rosserial node</h2>
+      <div class="question">
+        <p>I am running  a <code>rosserial</code> node on an Arduino, I am using ROS Noetic. I initialize the node using the following:</p>
+
+<pre><code>&lt;launch&gt;
+  &lt;node pkg=&quot;rosserial_python&quot; type=&quot;serial_node.py&quot; name=&quot;motor_control&quot; output=&quot;screen&quot;&gt;
+  &lt;param name=&quot;~port&quot; value=&quot;/dev/ttyACM0&quot; /&gt;
+  &lt;param name=&quot;~baud&quot; value=&quot;57600&quot; /&gt;
+  &lt;/node&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>The connection is established as shown below:</p>
+
+<pre><code>process[motor_control-1]: started with pid [5063]
+[INFO] [1632597275.309702]: ROS Serial Python Node
+[INFO] [1632597275.358828]: Connecting to /dev/ttyACM0 at 57600 baud
+[INFO] [1632597277.494118]: Requesting topics...
+[INFO] [1632597277.839086]: Note: subscribe buffer size is 280 bytes
+[INFO] [1632597277.847758]: Setup subscriber on velocity_command [geometry_msgs/Twist]
+</code></pre>
+
+<p>I publish the msg from the command line:</p>
+
+<pre><code>rostopic pub /velocity_command geometry_msgs/Twist  &quot;{linear:  {x: 0.1, y: 0.0, z: 0.0}, angular: {x: 0.0,y: 0.0, z: 0.0}}&quot;
+</code></pre>
+
+<p>but when I publish a command to the topic that the node subscribes to I get the following error:</p>
+
+<pre><code>Exception in thread Thread-6:
+Traceback (most recent call last):
+  File &quot;/usr/lib/python3.8/threading.py&quot;, line 932, in _bootstrap_inner
+    self.run()
+  File &quot;/usr/lib/python3.8/threading.py&quot;, line 870, in run
+    self._target(*self._args, **self._kwargs)
+  File &quot;/home/ubuntu/catkin_ws/src/rosserial/rosserial_python/src/rosserial_python/SerialClient.py&quot;, line 778, in processWriteQueue
+    self._send(topic, msg)
+  File &quot;/home/ubuntu/catkin_ws/src/rosserial/rosserial_python/src/rosserial_python/SerialClient.py&quot;, line 758, in _send
+    topic_bytes = struct.pack(&#39;&lt;h&#39;, topic)
+struct.error: short format requires (-0x7fff - 1) &lt;= number &lt;= 0x7fff
+[INFO] [1632597808.464485]: Sending tx stop request
+</code></pre>
+
+<p>This error seems a bit cryptic and I am not quite sure how to tackle it. Any ideas what it may be due to?</p>
+
+<p>Subscriber:</p>
+
+<pre><code>// Differential drive kinematics conversion to motor control inputs.
+
+#include &lt;ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;std_msgs/Float64.h&gt;
+#include &lt;knet_bot_msgs/EncoderSpeed.h&gt;
+
+#include &quot;CytronMotorDriver.h&quot;
+
+// Constant definitions
+#define PI 3.1415926535897932384626433832795
+
+// Robot parameters
+float gear_ratio = 98.78;
+float wheel_radius = 0.08;
+float base_length = 0.171;
+float power_supply_voltage = 24.0;
+
+// Motor parameters
+float max_motor_rpm = 10000;
+float max_motor_voltage = 12.0;
+float max_wheel_rpm = max_motor_rpm / gear_ratio;
+float max_serial_scale_speed = 250.0 / (power_supply_voltage / max_motor_voltage); 
+float max_wheel_linear_speed = max_wheel_rpm * 2.0 * PI * wheel_radius / 60.0; // m/sec
+
+// Feedback parameters
+float right_motor_rpm;
+float left_motor_rpm;
+
+// Configure the motor driver.
+CytronMD motor_right(PWM_DIR, 9, 8);  // PWM 1 = Pin 3, DIR 1 = Pin 4.
+CytronMD motor_left(PWM_DIR, 11, 13); // PWM 2 = Pin 9, DIR 2 = Pin
+
+// Initialize ROS parameters
+ros::NodeHandle nh;
+
+void motor_callback(const geometry_msgs::Twist&amp; velocity_msg){
+  nh.loginfo(&quot;Message to motor callback received.&quot;);
+
+  // Velocity inputs are v_x and w_z. Others are 0.
+  float diff_drive_right_speed = 1/wheel_radius * velocity_msg.linear.x + base_length/(2*wheel_radius) * velocity_msg.angular.z;
+  float diff_drive_left_speed = 1/wheel_radius * velocity_msg.linear.x - base_length/(2*wheel_radius) * velocity_msg.angular.z;
+
+  // Check speed saturation limits.
+  if(abs(diff_drive_right_speed) &gt; max_wheel_linear_speed){
+      diff_drive_right_speed = diff_drive_right_speed/abs(diff_drive_right_speed) * max_wheel_linear_speed;
+    }
+  if(abs(diff_drive_left_speed) &gt; max_wheel_linear_speed){
+      diff_drive_left_speed = diff_drive_left_speed/abs(diff_drive_left_speed) * max_wheel_linear_speed;
+    }
+
+  // Convert wheel linear speeds to motor angular velocity in RPM
+  float motor_right_speed_input_rpm = 60.0 * diff_drive_right_speed * gear_ratio / (2.0 * PI * wheel_radius);
+  float motor_left_speed_input_rpm = 60.0 * diff_drive_left_speed * gear_ratio / (2.0 * PI * wheel_radius);
+
+  // Convert to Arduino serial scale.
+  int motor_right_serial_scale_speed_input = (int) motor_right_speed_input_rpm * max_serial_scale_speed / max_motor_rpm;
+  int motor_left_serial_scale_speed_input = (int) motor_left_speed_input_rpm * max_serial_scale_speed / max_motor_rpm;
+
+  // Voltage saturation limits.
+  if(abs(motor_right_serial_scale_speed_input) &gt; max_serial_scale_speed){
+    motor_right_serial_scale_speed_input = motor_right_serial_scale_speed_input / abs(motor_right_serial_scale_speed_input) *  max_serial_scale_speed;
+    }
+  if(abs(motor_left_serial_scale_speed_input) &gt; max_serial_scale_speed){
+    motor_left_serial_scale_speed_input =  motor_left_serial_scale_speed_input / abs(motor_left_serial_scale_speed_input) * max_serial_scale_speed;
+    }
+
+  // Command motor speeds.
+  char right_motor_command_str[8]; 
+  dtostrf(motor_right_speed_input_rpm, 6, 2, right_motor_command_str);
+  char left_motor_command_str[8];
+  dtostrf(motor_left_speed_input_rpm, 6, 2, left_motor_command_str);
+
+  //sprintf(log_msg,&quot;points[0].positions[0] =%s&quot;, right_motor_command_str);
+  nh.loginfo(right_motor_command_str);
+  nh.loginfo(left_motor_command_str);
+
+  motor_right.setSpeed(motor_right_serial_scale_speed_input);   
+  motor_left.setSpeed(motor_left_serial_scale_speed_input); 
+}
+
+void odometry_callback(const knet_bot_msgs::EncoderSpeed&amp; odometry_msg){
+  right_motor_rpm = odometry_msg.right_wheel_rpm * gear_ratio;
+  left_motor_rpm = odometry_msg.left_wheel_rpm * gear_ratio;
+  }
+
+void setup()
+{
+  nh.initNode();
+  ros::Subscriber&lt;geometry_msgs::Twist&gt; vel_subscriber(&quot;velocity_command&quot;, &amp;motor_callback);
+  ros::Subscriber&lt;knet_bot_msgs::EncoderSpeed&gt; vel_subscriber(&quot;odometry/wheels_rpm&quot;, &amp;odometry_callback);
+  nh.subscribe(vel_subscriber);
+  nh.getHardware()-&gt;setBaud(57600);
+  }
+
+void loop()
+{
+  nh.spinOnce();
+  delay(100);
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/72618">Sknet</a> on 2021-09-25 16:10:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you include the subscriber callback code?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34260">abhishek47</a> on 2021-09-26 04:36:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I have edited the post and added the subscriber code.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72618">Sknet</a> on 2021-09-26 07:54:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Looks like a cross-post of <a href="https://github.com/ros-drivers/rosserial/issues/571">ros-drivers/rosserial#571</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-09-26 08:00:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I was not sure where this should be posted. I can remove one of them. Thank you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72618">Sknet</a> on 2021-09-27 07:52:05 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

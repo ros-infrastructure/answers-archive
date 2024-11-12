@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>EKF rejects timestamp more than the cache length earlier than newest transform cache - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/223920">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>EKF rejects timestamp more than the cache length earlier than newest transform cache</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/71293/ekf-rejects-timestamp-more-than-the-cache-length-earlier-than-newest-transform-c">https://robotics.stackexchange.com/questions/71293/ekf-rejects-timestamp-more-than-the-cache-length-earlier-than-newest-transform-c</a>.</p>
+        <p>Hi,</p>
+
+<p>Having a <a href="http://wiki.ros.org/px4flow_node">px4flow</a> optical flow sensor, I want to convert its <a href="https://github.com/cehberlin/px-ros-pkg/blob/master/px_comm/msg/OpticalFlowRad.msg">opt<em>flow</em>rad</a> message into a TwistWithCovarianceStamped, which I can use in my <a href="http://wiki.ros.org/robot_localization#ekf_localization_node">EKF localization node</a>.</p>
+
+<p>However, the ekf node doesn&#39;t accept my twists. It warns (I configured my ros log to show nodes instead of time):</p>
+
+<blockquote>
+<p>[ WARN] [/ekf<em>localization</em>node]:
+WARNING: failed to transform from
+/px4flow-&gt;base_link for twist0 message
+received at 3370.342710000. The
+timestamp on the message is more than
+the cache length earlier than the
+newest data in the transform cache.</p>
+</blockquote>
+
+<p>The message conversion (optflow_odometry) works like this:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/TwistWithCovarianceStamped.h&gt;
+#include &lt;px_comm/OpticalFlowRad.h&gt;
+
+ros::Publisher twist_publisher;    
+
+void flow_callback (const px_comm::OpticalFlowRad::ConstPtr&amp; opt_flow) {
+
+    // Don&#39;t publish garbage data
+    if(opt_flow-&gt;quality == 0){ return; }
+
+    geometry_msgs::TwistWithCovarianceStamped twist;
+    twist.header = opt_flow-&gt;header;
+
+    // translation from optical flow, in m/s
+    twist.twist.twist.linear.x = (opt_flow-&gt;integrated_x/opt_flow-&gt;integration_time_us)/opt_flow-&gt;distance;
+    twist.twist.twist.linear.y = (opt_flow-&gt;integrated_y/opt_flow-&gt;integration_time_us)/opt_flow-&gt;distance;
+    twist.twist.twist.linear.z = 0;
+
+    // rotation from integrated gyro, in rad/s
+    twist.twist.twist.angular.x = opt_flow-&gt;integrated_xgyro/opt_flow-&gt;integration_time_us;
+    twist.twist.twist.angular.y = opt_flow-&gt;integrated_ygyro/opt_flow-&gt;integration_time_us;
+    twist.twist.twist.angular.z = opt_flow-&gt;integrated_zgyro/opt_flow-&gt;integration_time_us;
+
+    // Populate covariance matrix with uncertainty values
+    twist.twist.covariance.assign(0.0); // We say that generally, our data is uncorrelated to each other
+    // However, we have uncertainties for x, y, z, rotation about X axis, rotation about Y axis, rotation about Z axis
+    double uncertainty = pow(10, -1.0 * opt_flow-&gt;quality / (255.0/6.0));
+    for (int i=0; i&lt;36; i+=7)
+        twist.twist.covariance[i] = uncertainty;
+    twist_publisher.publish(twist);
+}
+
+int main(int argc, char** argv) {
+    ros::init(argc, argv, &quot;optflow_odometry&quot;);
+    ros::NodeHandle n;
+    ros::Subscriber flow_subscriber = n.subscribe(&quot;/px4flow/opt_flow_rad&quot;, 100, flow_callback);
+    twist_publisher = n.advertise&lt;geometry_msgs::TwistWithCovarianceStamped&gt;(&quot;visual_odom&quot;, 50);
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+<p>My launchfile looks like this:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;launch&gt;
+
+  &lt;!-- Optical Flow Sensor --&gt;
+  &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;base_link_to_px4flow&quot; args=&quot;0.14 0 0 0 0 0 /base_link /px4flow 50&quot; /&gt;
+  &lt;node name=&quot;px4flow&quot; pkg=&quot;px4flow&quot; type=&quot;px4flow_node&quot; respawn=&quot;true&quot; output=&quot;screen&quot;&gt;
+    &lt;param name=&quot;serial_port&quot; value=&quot;/dev/serial/by-id/usb-3D_Robotics_PX4Flow_v1.3_000000000000-if00&quot;/&gt;
+  &lt;/node&gt;
+  &lt;node pkg=&quot;tas_odometry&quot; type=&quot;optflow_odometry&quot; name=&quot;optflow_odometry&quot; output=&quot;screen&quot;/&gt;
+
+  &lt;!-- EKF for odom-&gt;base_link --&gt;
+  &lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_localization_node&quot; output=&quot;screen&quot;&gt;
+    &lt;param name=&quot;map_frame&quot; value=&quot;map&quot;/&gt;
+    &lt;param name=&quot;world_frame&quot; value=&quot;odom&quot;/&gt;
+    &lt;param name=&quot;odom_frame&quot; value=&quot;odom&quot;/&gt;
+    &lt;param name=&quot;base_link_frame&quot; value=&quot;base_link&quot;/&gt;
+
+    &lt;param name=&quot;print_diagnostics&quot; value=&quot;true&quot;/&gt;
+    &lt;param name=&quot;frequency&quot; value=&quot;100&quot;/&gt;
+    &lt;param name=&quot;two_d_mode&quot; value=&quot;true&quot;/&gt;
+
+    &lt;param name=&quot;twist0&quot; value=&quot;/visual_odom&quot;/&gt;
+    &lt;rosparam param=&quot;twist0_config&quot;&gt;
+      [false, false, false, # x, y, z,
+      false, false, false,  # roll, pitch, yaw,
+      true,  true, false,   # vx, vy, vz, ---&gt; vx, vy from optical flow
+      false, false, true,   # vroll, vpitch, vyaw, ---&gt; use px4flow gyro
+      false, false, false]  # ax, ay, az
+    &lt;/rosparam&gt;
+  &lt;/node&gt; 
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Lastly, here are my TF Tree and Node Graph:
+<img src="http://i.imgur.com/yZKIfSL.png" alt="image description">
+<img src="http://i.imgur.com/2dtcdx8.png" alt="image description"></p>
+
+<p>What do I have to change to get this working?</p>
+
+<p>Cheers<br>
+Laurenz</p>
+
+        <div class="owner"><p>Asked by <a href="/users/25550">lalten</a> on 2016-01-12 08:21:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>How did you come up with the formula converting uncertainty to covariance?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23470">sloretz</a> on 2016-01-13 19:17:34 UTC</p></div>
+</div>
+<div class="comment">
+              <p><em>opt_flow-&gt;quality</em> is 0 at min and 255 max. I wanted high uncertainty (~1) for low quality and low uncertainty for high quality (1e-6). The exponential curve puts emphasis on higher quality.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25550">lalten</a> on 2016-01-14 09:54:35 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It works when you change the header construction of the converted message. The timestamp must be reset and the leading / in the frame_id must be removed.
+I&#39;m not sure changing the timestamps is a good idea, but it works like this.</p>
+
+<pre><code>// Build new message from old header
+geometry_msgs::TwistWithCovarianceStamped twist;
+twist.header = opt_flow-&gt;header;
+twist.header.stamp = ros::Time::now(); // Otherwise the timestamp on the message is more than the cache length earlier than the newest data in the transform cache
+if(twist.header.frame_id.substr(0,1) == &quot;/&quot;)
+twist.header.frame_id = twist.header.frame_id.erase(0,1); // Otherwise: error, because tf2 frame_ids cannot start with a &#39;/&#39;
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25550">lalten</a> on 2016-01-12 11:43:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The timestamp in the range of 3000 suggests that it&#39;s not time since epoch. Maybe time since startup. For a more accurate timestamp you need to calibrate the offset between the sensors timestamps and ros time, and then apply that correction instead of stamping it with the current time of receipt.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2016-01-12 14:36:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Good idea, that&#39;s probably the reason! Thanks :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25550">lalten</a> on 2016-01-14 10:02:13 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Can't send binary String messages in ROS Noetic via rospy - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374442">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Can't send binary String messages in ROS Noetic via rospy</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98601/cant-send-binary-string-messages-in-ros-noetic-via-rospy">https://robotics.stackexchange.com/questions/98601/cant-send-binary-string-messages-in-ros-noetic-via-rospy</a>.</p>
+        <p>I have to send binary String messages via the ROS message bus. That worked out perfectly with Python 2.7 and ROS Melodic, but fails with ROS Noetic. Here&#39;s some example code (of course I don&#39;t just want to send &#39;test&#39; as binary data):</p>
+
+<pre><code>import rospy
+from std_msgs.msg import String
+
+rospy.init_node(&#39;test_pub&#39;)
+pub = rospy.Publisher(&#39;bin&#39;, String, queue_size=10)
+
+while not rospy.is_shutdown():
+    msg = String()
+    msg.data = b&#39;test&#39;
+    pub.publish(msg)
+    rospy.sleep(1.)
+</code></pre>
+
+<p>With Noetic that fails as soon as someone subscribes to the topic. The reason is that ROS tries to encode the data of String messages via <code>.encode(utf-8)</code> once it detects Python 3, which will of course fail for <code>bytes</code>. </p>
+
+<p>Here&#39;s the error:</p>
+
+<pre><code>File &quot;/opt/ros/noetic/lib/python3/dist-packages/rospy/msg.py&quot;, line 152, in serialize_message
+    msg.serialize(b)
+File &quot;/opt/ros/noetic/lib/python3/dist-packages/std_msgs/msg/_String.py&quot;, line 56, in serialize
+    _x = _x.encode(&#39;utf-8&#39;)
+AttributeError: &#39;bytes&#39; object has no attribute &#39;encode&#39;
+</code></pre>
+
+<p>And the problematic passage in the String messages source:</p>
+
+<pre><code>def serialize(self, buff):
+&quot;&quot;&quot;
+serialize message into buffer
+:param buff: buffer, ``StringIO``
+&quot;&quot;&quot;
+try:
+  _x = self.data
+  length = len(_x)
+  if python3 or type(_x) == unicode:
+    _x = _x.encode(&#39;utf-8&#39;)
+</code></pre>
+
+<p>Is there some way to work around that without modifying/destroying the binary data itself? Decoding the binary data first so that ROS can encode it again unfortunately does modify it.</p>
+
+<p>And yes, I know that there exist the messages <code>Byte</code> / <code>MultiByteArray</code>, but therefore I would need to convert the binary data to/from an Integer array on all ends, which would add massive overhead and break compatibility with ROS Melodic clients and rosbags.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35755">gm88</a> on 2021-03-22 02:29:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Unfortunately, I believe this is by design.</p>
+
+<p>See <a href="http://wiki.ros.org/msg">wiki/msg</a>, specifically the parts about how Python 2 and Python 3 treat <code>string</code> and <code>uint8[]</code> fields.</p>
+
+<p>It&#39;s essentially as you already described: in Python 3, a <code>string</code> field will be mapped onto <code>bytes</code>. In Python 2, it&#39;ll be <code>str</code>.</p>
+
+<p>Pedantic, but I believe this is the problem:</p>
+
+<blockquote>
+<p>I have to send binary String messages via the ROS message bus</p>
+</blockquote>
+
+<p>According to <code>wiki/msg</code> again, <code>string</code> fields are intended to contain <em>ascii strings</em>, not binary data. Those two are not the same, both semantically and structurally (yes, they both typically occupy a contiguous piece of memory, and both are byte/char based, but that doesn&#39;t make them identical).</p>
+
+<p>The violation of the semantics of <code>string</code> you propose then causes the problems with the code on different versions of ROS: it just happened to work prior to Noetic because Python 2 was very lax in this regard. But based on the semantics and the field type description, the developers were justified in fixing it in Noetic (they were also forced by the Python 3 migration of course).</p>
+
+<p>Note: this is not a snooty answer trying to put blame on you. I just wanted to clarify for future readers <em>why</em> caring about semantics of ROS message fields (and semantics of messages in general) is important. Even if &quot;it fits&quot;, it does not mean it&#39;s proper use. Abusing message types can lead to situations where your assumption something will work is broken by a maintainer.</p>
+
+<blockquote>
+<p>Is there some way to work around that without modifying/destroying the binary data itself? Decoding the binary data first so that ROS can encode it again unfortunately does modify it.</p>
+</blockquote>
+
+<p>if you <em>really</em> want to send binary data in <code>string</code> fields, I believe the only proper way would be to first encode it as Base64, and then decode it again in all receivers.</p>
+
+<p>It would still violate semantics, but it would let you use a <code>string</code> for something which is technically not an <em>ascii string</em>.</p>
+
+<p>It would of course not help with this:</p>
+
+<blockquote>
+<p>would add massive overhead and break compatibility with ROS Melodic clients and rosbags.</p>
+</blockquote>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-03-22 10:55:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

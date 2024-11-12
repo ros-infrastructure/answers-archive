@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ValueError while looping spin_once() in a separate thread from a custom pyqtgraph widget - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/405689">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ValueError while looping spin_once() in a separate thread from a custom pyqtgraph widget</h2>
+      <div class="question">
+        <p>I am trying to write a subscriber node within a custom PyQt5 widget (via the module <code>pyqtgraph</code>). The widget is simple: a dot rotating in xy space, subscribing to a Twist message as a command velocity.</p>
+
+<p>Because I am using pyqtgraph, my python process is run by the Qt event loop (<code>app.exec()</code>, called by pyqtgraph as <code>pg.exec()</code>). This prevents me from using <code>rclpy.spin()</code> to manage the subscriber node, so I am using <code>rclpy.spin_once()</code> on a timed loop clocked by the Qt timer. This also forces my program to be structured like a PyQt application where my ROS node is an attribute of the MainWindow object, as opposed to defining a subscriber class that inherits <code>rclpy.Node</code>. I understand this might not be the best practice, but the features and performance provided by the Qt event loop are important to my full application, for which the rotating dot is just a temporary stand-in.</p>
+
+<p>If I run my program as described above, the plotting is choppy, as Qt needs to wait for <code>spin_once</code> to complete. To achieve smoother plotting, I decided to run all calls to <code>spin_once</code> in a separate thread operated by PyQt&#39;s QRunnable class. As a result, I am making frequent (~50 Hz) calls to <code>spin_once</code> in a thread pool run by PyQt. When I run it this way, I get the following runtime error:</p>
+
+<pre><code>File &quot;/opt/ros/humble/.../rclpy/executors.py&quot;, line 690, in wait_for_ready_callbacks
+    return next(self._cb_iter)
+ValueError: generator already executing
+</code></pre>
+
+<p>I assume this error comes from the subscriber node being called more frequently than it can handle, but I also know that 50 Hz is not an unreasonable rate for topic subscription. How could I structure this program so that I can run the Qt app.exec() and also subscribe to a topic? Is there a better way to run repeated calls to a subscriber in a separate thread?</p>
+
+<p>I am still a novice to ROS and concepts like threading and multiprocessing, but I&#39;m open to rewriting this in a different structure so long as I am still able to use my pyqtgraph GUI widget.</p>
+
+<p>I am running ros2 Humble on Ubuntu Jammy (22.04) on an x86 Dell XPS 13, with kernel 5.15.0-46-generic. My full program is written below:</p>
+
+<pre><code>import rclpy
+import pyqtgraph as pg
+from geometry_msgs.msg import Twist
+
+from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtCore import QRunnable, QThreadPool, pyqtSlot
+from rclpy.node import Node
+
+class Worker(QRunnable):
+    &#39;&#39;&#39;
+    This is a utility for running functions in a thread outside the Qt event loop
+    &#39;&#39;&#39;
+    def __init__(self, fn, *args, **kwargs):
+        super(Worker, self).__init__()
+        # Store constructor arguments (re-used for processing)
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+
+    @pyqtSlot()
+    def run(self):
+        # Initialise the runner function with passed args, kwargs.
+        self.fn(*self.args, **self.kwargs)
+
+class MainWindow(pg.GraphicsLayoutWidget):
+    &#39;&#39;&#39;
+    This is a pyqtgraph widget that plots a circular dot in xy space.
+    &#39;&#39;&#39;
+    def __init__(self,parent=None, show=True, size=None, title=None, **kargs):
+        super().__init__(parent, show, size, title, **kargs)
+
+        #Initialize ROS and subscriber node
+        rclpy.init(args=None)
+        self.node = Node(&quot;Plotter&quot;)
+        self.sub = self.node.create_subscription(Twist, &#39;cmd_vel&#39;, self.get_msg, 10)
+
+        #initialize Qt thread pool
+        self.threadpool = QThreadPool()
+
+        #rate and timer
+        self.timer_period = 20 #ms
+        self.timer = QtCore.QTimer()
+        self.timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self.timer.timeout.connect(self.timer_update)   
+
+        #window config
+        self.setGeometry(0, 0, 400,400)
+
+        #set background to white
+        self.setBackground(&#39;w&#39;)
+
+        # initialize plot 
+        self.P = self.addPlot()
+        self.P.setRange(xRange=(-1.2,1.2),yRange=(-1.2,1.2))
+        self.P.setAspectLocked(lock=True, ratio=1)
+
+        # initialize positions and velocities
+        self.x = 1
+        self.y = 0
+        self.dx = 0
+        self.dy = 0
+        self.do = 0
+
+        #initialize a dot
+        self.dot = self.P.plot([self.x],[self.y],pen=None,symbolBrush=&#39;k&#39;,symbolPen=&#39;w&#39;,symbolSize=50)
+
+        # start timer
+        self.timer.start(self.timer_period)
+
+    def timer_update(self):
+        &#39;&#39;&#39;
+        This function goes off every (self.timer_period) milliseconds and spins the ros node to
+        communicate with the ros graph and update things.
+        &#39;&#39;&#39;
+        #spin ros node (in a separate thread)
+        worker = Worker(rclpy.spin_once,self.node) 
+        self.threadpool.start(worker)
+
+        #update the plot 
+        self.update_plot()
+
+    def get_msg(self,msg):
+        &#39;&#39;&#39;
+        Fetch information from the Twist topic
+        &#39;&#39;&#39;
+        #unpack Twist message
+        self.dx = msg.linear.x
+        self.dy = msg.linear.y
+        self.do = msg.angular.z
+
+    def update_plot(self):
+        &#39;&#39;&#39;
+        Update the position of the dot, setting data to the plot
+        &#39;&#39;&#39;
+        #update the dot
+        self.x = self.x + self.dx
+        self.y = self.y + self.dy
+
+        #set data
+        self.dot.setData(x=[self.x],y=[self.y])
+
+        #print out the current values
+        print(&#39;*****&#39;)
+        print(&#39;x = &#39;,self.x)
+        print(&#39;y = &#39;,self.y)
+
+        # show
+        self.show()
+
+if __name__ == &#39;__main__&#39;:
+    app = QtWidgets.QApplication([])
+    window = MainWindow()
+    pg.exec()
+</code></pre>
+
+<p>Thank you!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/107605">markg</a> on 2022-08-29 17:08:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>It will depend a bit on what you want/need to do exactly, but I&#39;ve found <a href="https://github.com/StefanFabian/qml_ros2_plugin">StefanFabian/qml_ros2_plugin</a> to be <em>really</em> convenient for creating UIs that visualise data coming in over ROS topics.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-09-01 01:19:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ll check this out, thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/107605">markg</a> on 2022-09-01 10:38:41 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I found a solution! My mistake here was trying to use a thread-based solution when I could instead just use multiple processes and inter-process communication provided by <code>QProcess</code>. If anyone has a simple PyQt GUI they want to communicate with ROS, this is a fairly simple (maybe trivial?) solution that allows you to run both <code>rclpy.spin</code> and a PyQt app at the same time, though in different processes. </p>
+
+<p>My code is made up of two scripts: plotter.py and subscriber.py, where plotter.py is the <code>pyqtgraph</code> widget and subscriber.py is the ROS node. To launch both programs, run plotter.py and it will create a new process via <code>QProcess</code> that will launch subscriber.py. The node enters a <code>rclpy.spin</code> loop and outputs a copy of the current message reading to its standard output, only visible by its parent process plotter.py. </p>
+
+<p>I hacked this together very quickly and am fairly new to this so please let me know if there are any obvious improvements to be made. I am unsure whether standard output is the best method for IPC in this case, but it&#39;s fast enough for my application. </p>
+
+<p>Here is my code for the ROS node, in subscriber.py</p>
+
+<pre><code>&#39;&#39;&#39;
+This is a ROS2 subscriber that subscribes to the /cmd_vel topic, and then
+&quot;re-publishes&quot; that information to standard output, which is readable by QProcess.
+&#39;&#39;&#39;
+
+import rclpy
+import sys
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+
+class QtSubscriber(Node):
+    def __init__(self):
+        super().__init__(&#39;sub_to_qt&#39;)
+
+        #init subscription
+        self.subs = self.create_subscription(Twist,&#39;cmd_vel&#39;,self.callback,10)
+        self.subs
+
+    def callback(self,msg):
+        # get data from the Twist message
+        self.x  = msg.linear.x
+        self.y  = msg.linear.y
+        self.th = msg.angular.z
+
+        #output
+        # NOTE: these messages will be parsed such that the number on the
+        # right-hand side of the &#39;=&#39; is read, and if there is no &#39;=&#39;, the 
+        # whole message is read. So: either make sure everything to the 
+        # right of &#39;=&#39; is numeric or make the whole string numeric.
+        sys.stdout.write(f&quot;x  = {self.x}\n&quot;)
+        sys.stdout.write(f&quot;y  = {self.y}\n&quot;)
+        sys.stdout.write(f&quot;th = {self.th}\n&quot;)
+        sys.stdout.flush()
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = QtSubscriber()
+
+    rclpy.spin(node)
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>Here is my code for the pyqtgraph widget, in plotter.py</p>
+
+<pre><code>&#39;&#39;&#39;
+This script aims to create a pyqtgraph app which also acts as a ros node. 
+Timing will be run by the Qt event loop, which should be run at a faster 
+rate than ros publishes data at to prevent data loss.
+&#39;&#39;&#39;
+import sys
+import pyqtgraph as pg
+
+from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtCore import QProcess
+
+from IPython import embed
+
+
+class MainWindow(pg.GraphicsLayoutWidget):
+    &#39;&#39;&#39;
+    This is a pyqtgraph widget that plots a circular dot in xy space.
+    &#39;&#39;&#39;
+    def __init__(self,parent=None, show=True, size=None, title=None, **kargs):
+        super().__init__(parent, show, size, title, **kargs)
+
+        #Initialize ROS subscriber process
+        self.p = None
+        self.initROSproc()
+
+        #rate and timer
+        self.timer_period = 20 #ms
+        self.timer = QtCore.QTimer()
+        self.timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self.timer.timeout.connect(self.update_plot)   
+
+        #window config
+        self.title = &#39;blarf&#39;
+        self.width = 400
+        self.height = 400
+        self.setWindowTitle(self.title)
+        self.setGeometry(0, 0, self.width, self.height)
+        #set background to white
+        self.setBackground(&#39;w&#39;)
+
+        # initialize plot
+        self.P = self.addPlot()
+        self.P.setRange(xRange=(-1.2,1.2),yRange=(-1.2,1.2))
+        self.P.setAspectLocked(lock=True, ratio=1)
+
+        # initialize positions and velocities
+        self.x = 1
+        self.y = 0
+        self.dx = 0
+        self.dy = 0
+        self.do = 0
+
+        #initialize a dot
+        self.dot = self.P.plot([self.x],[self.y],pen=None,symbolBrush=&#39;k&#39;,symbolPen=&#39;w&#39;,symbolSize=50)
+
+        #start timer
+        self.timer.start(self.timer_period)   
+
+    def update_plot(self):
+        &#39;&#39;&#39;
+        Update the position of the dot, setting data to the plot
+        &#39;&#39;&#39;
+        #update the dot
+        self.x = self.x + self.dx
+        self.y = self.y + self.dy
+
+        #set data
+        self.dot.setData(x=[self.x],y=[self.y])
+
+        #print out the current values
+        print(&#39;*****&#39;)
+        print(&#39;x = &#39;,self.x)
+        print(&#39;y = &#39;,self.y)
+
+        # show
+        self.show()
+
+    def initROSproc(self):
+        &#39;&#39;&#39;
+        This initializes a separate python process (subscriber.py) and sets up communication with that process
+        &#39;&#39;&#39;
+        if self.p is None:  # No process running.
+            #initialize process
+            self.p = QProcess()  # Keep a reference to the QProcess (e.g. on self) while it&#39;s running.
+            self.p.readyReadStandardOutput.connect(self.get_msg)
+            self.p.finished.connect(self.process_finished)  # Clean up once complete.
+
+            #start process
+            print(&#39;starting ROS process&#39;)
+            self.p.start(&quot;python3&quot;, [&#39;subscriber.py&#39;])
+
+    def process_finished(self):
+        print(&quot;Process finished.&quot;)
+        self.p = None
+
+    def get_msg(self):
+        &#39;&#39;&#39;
+        Fetch information from the standard ouput
+        &#39;&#39;&#39;
+        #get standard output string
+        data = self.p.readAllStandardOutput()
+        stdout = bytes(data).decode(&quot;utf8&quot;)
+
+        #parse standard input and assign values
+        parse_xyth = [float(x.split(&quot;=&quot;)[-1]) for x in stdout.split(&quot;\n&quot;)[0:3]]
+
+        #unpack Twist message
+        self.dx = parse_xyth[0]
+        self.dy = parse_xyth[1]
+        self.do = parse_xyth[2]
+
+def main():
+    app = QtWidgets.QApplication([])
+    window = MainWindow()
+    pg.exec()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/107605">markg</a> on 2022-08-31 10:16:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

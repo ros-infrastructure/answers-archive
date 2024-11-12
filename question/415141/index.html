@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Help with integrating micro-ros and with the micro-ros-agent on STM32MP1 + Yocto + Kirkstone - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/415141">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Help with integrating micro-ros and with the micro-ros-agent on STM32MP1 + Yocto + Kirkstone</h2>
+      <div class="question">
+        <p>I am having issues with integrating micro-ROS with the STM32MP1. The STM32MP1 integrates a A7 and the equivalent of an STM32F4 in one chip. They communicate via shared memory. There is a driver that turns the shared memory into a virtual UART interface. I have created the custom transport layer for virtual UART and it seem to be working. I am able to initialize a node and start some kind of basic communication with the micro-ROS agent but not more than that. When I go to create a int32 publisher I get a return code of 200. I looked through the return codes of the function and could correlate 200 to a specific error code. Here is my code for reference. Any thoughts would be appreciated. Also would anyone be able to supply what a working initialization output looks like from the micro-ROS agent? Specifically the output of the following command. </p>
+
+<pre><code>ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyRPMSG0 -v6
+</code></pre>
+
+<p>I am building the micro-ROS agent with Yocto and am targeting the most recent release of foxy.</p>
+
+<pre><code>/**
+ * @file micro_ros.c
+ * File contains all the code for the micro-ROS task.
+ */
+
+#include &quot;Tasks/micro_ros.h&quot;
+#include &quot;System/VIRT_UART_transport.h&quot;
+#include &quot;System/microros_allocators.h&quot;
+#include &quot;freeRTOS.h&quot;
+#include &quot;main.h&quot;
+
+#include &lt;rcl/rcl.h&gt;
+#include &lt;rcl/error_handling.h&gt;
+#include &lt;rclc/rclc.h&gt;
+#include &lt;rclc/executor.h&gt;
+#include &lt;uxr/client/transport.h&gt;
+#include &lt;rmw_microxrcedds_c/config.h&gt;
+#include &lt;rmw_microros/rmw_microros.h&gt;
+
+#include &lt;std_msgs/msg/int32.h&gt;
+#include &lt;std_msgs/msg/string.h&gt;
+
+#include &lt;virt_uart.h&gt;
+
+VIRT_UART_HandleTypeDef huart0, huart1;
+
+#define RCCHECK(fn)                                                                      \
+    {                                                                                    \
+        rcl_ret_t temp_rc = fn;                                                          \
+        if ((temp_rc != RCL_RET_OK))                                                     \
+        {                                                                                \
+            printf(&quot;Failed status on line %d: %d. Aborting.\n&quot;, __LINE__, (int)temp_rc); \
+            Error_Handler();                                                             \
+        }                                                                                \
+    }
+#define RCSOFTCHECK(fn)                                                                    \
+    {                                                                                      \
+        rcl_ret_t temp_rc = fn;                                                            \
+        if ((temp_rc != RCL_RET_OK))                                                       \
+        {                                                                                  \
+            printf(&quot;Failed status on line %d: %d. Continuing.\n&quot;, __LINE__, (int)temp_rc); \
+        }                                                                                  \
+    }
+
+rcl_publisher_t publisher;
+std_msgs__msg__Int32 msg;
+
+void timer_callback(rcl_timer_t *timer, int64_t last_call_time)
+{
+    RCLC_UNUSED(last_call_time);
+    if (timer != NULL)
+    {
+        RCSOFTCHECK(rcl_publish(&amp;publisher, &amp;msg, NULL));
+        msg.data++;
+    }
+}
+
+#define STACK_SIZE 3000
+
+BaseType_t xReturned;
+TaskHandle_t xHandle = NULL;
+StackType_t xStack[ STACK_SIZE ];
+StaticTask_t xTaskBuffer;
+
+void micro_ros_init(void)
+{
+    // Create a freertos task
+
+    xHandle = xTaskCreateStatic(
+        micro_ros_task,
+        &quot;micro_ros_task&quot;,
+        STACK_SIZE,
+        NULL,
+        tskIDLE_PRIORITY,
+        xStack,
+        &amp;xTaskBuffer);
+    if (xHandle == NULL)
+    {
+        /* The task was created.  Use the task&#39;s handle to delete the task. */
+        vTaskDelete(xHandle);
+        Error_Handler();
+    }
+}
+
+void micro_ros_task(void *arg)
+{
+    rmw_uros_set_custom_transport(
+        true,
+        (void *)&amp;huart0,
+        cubemx_transport_open,
+        cubemx_transport_close,
+        cubemx_transport_write,
+        cubemx_transport_read);
+
+    rcl_allocator_t freeRTOS_allocator = rcutils_get_zero_initialized_allocator();
+    freeRTOS_allocator.allocate = microros_allocate;
+    freeRTOS_allocator.deallocate = microros_deallocate;
+    freeRTOS_allocator.reallocate = microros_reallocate;
+    freeRTOS_allocator.zero_allocate = microros_zero_allocate;
+
+    if (!rcutils_set_default_allocator(&amp;freeRTOS_allocator))
+    {
+        printf(&quot;Error on default allocators (line %d)\n&quot;, __LINE__);
+        Error_Handler();
+    }
+
+    // micro-ROS app
+    rcl_publisher_t publisher;
+    std_msgs__msg__Int32 msg;
+    rclc_support_t support;
+    rcl_allocator_t allocator;
+    rcl_node_t node;
+    rcl_ret_t return_code;
+
+    allocator = rcl_get_default_allocator();
+
+    // create init_options
+    RCCHECK(rclc_support_init(&amp;support, 0, NULL, &amp;allocator));
+
+    // create node
+    RCCHECK(rclc_node_init_default(&amp;node, &quot;cubemx_node&quot;, &quot;&quot;, &amp;support) == NULL);
+
+    // create publisher
+    return_code = rclc_publisher_init_default(
+            &amp;publisher,
+            &amp;node,
+            ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+            &quot;cubemx_publisher&quot;);
+    RCCHECK(return_code);
+
+    msg.data = 0;
+
+    for (;;)
+    {
+        return_code = rcl_publish(&amp;publisher, &amp;msg, NULL);
+        if (return_code != RCL_RET_OK)
+        {
+            printf(&quot;Error publishing (line %d)\n&quot;, __LINE__);
+        }
+
+        msg.data++;
+        vTaskDelay(10);
+    }
+    /* USER CODE END StartDefaultTask */
+}
+</code></pre>
+
+<p>Here is the output from the agent</p>
+
+<pre><code>[1683581842.387746] info     | TermiosAgentLinux.cpp | init                     | running...             | fd: 3
+[1683581848.071709] debug    | SerialAgentLinux.cpp | recv_message             | [==&gt;&gt; SER &lt;&lt;==]        | client_key: 0x5851F42D, len: 24, data:
+0000: 80 00 00 00 00 01 10 00 58 52 43 45 01 00 01 0F 58 51 F4 2D 81 00 FC 01
+[1683581848.072024] info     | SessionManager.hpp | establish_session        | session re-established | client_key: 0x5851F42D, address: 0
+[1683581848.072315] debug    | SerialAgentLinux.cpp | send_message             | [** &lt;&lt;SER&gt;&gt; **]        | client_key: 0x5851F42D, len: 19, data:
+0000: 81 00 00 00 04 01 0B 00 00 00 58 52 43 45 01 00 01 0F 00
+[1683581848.285678] debug    | SerialAgentLinux.cpp | recv_message             | [==&gt;&gt; SER &lt;&lt;==]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0B 01 05 00 00 00 00 00 80
+[1683581848.286201] debug    | SerialAgentLinux.cpp | send_message             | [** &lt;&lt;SER&gt;&gt; **]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0A 01 05 00 00 00 00 01 80
+[1683581848.493603] debug    | SerialAgentLinux.cpp | recv_message             | [==&gt;&gt; SER &lt;&lt;==]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0B 01 05 00 00 00 00 00 80
+[1683581848.494186] debug    | SerialAgentLinux.cpp | send_message             | [** &lt;&lt;SER&gt;&gt; **]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0A 01 05 00 00 00 00 01 80
+[1683581848.702604] debug    | SerialAgentLinux.cpp | recv_message             | [==&gt;&gt; SER &lt;&lt;==]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0B 01 05 00 00 00 00 00 80
+[1683581848.703120] debug    | SerialAgentLinux.cpp | send_message             | [** &lt;&lt;SER&gt;&gt; **]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0A 01 05 00 00 00 00 01 80
+[1683581848.910514] debug    | SerialAgentLinux.cpp | recv_message             | [==&gt;&gt; SER &lt;&lt;==]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0B 01 05 00 00 00 00 00 80
+[1683581848.910918] debug    | SerialAgentLinux.cpp | send_message             | [** &lt;&lt;SER&gt;&gt; **]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0A 01 05 00 00 00 00 01 80
+[1683581849.121462] debug    | SerialAgentLinux.cpp | recv_message             | [==&gt;&gt; SER &lt;&lt;==]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0B 01 05 00 00 00 00 00 80
+[1683581849.121826] debug    | SerialAgentLinux.cpp | send_message             | [** &lt;&lt;SER&gt;&gt; **]        | client_key: 0x5851F42D, len: 13, data:
+0000: 81 00 00 00 0A 01 05 00 00 00 00 01 80
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/148129">grahas</a> on 2023-05-08 18:20:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The issue was the custom transport. The function for writing would return true instead of how much had been written. Something like the following should work for the custom transport. </p>
+
+<pre><code>/**
+* File provides a custom transport layer for micro ROS.
+* It uses VUART to communicate with the micro XRCE-DDS agent.
+*/
+
+#include &lt;uxr/client/transport.h&gt;
+
+#include &lt;rmw_microxrcedds_c/config.h&gt;
+#include &lt;rmw_microros/rmw_microros.h&gt;
+
+#include &quot;main.h&quot;
+
+#include &lt;cmsis_os.h&gt;
+#include &lt;virt_uart.h&gt;
+
+#include &lt;unistd.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdbool.h&gt;
+
+#ifdef RMW_UXRCE_TRANSPORT_CUSTOM
+
+// VUART_transport defines
+#define VIRT_UART_IT_BUFFER_SIZE 2048
+
+// VUART_transport variables
+static uint8_t virt_uart_it_buffer[VIRT_UART_IT_BUFFER_SIZE];
+static size_t it_head = 0, it_tail = 0;
+
+/**
+* In order for the M4 to communicate with the A7 the A7
+* must first send a message to the M4 so the virt_uart 
+* can finish initialization
+*/
+static uint8_t received_first_message_from_A7 = false;
+
+/**
+* This function is called when the VIRT_UART has received a block.
+* It should copy the received data to the buffer and update the tail pointer.
+* IMPORTANT NOTE:
+    The actual bare metal version of OpenAMP is not designed to work with FreeROTS. as a consequence,
+    it&#39;s not advised to use FreeRTOS operations inside OpenAMP interrupts.
+*/
+void virt_uart_rx_complete_callback(VIRT_UART_HandleTypeDef *huart)
+{
+    // Add the received bytes to the buffer
+    for (int i = 0; i &lt; huart-&gt;RxXferSize; i++)
+    {
+        // Write the received byte to the buffer
+        virt_uart_it_buffer[it_tail] = huart-&gt;pRxBuffPtr[i];
+        it_tail = (it_tail + 1) % VIRT_UART_IT_BUFFER_SIZE;
+    }
+}
+
+/**
+* This callback is for handling the very first message from the A7 and
+* discarding it
+*/
+void virt_uart_rx_complete_callback_initial(VIRT_UART_HandleTypeDef *huart)
+{
+    // Mark the first message as received
+    received_first_message_from_A7 = true;
+
+    // Change the callback function for the VIRT_UART
+    if (VIRT_UART_RegisterCallback(huart, VIRT_UART_RXCPLT_CB_ID, virt_uart_rx_complete_callback) != VIRT_UART_OK)
+    {
+        Error_Handler();
+    }
+}
+
+
+/**
+* This function should open and init the custom transport.
+* It returns a boolean indicating if the opening was successful.
+* transport-&gt;args holds the arguments passed through uxr_init_custom_transport.
+*/
+bool cubemx_transport_open(struct uxrCustomTransport *transport)
+{
+    // Cast the transport args to the HAL VIRT_UART handle
+    VIRT_UART_HandleTypeDef *virt_uart = (VIRT_UART_HandleTypeDef *)transport-&gt;args;
+
+    // Register the initial callback function for the VIRT_UART
+    if (VIRT_UART_RegisterCallback(virt_uart, VIRT_UART_RXCPLT_CB_ID, virt_uart_rx_complete_callback_initial) != VIRT_UART_OK)
+    {
+        return false;
+    }
+
+    // Initialize the VIRT_UART
+    if (VIRT_UART_Init(virt_uart) != VIRT_UART_OK)
+    {
+        return false;
+    }
+
+    // Wait for a message from the A7
+    while (received_first_message_from_A7 == false)
+    {
+        OPENAMP_check_for_message();
+        vTaskDelay(1);
+    }
+
+    // Indicate the function was successful
+    return true;
+}
+
+/**
+* This function should close the custom transport.
+* It returns a boolean indicating if closing was successful.
+* transport-&gt;args holds the arguments passed through uxr_init_custom_transport
+*/
+bool cubemx_transport_close(struct uxrCustomTransport *transport)
+{
+    // Cast the transport args to the HAL VIRT_UART handle
+    VIRT_UART_HandleTypeDef *virt_uart = (VIRT_UART_HandleTypeDef *)transport-&gt;args;
+
+    // Close the VIRT_UART
+    if (VIRT_UART_DeInit(virt_uart) != VIRT_UART_OK)
+    {
+        return false;
+    }
+
+    // Indicate the function was successful
+    return true;
+}
+
+/**
+* This function should write data to the custom transport.
+* It returns the number of bytes written.
+* transport-&gt;args holds the arguments passed through uxr_init_custom_transport.
+*/
+size_t cubemx_transport_write(struct uxrCustomTransport *transport, uint8_t *buf, size_t len, uint8_t *err)
+{
+    // Cast the transport args to the HAL VIRT_UART handle
+    VIRT_UART_HandleTypeDef *virt_uart = (VIRT_UART_HandleTypeDef *)transport-&gt;args;
+
+    // Write the data to the VIRT_UART endpoint
+    int results = VIRT_UART_Transmit(virt_uart, buf, len);
+    if (results != VIRT_UART_OK)
+    {
+        return 0;
+    }
+
+    // Return the number of bytes sent
+    return len;
+}
+
+/**
+* This function should read data from the custom transport.
+* It returns the number of bytes read.
+* transport-&gt;args holds the arguments passed through uxr_init_custom_transport.
+*/
+size_t cubemx_transport_read(struct uxrCustomTransport *transport, uint8_t *buf, size_t len, int timeout, uint8_t *err)
+{
+    size_t wrote = 0;
+    OPENAMP_check_for_message();
+    while ((it_head != it_tail) &amp;&amp; (wrote &lt; len))
+    {
+        buf[wrote] = virt_uart_it_buffer[it_head];
+        it_head = (it_head + 1) % VIRT_UART_IT_BUFFER_SIZE;
+        wrote++;
+    }
+
+    // Return the number of bytes read
+    return wrote;
+}
+
+#endif // RMW_UXRCE_TRANSPORT_CUSTOM
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/148129">grahas</a> on 2023-05-09 16:57:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

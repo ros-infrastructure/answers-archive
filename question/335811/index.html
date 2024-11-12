@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>When exactly is a connect callback of a publisher called? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/335811">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>When exactly is a connect callback of a publisher called?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93618/when-exactly-is-a-connect-callback-of-a-publisher-called">https://robotics.stackexchange.com/questions/93618/when-exactly-is-a-connect-callback-of-a-publisher-called</a>.</p>
+        <p>Hi all,</p>
+
+<p>I would like to know when precisely the <code>connect_cb</code> is being invoked, specified in</p>
+
+<pre><code>Publisher ros::NodeHandle::advertise(const std::string &amp;    topic,
+    uint32_t    queue_size,
+    const SubscriberStatusCallback &amp;    connect_cb,
+    const SubscriberStatusCallback &amp;    disconnect_cb = SubscriberStatusCallback(),
+    const VoidConstPtr &amp;    tracked_object = VoidConstPtr(),
+    bool    latch = false 
+) 
+</code></pre>
+
+<p>(see <a href="http://docs.ros.org/melodic/api/roscpp/html/classros_1_1NodeHandle.html#ae4711ef282892176ba145d02f8f45f8d">http://docs.ros.org/melodic/api/roscpp/html/classros_1_1NodeHandle.html#ae4711ef282892176ba145d02f8f45f8d</a>). More specifically, I know that if I do a <code>NodeHandle:advertise()</code>, the underlying (TCP) connection is not established directly, i. e., upon returning from <code>advertise()</code>, subscribers may not already be connected even if they are already &quot;there&quot; (= known to the master) since this clearly also takes time. So, publishing messages right after the <code>advertise()</code> can causes messages not being received by all &quot;relevant nodes&quot; at that time. (IIRC, this issue has been discussed frequently here on ros.answers.org and one nasty workaround is a delay after the advertise.) Assume I <em>know</em> about the existance of another node that will eventually/finally subscribe to the advertised topic. (Please, I don&#39;t want to discuss here that this may not be the idea of a decoupled communication concept, i.e., what pub/sub was designed for.)</p>
+
+<p><strong>TL;DR: Is it safe to assume that once the above mentioned <code>connect_cb</code> is triggered, the underlying TCP connection <em>must</em> have been established so that publishing messages using the returned <code>ros::Publisher</code> object will definitely deliver the message to the node denoted by <code>ros::SingleSubscriberPublisher::getSubscriberName()</code> (= argument of the callback)?</strong></p>
+
+<p>I was already grep&#39;ping through <a href="https://github.com/ros/ros_comm/tree/melodic-devel/clients/roscpp/src/libros">ROS&#39; source code</a> but was not able to find the location where the callbacks are being invoked. </p>
+
+<p>Thanks you very much!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2019-10-21 08:52:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I&#39;m pretty sure those callbacks are in the end called in <a href="https://github.com/ros/ros_comm/blob/e45047801f8de4d91a639061c1e17546e217e403/clients/roscpp/src/libros/publication.cpp#L325-L340">Publication::peerConnect(..)</a> and <a href="https://github.com/ros/ros_comm/blob/e45047801f8de4d91a639061c1e17546e217e403/clients/roscpp/src/libros/publication.cpp#L342-L357">Publication::peerDisconnect(..)</a>. Those are in turn called <a href="https://github.com/ros/ros_comm/blob/e45047801f8de4d91a639061c1e17546e217e403/clients/roscpp/src/libros/publication.cpp#L219-L222">here</a> (in <code>Publication::addSubscriberLink(..)</code>) and <a href="https://github.com/ros/ros_comm/blob/e45047801f8de4d91a639061c1e17546e217e403/clients/roscpp/src/libros/publication.cpp#L249-L252">here</a> (in <code>Publication::removeSubscriberLink(..)</code>). The callbacks you pass to <code>NodeHandle::advertise&lt;&gt;(..)</code> are transferred to the actual <code>Publisher</code> object in <a href="https://github.com/ros/ros_comm/blob/5da095d06bccbea708394b399215d8a066797266/clients/roscpp/src/libros/publisher.cpp#L59-L67">Publisher::Publisher(..)</a>.</p>
+
+<p><code>Publication::addSubscriberLink(..)</code> gets called in <a href="https://github.com/ros/ros_comm/blob/89ca9a7bf288b09d033a1ab6966ef8cfe39e1002/clients/roscpp/src/libros/transport_subscriber_link.cpp#L117">TransportSubscriberLink::handleHeader(..)</a>, which is an event handler that gets invoked (via <a href="https://github.com/ros/ros_comm/blob/89ca9a7bf288b09d033a1ab6966ef8cfe39e1002/clients/roscpp/src/libros/connection_manager.cpp#L196-L207">ConnectionManager::onConnectionHeaderReceived(..)</a>) whenever a new connection is negotiated between a <code>Subscriber</code> and a <code>Publisher</code> (directly, so the master is already out of the picture here).</p>
+
+<p>I&#39;ve stopped there, you should be able to follow it from there yourself.</p>
+
+<blockquote>
+<p>Assume I know about the existance of another node that will eventually/finally subscribe to the advertised topic.  [..] Please, I don&#39;t want to discuss here that this may not be the idea of a decoupled communication concept, i.e., what pub/sub was designed for.)</p>
+</blockquote>
+
+<p>you may not want to, but I&#39;d still be interested to hear what application architecture necessitates using those callbacks. I&#39;ve not seen them used very often. Nodes expecting other nodes to &quot;be present&quot; is certainly an anti-pattern (see <a href="https://discourse.ros.org/t/runtime-configurable-parameters-in-autoware-ai/10653">“Runtime-configurable” Parameters in Autoware.ai</a> on ROS Discourse for a good example of this in <em>Autoware.ai</em> (and see @Geoff&#39;s response <a href="https://discourse.ros.org/t/runtime-configurable-parameters-in-autoware-ai/10653/4">here</a>)).</p>
+
+<p>Also note (but you may already be aware) that the <code>connect_cb</code> will be called for <em>every</em> new <code>Subscriber</code>. Not just the first.</p>
+
+<blockquote>
+<p>So, publishing messages right after the <code>advertise()</code> can causes messages not being received by all &quot;relevant nodes&quot; at that time. (IIRC, this issue has been discussed frequently here on ros.answers.org and one nasty workaround is a delay after the advertise.)</p>
+</blockquote>
+
+<p>Actually, using <a href="http://docs.ros.org/api/roscpp/html/classros_1_1Publisher.html#af5574532bf8a9b35efa3696a035d31fc">Publisher::getNumSubscribers()</a> is best practice there, not a delay. State-based is always better than time-based.</p>
+
+<p>Finally:</p>
+
+<blockquote>
+<p>Is it safe to assume that once the above mentioned <code>connect_cb</code> is triggered, the underlying TCP connection <em>must</em> have been established so that publishing messages using the returned <code>ros::Publisher</code> object will definitely deliver the message to the node denoted by <code>ros::SingleSubscriberPublisher::getSubscriberName()</code> (= argument of the callback)?</p>
+</blockquote>
+
+<p>Seeing as the callbacks appear to be only called at the very end of <code>TransportSubscriberLink::handleHeader(..)</code>, your assumption seems like one that could be true. The code suggests that after the connection is made and the connection header is exchanged, all registered <code>connect_cb</code> callbacks are called. I&#39;m not sure whether <a href="https://github.com/ros/ros_comm/blob/89ca9a7bf288b09d033a1ab6966ef8cfe39e1002/clients/roscpp/src/libros/transport_subscriber_link.cpp#L115">this</a> can fail sufficiently for the connection not to be considered &quot;established&quot; though.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2019-10-21 09:54:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>PS: as I&#39;m not the author of any of the code involved here, I cannot say with authority whether or not my analysis here is correct. But this should get you at least very close to figuring out things for yourself.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-10-21 10:22:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you VERY MUCH for your efforts! Really appreciated! :-)</p>
+
+<p>I will reply with an additional/separate answer since these comments are too restricted in terms of max. character count.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2019-10-23 06:30:29 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p><strong>TL;DR: the <code>connect_cb</code> is called AFTER the underlying TCP connection was created. So once the callback is triggered, a publisher <em>knows</em> for sure that messages being published will be received by the node denoted by the callback-provided <code>ros::SingleSubscriberPublisher</code> object. :-)</strong></p>
+
+<p>I was following a similar path through the ROS code but was unsure if the <code>peerConnect()</code> function really triggers the callback. After a 2nd thought/look, also due to your efforts, it seems that it &quot;just&quot; adds them to the callback queue so that some idle spinning thread will catch it up later. And it seems (according to your findings), that this is done after the connection is established. Indeed, the <code>onConnectionHeaderReceived()</code> callback is invoked upon <a href="https://github.com/ros/ros_comm/blob/89ca9a7bf288b09d033a1ab6966ef8cfe39e1002/clients/roscpp/src/libros/connection_manager.cpp#L185">tcprosAcceptConnection()</a> which seems like an evidance for my assumption. Also according to my further investigations, <a href="https://github.com/ros/ros_comm/blob/89ca9a7bf288b09d033a1ab6966ef8cfe39e1002/clients/roscpp/src/libros/transport_subscriber_link.cpp#L115">this</a> cannot fail or cause the just created TCP connection to fail anymore. (As a sidenote, the <code>ros::SingleSubscriberPublisher</code> object provided to the callback also underpins the fact since one can send messages to the other node that just subscribed.)</p>
+
+<p>I know that the <code>connect_cb</code> is invoked once for every new subscription. Its exactly what I need. :-)</p>
+
+<p>Now, regarding your question wrt. the underlying application architecture that requires this kind of callback: I am working on / doing research on a local planning algorithm that entirely prevents collisions given some reasonable contraints. This requires that every robot knows about all others in the system. I am using a topic to allow robots to discover others but once discovered, I require somewhat (rather tightly) coupled communication between the robots in order to guarantee safety (collision free motions). It is somewhat in contrast to all these DWA, VFH, etc. planners out there. ;-) And the decoupled nature of pub/sub made it difficult to send messages while ensuring that a designated receiver is actually receiving it. (Does this answer your question?)</p>
+
+<p>Ah and yes, sure: state-based conditions are always better (= more precise) than time-based ones. That&#39;s why I am intending to use these callbacks. The problem with <code>Publisher::getNumSubscribers()</code> is that some (e.g.)  <code>rostopic echo ...</code>also accounts for a subscriber and somewhat &quot;disorts&quot; the actual number of subscribers. :-)</p>
+
+<p>Thanks again for your super fast and detailed reply!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26762">CodeFinder</a> on 2019-10-23 06:56:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <blockquote>
+<p>Also according to my further investigations, <a href="https://github.com/ros/ros_comm/blob/89ca9a7bf288b09d033a1ab6966ef8cfe39e1002/clients/roscpp/src/libros/transport_subscriber_link.cpp#L115">this</a> cannot fail or cause the just created TCP connection to fail anymore. (As a sidenote, the <code>ros::SingleSubscriberPublisher</code> object provided to the callback also underpins the fact since one can send messages to the other node that just subscribed.)</p>
+</blockquote>
+
+<p>it can certainly fail. This is all based on TCP/IP, so if the remote side goes off-line, becomes unresponsive or for some other reason does not keep up its end of the connection, all subsequent writes (and reads) will fail.</p>
+
+<p>So pedantically I would say the answer to your question should be &quot;no&quot; (we cannot be certain there is a connection at all) . But for practical purposes you <em>can</em> probably assume that there is one after this callback is invoked.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-10-23 07:04:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Your post is also not really an answer btw. More a further clarification of your question combined with responses to my answer + comment.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-10-23 07:07:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Sure, connections can always fail. But this should cause the <code>disconnect_cb</code> to be called (may be another topic on its own). Pedantically, no, okay. But since my <code>disconnect_cb</code> will catch the case when the connection fails, it shouldn&#39;t be an issue. But generally, this is a problem of all coupled systems (relying on others causes somewhat &quot;dangerous&quot; dependencies but IMHO, this is inevitable anyway.)</p>
+
+<p>I was asking whether the <code>connect_cb</code> is called after the connection was established. One phase of establishing a TCP connection is listening for it, and finally (if there&#39;s one) accepting it. So,  <code>tcprosAcceptConnection()</code> is the correct location to conclude that it&#39;s true which answers my question (disregarding the fact that it can fail at any time anyway). Accepting my answer was just to let others know that they will find <em>this</em> information in this thread (and its worth reading). If you prefer to not mark my post as an answer (?), I am okay with that, too...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26762">CodeFinder</a> on 2019-10-23 07:20:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Perform long computation in callback - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/305257">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Perform long computation in callback</h2>
+      <div class="question">
+        <p>I would like to know which approach is recommended between:</p>
+
+<ol>
+<li>doing a long computation in the callback with a queue size of 1</li>
+<li>copying the data with some mutex and doing the computation in the spin</li>
+</ol>
+
+<p>Losing frames are ok but I need to process always the last frame, hence a queue size of 1.</p>
+
+<p>For 2, something like:</p>
+
+<pre><code>class Processing {
+  ros::NodeHandle m_nh;
+  unsigned int m_queue_size;
+  message_filters::Subscriber&lt;sensor_msgs::Image&gt; m_image_color_sub;
+  message_filters::Subscriber&lt;sensor_msgs::CameraInfo&gt; m_cam_info_sub;
+  typedef message_filters::sync_policies::ApproximateTime&lt;sensor_msgs::Image, sensor_msgs::CameraInfo&gt; MySyncPolicy;
+  message_filters::Synchronizer&lt;MySyncPolicy&gt; m_sync;
+  bool m_receive_new_image;
+  boost::mutex m_lock_new_image;
+  sensor_msgs::ImageConstPtr m_new_image_color;
+  sensor_msgs::CameraInfoConstPtr m_new_cam_info;
+
+public:
+  Processing() :
+      m_nh(),m_queue_size(1),
+      m_image_color_sub(m_nh, &quot;/camera/image&quot;, m_queue_size), m_cam_info_sub(m_nh, &quot;/camera/camera_info&quot;, m_queue_size),
+     m_sync(MySyncPolicy(10), m_image_color_sub, m_cam_info_sub),
+     m_receive_new_image(false), m_lock_new_image(), m_new_image_color(),
+     m_new_cam_info() {
+     m_sync.registerCallback(boost::bind(&amp;Processing::callback, this, _1, _2));
+  }
+
+  void spin() {
+    ros::Rate loop_rate(120);
+
+    while (m_nh.ok()) {
+      process();
+
+      ros::spinOnce();
+      loop_rate.sleep();
+    }
+  }
+
+  void callback(const sensor_msgs::ImageConstPtr&amp; msg_color, const sensor_msgs::CameraInfoConstPtr&amp; msg_cam_info     ) {
+      boost::mutex::scoped_lock(m_lock_new_image);
+      m_receive_new_image = true;
+      m_new_image_color = msg_color;
+      m_new_cam_info = msg_cam_info;
+  }
+
+  void process() {
+    try {
+      {
+        boost::mutex::scoped_lock(m_lock_new_image);
+        if (m_receive_new_image) {
+          m_receive_new_image = false;
+          //Convert data to correct format and release the mutex
+        } else {
+          return;
+        }
+      }
+
+      //Long computation time
+    } catch (const cv_bridge::Exception&amp; e) {
+      ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+    }
+  }
+};
+}
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, &quot;processing_node&quot;);
+  Processing processing;
+  processing.spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>For 1, the same thing but with:</p>
+
+<pre><code>  void spin() {
+    ros::Rate loop_rate(120);
+
+    while (m_nh.ok()) {    
+      ros::spinOnce();
+      loop_rate.sleep();
+    }
+  }
+</code></pre>
+
+<p>And the long computation time directly in the callback.</p>
+
+<p>The input images will be received at a higher rate than the processing function will be able to process.</p>
+
+<p>Also, in 2 is there a need to use mutex since the callback is called with <code>ros::spinOnce()</code> and so there is no risk of data races?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/37978">Alonso Martinez</a> on 2018-10-09 11:54:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>More or less the right track. You need to probably do something with your mutex in the callback so that it tries to get the mutex but if it fails it just passes because something if using it being processed. Otherwise the callback will block for the mutex.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2018-10-09 13:12:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I thought that the callback is called only with <code>ros::spinOnce()</code>? This is how understand this <a href="https://answers.ros.org/question/11887/significance-of-rosspinonce/">answer</a>.</p>
+
+<p>For me, there is no concurrency between the callback and the process function.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37978">Alonso Martinez</a> on 2018-10-09 15:18:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Alonso Martinez, you&#39;re correct. Your node is using <code>ros::spinOnce()</code> therefore it&#39;s single threaded and you don&#39;t really need to use mutex for data protection. The problem here is that your <strong>callback</strong> function has different rate than your <strong>process</strong> function. Therefore if you use single threade</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23971">l4ncelot</a> on 2018-10-10 09:17:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>... node your main loop will wait and do nothing while you process the last image (which would be already old at that point because new images arrive with greater speed). This could be solved using multi threaded approach with <code>AsyncSpinner</code> where you&#39;ll have to use mutex to protect data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23971">l4ncelot</a> on 2018-10-10 09:20:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@l4ncelot</p>
+
+<p>I understand that multi-threaded approach would be better.</p>
+
+<p>If images come at 30 Hz but I can only process at 10 Hz, with a queue size of 1, the process that handles messages does not overwrite the buffer in a way that I will get a close to recent image?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37978">Alonso Martinez</a> on 2018-10-10 10:06:25 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Alonso Martinez I think it depends on the buffer queue size you set in your publisher. It will not overwrite messages until the buffer queue size exceeds. Then it will just erase the old ones, which is alright.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23971">l4ncelot</a> on 2018-10-11 01:42:03 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

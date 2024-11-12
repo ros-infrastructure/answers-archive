@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ros2 Foxy Python custom SRV type error - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/383069">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ros2 Foxy Python custom SRV type error</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99718/ros2-foxy-python-custom-srv-type-error">https://robotics.stackexchange.com/questions/99718/ros2-foxy-python-custom-srv-type-error</a>.</p>
+        <p>Here&#39;s the traceback from the error,</p>
+
+<pre><code>[Intersection(i_d=0, ins=[1011, 1804], out=[1000], clear=True), Intersection(i_d=1, ins=[1103, 1001], out=[1002], clear=True), Intersection(i_d=2, ins=[1002, 1008], out=[1004, 1010], clear=True)]
+[INFO] [1627053698.780029518] [intersection_action_server]: Checking intersection
+[INFO] [1627053698.780460999] [intersection_action_server]: Incoming request
+Type: Incoming RFID: 1002
+[INFO] [1627053698.780763667] [intersection_action_server]: Sending back: Clear
+[INFO] [1627053053.366115161] [intersection_action_server]: Checking intersection
+[INFO] [1627053053.366806566] [intersection_action_server]: Incoming request
+Type: Incoming RFID: 1002
+[INFO] [1627053053.367215310] [intersection_action_server]: Sending back: Clear
+Traceback (most recent call last):
+File &quot;/home/mrumel/fisher_agc/AGCROS/install/server/lib/server/intersection_manager&quot;, line 11, in &lt;module&gt;
+load_entry_point(&#39;server==0.0.0&#39;, &#39;console_scripts&#39;, &#39;intersection_manager&#39;)()
+File &quot;/home/mrumel/fisher_agc/AGCROS/install/server/lib/python3.8/site-packages/server/intersection_manager.py&quot;, line 70, in main
+rclpy.spin(intersection_manager)
+File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/__init__.py&quot;, line 191, in spin
+executor.spin_once()
+File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 711, in spin_once
+raise handler.exception()
+File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/task.py&quot;, line 239, in __call__
+self._handler.send(None)
+File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 426, in handler
+await call_coroutine(entity, arg)
+File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 381, in _execute_service
+srv.send_response(response, header)
+File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/service.py&quot;, line 72, in send_response
+raise TypeError()
+TypeError
+</code></pre>
+
+<p>Here&#39;s my .SRV file first, it&#39;s filename is IntersectionManager.srv</p>
+
+<pre><code>string ask
+---
+string is_clear
+</code></pre>
+
+<p>My Service node</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+from agc_interfaces.srv import IntersectionManager
+from dataclasses import dataclass
+from typing import Optional, List
+import json
+import ast
+
+@dataclass
+class Intersection:
+    i_d: int
+    ins: List[int]
+    out: List[int]
+    clear: bool
+
+intersectionList: List[Intersection] = []
+
+class IntersectionActionServer(Node):
+
+
+    def __init__(self):
+        super().__init__(&#39;intersection_action_server&#39;)
+        self.srv = self.create_service(IntersectionManager,&#39;intersection_manage&#39;,self.execute_callback)
+        global intersectionList
+        with open(&#39;/home/maxunm/fisher_agc/AGCROS/scs_rfids.json&#39;) as f: 
+            data = json.load(f)
+        dicts = data[&#39;rfids&#39;] #Extract all the RFIDs from data
+        i = 0
+        for rfid in dicts:
+            for s in rfid[&#39;args&#39;]:
+                if &quot;intr&quot; in s:
+                    split_s = s.split(&#39;;&#39;,-1)
+                    ins = ast.literal_eval(split_s[1])
+                    out = ast.literal_eval(split_s[2])
+                    intersectionList.append(Intersection(i,ins,out,True))
+                    i = i+1
+        print(intersectionList)
+
+
+    def execute_callback(self, request, responce): 
+        self.get_logger().info(&#39;Checking intersection&#39;)
+        ask_list = request.ask.split(&quot;,&quot;)
+        which = ask_list[0]
+        rfid_num  = int(ask_list[1])
+        self.get_logger().info(&#39;Incoming request\nType: %s RFID: %d&#39; % (which, rfid_num))
+        for intersect in intersectionList:
+            if which == &quot;Incoming&quot;: #AGV coming into an intersection
+                if rfid_num in intersect.ins: #Which intersection the rfid it&#39;s at is in
+                    &quot;&quot;&quot;Check for if that intersection is locked or not&quot;&quot;&quot;
+                    if intersect.clear:
+                        responce.is_clear = str(&#39;Clear&#39;)
+                        intersect.clear = False
+                    else:
+                        responce.is_clear = str(&#39;Blocked&#39;)
+            else: #AGV leaving intersection
+                if rfid_num in intersect.out:
+                    if intersect.clear:
+                        responce.is_clear = str(&#39;ERROR&#39;)
+                        intersect.clear = True
+                    else:
+                        responce.is_clear = str(&#39;OK&#39;)
+                        intersect.clear = True
+        self.get_logger().info(&#39;Sending back: %s&#39;%(responce.is_clear))
+        return
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    intersection_manager = IntersectionActionServer()
+    rclpy.spin(intersection_manager)
+    rclpy.shutdown()
+
+
+
+
+if __name__ == &#39;__main__&#39;:
+    main()  
+</code></pre>
+
+<p>And then finally the tester node:</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+from agc_interfaces.srv import IntersectionManager
+import time
+
+
+class IntersectionTester(Node):
+
+    def __init__(self):
+        super().__init__(&#39;intersection_tester&#39;)
+        self.cli = self.create_client(IntersectionManager, &#39;intersection_manage&#39;)
+        while not self.cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(&#39;Intersection Manager not available, waiting again...&#39;)
+        self.req = IntersectionManager.Request()
+
+    def send_request(self):
+        self.req.ask = input(&quot;Enter the test string: &quot;)
+        self.future = self.cli.call_async(self.req)
+
+
+
+
+
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    intersection_tester = IntersectionTester()
+    intersection_tester.send_request()
+    while True:
+        while rclpy.ok():
+            rclpy.spin_once(intersection_tester)
+            if intersection_tester.future.done():
+                try:
+                    responce = intersection_tester.future.result()
+                except Exception as e:
+                    intersection_tester.get_logger().info(
+                        &#39;Service call failed %r&#39;%(e,)
+                    )
+                else:
+                    intersection_tester.get_logger().info(
+                        &#39;Responce received: {}&#39;.format(responce)
+                    )
+                break
+        time.sleep(2)
+    rclpy.shutdown()
+
+
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>On the input I am entering: <code>Incoming,1002</code> and it crashes with the traceback after trying to return as far as I can tell.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/70708">maxunm</a> on 2021-07-23 10:26:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/service.py&quot;, line 72, in send_response -  raise TypeError()  - TypeError</p>
+</blockquote>
+
+<p>The issue is with your service code in the execute_callback() function. The return is there but you have not defined the variable. In other words, it is returning nothing but in your service file, you have stated that it is returning a string. </p>
+
+<pre><code>return &lt;your return string&gt;
+</code></pre>
+
+<p>Just make that change in your service code &gt; execute_callback() function.</p>
+
+<p>Hope it helps you. feel free to drop a comment if it is not working.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/63046">Ranjit Kathiriya</a> on 2021-07-23 10:35:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Oh my gosh, I cant believe I forgot to return the response. Thank you for your help</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/70708">maxunm</a> on 2021-07-23 10:37:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2][Humble] async_send_request service result seldomly never returns using executors. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402780">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2][Humble] async_send_request service result seldomly never returns using executors.</h2>
+      <div class="question">
+        <p>Hi Guys, I am writing because I am dealing with the following strange behaviour:</p>
+
+<p>One node calls periodically (from a thread each 100ms) and sequentially N different services (4 in my example) using N clients. Each call is executed calling async<em>send</em>request and waited for using &quot;wait<em>for&quot; on the returned future. The node is added to an executor (tested with both Multithreaded and Singlehtreaded).
+Everything apparently works fine for a while, but seldomly the wait</em>for will hang and never get the result, even if the server generated a response. This happens much more frequently if the load on the system is increased (using for example an online multi-thread stress test like silver.urih) or on slow machines. Adding each client to a different callback group doesn&#39;t solve the issue, even with a multithreaded executor (but reduces its frequency).
+Using a timer to execute the calls periodically instead of a thread doesn&#39;t help either.
+If the service is called again after the timeout of wait_for expired, it will usually respond properly.</p>
+
+<p>I am currently running on a docker container (based on osrf/ros:humble-desktop).</p>
+
+<blockquote>
+<p>env | grep ROS: ROS<em>VERSION=2
+ROS</em>PYTHON<em>VERSION=3
+ROS</em>LOCALHOST<em>ONLY=0 ROS</em>DISTRO=humble</p>
+</blockquote>
+
+<p>Here is an example of client implementation running into the issue (the whole code can be found on <a href="https://github.com/MarcoMatteoBassa/reproduce_client_bug">https://github.com/MarcoMatteoBassa/reproduce_client_bug</a>)</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;thread&gt;
+
+#include &quot;example_interfaces/srv/add_two_ints.hpp&quot;
+
+    #include &quot;rclcpp/rclcpp.hpp&quot;
+
+using namespace std::placeholders;
+using namespace std::chrono_literals;
+
+class ServiceClientTest : public rclcpp::Node {
+ public:
+  ServiceClientTest(const rclcpp::NodeOptions&amp; options) : rclcpp::Node(&quot;service_client&quot;, options) {
+    auto servers = declare_parameter(&quot;servers_names&quot;, std::vector&lt;std::string&gt;{});
+    for (auto&amp; server_name : servers) {
+      // Adding one callback per client, or one callback for all clients, doesn&#39;t solve
+          // auto callback_group_client = create_callback_group(
+      //     rclcpp::CallbackGroupType::MutuallyExclusive);  // Using Reentrant doesn&#39;t help
+      // callback_groups_clients_.push_back(callback_group_client);
+      rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedPtr client =
+          create_client&lt;example_interfaces::srv::AddTwoInts&gt;(
+              server_name, rmw_qos_profile_services_default);  //, callback_group_client);
+      clients_.push_back(client);
+    }
+    node_test_thread_ = std::make_shared&lt;std::thread&gt;(&amp;ServiceClientTest::callThread, this);
+  }
+
+      ~ServiceClientTest() {
+    if (node_test_thread_-&gt;joinable()) node_test_thread_-&gt;join();
+  }
+
+  // Using a timer instead of a thread doesn&#39;t help.
+  void callThread() {
+    while (rclcpp::ok()) {
+      for (auto&amp; client : clients_) {
+        if (!client-&gt;wait_for_service(3s))
+          RCLCPP_ERROR_STREAM(get_logger(), &quot;Waiting service failed&quot;);  // Never happens
+        auto request = std::make_shared&lt;example_interfaces::srv::AddTwoInts::Request&gt;();
+    RCLCPP_INFO_STREAM(get_logger(), &quot;Calling service &quot; &lt;&lt; client-&gt;get_service_name());
+auto result = client-&gt;async_send_request(request);  // Specifying a callback doesn&#39;t help
+if (result.wait_for(3s) != std::future_status::ready) {  // More time doesn&#39;t help
+  RCLCPP_ERROR_STREAM(
+      get_logger(), &quot;Waiting result failed for server &quot; &lt;&lt; client-&gt;get_service_name());
+  return;
+} else {
+  RCLCPP_INFO_STREAM(
+      get_logger(), &quot;Waiting succeeded for server &quot; &lt;&lt; client-&gt;get_service_name());
+    }
+  }
+  get_clock()-&gt;sleep_for(rclcpp::Duration(100ms));
+    }
+  }
+
+ private:
+  std::vector&lt;rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedPtr&gt; clients_;
+  std::vector&lt;rclcpp::CallbackGroup::SharedPtr&gt;
+      callback_groups_clients_;  // Using only one cb group for all the clients also doesn&#39;t help
+  std::shared_ptr&lt;std::thread&gt; node_test_thread_;
+};
+int main(int argc, char** argv) {
+  rclcpp::init(argc, argv);
+  // The more threads are assigned and the less likely it is to get a deadlock if using multiple
+  // callback groups. Confirmed to happen with 5 threads.
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 4);
+  auto test_node = std::make_shared&lt;ServiceClientTest&gt;(rclcpp::NodeOptions());
+  executor.add_node(test_node-&gt;get_node_base_interface());
+  executor.spin();
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>The servers code isn&#39;t very relevant (the response is generated), but I&#39;ll add it for completeness.</p>
+
+<pre><code>#include &lt;memory&gt;
+
+#include &quot;example_interfaces/srv/add_two_ints.hpp&quot;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+
+using namespace std::placeholders;
+
+class ServiceServerTest : public rclcpp::Node {
+ public:
+  ServiceServerTest(const rclcpp::NodeOptions&amp; options) : rclcpp::Node(&quot;service_server&quot;, options) {
+
+
+   service_name_ = declare_parameter(&quot;service_name&quot;, std::string{});
+    service_ = create_service&lt;example_interfaces::srv::AddTwoInts&gt;(
+        service_name_, std::bind(&amp;ServiceServerTest::add, this, _1, _2));
+  }
+
+  void add(const std::shared_ptr&lt;example_interfaces::srv::AddTwoInts::Request&gt; request,
+      std::shared_ptr&lt;example_interfaces::srv::AddTwoInts::Response&gt; response) {
+    response-&gt;sum = request-&gt;a + request-&gt;b;
+    RCLCPP_INFO_STREAM(get_logger(), &quot;Server &quot; &lt;&lt; service_name_ &lt;&lt; &quot;Responding&quot;);
+  }
+
+     private:
+
+  rclcpp::Service&lt;example_interfaces::srv::AddTwoInts&gt;::SharedPtr service_;
+  std::string service_name_;
+};
+
+int main(int argc, char** argv) {
+  rclcpp::init(argc, argv);
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+
+
+    auto fixture = std::make_shared&lt;ServiceServerTest&gt;(rclcpp::NodeOptions());
+
+  executor.add_node(fixture-&gt;get_node_base_interface());
+  executor.spin();
+  rclcpp::shutdown();
+
+  return 0;
+}
+</code></pre>
+
+<p>Everything can be launched with a launchfile like:</p>
+
+<pre><code>from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(
+        package=&#39;iw_lifecycle_manager&#39;,
+    executable=&#39;service_server&#39;,
+    name=&#39;service_server_1&#39;,
+    parameters=[{&#39;service_name&#39;: &#39;service_server_1&#39;}]
+    ),
+    Node(
+        package=&#39;iw_lifecycle_manager&#39;,
+    executable=&#39;service_server&#39;,
+    name=&#39;service_server_2&#39;,
+    parameters=[{&#39;service_name&#39;: &#39;service_server_2&#39;}]
+),
+Node(
+        package=&#39;iw_lifecycle_manager&#39;,
+        executable=&#39;service_server&#39;,
+        name=&#39;service_server_3&#39;,
+    parameters=[{&#39;service_name&#39;: &#39;service_server_3&#39;}]
+),
+    Node(
+    package=&#39;iw_lifecycle_manager&#39;,
+        executable=&#39;service_server&#39;,
+        name=&#39;service_server_4&#39;,
+        parameters=[{&#39;service_name&#39;: &#39;service_server_4&#39;}]
+    ),
+    Node(
+        package=&#39;iw_lifecycle_manager&#39;,
+        executable=&#39;service_client&#39;,
+       name=&#39;service_client&#39;,
+    parameters=[{&#39;servers_names&#39;: [&#39;service_server_1&#39;, &#39;service_server_2&#39;, &#39;service_server_3&#39;, &#39;service_server_4&#39;]}]
+    )
+])
+</code></pre>
+
+<p>An example of output is:</p>
+
+<pre><code>[service_client-5] [INFO] [1655994199.332906692] [service_client]: Calling service /service_server_1
+[service_server-1] [INFO] [1655994199.333261599] [service_server_1]: Server service_server_1Responding
+[service_client-5] [INFO] [1655994199.333474084] [service_client]: Waiting succeeded for server /service_server_1
+[service_client-5] [INFO] [1655994199.333529454] [service_client]: Calling service /service_server_2
+[service_server-2] [INFO] [1655994199.333676860] [service_server_2]: Server service_server_2Responding
+[service_client-5] [INFO] [1655994199.333871010] [service_client]: Waiting succeeded for server /service_server_2
+[service_client-5] [INFO] [1655994199.333898254] [service_client]: Calling service /service_server_3
+[service_server-3] [INFO] [1655994199.334040428] [service_server_3]: Server service_server_3Responding
+[service_client-5] [INFO] [1655994199.334178310] [service_client]: Waiting succeeded for server /service_server_3
+[service_client-5] [INFO] [1655994199.334209875] [service_client]: Calling service /service_server_4
+[service_server-4] [INFO] [1655994199.334348107] [service_server_4]: Server service_server_4Responding
+[service_client-5] [INFO] [1655994199.334464206] [service_client]: Waiting succeeded for server /service_server_4
+[service_client-5] [INFO] [1655994199.434629161] [service_client]: Calling service /service_server_1
+[service_server-1] [INFO] [1655994199.434977860] [service_server_1]: Server service_server_1Responding
+[service_client-5] [INFO] [1655994199.435268193] [service_client]: Waiting succeeded for server /service_server_1
+[service_client-5] [INFO] [1655994199.435379712] [service_client]: Calling service /service_server_2
+[service_server-2] [INFO] [1655994199.435540431] [service_server_2]: Server service_server_2Responding
+[service_client-5] [ERROR] [1655994202.435855214] [service_client]: Waiting result failed for server /service_server_2
+</code></pre>
+
+<p>Did anyone run into similar issue? Could it be an issue with the executors implementation in humble?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/21206">MarcoB</a> on 2022-06-23 10:11:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>There have been some issues with FastRTPS in Humble (see <a href="https://discourse.ros.org/t/fastdds-without-discovery-server/26117">this discourse thread</a> and <a href="https://github.com/ros2/rmw_fastrtps/issues/613">ros2/rmw_fastrtps#613</a>).</p>
+
+<p>You could test using Cyclone DDS and see whether the behaviour changes.</p>
+
+<p>Note: this is not a solution. It might just provide an extra data point.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-06-23 11:06:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for the reply, we tested using Cyclone DDS too but unfortunately the issue perists. We did more testing and we could only reproduce the issue if running from a docker container (that&#39;s why I opened <a href="https://github.com/osrf/docker_images/issues/628">https://github.com/osrf/docker_images/issues/628</a>). I&#39;ll close this and follow up there.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21206">MarcoB</a> on 2022-06-24 06:02:48 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

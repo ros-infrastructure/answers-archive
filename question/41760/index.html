@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Coordinate frame transforms: /odom to /map? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/41760">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Coordinate frame transforms: /odom to /map?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/43340/coordinate-frame-transforms-odom-to-map">https://robotics.stackexchange.com/questions/43340/coordinate-frame-transforms-odom-to-map</a>.</p>
+        <p>I think I might just be having a difficult time understanding how the coordinate frames relate to each other. I&#39;m working on a visualization (very small subset of rviz) that is shown in a browser.</p>
+
+<p>Basically I&#39;m running SLAM and building a map. Using rosbridge I&#39;m able to get the map and draw it. The base frame is /map and the associated OccupancyGrid has an origin which I translate and rotate by. This seems to work just fine.</p>
+
+<p>Now I want to put an overlay of a robot footprint so you can see where it is, or it thinks it is in the map. Ideally I&#39;d like to display a few topics under /move<em>base</em>node which have a base frame of /odom:</p>
+
+<ul>
+<li>/move<em>base</em>node/local<em>costmap/robot</em>footprint</li>
+<li>/move<em>base</em>node/local_costmap/obstacles</li>
+<li>/move<em>base</em>node/local<em>costmap/inflated</em>obstacles</li>
+</ul>
+
+<p>** In the end this is what worked for me **</p>
+
+<p>As suggested I look up the transform between map and odom and then publish that on a new topic that I can subscribe to on the client end of rosbridge. Whenever I receive an update I use the transformation between map and odom on any topics with a base frame of odom to bring them into the map frame.</p>
+
+<p>You can check the frames easily with: rostopic echo &#39;your<em>topic</em>name&#39; | grep frame</p>
+
+<pre><code>int main(int argc, char** argv){
+  ros::init(argc, argv, &quot;my_tf_listener&quot;);
+  ros::NodeHandle node;
+  ros::Rate rate(1.0);
+
+  tf::TransformListener listener;
+  tf::StampedTransform tfTransform;
+  tf::Vector3 origin;
+  tf::Quaternion rotation;
+  tf::Vector3 axis;
+
+  static ros::Publisher publisher = 
+    node.advertise&lt;geometry_msgs::TransformStamped&gt;(&quot;/odom2map_transform&quot;,
+                            10);
+
+  geometry_msgs::TransformStamped geoTransform;
+
+  int seq = 0;
+  geoTransform.header.frame_id = &quot;map&quot;;
+  geoTransform.child_frame_id = &quot;odom&quot;;
+
+  while(node.ok()) {
+    try { 
+      listener.lookupTransform(geoTransform.header.frame_id,
+                   geoTransform.child_frame_id,       
+                   ros::Time(0), 
+                   tfTransform);
+    }
+    catch(tf::TransformException &amp;exception) { 
+      ROS_ERROR(&quot;%s&quot;, exception.what());
+    }
+
+    origin = tfTransform.getOrigin();
+    rotation = tfTransform.getRotation();
+    axis = rotation.getAxis();
+
+    geoTransform.header.seq = seq;
+    geoTransform.header.stamp = tfTransform.stamp_;
+
+    geoTransform.transform.translation.x = origin.x();
+    geoTransform.transform.translation.y = origin.y();
+    geoTransform.transform.translation.z = origin.z();
+
+    geoTransform.transform.rotation.x = axis.x();
+    geoTransform.transform.rotation.y = axis.y();
+    geoTransform.transform.rotation.z = axis.z();
+    geoTransform.transform.rotation.w = rotation.getW();
+
+    seq++;
+    publisher.publish(geoTransform);
+    rate.sleep();
+  }
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/2807">skiesel</a> on 2012-08-17 07:23:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I can&#39;t figure out where to respond to your comment? robot_footprint for example is in the /odom base frame. I want to figure out how to line up that coordinate frame with the /map frame. Basically I thought I was doing that above? The variables you reference are static, so they&#39;re only created once</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2807">skiesel</a> on 2012-08-18 06:00:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Right. Sorry. I missed that... Still I don&#39;t see what the sleep is for. I&#39;ll update my answer to be more specific.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21">Lorenz</a> on 2012-08-19 22:53:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>If you just want to have the pose of the robot in map, all you need to do is look up the transform between /map and your base frame. There is no need to subscribe to the odom topic for that. The code for getting the pose of base_footprint in map would be:</p>
+
+<pre><code>tf::StampedTransform transform_in_map;
+try {
+  listener.lookupTransform(&quot;map&quot;, &quot;base_footprint&quot;, ros::Time(0), transform_in_map);
+} catch(tf::TransformException &amp;exception) {
+  ROS_ERROR(&quot;%s&quot;, exception.what());
+}
+</code></pre>
+
+<p>Most tools, e.g. rviz, are using this mechanism to calculate the robot pose with respect to map instead of directly subscribing to odom. I think the only node that really uses the odom topic on the pr2 is the move_base node because it needs the current velocity. Everything else uses tf.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21">Lorenz</a> on 2012-08-18 03:11:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The odom topic is also used by mapping and localization algorithms. What can be confusing is that there can be an odometry topic (<code>nav_msgs/Odometry</code>) without the transform being published to tf (for instance if you use robot_pose_ekf that provides the link between /odom and /base)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3055">pgorczak</a> on 2012-08-23 22:02:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>According to the ros wiki, neither amcl nor gmapping or hector_mapping subscribe to the odom topic. I also checked the amcl source code, just in case the wiki is wrong. They all use tf, not the odom topic and that&#39;s why they work with robot_pose_ekf which publishes the odom-&gt;base_link transform.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21">Lorenz</a> on 2012-08-23 22:14:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Of course - my first sentence didn&#39;t make sense...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3055">pgorczak</a> on 2012-08-23 23:08:37 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>In ROS, we have the odometry, giving us a <em>continuous</em> transform from /odom to /base_link. The mapping algorithm computes a possibly <em>discontinuous</em> (it can &quot;jump&quot;) transform from /map to /base_link <em>but</em> publishes /map to /odom. The reason for that is, that algorithms like a Kalman Filter for pose estimation and trajectory planners don&#39;t deal with jumping coordinates so easily.</p>
+
+<p>So if you display the map and you want to see the position of the robot in the map, you should look up /map -&gt; /base_link or /base_footprint in tf.</p>
+
+<p>More details of the coordinate frame specification are explained in <a href="http://www.ros.org/reps/rep-0105.html">REP 105</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3055">pgorczak</a> on 2012-08-23 12:49:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>You&#39;re right - I fixed that mistake. What I was trying to explain was,if you display the map, the /odom frame will actually move around inside it (when the relative localization from odometry and the absolute localization from mapping drift apart). Or the map moves around /odom - whatever suits you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3055">pgorczak</a> on 2012-08-23 21:53:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am looking up /map-&gt; /base_link to see the position, but I am not getting desired result. I have posted a question, <a href="http://answers.ros.org/question/161326/rosrun-tf-tf_echo-map-base_link-vs-coding-implementation/">http://answers.ros.org/question/161326/rosrun-tf-tf_echo-map-base_link-vs-coding-implementation/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/6427">RB</a> on 2014-05-05 03:52:44 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

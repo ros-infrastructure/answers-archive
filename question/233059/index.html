@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>gazebo set joint angles by ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/233059">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>gazebo set joint angles by ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/73605/gazebo-set-joint-angles-by-ros">https://robotics.stackexchange.com/questions/73605/gazebo-set-joint-angles-by-ros</a>.</p>
+        <p>Hi everyone!</p>
+
+<p>I have a robot arm model in Gazebo with several &quot;revolute&quot; joints. I simply want to set the angles of the joints by a ROS service, topic or whatever WITHOUT any closed-loop controller. Just enter an angle and the robot jumps to that position. Is that possible?</p>
+
+<p>Background:
+I have a real robot arm, from which I can read the joint angles. These angles should be sent to Gazebo, where the simulated arm follows the movement of the real arm. In the simulation I want to recreate a special environment with several sensors for the robot arm to test my ROS nodes.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/21163">JohnDoe2991</a> on 2016-04-27 09:19:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Yes it&#39;s possible.</p>
+
+<p>If you make a gazebo plugin attached to your robot model, you can use the setPosition function in the Gazebo API <a href="https://osrf-distributions.s3.amazonaws.com/gazebo/api/dev/classgazebo_1_1physics_1_1Joint.html">https://osrf-distributions.s3.amazonaws.com/gazebo/api/dev/classgazebo_1_1physics_1_1Joint.html</a>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22477">F.Brosseau</a> on 2016-04-28 01:56:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I hopped there would be an easier solution than writing a plugin for gazebo</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21163">JohnDoe2991</a> on 2016-04-28 03:09:34 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Ok, here is what i found:
+ You can set the position and orientation for every Gazebo model with the service &quot;setModelState&quot;, but if you really want to set the joints&#39; angles of a model, you have to write a Gazebo Plugin as F.Brosseau has stated in his answer.</p>
+
+<p>My solution is based on the following three webpages and some experimenting. It is probably a quite bad solution, but the only one I came up with in the last few hours. Feel free to use and improve it. I won&#39;t take any responsibility for it.</p>
+
+<p><a href="http://gazebosim.org/tutorials/?tut=plugins_hello_world">http://gazebosim.org/tutorials/?tut=plugins_hello_world</a></p>
+
+<p><a href="http://gazebosim.org/tutorials?tut=plugins_model&cat=write_plugin">http://gazebosim.org/tutorials?tut=plugins_model&amp;cat=write_plugin</a></p>
+
+<p><a href="http://gazebosim.org/tutorials?cat=guided_i&tut=guided_i6">http://gazebosim.org/tutorials?cat=guided_i&amp;tut=guided_i6</a></p>
+
+<p>The plugin will subscribe to a special named topic for every &quot;revolute&quot; joint it can find in the model. You can find the topic names with &quot;rostopic list&quot; after you started a model with this plugin. The topics consist only of a Float32 value, which correspond to the angle in [rad]. If you publish a topic with the joint name and an angle, the joint will be forced to this angle and hold in place.</p>
+
+<p><strong>CMakeLists.txt:</strong></p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8.3)
+project(force_joint)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+find_package(roscpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(gazebo REQUIRED)
+include_directories(SYSTEM ${Boost_INCLUDE_DIRS} ${GAZEBO_INCLUDE_DIRS} ${roscpp_INCLUDE_DIRS} ${std_msgs_INCLUDE_DIRS} src)
+link_directories(${GAZEBO_LIBRARY_DIRS})
+set(CMAKE_CXX_FLAGS &quot;${CMAKE_CXX_FLAGS}  ${GAZEBO_CXX_FLAGS} -std=c++11&quot;)
+
+add_library(force_joint SHARED src/force_joint.cpp)
+target_link_libraries(force_joint ${Boost_LIBRARIES} ${GAZEBO_LIBRARIES} ${roscpp_LIBRARIES})
+</code></pre>
+
+<p><strong>force_joint.cpp</strong></p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &quot;ros/callback_queue.h&quot;
+#include &quot;ros/subscribe_options.h&quot;
+#include &quot;std_msgs/Float32.h&quot;
+
+#include &lt;gazebo/gazebo.hh&gt;
+#include &lt;boost/bind.hpp&gt;
+#include &lt;boost/algorithm/string.hpp&gt;
+#include &lt;gazebo/physics/physics.hh&gt;
+#include &lt;gazebo/common/common.hh&gt;
+#include &lt;thread&gt;
+#include &lt;memory&gt;
+#include &lt;map&gt;
+
+namespace gazebo
+{
+    class force_joint : public ModelPlugin
+    {
+    public:
+        force_joint() : ModelPlugin(){}
+
+        //read every joint of model and initialize ROS topics
+        void Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
+        {
+            this-&gt;model = _parent;
+            this-&gt;updateConnection = event::Events::ConnectWorldUpdateBegin(boost::bind(&amp;force_joint::OnUpdate, this, _1));
+            physics::Joint_V jointVector = this-&gt;model-&gt;GetJoints();
+
+            // Initialize ros, if it has not already bee initialized.
+            if (!ros::isInitialized())
+            {
+                int argc = 0;
+                char **argv = NULL;
+                ros::init(argc, argv, &quot;gazebo_client&quot;,
+                ros::init_options::NoSigintHandler);
+            }
+
+            // Create our ROS node. This acts in a similar manner to the Gazebo node
+            this-&gt;rosNode.reset(new ros::NodeHandle(&quot;force_joints&quot;));
+
+            // Create a named topic, and subscribe to it for every joint
+            for(physics::Joint_V::iterator jit=jointVector.begin(); jit!=jointVector.end(); ++jit)
+            {
+                //test if revolute joint ... i think ...
+                //if not, ignore joint
+                if((*jit)-&gt;GetType() != 576)
+                    continue;
+                std::string modelName = this-&gt;model-&gt;GetName();
+                boost::algorithm::replace_all(modelName, &quot; &quot;, &quot;_&quot;);
+                std::string jointName = (*jit)-&gt;GetName();
+                boost::algorithm::replace_all(jointName, &quot; &quot;, &quot;_&quot;);
+                std::string subPath = modelName + &quot;/&quot; + jointName;
+                ros::SubscribeOptions so = ros::SubscribeOptions::create&lt;std_msgs::Float32&gt;(subPath,
+                                                                            1,
+                                                                            boost::bind(&amp;force_joint::OnRosMsg, this, _1, (*jit)-&gt;GetName()),
+                                                                            ros::VoidPtr(), &amp;this-&gt;rosQueue);
+                this-&gt;rosSubList.push_back(this-&gt;rosNode-&gt;subscribe(so));
+                joints.push_back((*jit)-&gt;GetName());
+                jointAngles[(*jit)-&gt;GetName()] = (*jit)-&gt;GetAngle(0).Radian();
+            }
+
+            // Spin up the queue helper thread
+            this-&gt;rosQueueThread = std::thread(std::bind(&amp;force_joint::QueueThread, this));
+        }
+
+        //Handle an incoming message from ROS
+        void OnRosMsg(const std_msgs::Float32ConstPtr &amp;_msg, std::string jointName)
+        {
+            this-&gt;jointAngles[jointName] = _msg-&gt;data;
+            return;
+        }
+
+        void OnUpdate(const common::UpdateInfo &amp; _info)
+
+        {
+            //set velocity and force to zero for every saved joint
+            //and set angle to saved value
+            for(auto it=this-&gt;joints.begin(); it!=joints.end(); ++it)
+            {
+                this-&gt;model-&gt;GetJoint(*it)-&gt;SetVelocity(0, 0);
+                this-&gt;model-&gt;GetJoint(*it)-&gt;SetForce(0, 0);
+                this-&gt;model-&gt;GetJoint(*it)-&gt;SetAngle(0, math::Angle(jointAngles[*it]));
+            }
+            return;
+        }
+    private:
+        //ROS helper function that processes messages
+        void QueueThread()
+        {
+            static const double timeout = 0.01;
+            while (this-&gt;rosNode-&gt;ok())
+            {
+                this-&gt;rosQueue.callAvailable(ros::WallDuration(timeout));
+            }
+        }
+
+        physics::ModelPtr model;
+
+        event::ConnectionPtr updateConnection;
+
+        std::unique_ptr&lt;ros::NodeHandle&gt; rosNode;
+
+        //List with all subscribers
+        std::list&lt;ros::Subscriber&gt; rosSubList;
+
+        //List with all revolute joint names
+        std::list&lt;std::string&gt; joints;
+
+        ros::CallbackQueue rosQueue;
+
+        std::thread rosQueueThread;
+
+        //map with joints&#39; angles by their names
+        std::map&lt;std::string, double&gt; jointAngles;
+    };
+
+    GZ_REGISTER_MODEL_PLUGIN(force_joint)
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21163">JohnDoe2991</a> on 2016-04-28 06:22:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi John Doe,
+ As you mentioned above i created a package and included the above files in the catkin workspace, I also included it in my robot model, but when start gazebo it could not load the libforce_joint.so. but the libforce_joint.so exists in libforce_joint folder. This is the exact error i get</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28641">vjothi</a> on 2016-11-28 16:28:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Take a look at the first <a href="http://gazebosim.org/tutorials/?tut=plugins_hello_world">link</a> at &quot;Using a Plugin&quot;: You either have to use the full path in your model file, add the path to the GAZEBO_PLUGIN_PATH or copy libforce_joint.so to /opt/ros/indigo/lib/ (that&#39;s what I did). Hope I could help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21163">JohnDoe2991</a> on 2016-11-29 01:41:06 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>rosservice call /gazebo/set_model_configuration is far better than the solutions posted here so far, no plugin needed.
+Here is a complete example of how to achieve this from terminal:</p>
+
+<pre><code>rosservice call /gazebo/set_model_configuration &quot;model_name: &#39;acrobat&#39;
+urdf_param_name: &#39;robot_description&#39;
+joint_names:
+- &#39;joint1&#39;
+joint_positions:
+- 3.3&quot;
+</code></pre>
+
+<p>Tested on Gazebo 7, ROS kinetic and Ubuntu 16.04 with the <a href="https://github.com/socrob/acrobat_robot">acrobat robot</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21475">Oscar Lima</a> on 2017-10-17 05:20:07 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This worked for me...!!!!
+more info here: <a href="http://gazebosim.org/tutorials?tut=ros_installing&cat=connect_ros#TestingGazebowithROSIntegration">http://gazebosim.org/tutorials?tut=ros_installing&amp;cat=connect_ros#TestingGazebowithROSIntegration</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32268">ivan_calle</a> on 2017-11-17 08:58:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m facing the same issue as <a href="https://answers.gazebosim.org/question/22073/set_model_configuration/">this question</a> where I can set the robot pose after pausing gazebo, but after unpausing, the robot pose snaps back to the original pose.</p>
+
+<p>I ended up having to do it <a href="https://answers.ros.org/question/352418/how-to-force-set-robot-arm-joint-values/?answer=360894#post-id-360894">this way</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34739">Rufus</a> on 2020-09-02 22:41:55 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Yes, it is possible! 
+In order to control your robot in Gazebo without setting up controllers, you have to follow these steps:</p>
+
+<ol>
+<li>Convert your robot to a Gazebo actor. 
+An actor is a model that is not affected by Gazebo&#39;s physics engine.
+To this end, convert your URDF file to SDF and then replace the <code>&lt;model&gt;</code> tag by <code>&lt;actor&gt;</code>.</li>
+<li>Write a Gazebo plugin that listens to ROS transformations and sets the poses of the actor links accordingly.</li>
+<li>Include a reference to your plugin in the SDF.</li>
+<li>Upload the SDF to Gazebo.</li>
+</ol>
+
+<p>You can do all the steps yourself, or you can download the <a href="https://github.com/acschaefer/gazebo_tf_injector">gazebo_tf_injector</a> package, which contains both the Gazebo plugin and a script to convert your URDF to an actor SDF.
+It also comes with lots of documentation and a ready-to-use example, which should get you started quickly.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/38195">aschaefer</a> on 2018-11-14 12:47:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

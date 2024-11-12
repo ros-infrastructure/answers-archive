@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Service Call in a Publisher Timer Callback - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374388">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Service Call in a Publisher Timer Callback</h2>
+      <div class="question">
+        <p>Running ROS2 Foxy on an RPI4 w/ Ubuntu</p>
+
+<p>I have implemented an SPI service node that provides shared bus access across multiple nodes.  This works as expected; I can send a byte array as a request, and the response returns the full duplex recieved data.</p>
+
+<p>However, I am now trying to create another node that publishes data that must be accessed via the SPI service, but I am getting a runtime error:</p>
+
+<pre><code>terminate called after throwing an instance of &#39;std::runtime_error&#39;
+  what():  Node has already been added to an executor.
+</code></pre>
+
+<p>After researching, I found the various comments online about not being able to call a service from another callback due to deadlocks.  </p>
+
+<p>So my question is: what is the &#39;correct&#39; way to architect this, given that I want to have multipler peripherals on the SPI bus that could be time shared to access different components for different nodes, and I need to grab data via SPI for publishing (or upon recipt if a subscriber).</p>
+
+<p>Thank you,
+Scott</p>
+
+<p>UPDATE:</p>
+
+<p>Thank you for the response; I have found this link as well with an async call that allows for an automatic callback:</p>
+
+<p><a href="https://github.com/ros2/demos/blob/40e3732791c8c72215a5eb954e9e25be1a5ebb73/demo_nodes_cpp/src/services/add_two_ints_client_async.cpp#L62..L73">https://github.com/ros2/demos/blob/40e3732791c8c72215a5eb954e9e25be1a5ebb73/demo_nodes_cpp/src/services/add_two_ints_client_async.cpp#L62..L73</a></p>
+
+<p>Here is the example code:</p>
+
+<pre><code>    // We give the async_send_request() method a callback that will get executed once the response
+    // is received.
+    // This way we can return immediately from this method and allow other work to be done by the
+    // executor in `spin` while waiting for the response.
+    using ServiceResponseFuture =
+      rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedFuture;
+    auto response_received_callback = [this](ServiceResponseFuture future) {
+        auto result = future.get();
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Result of add_two_ints: %&quot; PRId64, result-&gt;sum)
+        rclcpp::shutdown();
+      };
+    auto future_result = client_-&gt;async_send_request(request, response_received_callback);
+  }
+</code></pre>
+
+<p>I get the concept that this implementation will therfore permit a callback execution upon receipt of the response, unblocking execution.  </p>
+
+<p>However, given my limitied C++ experience, it is not clear how I can wrap my needed function and pass a callback as an argument.</p>
+
+<p>For example, my current implementation is this:</p>
+
+<pre><code>int32_t TMC5130::SpiServiceClient::RegisterRead( uint8_t addr )
+{
+//Per the datasheet, reading a register requires:
+//  1) Each datagram consists of 5 bytes; the first byte contains the target
+//      address and a read/write flag as the MS bit.
+
+std::vector&lt;uint8_t&gt; pkt1 = {addr &amp; 0x7F, 0, 0, 0, 0 };
+std::vector&lt;uint8_t&gt; pkt2 = {addr &amp; 0x7F, 0, 0, 0, 0 };
+
+auto request = std::make_shared&lt;cpp_rpispi::srv::Spixfer::Request&gt;();
+
+request-&gt;tx = BytesToHexList( pkt1 );
+request-&gt;tx += &quot;,&quot;;
+request-&gt;tx += BytesToHexList( pkt2 );
+
+auto result = this-&gt;client_-&gt;async_send_request( request );
+
+if( rclcpp::spin_until_future_complete( this-&gt;node_, result) == rclcpp::FutureReturnCode::SUCCESS )
+{
+    //RCLCPP_INFO(rclcpp::get_logger(&quot;rclcpp&quot;), &quot;rx: {%s}&quot;, result.get()-&gt;rx.c_str() );
+}
+else
+{
+    RCLCPP_ERROR(rclcpp::get_logger(&quot;rclcpp&quot;), &quot;failed&quot;);
+}
+
+//assume rx is a dual 5 byte datagram
+//  [00,11,22,33,44],[55,66,77,88,99]
+//  012345678901234567890123456789012
+//  0         1         2         3
+int32_t data3 = std::stoi( result.get()-&gt;rx.substr(21,2), nullptr, 16 );
+int32_t data2 = std::stoi( result.get()-&gt;rx.substr(24,2), nullptr, 16 );
+int32_t data1 = std::stoi( result.get()-&gt;rx.substr(27,2), nullptr, 16 );
+int32_t data0 = std::stoi( result.get()-&gt;rx.substr(30,2), nullptr, 16 );
+
+return (data3&lt;&lt;24 | data2&lt;&lt;16 | data1&lt;&lt;8 | data0 );
+}
+</code></pre>
+
+<p>UPDATE:</p>
+
+<p>Following the information provided, the code is now working using the callback based methods, thank you!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27373">scott.nortman@gmail.com</a> on 2021-03-20 09:08:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Nothing prevents to do a service call within a callback managed by the executor (e.g. Timer or subscription callbacks), but a little  More care is required for doing it. </p>
+
+<p>The problems with doing a service call within an executor callback are the following:</p>
+
+<ul>
+<li><p>if the service server is located in the same executor as the callback from where you are doing the service request, then the code for the service call must be non blocking. This is because, unless you have multithreaded executor, the service server will not be able to start until the aforementioned callback returns, which is in turn waiting for the service to be completed, causing a deadlock.</p></li>
+<li><p>if the service server is located In another executor, there is no risk of deadlocks, but still you should try to avoid blocking the callback as that will prevent other entities associated with the executor to do their work.</p></li>
+</ul>
+
+<p>Note that ROS will not detect these problems for you. </p>
+
+<p>As the error says, your problem however is that you are adding your node to two executors. 
+I assume that your node is already added to an executor since it is executing the timer. This means that in the timer callback you can&#39;t add it to another. 
+Without looking at the code in your timer callback i can&#39;t really say what you are doing wrong, but chances are that you are using a synchronous service call or using a ros API that under the hoods adds the node to an executor, such as <code>spin_until_future_complete</code>.</p>
+
+<p>My suggestion is to look into asynchronous service calls.
+Those will not cause the problem and will also be better for your system. </p>
+
+<p>For details read the tutorial page that describes both the deadlock problem as well as asynchronous services
+<a href="https://docs.ros.org/en/foxy/Guides/Sync-Vs-Async.html#asynchronous-calls">https://docs.ros.org/en/foxy/Guides/Sync-Vs-Async.html#asynchronous-calls</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30341">alsora</a> on 2021-03-21 04:15:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

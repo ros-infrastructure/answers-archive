@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Invalid argument passed to lookupTransform - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/406406">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Invalid argument passed to lookupTransform</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102392/invalid-argument-passed-to-lookuptransform">https://robotics.stackexchange.com/questions/102392/invalid-argument-passed-to-lookuptransform</a>.</p>
+        <p>I am using a <code>ray_ground_filter</code> node from Autoware.ai. I am get the following error when I launch the node. </p>
+
+<pre><code>Invalid argument passed to lookupTransform argument target_frame in tf2 frame_ids cannot be empty
+</code></pre>
+
+<p>I noticed that my <code>tf_static</code> is empty for some odd reason.Could anyone help me in understanding this bug? </p>
+
+<p><strong>ray<em>ground</em>filter.cpp</strong></p>
+
+<pre><code>/*
+ * Copyright 2017-2019 Autoware Foundation. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ********************
+ *  v1.0: amc-nu (abrahammonrroy@yahoo.com)
+ */
+#include &lt;iostream&gt;
+#include &lt;algorithm&gt;
+#include &lt;vector&gt;
+#include &lt;string&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &lt;pcl_ros/point_cloud.h&gt;
+#include &lt;pcl_ros/transforms.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl/features/normal_3d.h&gt;
+#include &lt;pcl/features/normal_3d_omp.h&gt;
+#include &lt;pcl/filters/extract_indices.h&gt;
+#include &lt;velodyne_pointcloud/point_types.h&gt;
+#include &quot;autoware_config_msgs/ConfigRayGroundFilter.h&quot;
+
+#include &lt;opencv2/core/version.hpp&gt;
+#if (CV_MAJOR_VERSION == 3)
+#include &quot;gencolors.cpp&quot;
+#else
+#include &lt;opencv2/contrib/contrib.hpp&gt;
+#endif
+
+#include &quot;points_preprocessor/ray_ground_filter/ray_ground_filter.h&quot;
+
+void RayGroundFilter::update_config_params(const autoware_config_msgs::ConfigRayGroundFilter::ConstPtr&amp; param)
+{
+  general_max_slope_ = param-&gt;general_max_slope;
+  local_max_slope_ = param-&gt;local_max_slope;
+  radial_divider_angle_ = param-&gt;radial_divider_angle;
+  concentric_divider_distance_ = param-&gt;concentric_divider_distance;
+  min_height_threshold_ = param-&gt;min_height_threshold;
+  clipping_height_ = param-&gt;clipping_height;
+  min_point_distance_ = param-&gt;min_point_distance;
+  reclass_distance_threshold_ = param-&gt;reclass_distance_threshold;
+}
+
+bool RayGroundFilter::TransformPointCloud(const std::string&amp; in_target_frame,
+                                          const sensor_msgs::PointCloud2::ConstPtr&amp; in_cloud_ptr,
+                                          const sensor_msgs::PointCloud2::Ptr&amp; out_cloud_ptr)
+{
+  if (in_target_frame == in_cloud_ptr-&gt;header.frame_id)
+  {
+    *out_cloud_ptr = *in_cloud_ptr;
+    return true;
+  }
+
+  geometry_msgs::TransformStamped transform_stamped;
+  try
+  {
+    transform_stamped = tf_buffer_.lookupTransform(in_target_frame, in_cloud_ptr-&gt;header.frame_id,
+                                                   in_cloud_ptr-&gt;header.stamp, ros::Duration(1.0));
+  }
+  catch (tf2::TransformException&amp; ex)
+  {
+    ROS_WARN(&quot;%s&quot;, ex.what());
+    return false;
+  }
+  // tf2::doTransform(*in_cloud_ptr, *out_cloud_ptr, transform_stamped);
+  Eigen::Matrix4f mat = tf2::transformToEigen(transform_stamped.transform).matrix().cast&lt;float&gt;();
+  pcl_ros::transformPointCloud(mat, *in_cloud_ptr, *out_cloud_ptr);
+  out_cloud_ptr-&gt;header.frame_id = in_target_frame;
+  return true;
+}
+
+void RayGroundFilter::publish_cloud(const ros::Publisher&amp; in_publisher,
+                                    const pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr in_cloud_to_publish_ptr,
+                                    const std_msgs::Header&amp; in_header)
+{
+  sensor_msgs::PointCloud2::Ptr cloud_msg_ptr(new sensor_msgs::PointCloud2);
+  sensor_msgs::PointCloud2::Ptr trans_cloud_msg_ptr(new sensor_msgs::PointCloud2);
+  pcl::toROSMsg(*in_cloud_to_publish_ptr, *cloud_msg_ptr);
+  cloud_msg_ptr-&gt;header.frame_id = base_frame_;
+  cloud_msg_ptr-&gt;header.stamp = in_header.stamp;
+  const bool succeeded = TransformPointCloud(in_header.frame_id, cloud_msg_ptr, trans_cloud_msg_ptr);
+  if (!succeeded)
+  {
+    ROS_ERROR_STREAM_THROTTLE(10, &quot;Failed transform from &quot; &lt;&lt; cloud_msg_ptr-&gt;header.frame_id &lt;&lt; &quot; to &quot;
+                                                           &lt;&lt; in_header.frame_id);
+    return;
+  }
+  in_publisher.publish(*trans_cloud_msg_ptr);
+}
+
+/*!
+ *
+ * @param[in] in_cloud Input Point Cloud to be organized in radial segments
+ * @param[out] out_organized_points Custom Point Cloud filled with XYZRTZColor data
+ * @param[out] out_radial_divided_indices Indices of the points in the original cloud for each radial segment
+ * @param[out] out_radial_ordered_clouds Vector of Points Clouds, each element will contain the points ordered
+ */
+void RayGroundFilter::ConvertXYZIToRTZColor(
+    const pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr in_cloud,
+    const std::shared_ptr&lt;PointCloudXYZIRTColor&gt;&amp; out_organized_points,
+    const std::shared_ptr&lt;std::vector&lt;pcl::PointIndices&gt; &gt;&amp; out_radial_divided_indices,
+    const std::shared_ptr&lt;std::vector&lt;PointCloudXYZIRTColor&gt; &gt;&amp; out_radial_ordered_clouds)
+{
+  out_organized_points-&gt;resize(in_cloud-&gt;points.size());
+  out_radial_divided_indices-&gt;clear();
+  out_radial_divided_indices-&gt;resize(radial_dividers_num_);
+  out_radial_ordered_clouds-&gt;resize(radial_dividers_num_);
+
+  for (size_t i = 0; i &lt; in_cloud-&gt;points.size(); i++)
+  {
+    PointXYZIRTColor new_point;
+    auto radius = static_cast&lt;float&gt;(
+        sqrt(in_cloud-&gt;points[i].x * in_cloud-&gt;points[i].x + in_cloud-&gt;points[i].y * in_cloud-&gt;points[i].y));
+    auto theta = static_cast&lt;float&gt;(atan2(in_cloud-&gt;points[i].y, in_cloud-&gt;points[i].x) * 180 / M_PI);
+    if (theta &lt; 0)
+    {
+      theta += 360;
+    }
+    if (theta &gt;= 360)
+    {
+      theta -= 360;
+    }
+
+    auto radial_div = (size_t)floor(theta / radial_divider_angle_);
+
+    auto concentric_div = (size_t)floor(fabs(radius / concentric_divider_distance_));
+
+    new_point.point = in_cloud-&gt;points[i];
+    new_point.radius = radius;
+    new_point.theta = theta;
+    new_point.radial_div = radial_div;
+    new_point.concentric_div = concentric_div;
+    new_point.red = (size_t)colors_[new_point.radial_div % color_num_].val[0];
+    new_point.green = (size_t)colors_[new_point.radial_div % color_num_].val[1];
+    new_point.blue = (size_t)colors_[new_point.radial_div % color_num_].val[2];
+    new_point.original_index = i;
+
+    out_organized_points-&gt;at(i) = new_point;
+
+    // radial divisions
+    out_radial_divided_indices-&gt;at(radial_div).indices.push_back(i);
+
+    out_radial_ordered_clouds-&gt;at(radial_div).push_back(new_point);
+  }  // end for
+
+// order radial points on each division
+#pragma omp for
+  for (size_t i = 0; i &lt; radial_dividers_num_; i++)
+  {
+    std::sort(out_radial_ordered_clouds-&gt;at(i).begin(), out_radial_ordered_clouds-&gt;at(i).end(),
+              [](const PointXYZIRTColor&amp; a, const PointXYZIRTColor&amp; b) { return a.radius &lt; b.radius; });  // NOLINT
+  }
+}
+
+/*!
+ * Classifies Points in the PointCoud as Ground and Not Ground
+ * @param in_radial_ordered_clouds Vector of an Ordered PointsCloud ordered by radial distance from the origin
+ * @param out_ground_indices Returns the indices of the points classified as ground in the original PointCloud
+ * @param out_no_ground_indices Returns the indices of the points classified as not ground in the original PointCloud
+ */
+void RayGroundFilter::ClassifyPointCloud(const std::vector&lt;PointCloudXYZIRTColor&gt;&amp; in_radial_ordered_clouds,
+                                         const pcl::PointIndices::Ptr&amp; out_ground_indices,
+                                         const pcl::PointIndices::Ptr&amp; out_no_ground_indices)
+{
+  out_ground_indices-&gt;indices.clear();
+  out_no_ground_indices-&gt;indices.clear();
+#pragma omp for
+  for (size_t i = 0; i &lt; in_radial_ordered_clouds.size(); i++)  // sweep through each radial division
+  {
+    float prev_radius = 0.f;
+    float prev_height = 0.f;
+    bool prev_ground = false;
+    bool current_ground = false;
+    for (size_t j = 0; j &lt; in_radial_ordered_clouds[i].size(); j++)  // loop through each point in the radial div
+    {
+      float points_distance = in_radial_ordered_clouds[i][j].radius - prev_radius;
+      float height_threshold = tan(DEG2RAD(local_max_slope_)) * points_distance;
+      float current_height = in_radial_ordered_clouds[i][j].point.z;
+      float general_height_threshold = tan(DEG2RAD(general_max_slope_)) * in_radial_ordered_clouds[i][j].radius;
+
+      // for points which are very close causing the height threshold to be tiny, set a minimum value
+      if (points_distance &gt; concentric_divider_distance_ &amp;&amp; height_threshold &lt; min_height_threshold_)
+      {
+        height_threshold = min_height_threshold_;
+      }
+
+      // check current point height against the LOCAL threshold (previous point)
+      if (current_height &lt;= (prev_height + height_threshold) &amp;&amp; current_height &gt;= (prev_height - height_threshold))
+      {
+        // Check again using general geometry (radius from origin) if previous points wasn&#39;t ground
+        if (!prev_ground)
+        {
+          if (current_height &lt;= general_height_threshold &amp;&amp; current_height &gt;= -general_height_threshold)
+          {
+            current_ground = true;
+          }
+          else
+          {
+            current_ground = false;
+          }
+        }
+        else
+        {
+          current_ground = true;
+        }
+      }
+      else
+      {
+        // check if previous point is too far from previous one, if so classify again
+        if (points_distance &gt; reclass_distance_threshold_ &amp;&amp;
+            (current_height &lt;= height_threshold &amp;&amp; current_height &gt;= -height_threshold))
+        {
+          current_ground = true;
+        }
+        else
+        {
+          current_ground = false;
+        }
+      }
+
+      if (current_ground)
+      {
+        out_ground_indices-&gt;indices.push_back(in_radial_ordered_clouds[i][j].original_index);
+        prev_ground = true;
+      }
+      else
+      {
+        out_no_ground_indices-&gt;indices.push_back(in_radial_ordered_clouds[i][j].original_index);
+        prev_ground = false;
+      }
+
+      prev_radius = in_radial_ordered_clouds[i][j].radius;
+      prev_height = in_radial_ordered_clouds[i][j].point.z;
+    }
+  }
+}
+
+/*!
+ * Removes the points higher than a threshold
+ * @param in_cloud_ptr PointCloud to perform Clipping
+ * @param in_clip_height Maximum allowed height in the cloud
+ * @param out_clipped_cloud_ptr Resultung PointCloud with the points removed
+ */
+void RayGroundFilter::ClipCloud(const pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr in_cloud_ptr, const double in_clip_height,
+                                pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr out_clipped_cloud_ptr)
+{
+  pcl::ExtractIndices&lt;pcl::PointXYZI&gt; extractor;
+  extractor.setInputCloud(in_cloud_ptr);
+  pcl::PointIndices indices;
+
+#pragma omp for
+  for (size_t i = 0; i &lt; in_cloud_ptr-&gt;points.size(); i++)
+  {
+    if (in_cloud_ptr-&gt;points[i].z &gt; in_clip_height)
+    {
+      indices.indices.push_back(i);
+    }
+  }
+  extractor.setIndices(boost::make_shared&lt;pcl::PointIndices&gt;(indices));
+  extractor.setNegative(true);  // true removes the indices, false leaves only the indices
+  extractor.filter(*out_clipped_cloud_ptr);
+}
+
+/*!
+ * Returns the resulting complementary PointCloud, one with the points kept and the other removed as indicated
+ * in the indices
+ * @param in_cloud_ptr Input PointCloud to which the extraction will be performed
+ * @param in_indices Indices of the points to be both removed and kept
+ * @param out_only_indices_cloud_ptr Resulting PointCloud with the indices kept
+ * @param out_removed_indices_cloud_ptr Resulting PointCloud with the indices removed
+ */
+void RayGroundFilter::ExtractPointsIndices(const pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr in_cloud_ptr,
+                                           const pcl::PointIndices&amp; in_indices,
+                                           pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr out_only_indices_cloud_ptr,
+                                           pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr out_removed_indices_cloud_ptr)
+{
+  pcl::ExtractIndices&lt;pcl::PointXYZI&gt; extract_ground;
+  extract_ground.setInputCloud(in_cloud_ptr);
+  extract_ground.setIndices(boost::make_shared&lt;pcl::PointIndices&gt;(in_indices));
+
+  extract_ground.setNegative(false);  // true removes the indices, false leaves only the indices
+  extract_ground.filter(*out_only_indices_cloud_ptr);
+
+  extract_ground.setNegative(true);  // true removes the indices, false leaves only the indices
+  extract_ground.filter(*out_removed_indices_cloud_ptr);
+}
+
+/*!
+ * Removes points up to a certain distance in the XY Plane
+ * @param in_cloud_ptr Input PointCloud
+ * @param in_min_distance Minimum valid distance, points closer than this will be removed.
+ * @param out_filtered_cloud_ptr Resulting PointCloud with the invalid points removed.
+ */
+void RayGroundFilter::RemovePointsUpTo(const pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr in_cloud_ptr, double in_min_distance,
+                                       pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr out_filtered_cloud_ptr)
+{
+  pcl::ExtractIndices&lt;pcl::PointXYZI&gt; extractor;
+  extractor.setInputCloud(in_cloud_ptr);
+  pcl::PointIndices indices;
+
+#pragma omp for
+  for (size_t i = 0; i &lt; in_cloud_ptr-&gt;points.size(); i++)
+  {
+    if (sqrt(in_cloud_ptr-&gt;points[i].x * in_cloud_ptr-&gt;points[i].x +
+             in_cloud_ptr-&gt;points[i].y * in_cloud_ptr-&gt;points[i].y) &lt; in_min_distance)
+    {
+      indices.indices.push_back(i);
+    }
+  }
+  extractor.setIndices(boost::make_shared&lt;pcl::PointIndices&gt;(indices));
+  extractor.setNegative(true);  // true removes the indices, false leaves only the indices
+  extractor.filter(*out_filtered_cloud_ptr);
+}
+
+void RayGroundFilter::CloudCallback(const sensor_msgs::PointCloud2ConstPtr&amp; in_sensor_cloud)
+{
+  health_checker_ptr_-&gt;NODE_ACTIVATE();
+  health_checker_ptr_-&gt;CHECK_RATE(&quot;topic_rate_points_raw_slow&quot;, 8, 5, 1, &quot;topic points_raw subscribe rate slow.&quot;);
+
+  sensor_msgs::PointCloud2::Ptr trans_sensor_cloud(new sensor_msgs::PointCloud2);
+  const bool succeeded = TransformPointCloud(base_frame_, in_sensor_cloud, trans_sensor_cloud);
+  if (!succeeded)
+  {
+    ROS_ERROR_STREAM_THROTTLE(10, &quot;Failed transform from &quot; &lt;&lt; base_frame_ &lt;&lt; &quot; to &quot;
+                                                           &lt;&lt; in_sensor_cloud-&gt;header.frame_id);
+    return;
+  }
+
+  pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr current_sensor_cloud_ptr(new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+  pcl::fromROSMsg(*trans_sensor_cloud, *current_sensor_cloud_ptr);
+
+  pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr clipped_cloud_ptr(new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+
+  // remove points above certain point
+  ClipCloud(current_sensor_cloud_ptr, clipping_height_, clipped_cloud_ptr);
+
+  // remove closer points than a threshold
+  pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr filtered_cloud_ptr(new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+  RemovePointsUpTo(clipped_cloud_ptr, min_point_distance_, filtered_cloud_ptr);
+
+  // GetCloud Normals
+  // pcl::PointCloud&lt;pcl::PointXYZINormal&gt;::Ptr cloud_with_normals_ptr (new pcl::PointCloud&lt;pcl::PointXYZINormal&gt;);
+  // GetCloudNormals(current_sensor_cloud_ptr, cloud_with_normals_ptr, 5.0);
+
+  std::shared_ptr&lt;PointCloudXYZIRTColor&gt; organized_points(new PointCloudXYZIRTColor);
+  std::shared_ptr&lt;std::vector&lt;pcl::PointIndices&gt; &gt; radial_division_indices(new std::vector&lt;pcl::PointIndices&gt;);
+  std::shared_ptr&lt;std::vector&lt;PointCloudXYZIRTColor&gt; &gt; radial_ordered_clouds(new std::vector&lt;PointCloudXYZIRTColor&gt;);
+
+  radial_dividers_num_ = ceil(360 / radial_divider_angle_);
+
+  ConvertXYZIToRTZColor(filtered_cloud_ptr, organized_points, radial_division_indices, radial_ordered_clouds);
+
+  pcl::PointIndices::Ptr ground_indices(new pcl::PointIndices), no_ground_indices(new pcl::PointIndices);
+
+  ClassifyPointCloud(*radial_ordered_clouds, ground_indices, no_ground_indices);
+
+  pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr ground_cloud_ptr(new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+  pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr no_ground_cloud_ptr(new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+
+  ExtractPointsIndices(filtered_cloud_ptr, *ground_indices, ground_cloud_ptr, no_ground_cloud_ptr);
+
+  publish_cloud(ground_points_pub_, ground_cloud_ptr, in_sensor_cloud-&gt;header);
+  publish_cloud(groundless_points_pub_, no_ground_cloud_ptr, in_sensor_cloud-&gt;header);
+}
+
+RayGroundFilter::RayGroundFilter() : node_handle_(&quot;~&quot;), tf_listener_(tf_buffer_)
+
+{
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh(&quot;~&quot;);
+  health_checker_ptr_ = std::make_shared&lt;autoware_health_checker::HealthChecker&gt;(nh, pnh);
+  health_checker_ptr_-&gt;ENABLE();
+}
+
+void RayGroundFilter::Run()
+{
+  // Model   |   Horizontal   |   Vertical   | FOV(Vertical)    degrees / rads
+  // ----------------------------------------------------------
+  // HDL-64  |0.08-0.35(0.32) |     0.4      |  -24.9 &lt;=x&lt;=2.0   (26.9  / 0.47)
+  // HDL-32  |     0.1-0.4    |     1.33     |  -30.67&lt;=x&lt;=10.67 (41.33 / 0.72)
+  // VLP-16  |     0.1-0.4    |     2.0      |  -15.0&lt;=x&lt;=15.0   (30    / 0.52)
+  // VLP-16HD|     0.1-0.4    |     1.33     |  -10.0&lt;=x&lt;=10.0   (20    / 0.35)
+  ROS_INFO(&quot;Initializing Ground Filter, please wait...&quot;);
+  node_handle_.param&lt;std::string&gt;(&quot;input_point_topic&quot;, input_point_topic_, &quot;/points_raw&quot;);
+  ROS_INFO(&quot;Input point_topic: %s&quot;, input_point_topic_.c_str());
+
+  node_handle_.param&lt;std::string&gt;(&quot;base_frame&quot;, base_frame_, &quot;base_link&quot;);
+  ROS_INFO(&quot;base_frame: %s&quot;, base_frame_.c_str());
+
+  node_handle_.param(&quot;general_max_slope&quot;, general_max_slope_, 3.0);
+  ROS_INFO(&quot;general_max_slope[deg]: %f&quot;, general_max_slope_);
+
+  node_handle_.param(&quot;local_max_slope&quot;, local_max_slope_, 5.0);
+  ROS_INFO(&quot;local_max_slope[deg]: %f&quot;, local_max_slope_);
+
+  node_handle_.param(&quot;radial_divider_angle&quot;, radial_divider_angle_, 0.1);  // 1 degree default
+  ROS_INFO(&quot;radial_divider_angle[deg]: %f&quot;, radial_divider_angle_);
+  node_handle_.param(&quot;concentric_divider_distance&quot;, concentric_divider_distance_, 0.0);  // 0.0 meters default
+  ROS_INFO(&quot;concentric_divider_distance[meters]: %f&quot;, concentric_divider_distance_);
+  node_handle_.param(&quot;min_height_threshold&quot;, min_height_threshold_, 0.05);  // 0.05 meters default
+  ROS_INFO(&quot;min_height_threshold[meters]: %f&quot;, min_height_threshold_);
+  node_handle_.param(&quot;clipping_height&quot;, clipping_height_, 2.0);  // 2.0 meters default above the car
+  ROS_INFO(&quot;clipping_height[meters]: %f&quot;, clipping_height_);
+  node_handle_.param(&quot;min_point_distance&quot;, min_point_distance_, 1.85);  // 1.85 meters default
+  ROS_INFO(&quot;min_point_distance[meters]: %f&quot;, min_point_distance_);
+  node_handle_.param(&quot;reclass_distance_threshold&quot;, reclass_distance_threshold_, 0.2);  // 0.5 meters default
+  ROS_INFO(&quot;reclass_distance_threshold[meters]: %f&quot;, reclass_distance_threshold_);
+
+#if (CV_MAJOR_VERSION == 3)
+  generateColors(colors_, color_num_);
+#else
+  cv::generateColors(colors_, color_num_);
+#endif
+
+  radial_dividers_num_ = ceil(360 / radial_divider_angle_);
+  ROS_INFO(&quot;Radial Divisions: %d&quot;, (int)radial_dividers_num_);
+
+  std::string no_ground_topic, ground_topic;
+  node_handle_.param&lt;std::string&gt;(&quot;no_ground_point_topic&quot;, no_ground_topic, &quot;/points_no_ground&quot;);
+  ROS_INFO(&quot;No Ground Output Point Cloud no_ground_point_topic: %s&quot;, no_ground_topic.c_str());
+  node_handle_.param&lt;std::string&gt;(&quot;ground_point_topic&quot;, ground_topic, &quot;/points_ground&quot;);
+  ROS_INFO(&quot;Only Ground Output Point Cloud ground_topic: %s&quot;, ground_topic.c_str());
+
+  ROS_INFO(&quot;Subscribing to... %s&quot;, input_point_topic_.c_str());
+  points_node_sub_ = node_handle_.subscribe(input_point_topic_, 1, &amp;RayGroundFilter::CloudCallback, this);
+
+  config_node_sub_ =
+      node_handle_.subscribe(&quot;/config/ray_ground_filter&quot;, 1, &amp;RayGroundFilter::update_config_params, this);
+
+  groundless_points_pub_ = node_handle_.advertise&lt;sensor_msgs::PointCloud2&gt;(no_ground_topic, 2);
+  ground_points_pub_ = node_handle_.advertise&lt;sensor_msgs::PointCloud2&gt;(ground_topic, 2);
+
+  ROS_INFO(&quot;Ready&quot;);
+
+  ros::spin();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/108218">Junaid22</a> on 2022-09-14 05:03:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Please see the following line taken from the above code:</p>
+
+<pre><code>transform_stamped = tf_buffer_.lookupTransform(in_target_frame, in_cloud_ptr-&gt;header.frame_id,
+                                               in_cloud_ptr-&gt;header.stamp, ros::Duration(1.0));
+</code></pre>
+
+<p>The error you are receiving is due to empty target frame, i.e., <code>in_target_frame</code>. Therefore, please run a debugger or add a print statement to confirm its value.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25207"></a> on 2022-09-14 05:42:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I did print out the <code>in_target_frame</code>. I got two log files which are here.</p>
+
+<p><a href="https://drive.google.com/file/d/1qsjc9dXfiTE78cKTeJ7ElmE9O4hTFkvT/view?usp=sharing">https://drive.google.com/file/d/1qsjc9dXfiTE78cKTeJ7ElmE9O4hTFkvT/view?usp=sharing</a></p>
+
+<p><a href="https://drive.google.com/file/d/18lXeNC71Ad2A2DlEwrOgccMDIJk_jrjL/view?usp=sharing">https://drive.google.com/file/d/18lXeNC71Ad2A2DlEwrOgccMDIJk_jrjL/view?usp=sharing</a></p>
+
+<p>I didnt get any warning or error either.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108218">Junaid22</a> on 2022-09-14 07:11:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have sorted it out. Thanks for the help @ravijoshi</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108218">Junaid22</a> on 2022-09-14 09:03:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am glad you made it work. If this answer helped you, please upvote and accept it by marking it as the correct answer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-09-14 20:30:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>ok @ravijoshi.
+Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108218">Junaid22</a> on 2022-09-15 04:47:19 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros::Timer won't start if initialized before dynamic reconfigure server - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/364115">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros::Timer won't start if initialized before dynamic reconfigure server</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97401/rostimer-wont-start-if-initialized-before-dynamic-reconfigure-server">https://robotics.stackexchange.com/questions/97401/rostimer-wont-start-if-initialized-before-dynamic-reconfigure-server</a>.</p>
+        <p>Hey, I am not sure where to post the issue, so I am showing it here first. Maybe I am doing something wrong.</p>
+
+<p>My <strong>ros::Timer</strong> won&#39;t start if I initialize it before the initialization of a <strong>dynamic reconfigure server</strong>. Here is the summary:</p>
+
+<h2>Environment</h2>
+
+<ul>
+<li>Ubuntu 20.04 + ROS Noetic</li>
+<li>empty workspace with no specific flags</li>
+<li>tested on amd64 or arm64</li>
+</ul>
+
+<h2>Observations</h2>
+
+<ul>
+<li>when <strong>ros::Timer</strong> is initialized before a <strong>dynamic reconfigure server</strong> (DRS), the timer won&#39;t start</li>
+<li>it affects fast timers (100 Hz and more) rather than slow timers</li>
+<li>it is non-deterministic, sometimes it starts correctly</li>
+<li>the higher the number of DRS parameters, the higher the chance of replicating the issue (10+ parameters = near 100% chance)</li>
+<li>seems not to be influenced by the computational resources, happens on i9-9900K as well as on Rpi4</li>
+<li>does not happen at all on 18.04 + ROS Melodic</li>
+</ul>
+
+<h2>Minimal non-working example</h2>
+
+<ul>
+<li><a href="https://github.com/klaxalk/ros_timer_drs_bug">https://github.com/klaxalk/ros_timer_drs_bug</a></li>
+<li>has two timers, 1 Hz and 100 Hz</li>
+<li>has a pre-compiler <code>#define</code> which can switch the order of initialization</li>
+<li>the 100 Hz timer won&#39;t run</li>
+</ul>
+
+<h2>Solution</h2>
+
+<ul>
+<li>I don&#39;t know, the DRS seems to be devoid of ros::Timers.</li>
+<li>Can&#39;t say for sure, but swapping the order is not a viable workaround for ros::Pluginlib plugins. So far it looks like some plugins&#39; timers are blocked by other plugins&#39; DRSs.</li>
+<li>the only workaround I found is to use a slow timer (or a thread) to check the activity and restart any broken fast timers... but... duh...</li>
+</ul>
+
+<h2>Sources</h2>
+
+<p>Full sources here: <a href="https://github.com/klaxalk/ros_timer_drs_bug">https://github.com/klaxalk/ros_timer_drs_bug</a></p>
+
+<p>The main cpp file:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;nodelet/nodelet.h&gt;
+
+#include &lt;dynamic_reconfigure/server.h&gt;
+#include &lt;timer_tester/timer_testerConfig.h&gt;
+
+#define TIMERS_BEFORE 1
+
+namespace timer_tester
+{
+
+class TimerTester : public nodelet::Nodelet {
+
+public:
+  virtual void onInit();
+
+private:
+  ros::NodeHandle nh_;
+
+  // | --------------- dynamic reconfigure server --------------- |
+
+  boost::recursive_mutex                           mutex_drs_;
+  typedef timer_tester::timer_testerConfig         DrsConfig_t;
+  typedef dynamic_reconfigure::Server&lt;DrsConfig_t&gt; Drs_t;
+  boost::shared_ptr&lt;Drs_t&gt;                         drs_;
+  void                                             callbackDrs(timer_tester::timer_testerConfig&amp; config, uint32_t level);
+
+  // | ------------------------- timers ------------------------- |
+
+  ros::Timer timer_fast_;
+  void       timerFast(const ros::TimerEvent&amp; te);
+
+  ros::Timer timer_slow_;
+  void       timerSlow(const ros::TimerEvent&amp; te);
+};
+
+void TimerTester::onInit() {
+
+  ros::NodeHandle nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+
+  ros::Time::waitForValid();
+
+  ROS_INFO(&quot;[TimerTester]: initializing&quot;);
+
+#if TIMERS_BEFORE == 1
+  ROS_INFO(&quot;[TimerTester]: creating timers before DRS&quot;);
+  timer_fast_ = nh_.createTimer(ros::Rate(100.0), &amp;TimerTester::timerFast, this);
+  timer_slow_ = nh_.createTimer(ros::Rate(1.0), &amp;TimerTester::timerSlow, this);
+#endif
+
+  // | --------------- dynamic reconfigure server --------------- |
+
+  drs_.reset(new Drs_t(mutex_drs_, nh_));
+  Drs_t::CallbackType f = boost::bind(&amp;TimerTester::callbackDrs, this, _1, _2);
+  drs_-&gt;setCallback(f);
+
+#if TIMERS_BEFORE == 0
+  ROS_INFO(&quot;[TimerTester]: creating timers after DRS&quot;);
+  timer_fast_ = nh_.createTimer(ros::Rate(100.0), &amp;TimerTester::timerFast, this);
+  timer_slow_ = nh_.createTimer(ros::Rate(1.0), &amp;TimerTester::timerSlow, this);
+#endif
+
+  ROS_INFO_ONCE(&quot;[TimerTester]: initialized&quot;);
+}
+
+// | --------------------- timer callbacks -------------------- |
+
+void TimerTester::timerFast([[maybe_unused]] const ros::TimerEvent&amp; te) {
+
+  ROS_INFO_THROTTLE(0.1, &quot;[TimerTester]: 100 Hz timer spinning&quot;);
+}
+
+void TimerTester::timerSlow([[maybe_unused]] const ros::TimerEvent&amp; te) {
+
+  ROS_INFO_THROTTLE(0.1, &quot;[TimerTester]: 1 Hz timer spinning&quot;);
+}
+
+void TimerTester::callbackDrs([[maybe_unused]] timer_tester::timer_testerConfig&amp; config, [[maybe_unused]] uint32_t level) {
+
+  ROS_INFO(&quot;[TimerTester]: callbackDrs() called&quot;);
+}
+
+}  // namespace timer_tester
+
+#include &lt;pluginlib/class_list_macros.h&gt;
+PLUGINLIB_EXPORT_CLASS(timer_tester::TimerTester, nodelet::Nodelet);
+</code></pre>
+
+<p>The dynamic reconfigure server config:</p>
+
+<pre><code>#!/usr/bin/env python
+
+PACKAGE = &quot;timer_tester&quot;
+import roslib;
+roslib.load_manifest(PACKAGE)
+
+from dynamic_reconfigure.parameter_generator_catkin import *
+
+gen = ParameterGenerator()
+
+main = gen.add_group(&quot;Main&quot;);
+main.add(&quot;a&quot;, double_t, 1, &quot;A&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;b&quot;, double_t, 2, &quot;B&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;c&quot;, double_t, 4, &quot;C&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;d&quot;, double_t, 8, &quot;D&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;e&quot;, double_t, 16, &quot;E&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;f&quot;, double_t, 32, &quot;F&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;g&quot;, double_t, 64, &quot;G&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;h&quot;, double_t, 128, &quot;H&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;i&quot;, double_t, 256, &quot;I&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;j&quot;, double_t, 512, &quot;J&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;k&quot;, double_t, 1024, &quot;K&quot;, 1.0, 0.0, 10.0);
+main.add(&quot;l&quot;, double_t, 2048, &quot;L&quot;, 1.0, 0.0, 10.0);
+
+exit(gen.generate(PACKAGE, &quot;TimerTester&quot;, &quot;timer_tester&quot;))
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/61588">klaxalk</a> on 2020-10-25 11:07:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Submitted it as an issue: <a href="https://github.com/ros/ros_comm/issues/2085">https://github.com/ros/ros_comm/issues/2085</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61588">klaxalk</a> on 2020-10-28 06:57:02 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I finally got it. The problem is not with DRS in particular but with anything that takes a non-zero amount of time to execute. It can be broken with sleep() or just with some traditional operations. The problem is in fact caused by the nodelet, specifically by the first commit that got to Noetic: <a href="https://github.com/ros/nodelet_core/commit/5272c3462e7c7ebab9848ed943d5c926b1e75842">https://github.com/ros/nodelet_core/5272c34</a>. The commit was intended to fix this particular issue, but it, in fact, causes it. They disable callback queues before calling onInit() and re-enable them after. But it seems that this is not a good solution. I have submitted an issue there: <a href="https://github.com/ros/nodelet_core/issues/106">https://github.com/ros/nodelet_core/issues/106</a>. In the meantime, a temporary workaround is to compile the nodelet_core without that commit.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/61588">klaxalk</a> on 2020-11-30 08:48:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Using VTune for ROS profiling - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/337461">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Using VTune for ROS profiling</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93801/using-vtune-for-ros-profiling">https://robotics.stackexchange.com/questions/93801/using-vtune-for-ros-profiling</a>.</p>
+        <p>Hi, All!
+Can I use VTune Intel profiler for using in ROS? What are the basic steps to do it? In particular, how can I make symbolic information for VTune while ROS building? Thank you.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/49271">mikhail1981</a> on 2019-11-12 09:58:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Would you happen to know how to do this with CMake? If so: Catkin is a set of macros and functions for CMake. You should be able to just use the CMake workflow for VTune.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-12 11:23:18 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Couldn&#39;t use VTune in &quot;launch application mode&quot;. But it wasn&#39;t any special to use it in &quot;attach to process&quot; mode (just building with debug configuration needed), and it worked fine. I think, question is not actual.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/49271">mikhail1981</a> on 2019-11-14 07:34:22 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <h1>Profiling an application</h1>
+
+<p>This readme is a step by step application for using VTUNE to profile a node.</p>
+
+<h2><strong>General Overview</strong></h2>
+
+<p>In order to profile your application, you will need to do the following:</p>
+
+<ol>
+<li>Edit the application CMakeLists.txt to compile it correctly for profiling</li>
+<li>Edit the application to add any user instrumentation</li>
+<li>Edit the application launch file in order to launch it under the profiler with desired profile type</li>
+<li>Edit the launch point of the application to set the timeouts longer</li>
+<li>Set the correct settings in the pc to allow user profiling</li>
+<li>Run the node</li>
+<li>View the profiler results with the VTune GUI</li>
+</ol>
+
+<p>We will go through these step by step here. </p>
+
+<h2><strong>CMakeLists.txt</strong></h2>
+
+<p>There are a few changes for your application binary that allow it to be profiled. </p>
+
+<pre><code>#  README: This is an example CMakeLists.txt for adding a target that you intend to profile. It
+#  is a mix of the regular catkin for ros stuff as well as the extra stuff you need for the 
+#  actual profiling bit. Each bit will be explained below.
+
+# Regular ROS stuff, as required for all ros nodes.
+cmake_minimum_required(VERSION 3.2)
+project(profiler_example)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED YES)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+)
+
+find_package(Threads REQUIRED)  # Threads may or may not be required. For the profiler, the target that you link against  
+                                # will need to be linked against threads if it uses threads. For basically any ros node
+                                # this will be the case because of subscription queues etc. 
+
+
+catkin_package()
+
+set(THREADS_PREFER_PTHREAD_FLAG ON) # This is just for us, we do prefer pthreads on our system, because linux etc. We
+                                    # want this to ensure that we use pthreads which are profilable. Very high chance
+                                    # we are using them anyway.
+
+add_executable(test_profiler     # We add our executable as per usual, with all the translation units included. 
+    thread_profile_example.cpp
+)
+
+#  The following 2 lines are very important if you wish to use the user instrumentation API detailed here:
+#  https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/api-support/instrumentation-and-tracing-technology-apis/instrumentation-and-tracing-technology-api-reference.html
+#  This is so you can include and then link against their libs. For very basic example usage, see the thread_profiling_example.cpp
+target_include_directories(test_profiler PRIVATE /opt/intel/oneapi/vtune/latest/sdk/include) 
+target_link_directories(test_profiler PRIVATE /opt/intel/oneapi/vtune/latest/sdk/lib64)
+
+# Each of the compiler options and libs we are linking against are quite important, so they will be detailed one at a time. 
+target_compile_options(test_profiler PRIVATE
+    -g                          # The most important, this compiles your application with profiling symbols.
+    -fno-omit-frame-pointer     # This adds some extra information that allows the vtune application to more easily view your profile. 
+    -D_LINUX                    # This is suggested by Vtune, i don&#39;t know what this does.
+    -fno-asm                    # This stops you from ending up with no code trace I think.
+)
+
+target_link_libraries(test_profiler PRIVATE 
+    ittnotify           # This is important to link against if you are using the user API, see above include directories
+    dl                  # This allows the dynamic linking of the user api.
+    pthread             # This or the below must be linked if you are using threads. Adding both doesn&#39;t hurt. 
+    Threads::Threads    # See above.
+    ${catkin_LIBRARIES} # Normal ros linking.
+)
+
+# Below is more regular ROS stuff
+add_dependencies(test_profiler ${catkin_EXPORTED_TARGETS})
+
+install(TARGETS 
+    test_profiler
+
+    ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+    LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+</code></pre>
+
+<p>The details for how to do this were taken from the <a href="https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/set-up-analysis-target/linux-targets/compiler-switches-for-performance-analysis-on-linux-targets.html">compiler switches for linux</a> vtune page. It is also helpful to look at the makefile in the provided matrix example in <code>/opt/intel/oneapi/vtune/latest/samples/en/C++/matrix</code>.</p>
+
+<h2><strong>Adding user API instrumentation</strong> </h2>
+
+<p>Details about how to do this are <a href="https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/api-support/instrumentation-and-tracing-technology-apis/instrumentation-and-tracing-technology-api-reference.html">here</a>, with the most useful ones so far being:
+1. <a href="https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/api-support/instrumentation-and-tracing-technology-apis/instrumentation-and-tracing-technology-api-reference/event-api.html">One time user events</a>
+2. <a href="https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/api-support/instrumentation-and-tracing-technology-apis/instrumentation-and-tracing-technology-api-reference/thread-naming-api.html">Thread naming</a></p>
+
+<p>But you can do pretty much anything. </p>
+
+<h2><strong>Launching from a launch file</strong></h2>
+
+<p>In order to profile a node being launched from the ROS ecosystem you need to do a couple of things. </p>
+
+<p>The first is to amend the launch file with a prefix to launch the profiler. You do this with:</p>
+
+<p><code>
+launch-prefix=&quot;
+  /opt/intel/oneapi/vtune/2021.4.0/bin64/vtune              # Always give the full path, the environment is not set up the way you think.
+  --collect hotspots                                        # Specify the type of profile you want to make
+  -knob sampling-mode=hw -knob stack-size=0                 # Specify extra arguments, like use hw mode.
+  -result-dir /tmp/profiling/little-test-@@@   # Specify the output directory, @ is an auto incrementing numeral.
+  &quot;
+</code></p>
+
+<p><em>Note:</em> This all needs to be a single line without comments. </p>
+
+<p>The full command line interface documentation is <a href="https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/command-line-interface/running-command-line-analysis.html">here</a>. These are my recomendations:
+- Use hw sampling mode, it has a smaller impact and gets more samples. 
+- There are many different profilers you can run, there is a list <a href="https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/command-line-interface/running-command-line-analysis.html">here</a>
+- The easiest way to get a complex command line is to select the items you want with the GUI and check the generated command line. When you create a new profiler action in the gui, next to the start (play) button, there is a button to show you the command line of what you are about to run. 
+- The vtune profiler needs significant time to finalize the result and make a report. If you want this to occur, you need to add some extended timeout to the launch so that it doesn&#39;t send SIGTERM to bomb your application while it is finalizing. You can add <code>--sigint-timeout=60 --sigterm-timeout=60</code> to any launch command to extend this death time. It is likely that you will want to add it to <code>node_manager.py</code> where most launch files are run.</p>
+
+<h2><strong>Changing your environment</strong></h2>
+
+<p>You need a bunch of different environment variables. Likely that you will need to play with this for your specific example, eg. your user may not always be root or something. </p>
+
+<p><code>
+echo &quot;source /opt/intel/oneapi/setvars.sh&quot; &gt;&gt; /home/user/.bashrc
+sed -i &#39;s/ptrace_scope = 1/ptrace_scope = 0/g&#39; /etc/sysctl.d/10-ptrace.conf
+echo &quot;echo 0 &gt; /proc/sys/kernel/perf_event_paranoid&quot; &gt;&gt; /home/user/.bashrc
+echo &quot;export INTEL_LIBITTNOTIFY32=/opt/intel/oneapi/vtune/latest/lib32/runtime/libittnotify_collector.so&quot; &gt;&gt; /home/user/.bashrc
+echo &quot;export INTEL_LIBITTNOTIFY64=/opt/intel/oneapi/vtune/latest/lib64/runtime/libittnotify_collector.so&quot; &gt;&gt; /home/user/.bashrc
+</code></p>
+
+<h2><strong>Running the stack and getting results</strong></h2>
+
+<p>You can see above:</p>
+
+<p><code>
+echo &quot;echo 0 &gt; /proc/sys/kernel/perf_event_paranoid&quot; &gt;&gt; /root/.bashrc
+</code></p>
+
+<p>If the user is not privileged, you may need to do:</p>
+
+<p><code>
+sudo sysctl -w kernel.perf_event_paranoid=1
+</code></p>
+
+<p>If you have set up everything correctly so far, you should just be able to run the system and expect the results to be generated at the location where you specified in the launch file (using <code>-result-dir</code>). </p>
+
+<p>Now you can simply use vtune-gui top open the results. Use <code>ctrl-o</code> and go to the result folder and open the <code>.vtune</code> file. Happy profiling!</p>
+
+<h2><strong>Attaching to an existing process with PID</strong></h2>
+
+<p><em>Currently this does not fully work</em> - see current bug report <a href="https://community.intel.com/t5/Analyzers/Get-user-events-from-VTune-doesn-t-work-with-attach-to-process/m-p/1294212/emcs_t/S2h8ZW1haWx8dG9waWNfc3Vic2NyaXB0aW9ufEtRSE83S1JOMlVMWDI0fDEyOTQyMTJ8U1VCU0NSSVBUSU9OU3xoSw#M20844">here</a>.
+- The collection of user functions and system functions is correct.
+- The collection of user API is not working, aka, ITT events and thread names will not appear in the profiler data. </p>
+
+<p>You can use <code>-target-pid</code> to attach to a process already running to capture profiler output. The application needs to be started in an environment where the envrionment variables <code>INTEL_LIBITTNOTIFY32</code> and <code>INTEL_LIBITTNOTIFY64</code> are set with the correct dll path. You can find your process with <code>ps -aux</code> or if you know the name already issue a command like:</p>
+
+<p><code>
+/opt/intel/oneapi/vtune/2021.4.0/bin64/vtune \
+    --collect hotspots -knob sampling-mode=hw -knob sampling-interval=0.5 -knob stack-size=0 \
+    -result-dir /tmp/docker_share/profiling/test-@@@ \
+    -target-pid $(ps -ef | grep example | head -n 1 | awk &#39;{print $2}&#39;)
+</code></p>
+
+<p>The last line will find the pid for you (ensure that your process name is unique, otherwise just find it yourself). </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/67692">FantasticMrFox</a> on 2021-07-01 02:18:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

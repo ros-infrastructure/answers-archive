@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publisher send rate drops with multiple clients in rospy - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/201524">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publisher send rate drops with multiple clients in rospy</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/65329/publisher-send-rate-drops-with-multiple-clients-in-rospy">https://robotics.stackexchange.com/questions/65329/publisher-send-rate-drops-with-multiple-clients-in-rospy</a>.</p>
+        <p>We noticed this as part of testing the Applanix Driver, which is written entirely in Python. On some machines, the send rate of the /applanix/nav message drops from the normal 100 Hz to 40 or even &lt; 10 Hz as soon as there are subscribers listening and using the topic.</p>
+
+<p>To test this out, I created the <a href="https://github.com/kshehata/ros_py_tests">ros<em>py</em>tests</a> [github] package. It&#39;s just a test harness with a rospy publisher set to publish Headers at 100 Hz, and rospy subscribers that listen check messages for time deltas and sequence numbers. I&#39;ve copied the code below for reference, though do use the github version since I&#39;ll post updated code there.</p>
+
+<pre><code># pub.py exerpt
+pub = rospy.Publisher(&#39;test&#39;, Header, queue_size=10)
+rospy.init_node(&#39;sender&#39;, anonymous=True)
+rate = rospy.Rate(100)
+msg = Header()
+while not rospy.is_shutdown():
+    msg.stamp = rospy.Time.now()
+    msg.frame_id = &quot;hello world %s&quot; % msg.stamp
+    pub.publish(msg)
+    rate.sleep()
+</code></pre>
+
+<p>Here&#39;s the listener.</p>
+
+<pre><code># sub.py excerpt
+def callback(data):
+    global last_seq
+    # check that we haven&#39;t missed any messages
+    if last_seq &gt; 0 and data.seq != last_seq + 1:
+        rospy.logerror(&quot;Sequence number mismatch: expected &quot; + str(last_seq + 1)
+            + &quot; got &quot; + data.seq)
+    last_seq = data.seq
+
+    # compare time stamps and print out
+    rospy.loginfo(&quot;Received message with time &quot; + format_time_str(data.stamp) + 
+        &quot;, delta &quot; + format_time_str(rospy.Time.now() - data.stamp) + 
+        &quot;, message: &quot; + str(data.frame_id))
+
+rospy.init_node(&#39;listener&#39;, anonymous=True)
+rospy.Subscriber(&quot;test&quot;, Header, callback)
+rospy.spin()
+</code></pre>
+
+<p>There&#39;s a launch file included the package on GitHub that makes it really easy to start this test. Basic procedure:</p>
+
+<ol>
+<li>Start the publisher</li>
+<li>Start 5 of the listeners</li>
+<li>rostopic hz /test</li>
+</ol>
+
+<p>Here&#39;s the strange part: it works perfectly well in virtual machines. On every Ubuntu host machine we&#39;ve tried it on, the rate drops drastically once the listeners are running.</p>
+
+<p>What&#39;s going on here? Why does having listeners kill the rate of sending of the publisher?</p>
+
+<p><strong>Update</strong></p>
+
+<p>I&#39;ve added a cpp version of the publisher and the subscriber. Here&#39;s the result of testing the combinations:</p>
+
+<pre><code>           |    Subscriber   |
+Publisher  | Python |   C++  |
+Python     |  Fail  |  Fail  |
+C++        |  Pass  |  Pass  |
+</code></pre>
+
+<p>Looks like it&#39;s pretty solidly something in the Python publisher, since the subscriber doesn&#39;t seem to matter.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/19983">KareemShehata</a> on 2015-01-22 10:09:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;ve now created <a href="https://github.com/ros/ros_comm/issues/557">ros_comm issue #557</a> for this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19983">KareemShehata</a> on 2015-01-22 12:55:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>To anyone looking, it seems like this might be fixed in the latest version of rospy. If you can reproduce the problem on your machine, please try updating the ROS core packages.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19983">KareemShehata</a> on 2015-01-23 08:19:35 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Could this be due to the use of <em>synchronous publishing</em> in <code>rospy</code>?</p>
+
+<p>Looking at the code you posted, I don&#39;t see an explicit <code>queue_size</code> declared for your publisher. According to <a href="http://wiki.ros.org/rospy/Overview/Publishers%20and%20Subscribers#queue_size:_publish.28.29_behavior_and_queuing">rospy/Overview/Publishers and Subscribers - queue_size: publish() behavior and queuing</a>, the <code>queue_size</code> needs to be set for asynchronous publishing to work.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2015-01-22 16:21:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The queue_size is being set. It&#39;s on the first line of the excerpt from pub.py.</p>
+
+<pre><code>pub = rospy.Publisher(&#39;test&#39;, Header, queue_size=10)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19983">KareemShehata</a> on 2015-01-22 16:56:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hm, must&#39;ve been late last night when reading this. Seems you&#39;re right.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2015-01-23 04:24:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>No worries. I had to check myself to make sure. :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19983">KareemShehata</a> on 2015-01-23 08:18:39 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Turns out this was a bug in rospy that has was fixed somewhere between rospy 1.10.2-0 and 1.10.11-0. We hadn&#39;t updated because of a package dependency problem. If you&#39;re seeing a problem like this in ROS hydro, make sure to update your packages, and do both an upgrade and a dist-upgrade!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/19983">KareemShehata</a> on 2015-01-23 17:09:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

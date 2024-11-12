@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Issues with Spin() and AsyncSpinner: multithreaded application - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/297204">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Issues with Spin() and AsyncSpinner: multithreaded application</h2>
+      <div class="question">
+        <p>Hello the following code gives me this error: <code>SingleThreadedSpinner: You&#39;ve attempted to call spin from multiple threads.  Use a MultiThreadedSpinner instead.</code></p>
+
+<p>And this warning: <code>AsyncSpinnerImpl: Attempt to start() an AsyncSpinner failed because another AsyncSpinner is already running. Note that the other AsyncSpinner might not be using the same callback queue as this AsyncSpinner, in which case no callbacks in your callback queue will be serviced.
+</code></p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;rosbag/bag.h&gt;
+#include &lt;rosbag/view.h&gt;
+#include &lt;boost/foreach.hpp&gt;
+#include &lt;moveit/move_group_interface/move_group.h&gt;
+#include &lt;sstream&gt;
+#include &quot;std_msgs/String.h&quot;
+#include &quot;std_msgs/Float32.h&quot;
+#include &quot;std_msgs/Float32MultiArray.h&quot;
+#include &quot;geometry_msgs/Pose.h&quot;
+#include &quot;moveit_msgs/RobotTrajectory.h&quot;
+#include &quot;sensor_msgs/JointState.h&quot;
+#include &quot;trajectory_msgs/JointTrajectoryPoint.h&quot;
+#define foreach BOOST_FOREACH
+
+// subscribe to the point topic: This callback takes a geometry pose, plans to it, and publishes the times and waypoints to a motionPlan topic
+void automaticCallback(const geometry_msgs::Pose::ConstPtr&amp; msg)
+{
+  ros::AsyncSpinner spinner(4);
+  spinner.start();
+
+  std::string jointgroup = &quot;sia5dArm&quot;;
+  move_group_interface::MoveGroup group(jointgroup);
+
+  moveit::planning_interface::MoveGroup::Plan my_plan;
+  group.setPoseTarget(*msg);
+  bool success = group.plan(my_plan);
+
+    //write the trajectory to a bag file to use later
+    rosbag::Bag bag;
+    bag.open(&quot;test.bag&quot;, rosbag::bagmode::Write);
+    bag.write(&quot;my_plan_trajectory&quot;, ros::Time::now(), my_plan.trajectory_);
+    bag.close();
+
+  ROS_INFO(&quot;Visualizing plan 1 (pose goal) %s&quot;,success?&quot;&quot;:&quot;FAILED&quot;);
+
+  // Convert robot trajectory to a sensor_msg, for complicated reasons
+  if (success == true)
+  {
+    std::vector&lt;trajectory_msgs::JointTrajectoryPoint&gt; trajectory_points;
+    trajectory_points = my_plan.trajectory_.joint_trajectory.points;
+
+
+    std::vector&lt;int&gt;::size_type points_number = trajectory_points.size();
+    std::vector&lt;double&gt; motionPlan_msg;
+    std::vector&lt;double&gt; motionPlan_times;
+
+    for (unsigned i = 0; i&lt;points_number; i++)
+    {
+      std::vector&lt;int&gt;::size_type joints_number = trajectory_points[i].positions.size();
+
+      double trajectory_time = ros::Duration(trajectory_points[i].time_from_start).toSec();
+
+      motionPlan_times.push_back(trajectory_time); 
+
+      for (unsigned j = 0; j&lt;joints_number; j++)
+      {
+        motionPlan_msg.push_back(trajectory_points[i].positions[j]);
+      } 
+    }
+
+    sensor_msgs::JointState motionPlan_position;
+    motionPlan_position.position = motionPlan_msg;
+    motionPlan_position.effort = motionPlan_times;
+
+    // publish the motionPlan in sensor message format to a motionPlan topic    
+    ros::NodeHandle n;
+    ros::Publisher motionPlan_pub = n.advertise&lt;sensor_msgs::JointState&gt;(&quot;motionPlan&quot;,1000);
+    motionPlan_pub.publish(motionPlan_position);
+    ros::spin();
+  }
+  ros::waitForShutdown();
+}
+
+// subscribe to the command topic, based on the command the robot will either be automatically controlled or it will look in a bag file for a motionPlan to execute
+void commandCallback(const std_msgs::String::ConstPtr&amp; msg)
+{
+  std::string command = msg-&gt;data;
+
+  if(command == &quot;automatic&quot;)
+  {
+    ros::NodeHandle n;
+
+    ros::Subscriber sub2 = n.subscribe(&quot;point&quot;,1000,automaticCallback);
+
+    ros::spin();
+
+    ROS_INFO(&quot;automatic control&quot;);
+  }
+  else if(command == &quot;execute&quot;)
+  {
+    std::string jointgroup = &quot;sia5dArm&quot;;
+    move_group_interface::MoveGroup group(jointgroup);
+
+    // read in motion Plan from a bag file so it can be executed.
+    rosbag::Bag bag;
+    bag.open(&quot;test.bag&quot;, rosbag::bagmode::Read);
+
+    std::vector&lt;std::string&gt; topics;
+    topics.push_back(std::string(&quot;my_plan_trajectory&quot;));
+    rosbag::View view(bag, rosbag::TopicQuery(topics));
+
+    foreach(rosbag::MessageInstance const m, view)
+    {
+        moveit_msgs::RobotTrajectory::ConstPtr s = m.instantiate&lt;moveit_msgs::RobotTrajectory&gt;();
+        if (s != NULL)
+        {
+            ROS_INFO(&quot;executing command&quot;);
+
+          moveit::planning_interface::MoveGroup::Plan my_plan2;
+          my_plan2.trajectory_ = *s;
+            group.execute(my_plan2);
+
+          ROS_INFO(&quot;plan executed&quot;);
+
+            ros::NodeHandle n;
+        ros::Publisher motionPlan_pub2 = n.advertise&lt;moveit_msgs::RobotTrajectory&gt;(&quot;motionPlan_trajectory&quot;,1000);
+        motionPlan_pub2.publish(my_plan2.trajectory_);
+
+        ros::spin();
+
+        }
+    }
+    bag.close();
+  }
+}
+
+
+//****************************
+//----------------------------
+//Primary Node Function (subscribes to a command topic...)
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;planner&quot;);
+
+  ros::NodeHandle n;
+
+  ros::Subscriber sub1 = n.subscribe(&quot;command&quot;,1000,commandCallback);
+
+  //Initialize the moveit group for time reasons here
+  std::string jointgroup = &quot;sia5dArm&quot;;
+  move_group_interface::MoveGroup group(jointgroup);
+
+  ros::spin();
+
+  return 0;
+
+}
+</code></pre>
+
+<p>I have tried using MultiThreaded spinners, using spinner.spin and everything in between and anytime I deviate either the motioinPlan topic doesn&#39;t get published or I get errors thrown at me.  Any help with spinners would be great!  I am having a hard time understanding which ones to use when.</p>
+
+<p>The &quot;point&quot; and &quot;command&quot; topics are being published by another node at discrete points in time. </p>
+
+<p><strong>Edit:</strong> So I have modified the above code to simplify it down to the basics for testing purposes.  And the motionPlan is still unpublished.  Any ideas why?</p>
+
+<pre><code>// subscribe to the point topic
+void automaticCallback(const geometry_msgs::Pose::ConstPtr&amp; msg)
+{
+
+  std::string jointgroup = &quot;sia5dArm&quot;;
+  move_group_interface::MoveGroup group(jointgroup);
+
+  moveit::planning_interface::MoveGroup::Plan my_plan;
+  group.setPoseTarget(*msg);
+  bool success = group.plan(my_plan);
+
+  ROS_INFO(&quot;Visualizing plan 1 (pose goal) %s&quot;,success?&quot;&quot;:&quot;FAILED&quot;);
+
+  ROS_INFO(&quot;try to publish&quot;);
+  ros::NodeHandle n;
+  ros::Publisher motionPlan_pub = n.advertise&lt;moveit_msgs::RobotTrajectory&gt;(&quot;motionPlan&quot;,1000);
+  motionPlan_pub.publish(my_plan.trajectory_);
+}
+
+
+//Primary Node Function
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;planner&quot;);
+  ros::NodeHandle n;
+  ros::Subscriber sub2 = n.subscribe(&quot;point&quot;,1000,automaticCallback);
+
+  std::string jointgroup = &quot;sia5dArm&quot;;
+  move_group_interface::MoveGroup group(jointgroup);
+
+  ros::spin();
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/36261">Levi_Manring</a> on 2018-07-12 19:00:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>There are a few things I can see that stand out. Firstly can you post more of your code, this snippet is incomplete and even has unbalanced parentheses. </p>
+
+<p>The code you&#39;ve shown appears to mostly be a callback function, inside this callback you&#39;re starting the asyncspinner as well as a normal spin at the end. Neither of these make any sense being inside a callback and could result in very strange recursive behaviours. </p>
+
+<p>Your callback seems to create a motion plan and publish a plan message if it was successful. This doesn&#39;t require a spin at any point in this function.</p>
+
+<p>As I&#39;ve said, if you can post more of your code hopefully we can help you fix this, but as is it doesn&#39;t make much sense.</p>
+
+<p><strong>Edit.</strong> You should only need a spin in your main function, if it&#39;s not working with than then there is a problem with your code you should not try and solve it by adding more spin calls. To be clear ros::spin() will not return until the node has been shutdown, either through a call to ros::shutdown() or a Ctrl-C. So calling it inside a callback will do strange recurrsive things!</p>
+
+<p>There is a serious problem with the code snippet below:</p>
+
+<pre><code>  if(command == &quot;automatic&quot;)
+  {
+    ros::NodeHandle n;
+
+    ros::Subscriber sub2 = n.subscribe(&quot;point&quot;,1000,automaticCallback);
+
+    //ros::spin();
+
+    ROS_INFO(&quot;automatic control&quot;);
+  }
+</code></pre>
+
+<p>The sub2 subscriber object will go out of scope and be destroyed when the end parenthesis of the if statement is reached. If you want it to remain subscribed you should make sub2 a global variable instead. Adding a spin here is causing the callbacks to be recursive which is why your code is trying to make multiple asyncspinner objects and crashing.</p>
+
+<p>Remove all the spins and asyncspinners apart from main. You&#39;ll also need to remove the ros::waitForShutdown(); this will stop your node from doing anything. </p>
+
+<p>I hope this helps, but I&#39;d recommend learning some more about c++ and the thread of execution.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-13 01:55:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your help.  I posted my whole node in an edit, so hopefully it makes a bit more sense.  I will say that I tried doing what you suggested in terms of eliminating the spinners inside <code>automaticCallback</code> but that resulted in <code>motionPlan</code> never getting published.  Any other ideas?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36261">Levi_Manring</a> on 2018-07-13 13:18:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have also just tried eliminating every spinner except the once inside the main init node clause, and if I do that, nothing happens.  The robot arm doesn&#39;t move in RVIZ, motionPlan isn&#39;t published...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36261">Levi_Manring</a> on 2018-07-13 13:57:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ve updated my answer. You do need to remove all the spins except for in main, but there are a few other problems that need fixing in your code too.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-14 04:50:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for your help.  I have tried doing what you have suggested in a number of forms, with no success.  I eliminated the if statement and did a bunch of other testing, still nothing is published to motionPlan, so this isn&#39;t working for me yet.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36261">Levi_Manring</a> on 2018-07-16 15:06:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Can you post the modified code you&#39;ve tried. There were a lot of things to fix in your old code so it&#39;s hard to keep track of the changes individually.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-17 02:35:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have posted the changes in a edit at the bottom of my question.  I eliminated all the if statements and simplified as much as possible.  Still the motionPlan is unpublished.  The robot moves in RViz and does what it is supposed to, minus the crucial publishing stage.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36261">Levi_Manring</a> on 2018-07-17 10:34:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I will say that it never executes the ROS_INFO statements in the code. So it stops after the group.plan command.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36261">Levi_Manring</a> on 2018-07-17 10:35:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You cannot create a publisher object and instantly publish to it, they take a little bit of time to attach to any subscribers. It&#39;s also bad practice to create and destroy them repeatedly, that&#39;s not how they were intended to be used.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-17 15:38:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>If you make the motionPlan_pub publisher a global variable and set it up in main then it should start publishing successfully.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-17 15:39:02 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

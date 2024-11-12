@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscriber to array type overwriting data from different publishers! - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/312598">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscriber to array type overwriting data from different publishers!</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/90058/subscriber-to-array-type-overwriting-data-from-different-publishers">https://robotics.stackexchange.com/questions/90058/subscriber-to-array-type-overwriting-data-from-different-publishers</a>.</p>
+        <p>Hi,</p>
+
+<p>I have been witnessing some bizarre behaviour with my very simple node.</p>
+
+<p>I have a custom message that contains <code>uint8[]</code> type (it&#39;s 8 elements long). I have a subscriber that subscribes to a topic of the custom message and stores it in a global variable:</p>
+
+<pre><code>uint16* leddar_distance_cm_1 = NULL;
+
+void leddarCallback(const perception_msgs::Leddar8::ConstPtr&amp; msg) {
+  if (msg-&gt;leddar_id == 1) {
+      leddar_distance_cm_1 = const_cast&lt;uint16_t*&gt;(&amp;(msg-&gt;distance[0]));
+  }
+
+  for (uint8_t i = 0; i &lt; 8; i++) {
+      ROS_INFO(&quot;VALUE: [%d]&quot;, leddar_distance_cm_1[i]);
+  }
+}
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, &quot;collision_avoidance_node&quot;);
+  ros::NodeHandle n;
+
+  ros::Subscriber leddar_sub = n.subscribe(&quot;perception/leddars&quot;, 1000, leddarCallback);
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>I then have 2 publishers publishing onto that topic using rostopic pub. When I try to print the stored array from the callback I get this (bottom right window):</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15473433473642725.png" alt="image description"></p>
+
+<p>As you can see the two publishers seem to be interfering with each other and somehow overwritting leddar<em>distance</em>cm_1   pointer repeatedly. This doesn&#39;t happen with any non-pointer types from the message such as char or int.</p>
+
+<p>I even tried creating 2 different subscribers for each publisher, same issue! As if both publishers are overwriting the same memory address (which they in fact are). Does this have anything to do with queues? I have a feeling that I am not reading the array correctly. I have spent over 8 hours looking at this and I can&#39;t figure out what the problem is, if there is an obvious mistake could someone please tell me what it is?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-12 20:44:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>tl;dr: Your <code>leddar_distance_cm_1</code> should be <code>std::vector&lt;uint8_t&gt; leddar_distance_cm_1;</code></p>
+
+<p>Your current code is taking the address of a temporary object (<code>msg-&gt;distance[0]</code>) and storing it in a pointer ( <code>leddar_distance_cm_1</code>) after that object goes out of scope and is destroyed at the end of the callback.</p>
+
+<p>After the callback is done, <code>leddar_distance_cm_1</code> is now pointing to unused memory, and the operating system is free to re-use that memory for whatever it wants. You are getting VERY LUCKY that it chooses to re-use that memory for the next message.</p>
+
+<p>Instead of taking the address of the lidar data, your callback needs to copy it out of the message before that message is destructed. You could do this by hand with a for loop, but since the data is already stored in a <code>std::vector&lt;uint8_t&gt;</code>, just copying the data into another <code>std::vector&lt;uint8_t&gt;</code> will do all the hard work for you.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2019-01-13 00:53:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Really appreciate your answer!</p>
+
+<p>I copied this approach from a different package, does that mean it&#39;s not safe to use C arrays in messages? What if I use memcpy? I read that fixed size arrays in a msg are boost::array type, how would one utilize these?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-13 08:06:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Either the package that you copied this from is also broken, or they&#39;ve done something slightly different that doesn&#39;t use the pointer after the message has been destructed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-01-13 13:19:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You could copy the message data using memcpy, but you&#39;d also need to make sure that the destination array was allocated and was the right size, and you&#39;d need to copy both the data array and its size. Using std::vector or boost::array does this for you, so you&#39;re less likely to write a bug.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-01-13 13:21:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The <a href="https://wiki.ros.org/msg">msg wiki page</a> describes the C++ equivalent types used to represent arrays in messages. If you message was fixed-length, your array type would be <code>boost::array&lt;uint8_t, 8&gt;</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-01-13 13:23:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ahendrix, gotcha, the package I copied it from was pointing to an argument (of a pointer type) inside an object&#39;s function: <a href="https://github.com/astuff/kvaser_interface/blob/master/src/linuxcan.cpp">https://github.com/astuff/kvaser_interface/blob/master/src/linuxcan.cpp</a>, line 216. What happens after that I am not sure.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-13 13:50:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ahendrix, the call is here: <a href="https://github.com/astuff/kvaser_interface/blob/master/src/kvaser_can_bridge.cpp">https://github.com/astuff/kvaser_interface/blob/master/src/kvaser_can_bridge.cpp</a>, line 107. It&#39;s a low-level CAN driver wrapper that sends CAN messages upon successful callback. Not exactly sure how it works as it&#39;s still pointer to pointer assignment.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-13 13:53:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>What I don&#39;t understand is: I mentioned earlier that &quot;I even tried creating 2 different subscribers for each publisher, same issue! As if both publishers are overwriting the same memory address (which they in fact are).&quot; and I still had the same issue, even though they had different mem. addresses..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-13 13:54:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ahendrix, P.S.: 2 different subscribers, 2 separate topics, 2 separate publishers, still overwriting each other. Would the same issue happen with this package? I am going to be using 2 publishers for that subscriber so now I am worried :(</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-13 13:59:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>There are a lot of differences between that code and yours. Instead of trying to explain all of them and possibly giving the wrong impression of the C++ rules, I suggest you go through a few tutorials about object scope and lifetime in C++</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-01-13 14:01:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>All of these google results look similar; I suggest you go through and find one that makes sense to you: <a href="https://www.google.com/search?q=C%2B%2B+object+lifetime+tutorial&oq=C%2B%2B+object+lifetime+tutorial&aqs=chrome..69i57.5719j0j1&sourceid=chrome&ie=UTF-8">https://www.google.com/search?q=C%2B%2B+object+lifetime+tutorial&amp;oq=C%2B%2B+object+lifetime+tutorial&amp;aqs=chrome..69i57.5719j0j1&amp;sourceid=chrome&amp;ie=UTF-8</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-01-13 14:02:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ahendrix, thank you again, very much appreciated. I am still new to C++ so RAII is pretty much out of my scope but I am getting there!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36123">Hypomania</a> on 2019-01-13 14:06:29 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Weird increasing delay in rosbridge despite queue_size=1 and buff_size=2**24 - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/334898">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Weird increasing delay in rosbridge despite queue_size=1 and buff_size=2**24</h2>
+      <div class="question">
+        <p>Hi everyone,</p>
+
+<p>I&#39;ve got a very weird problem here. I have a topic published on at around 50hz. On the other end there&#39;s a subscriber. The callback of the subscriber is a relatively long running process, slower than those 50hz. </p>
+
+<p>That subscriber is initialized with <code>queue_size=1</code> and <code>buff_size=2**24</code>. That way I want to make sure, messages come in as fast as possible and if there&#39;s currently one message processed, further messages get <strong>dropped</strong>. That&#39;s the desired behavior. I don&#39;t need all messages, but I need them fast.</p>
+
+<p>When I leave <code>queue_size=1</code> and <code>buff_size=2**24</code> out, I see an increasing delay when I take a look at the age of the messages processed (now - header.stamp). </p>
+
+<p><code>queue_size=1</code> and <code>buff_size=2**24</code> work when I use <code>rospy</code> directly. However, it does <strong>not</strong> with <code>rosbridge</code>. I have already changed <code>rosbridge</code> in a way that the actual <code>rospy.Subscriber</code> is created in the exact same way as descrbed above, including <code>queue_size=1</code> and <code>buff_size=2**24</code>. it does not help. I still see the increasing delay. </p>
+
+<p>Where do I have to look to make sure I don&#39;t have that delay when using <code>rosbridge</code>?</p>
+
+<p>Thanks</p>
+
+<h1>Update 1</h1>
+
+<p>Here&#39;s a code example with which I can reproduce the problem. I&#39;m just not sure if it&#39;s caused by <code>roslibpy</code> or by <code>rosbridge</code>. Maybe someone with a little spare time could help me investigate this behavior. Or tell me that they cannot reproduce it and that I&#39;m the only one seeing this behavior. Or that I&#39;m doing something inherently wrong.</p>
+
+<pre><code>import roslibpy
+import time
+import json
+import logging
+logger = logging.getLogger(&quot;roslibpy&quot;)
+handler = logging.StreamHandler()
+logger.addHandler(handler)
+
+def to_epoch(stamp):
+    stamp_secs = stamp[&quot;secs&quot;]
+    stamp_nsecs = stamp[&quot;nsecs&quot;]
+    return stamp_secs + stamp_nsecs*1e-9
+
+def from_epoch(stamp):
+    stamp_secs = int(stamp)
+    stamp_nsecs = (stamp - stamp_secs) * 1e9
+    return {&quot;secs&quot;: stamp_secs, &quot;nsecs&quot;: stamp_nsecs}
+
+
+def sub(msg):
+    # The `age` of the message should remain constant, but it increases seemingly indef.
+    age = time.time() - to_epoch(msg[&quot;stamp&quot;])
+    print(&quot;Age of message: %6.3f seconds&quot; % age)
+    time.sleep(1./5.)
+
+
+ros = roslibpy.Ros(&quot;ws://localhost:9090&quot;)
+ros.run()
+
+tt = roslibpy.Topic(ros, &quot;/test&quot;, &quot;std_msgs/Header&quot;, queue_size=1)
+
+ts = roslibpy.Topic(ros, &quot;/test&quot;, &quot;std_msgs/Header&quot;, queue_length=1)
+ts.subscribe(sub)
+
+try:
+    seq = 0
+    while True:
+        seq += 1
+        header = {&quot;frame_id&quot;: &quot;test&quot;, &quot;stamp&quot;: from_epoch(time.time()), &quot;seq&quot;: seq}
+        tt.publish(roslibpy.Message(header))
+except KeyboardInterrupt:
+    ros.terminate()
+</code></pre>
+
+<h1>Update 2</h1>
+
+<p>Three things that I&#39;ve already ruled out:</p>
+
+<ol>
+<li>in <code>rosbridge_library subscribers.py</code> setting <code>rospy.Subscriber(..., queue_size = 1, ...)</code> has no effect</li>
+<li>in <code>rosbridge_library subscribers.py</code> setting <code>rospy.Subscriber(..., buff_size = 2**24, ...)</code> has no effect</li>
+<li>in <code>rosbridge_server rosbridge_websocket.py</code> setting <code>listenWS(..., backlog = 1, ...)</code> or <code>backlog = 0</code> has no effect</li>
+</ol>
+
+<h1>Update 3</h1>
+
+<p>I&#39;ve now tested <code>rosbridge_server/rosbridge_udp</code>. It shows the same behavior! So it is <strong>not</strong> related to websockets.  </p>
+
+<h1>Update 4</h1>
+
+<p>As suggested below I&#39;ve added a sleep to the send loop. It has no effect on my side. </p>
+
+<pre><code>import roslibpy
+import time
+import json
+import logging
+logger = logging.getLogger(&quot;roslibpy&quot;)
+handler = logging.StreamHandler()
+logger.addHandler(handler)
+
+def to_epoch(stamp):
+    stamp_secs = stamp[&quot;secs&quot;]
+    stamp_nsecs = stamp[&quot;nsecs&quot;]
+    return stamp_secs + stamp_nsecs*1e-9
+
+def from_epoch(stamp):
+    stamp_secs = int(stamp)
+    stamp_nsecs = (stamp - stamp_secs) * 1e9
+    return {&quot;secs&quot;: stamp_secs, &quot;nsecs&quot;: stamp_nsecs}
+
+
+def sub(msg):
+    # The `age` of the message should remain constant, but it increases seemingly indef.
+    age = time.time() - to_epoch(msg[&quot;stamp&quot;])
+    print(&quot;Age of message: %6.3f seconds&quot; % age)
+    time.sleep(1./5.)
+
+
+print(&quot;Trying to connect to ros bridge&quot;)
+ros = roslibpy.Ros(&quot;ws://localhost:9090&quot;)
+ros.run()
+print(&quot;Connected to ros bridge&quot;)
+
+tt = roslibpy.Topic(ros, &quot;/test&quot;, &quot;std_msgs/Header&quot;, queue_size=1)
+ts = roslibpy.Topic(ros, &quot;/test&quot;, &quot;std_msgs/Header&quot;, queue_length=1)
+ts.subscribe(sub)
+
+try:
+    seq = 0
+    print(&quot;Fire!&quot;)
+    while True:
+        seq += 1
+        header = {&quot;frame_id&quot;: &quot;test&quot;, &quot;stamp&quot;: from_epoch(time.time()), &quot;seq&quot;: seq}
+        tt.publish(roslibpy.Message(header))
+        time.sleep(0.01)
+except KeyboardInterrupt:
+    ros.terminate()
+
+
+
+Trying to connect to ros bridge
+Connected to ros bridge
+Fire!
+Age of message:  0.180 seconds
+Age of message:  0.317 seconds
+Age of message:  0.486 seconds
+Age of message:  0.676 seconds
+Age of message:  0.845 seconds
+Age of message:  1.035 seconds
+Age of message:  1.226 seconds
+Age of message:  1.416 seconds
+Age of message:  1.848 seconds
+Age of message:  2.039 seconds
+Age of message:  2.208 seconds
+Age of message:  2.366 seconds
+Age of message:  2.557 seconds
+Age of message:  2.747 seconds
+Age of message:  2.927 seconds
+</code></pre>
+
+<hr>
+
+<h1>The behavior persists.</h1>
+
+        <div class="owner"><p>Asked by <a href="/users/295">Hendrik Wiese</a> on 2019-10-08 10:03:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Possible you have buffering not related to ROS, like in a network switch or card. Is data through rosbridge coming through network? I&#39;ve had more than one issue where images get backed up with frames 10 - 15 seconds old coming appearing, related to location of the image source in the house. Issue only occurs in wifi dead zones, and when coming back in range images from long ago will show up, and not always in the order you would expect.</p>
+
+<p>So while ROS be properly handling the queue = 1, your HW may have other ideas.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2019-10-09 01:23:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Cannot rule that out, but the sources are all on the same system, so everything runs via loopback. I&#39;ve even throttled the topic to 1hz and still the age of the messages keeps increasing at the very same rate, which is exceptionally weird. </p>
+
+<p>It only happens when I use <code>rosbridge_suite</code> in conjunction with <code>roslibpy</code>. If it also happens when I use <code>roslibjs</code> I&#39;ll have to test... <code>rospy</code> works fine. I&#39;m just refraining from using rospy because my code has hard <code>python 3</code> dependencies and <code>rospy</code> appears to be incompatible with <code>python 3</code>, which is a real shame. </p>
+
+<p>I&#39;ll soon add a small test script that you might be willing to run in order to verify the behavior.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/295">Hendrik Wiese</a> on 2019-10-09 03:15:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I just wonder how can you connect to udp rosbridge. thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53001">huyhoangk50</a> on 2020-03-30 02:06:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Any solution to this? Having the same problem</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/82310">Bender_From_Futurama</a> on 2021-09-08 05:39:10 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Much to my regret, no. I&#39;ve not been on the project anymore for almost 2 years. I&#39;ve never tried to solve it. If I find the time, I&#39;ll go check it out again in my spare time, however, that&#39;d take a while. If you find a solution, please, post it here!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/295">Hendrik Wiese</a> on 2021-09-08 05:49:13 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>So I made a change and got your code to work on my machine.
+Initially got the same results as you.</p>
+
+<p>Remove <code>time.sleep(1./5.)</code> from the callback and add <code>time.sleep(0.01)</code> to the while true loop.</p>
+
+<p>Perhaps the main needs to give some time for the callbacks to function.</p>
+
+<pre><code>#!/usr/bin/python
+import roslibpy
+import time
+import json
+import logging
+logger = logging.getLogger(&quot;roslibpy&quot;)
+handler = logging.StreamHandler()
+logger.addHandler(handler)
+
+def to_epoch(stamp):
+    stamp_secs = stamp[&quot;secs&quot;]
+    stamp_nsecs = stamp[&quot;nsecs&quot;]
+    return stamp_secs + (stamp_nsecs*1e-9)
+
+def from_epoch(stamp):
+    stamp_secs = int(stamp)
+    stamp_nsecs = (stamp - stamp_secs) * 1e9
+    return {&quot;secs&quot;: stamp_secs, &quot;nsecs&quot;: stamp_nsecs}
+
+
+def sub(msg):
+    # The `age` of the message should remain constant, but it increases seemingly indefinetly
+    age = time.time() - to_epoch(msg[&quot;stamp&quot;])
+    print(&quot;Age of message: %6.3f seconds&quot; % age)
+ #   time.sleep(1./5.)
+
+
+ros = roslibpy.Ros(&quot;ws://localhost:9090&quot;)
+ros.run()
+
+tt = roslibpy.Topic(ros, &quot;/test&quot;, &quot;std_msgs/Header&quot;, queue_size=1)
+
+ts = roslibpy.Topic(ros, &quot;/test&quot;, &quot;std_msgs/Header&quot;, queue_length=1)
+ts.subscribe(sub)
+
+try:
+    seq = 0
+    while True:
+        seq += 1
+        header = {&quot;frame_id&quot;: &quot;test&quot;, &quot;stamp&quot;: from_epoch(time.time()), &quot;seq&quot;: seq}
+        tt.publish(roslibpy.Message(header))
+        time.sleep(0.01)
+except KeyboardInterrupt:
+    ros.terminate()
+
+
+Age of message:  0.003 seconds
+Age of message:  0.002 seconds
+Age of message:  0.003 seconds
+Age of message:  0.002 seconds
+Age of message:  0.002 seconds
+Age of message:  0.003 seconds
+Age of message:  0.001 seconds
+Age of message:  0.001 seconds
+Age of message:  0.003 seconds
+Age of message:  0.002 seconds
+Age of message:  0.002 seconds
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26871">billy</a> on 2019-10-10 02:33:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your effort but the script that I gave was only a minimal working example to reproduce the actual problem. I don&#39;t have a <code>time.sleep</code> in my actual code that I could remove. The callback (or rather the process with the callback) of my code just <em>is</em> slow enough to cause this behavior. I can&#39;t do much about that fact. I need to find the actual cause, the very root of the problem, and get a fix for it. Or I need to know that this is expected behavior (which it can&#39;t be because <code>rospy</code> alone, without <code>rosbridge</code> in between, does <strong>not</strong> behave like this if I set the queue_sizes accordingly)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/295">Hendrik Wiese</a> on 2019-10-10 04:52:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>But it&#39;s good to know that I&#39;m not alone and that you can reproduce the behavior</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/295">Hendrik Wiese</a> on 2019-10-10 04:53:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Removing the sleep from the callback didn&#39;t fix it for me. It was adding the sleep to the <code>while true</code> loop that fixed it. Have you tried that yet?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26871">billy</a> on 2019-10-10 18:15:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, thanks. Unfortunately, it has no effect.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/295">Hendrik Wiese</a> on 2019-10-11 03:57:49 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

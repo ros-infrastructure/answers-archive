@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] asyncio await with timeout a service call in a callback - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/413482">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] asyncio await with timeout a service call in a callback</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103124/ros2-asyncio-await-with-timeout-a-service-call-in-a-callback">https://robotics.stackexchange.com/questions/103124/ros2-asyncio-await-with-timeout-a-service-call-in-a-callback</a>.</p>
+        <p>Hi! I am trying to use the asyncio syntax to await for a service to complete inside a callback function of a Node. A dummy node to test this:</p>
+
+<pre><code>#!/usr/bin/env python3
+import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from std_msgs.msg import Empty
+from rcl_interfaces.srv import ListParameters
+import asyncio
+
+class TestNode(Node):
+    def __init__(self) -&gt; None:
+        Node.__init__(
+            self,
+            &quot;test_node&quot;,
+        )
+        self.callback_group = ReentrantCallbackGroup()
+        self._sub = self.create_subscription(
+            topic=&quot;test&quot;,
+            msg_type=Empty,
+            callback=self.cb_test,
+            qos_profile=5,
+            callback_group=self.callback_group,
+        )
+
+        self.client = self.create_client(
+            ListParameters,
+            &quot;/test_node/list_parameters&quot;
+        )
+
+    async def cb_test(self, msg: Empty) -&gt; None:
+
+        service_request = ListParameters.Request()
+        srv_future = self.client.call_async(service_request)
+        try:
+            # result = await asyncio.wait_for(srv_future, timeout=10.0)
+            result = await srv_future
+        except Exception as e:
+            self.get_logger().error(f&quot;Service call failed! what(): {str(e)}&quot;)
+        else:
+            self.get_logger().info(f&quot;Service call success! what(): {str(result)}&quot;)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = TestNode()
+    executor = SingleThreadedExecutor()
+
+    rclpy.spin(node, executor)
+    node.destroy_node()
+    rclpy.try_shutdown()
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<p>You can test it with </p>
+
+<pre><code>ros2 topic pub -1 /test std_msgs/msg/Empty {}
+</code></pre>
+
+<p>That code works just fine. The callback function doesn&#39;t block any other callback functions and it returns the result of the service. Now If I want to add a timeout to that future with <code>asyncio.wait_for(future, timeout=10.0)</code> it fails with:</p>
+
+<pre><code>[ERROR][1679007966.209838027][test_node]: Service call failed! what(): no running event loop
+</code></pre>
+
+<p>I tried everything, spawning a new event<em>loop in a separate thread, calling `event</em>loop.run_forever<code>in the main thread, and spawning the</code>rclpy.spin` in a thread. Nothing works.</p>
+
+<p>I tried this alternative approach:</p>
+
+<pre><code>    # ... another method from the previous code
+    def run(self):
+
+        self.event_loop = asyncio.get_event_loop()
+
+        # this task will run forever to process ROS node events
+        async def rosloop():
+            while rclpy.ok():
+                rclpy.spin_once(self, timeout_sec=0)
+                await asyncio.sleep(0.01)
+
+        # perform main event loop processing
+        try:
+            asyncio.ensure_future(rosloop())
+            self.event_loop.run_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.event_loop.close()
+            self.event_loop = None
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = TestNode()    
+    node.run()
+    rclpy.try_shutdown()
+</code></pre>
+
+<p>Now I get the error:</p>
+
+<pre><code>[ERROR][1679008951.750327026][test_node]: Service call failed! what(): await wasn&#39;t used with future
+</code></pre>
+
+<p>Does anyone know how to handle this? Any asyncio and rclpy expert for advice? I want to stick with a Singlethreaded executor</p>
+
+<p>[UPDATE] PD: If I use the <a href="https://github.com/aio-libs/async-timeout">async_timeout</a> package and the alternative approach for spinning the node it works, but I still don&#39;t want to depend on an external package</p>
+
+        <div class="owner"><p>Asked by <a href="/users/64524">charlie92</a> on 2023-03-16 18:08:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I&#39;ve had problems of the same sort. I think it comes down to a design problem: awaiting an inner callback inside of an outer callback invites the problem of deadlocks. The way to solve it, I believe, is through callback groups.</p>
+
+<p>Have a look at these links for more information:
+<a href="https://docs.ros.org/en/foxy/How-To-Guides/Sync-Vs-Async.html#asynchronous-calls">https://docs.ros.org/en/foxy/How-To-Guides/Sync-Vs-Async.html#asynchronous-calls</a></p>
+
+<p><a href="https://github.com/ros2/examples/blob/foxy/rclpy/services/minimal_client/examples_rclpy_minimal_client/client_async_callback.py">https://github.com/ros2/examples/blob/foxy/rclpy/services/minimal_client/examples_rclpy_minimal_client/client_async_callback.py</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/79869">Per Edwardsson</a> on 2023-03-17 02:02:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I think it has nothing to do with callback groups but the interaction of asyncio with ROS2 internals
+The example you shared looks exactly like the code I shared that is working, but without a timeout for the await of the service future</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64524">charlie92</a> on 2023-03-17 10:35:53 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I find a workaround using <code>asyncio.ensure_future</code> as follows:</p>
+
+<pre><code>class TestNode(Node):
+    def __init__(self) -&gt; None:
+        Node.__init__(
+            self,
+            &quot;test_node&quot;,
+        )
+        self.callback_group = ReentrantCallbackGroup()
+
+        self._sub = self.create_subscription(
+            topic=&quot;test&quot;,
+            msg_type=Empty,
+            callback=self.cb_test,
+            qos_profile=5,
+            callback_group=self.callback_group,
+        )
+
+        self.client = self.create_client(
+            ListParameters,
+            &quot;/test_node/list_parameters&quot;,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+    def cb_test(self, msg: Empty) -&gt; None:
+        # Schedule the async function and add it to the node&#39;s callback group.
+        asyncio.ensure_future(self.async_cb_test(msg))
+
+    async def async_cb_test(self, msg: Empty) -&gt; None:
+        service_request = ListParameters.Request()
+        srv_future = self.client.call_async(service_request)
+        try:
+            result = await asyncio.wait_for(srv_future, timeout=10.0)
+        except Exception as e:
+            self.get_logger().error(f&quot;Service call failed! what(): {str(e)}&quot;)
+        else:
+            self.get_logger().info(f&quot;Service call success! what(): {str(result)}&quot;)
+
+
+async def spin(executor: SingleThreadedExecutor):
+    while rclpy.ok():
+        executor.spin_once()
+        # Setting the delay to 0 provides an optimized path to allow other tasks to run.
+        await asyncio.sleep(0)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = TestNode()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(spin(executor))
+
+    node.destroy_node()
+    rclpy.shutdown()
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/64524">charlie92</a> on 2023-03-17 18:18:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

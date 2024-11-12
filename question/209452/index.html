@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Exception thrown while processing service call: Time is out of dual 32-bit range - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/209452">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Exception thrown while processing service call: Time is out of dual 32-bit range</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/67654/exception-thrown-while-processing-service-call-time-is-out-of-dual-32-bit-range">https://robotics.stackexchange.com/questions/67654/exception-thrown-while-processing-service-call-time-is-out-of-dual-32-bit-range</a>.</p>
+        <p>I am doing a very simple implementation of ROS service. There are two nodes, server and client node and the only main variable is that I am using rosbags for streaming data used by callback method on server side. I am getting the following error on some callbacks - </p>
+
+<pre><code>Exception thrown while processing service call: Time is out of dual 32-bit range
+</code></pre>
+
+<p>Can someone throw some light on why am I getting this error and how can I fix this for my service callback to work properly?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/18985">ajain</a> on 2015-05-18 16:54:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The exception is because Internally ros::Time objects use int64_t variables and cast to uint32_t when returning the result.  When a time value is negative, the value exceeds what an uint32_t variable can represent. The result is the exception you are seeing is thrown. </p>
+
+<p>This sample code that generates the exception you are seeing.</p>
+
+<pre><code>try {
+  ros::Time test = ros::Time::now() - ros::Duration(0.01);
+}
+catch(std::runtime_error&amp; ex) {
+  ROS_ERROR(&quot;Exception: [%s]&quot;, ex.what());
+}
+</code></pre>
+
+<p>Possible solutions:</p>
+
+<ol>
+<li>Wrap your code in try-catch blocks and deal with the resulting issues</li>
+<li>Call toSec() on time/duration objects and do the math manually</li>
+</ol>
+
+<h2>TL;DR</h2>
+
+<p>Here&#39;s where the exception is thrown (source <a href="https://github.com/ros/roscpp_core/blob/indigo-devel/rostime/src/time.cpp#L487">here</a>)</p>
+
+<pre><code>void normalizeSecNSecUnsigned(int64_t&amp; sec, int64_t&amp; nsec)
+{
+  int64_t nsec_part = nsec % 1000000000L;
+  int64_t sec_part = sec + nsec / 1000000000L;
+  if (nsec_part &lt; 0)
+  {
+      nsec_part += 1000000000L;
+      --sec_part;
+  }
+
+  if (sec_part &lt; 0 || sec_part &gt; UINT_MAX)
+    throw std::runtime_error(&quot;Time is out of dual 32-bit range&quot;);
+
+  sec = sec_part;
+  nsec = nsec_part;
+}
+</code></pre>
+
+<p>This code is one of several places where the exception might be generated. Subtraction is implemented as &quot;negative addition&quot;. (source <a href="https://github.com/ros/roscpp_core/blob/indigo-devel/rostime/include/ros/impl/time.h#L83">here</a>)</p>
+
+<pre><code>template&lt;class T, class D&gt;
+T TimeBase&lt;T, D&gt;::operator-(const D &amp;rhs) const
+{
+  return *static_cast&lt;const T*&gt;(this) + ( -rhs);
+}
+
+template&lt;class T, class D&gt;
+T TimeBase&lt;T, D&gt;::operator+(const D &amp;rhs) const
+{
+  int64_t sec_sum  = (int64_t)sec  + (int64_t)rhs.sec;
+  int64_t nsec_sum = (int64_t)nsec + (int64_t)rhs.nsec;
+
+  // Throws an exception if we go out of 32-bit range
+  normalizeSecNSecUnsigned(sec_sum, nsec_sum);
+
+  // now, it&#39;s safe to downcast back to uint32 bits
+  return T((uint32_t)sec_sum, (uint32_t)nsec_sum);
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20596">crazyorc</a> on 2015-05-28 22:27:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The explanation is correct. However, I would use another solution as this exception is a sign of something going actually wrong unless negative time has meaning. So, the best would be, figure out, where the exceptions happen and check the time values/durations involved.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2015-05-29 02:24:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Excellent point.  My experience bias blinded me a little.  Playback of rosbags has been the source of many of these exceptions for me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20596">crazyorc</a> on 2015-05-29 10:25:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ve had the same issue recently, running bags on a set of code that I know works.  Any ideas on how to determine which clock times are wrong? I&#39;m using the usual</p>
+
+<p>rosparam set use_sim_time
+  rosbag play --clock bagfile.bag</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20407">stevenwaslander</a> on 2015-07-02 20:07:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;d just dump the actual time stamps. Usually it&#39;s something, where 12.0 is compared to 173939302.2.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2015-07-03 03:37:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks, that did it.  It appears there was an issue using ros::Time::now().toNSec() to populate the pcl point cloud header.stamp using the latest everything in Ubuntu 14.04. Started happening about two weeks ago, will confirm versions and post elsewhere.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20407">stevenwaslander</a> on 2015-07-03 06:47:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Found a cleaner answer, see <a href="http://answers.ros.org/question/172730/pcl-header-timestamp/">this post</a></p>
+
+<p><code>#include &lt;pcl_conversions/pcl_conversions.h&gt;
+...
+pcl_conversions::toPCL(ros::Time::now(), point_cloud_msg-&gt;header.stamp);</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20407">stevenwaslander</a> on 2015-07-03 07:32:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@crazyorc the example you provide does not cause any issues on my machine (Ubuntu 14.04.3 64 bit, ROS Indigo).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2016-03-21 09:12:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@bit-pirate Consider yourself lucky!  A lot has changed in the past year for both ROS <em>and</em> Ubuntu but I don&#39;t see any changes to fix this. I would expect my example to still fail since I don&#39;t see any changes (rushed glance), but if it works now that&#39;s awesome.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20596">crazyorc</a> on 2016-03-28 19:15:36 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

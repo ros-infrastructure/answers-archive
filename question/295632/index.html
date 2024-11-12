@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[solved] Struggling to run ros_control controller in gdb - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/295632">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[solved] Struggling to run ros_control controller in gdb</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87591/solved-struggling-to-run-ros-control-controller-in-gdb">https://robotics.stackexchange.com/questions/87591/solved-struggling-to-run-ros-control-controller-in-gdb</a>.</p>
+        <p>Hi folks,</p>
+
+<p><strong>Intro</strong></p>
+
+<p>I am using the guided policy search (GPS) package (<a href="http://rll.berkeley.edu/gps/">http://rll.berkeley.edu/gps/</a>) to run the back-end of a ros_control controller for a Gazebo simulation of the KUKA LWR 4+ arm.</p>
+
+<p>My working environment is Linux 18.3 (Ubuntu 16.10) with Kinetic. My kernel is 4.10.0-38-generic.</p>
+
+<p>Currently, my controller crashes in update() because the base class, which is provided by the GPS distribution, initialises two sets of internal controllers (one for each of two arms) and then tries to update both. My derived controller only has one arm to work with. Compiled with debugging, lots of assertions fail at runtime. Compiled without debugging, I get segmentation faults when methods are called on the non-existent second arm.</p>
+
+<p>I don&#39;t particularly want to change the underlying code, because I want my controller to be easily installable and I don&#39;t really think it&#39;s necessary.</p>
+
+<p><strong>What I need</strong></p>
+
+<p>As a ROS noob, I find the code quite difficult to follow, and all I want is to be able to set some breakpoints and get stack traces, but I can&#39;t start the controller in gdb.</p>
+
+<p>I have tried running my launch file with <code>debug:=true</code> on the command line. I have tried adding a gdb prefix to the controller spawner, but that&#39;s a Python script and in any case does not <em>contain</em> the executing controller. I have tried compiling as release, but with debugging information (so the controller fails with a seg fault rather than on the debugging assertions) and then running with the <code>debug:=true</code> parameter/argument, but when the seg fault occurs, gzserver crashes and there is no PID to use with gdb.</p>
+
+<p>I have been unable to find any more information than this on debugging ROS controllers. Can anyone give me a reliable method of starting the controller in gdb? Please?</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;!-- ======================================================================= --&gt;
+&lt;!-- lwr_gazebo.launch                                                       --&gt;
+&lt;!-- Description: Launches the Gazebo simulation of the KUKA LWR 4+ and      --&gt;
+&lt;!--              guided policy search.                                      --&gt;
+&lt;!-- ======================================================================= --&gt;
+
+&lt;launch&gt;
+  &lt;!-- Set debug on --&gt;
+  &lt;!-- &lt;env name = &quot;ROSCONSOLE_CONFIG_FILE&quot; 
+       value = &quot;$(find gps_agent_pkg)/launch/custom_rosconsole.conf&quot; /&gt; --&gt;
+
+  &lt;arg name = &quot;robot_name&quot; default = &quot;single_lwr_robot&quot; /&gt;
+
+  &lt;!-- Upload robot description to ros parameter server --&gt;
+  &lt;param name = &quot;robot_description&quot; command = &quot;$(find xacro)/xacro 
+    --inorder $(find single_lwr_robot)/robot/$(arg robot_name).urdf.xacro&quot; /&gt;
+
+  &lt;!-- Set up state publishers. Don&#39;t know if this is needed for GPS --&gt;
+  &lt;node name = &quot;joint_state_publisher&quot; pkg = &quot;joint_state_publisher&quot;
+      type = &quot;joint_state_publisher&quot;&gt;
+    &lt;rosparam param = &quot;source_list&quot;&gt;[/lwr/joint_states]&lt;/rosparam&gt;
+  &lt;/node&gt;
+
+  &lt;node name = &quot;robot_state_publisher&quot; pkg = &quot;robot_state_publisher&quot;
+    type = &quot;robot_state_publisher&quot; /&gt;
+
+  &lt;!-- Start up gazebo and spawn the KUKA in an empty world --&gt;
+  &lt;node name = &quot;spawn_urdf&quot; pkg = &quot;gazebo_ros&quot; type = &quot;spawn_model&quot;
+    args = &quot;-param robot_description -urdf -model $(arg robot_name)&quot;
+    respawn = &quot;false&quot; output = &quot;screen&quot; /&gt;
+
+  &lt;include file=&quot;$(find gazebo_ros)/launch/empty_world.launch&quot; /&gt;
+
+  &lt;!-- Load hardware interface configuration to parameter server --&gt;
+  &lt;rosparam command = &quot;load&quot;
+    file = &quot;$(find single_lwr_robot)/config/hw_interface.yaml&quot; /&gt;
+
+  &lt;!-- Load hardware limits as per Kuka&#39;s LWR T1 training mode --&gt;
+  &lt;!-- Still TODO in controller code --&gt;
+  &lt;rosparam command = &quot;load&quot;
+    file = &quot;$(find single_lwr_robot)/config/t1_joint_limits.yaml&quot; /&gt;
+
+
+  &lt;!-- Configuration of controller as per PR2 --&gt;
+  &lt;rosparam command = &quot;load&quot;
+    file = &quot;$(find gps_agent_pkg)/launch/lwr_controller.yaml&quot; /&gt;
+
+  &lt;!-- &lt;param name = &quot;lwr/kuka_lwr_controller/root_name&quot; value = &quot;lwr_base_link&quot; /&gt;
+  &lt;param name = &quot;lwr/kuka_lwr_controller/active_tip_name&quot; value = &quot;lwr_7_link&quot; /&gt; --&gt;
+
+  &lt;!-- kalman filter matrices (straight from PR2 launcher) --&gt;
+  &lt;param name = &quot;lwr/kuka_lwr_controller/encoder_filter_params&quot;
+    textfile = &quot;$(find gps_agent_pkg)/encoder_filter_params.txt&quot; /&gt;
+
+  &lt;group ns=&quot;lwr&quot;&gt;
+    &lt;node name = &quot;controller_spawner&quot; pkg = &quot;controller_manager&quot;
+        type = &quot;spawner&quot; respawn = &quot;false&quot; output = &quot;screen&quot;
+        args = &quot;kuka_lwr_controller --shutdown-timeout 2&quot; /&gt;
+  &lt;/group&gt;
+&lt;/launch&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/36152">walkingbeard</a> on 2018-06-28 10:54:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>I have tried running my launch file with <code>debug:=true</code> on the command line.</p>
+</blockquote>
+
+<p>Unless the launch file your launching defines a <code>debug</code> arg <em>and</em> does something special if you set it to <code>true</code>, that will not make things run in <code>gdb</code> or turn on some debugging infrastructure. I don&#39;t see anything in the launch file you include that suggests setting that argument would work.</p>
+
+<blockquote>
+<p>I have tried adding a gdb prefix to the controller spawner, but that&#39;s a Python script and in any case does not contain the executing controller. </p>
+</blockquote>
+
+<p>If this is using <code>gazebo_ros_control</code>, then the process that is hosting the controller plugins would be <code>gzserver</code>, and it would be that process that you&#39;d have to run in <code>gdb</code>.</p>
+
+<p><code>empty_world.launch</code> does accept a <code>debug</code> arg (<a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/9cbc4bfd9b0caf763387cb203f6bf695071cae07/gazebo_ros/launch/empty_world.launch#L13">here</a>) and if that is set to <code>true</code>, it will eventually start <code>gzserver</code> in <code>gdb</code> (<a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/dd51b73ccc54a54ae41dd5c4901252a49ca51177/gazebo_ros/scripts/debug#L21-L22">here</a>, via <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/9cbc4bfd9b0caf763387cb203f6bf695071cae07/gazebo_ros/launch/empty_world.launch#L34-L35">this</a> and then <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/9cbc4bfd9b0caf763387cb203f6bf695071cae07/gazebo_ros/launch/empty_world.launch#L41">this</a>).</p>
+
+<p>So to do that, you would have to change:</p>
+
+<pre><code>&lt;include file=&quot;$(find gazebo_ros)/launch/empty_world.launch&quot; /&gt;
+</code></pre>
+
+<p>to:</p>
+
+<pre><code>&lt;include file=&quot;$(find gazebo_ros)/launch/empty_world.launch&quot;&gt;
+    &lt;arg name=&quot;debug&quot; value=&quot;true&quot; /&gt;
+&lt;/include&gt;
+</code></pre>
+
+<p>Make sure to compile all relevant code with the <code>Debug</code> build type, or backtraces will be useless, but I guess you already know that.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2018-06-28 13:21:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Note that the page you link for <code>gps</code> setup seems a bit dated. Manually changing the <code>ROS_PACKAGE_PATH</code> is not something we typically do these days.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-28 13:24:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for your replies - very helpful! Honestly, there are many outdated things about this project I&#39;m doing, but I have limited time, so I can either do the project or update the underlying code. It&#39;s frustrating, but such is life.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36152">walkingbeard</a> on 2018-07-04 04:06:38 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

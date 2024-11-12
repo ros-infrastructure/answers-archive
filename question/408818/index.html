@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>action-server Call (send a goal to an action-server) with in a service callback. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/408818">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>action-server Call (send a goal to an action-server) with in a service callback.</h2>
+      <div class="question">
+        <p>Steps to reproduce:
+- make an action server
+- make a service server
+- call the action server with the callback of the service server
+- call the service server</p>
+
+<p>Output:
+The action server callback gets called and return if called alone from the terminal 
+The call to the action server WITHIN the service server callback behaves as follows:
+ - The call to the actions senver gets sent --&gt; the action server callbacks actually get executed
+ - GoalOptions of the action client never executes. (unless the service callback finishes, which is not the needed behavoir)
+ - the future obtained by sending the goal to the action server never goes into the ready state.</p>
+
+<p>Note: the action client is in a adhoc created callback group.</p>
+
+<p>Ros version: galactic</p>
+
+<pre><code>namespace test { using actionmsg = srv_action_interfaces::action::TestAction; using clienthandle = rclcpp_action::ClientGoalHandle&lt;actionmsg&gt;;
+
+    struct service_server_node : public rclcpp::Node
+    {
+        service_server_node(rclcpp::NodeOptions const &amp;Options = rclcpp::NodeOptions()) : rclcpp::Node(&quot;serviceServernode&quot;, Options)
+        {
+            cb_group_action_client = this-&gt;create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+            cb_group_service_server = this-&gt;create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+            this-&gt;action_client_ = rclcpp_action::create_client&lt;srv_action_interfaces::action::TestAction&gt;(this, &quot;/capra/test/action_server_name&quot;, cb_group_action_client);
+            this-&gt;SendGoalOptions.feedback_callback = [this](clienthandle::SharedPtr handle, std::shared_ptr&lt;const actionmsg::Feedback&gt; feedback) -&gt; void
+            {
+                std::ostringstream oss;
+                std::copy(feedback-&gt;partial_sequence.begin(), feedback-&gt;partial_sequence.end(), std::ostream_iterator&lt;int&gt;(oss, &quot;, &quot;));
+                RCLCPP_INFO(get_logger(), &quot;feedback : %s&quot;, oss.str().c_str());
+            };
+
+            this-&gt;SendGoalOptions.result_callback = [this](clienthandle::WrappedResult const &amp;WrappedResult) -&gt; void
+            {
+                std::lock_guard lk(mtx);
+                std::ostringstream oss;
+                std::copy(WrappedResult.result-&gt;sequence.begin(), WrappedResult.result-&gt;sequence.end(), std::ostream_iterator&lt;int&gt;(oss, &quot;, &quot;));
+                RCLCPP_INFO(get_logger(), &quot;RESULT RECEIVED! : %s&quot;, oss.str().c_str());
+                result_received_flag = true;
+                cv.notify_all();
+            };
+
+            this-&gt;SendGoalOptions.goal_response_callback = [this](std::shared_ptr&lt;clienthandle&gt; handle) -&gt; void
+            {
+                RCLCPP_INFO(get_logger(), &quot;STATUS: %d&quot;, handle-&gt;get_status());
+            };
+
+            this-&gt;service_server = this-&gt;create_service&lt;srv_action_interfaces::srv::TestService&gt;(&quot;/capra/test/service_server_name&quot;, std::bind(&amp;capra::test::service_server_node::service_cb, this, std::placeholders::_1, std::placeholders::_2), rmw_qos_profile_services_default, this-&gt;cb_group_action_client);
+        };
+
+        // Connection to action server
+        rclcpp_action::Client&lt;actionmsg&gt;::SharedPtr action_client_;
+        rclcpp_action::Client&lt;actionmsg&gt;::SendGoalOptions SendGoalOptions{};
+        // Service server bring up
+        void service_cb(const srv_action_interfaces::srv::TestService_Request::SharedPtr req, srv_action_interfaces::srv::TestService_Response::SharedPtr res)
+        {
+
+            RCLCPP_INFO(rclcpp::get_logger(&quot;SERVICE SERVER CALLBACK&quot;), &quot;sending request to action server&quot;);
+            srv_action_interfaces::action::TestAction::Goal goal;
+            goal.order = req-&gt;order;
+            std::shared_future&lt;std::shared_ptr&lt;clienthandle&gt;&gt; future = this-&gt;action_client_-&gt;async_send_goal(goal, this-&gt;SendGoalOptions);
+            // while (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready)
+            // {
+            //     RCLCPP_INFO(rclcpp::get_logger(&quot;WAIT FOR FUTURE&quot;), &quot;FUTURE NO READY&quot;);
+            // };
+            if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+            {
+                RCLCPP_INFO(rclcpp::get_logger(&quot;WAIT FOR FUTURE&quot;), &quot;FUTURE NOT READY&quot;);
+            }
+
+            // START Handle different wait for result logic
+
+            std::unique_lock u_lk(mtx, std::defer_lock);
+            cv.wait(u_lk, [this]() -&gt; bool
+                    { 
+                        RCLCPP_INFO(rclcpp::get_logger(&quot;WAITING FOR RESULT RECEIVED FLAG: &quot;),  std::to_string(this-&gt;result_received_flag).c_str());
+                        return this-&gt;result_received_flag; });
+            RCLCPP_INFO(rclcpp::get_logger(&quot;WAIT FOR FUTURE&quot;), &quot;FUTURE is READY&quot;);
+            // END Handle different wait for result logic
+
+            res-&gt;sequence.push_back(1);
+            res-&gt;sequence.push_back(1);
+            res-&gt;sequence.push_back(1);
+            res-&gt;sequence.push_back(1);
+            res-&gt;sequence.push_back(1);
+        };
+
+        rclcpp::Service&lt;srv_action_interfaces::srv::TestService&gt;::SharedPtr service_server;
+        rclcpp::CallbackGroup::SharedPtr cb_group_action_client;
+        rclcpp::CallbackGroup::SharedPtr cb_group_service_server;
+        // Handle different wait for result logic
+        std::atomic&lt;bool&gt; result_received_flag{false};
+        std::condition_variable cv;
+        std::mutex mtx;
+    };
+
+} // namespace test
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/121788">RenzoBC</a> on 2022-11-01 10:59:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please share <a href="https://en.wikipedia.org/wiki/Minimal_reproducible_example">Minimal reproducible example</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-11-02 07:36:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>ill just posted it as an answer. Its a simple service server , calling an action sever within its callback.
+Ros version : Galactic</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/121788">RenzoBC</a> on 2022-11-10 03:37:32 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>robot_localization - IMU setup or other problem? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/273734">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>robot_localization - IMU setup or other problem?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/83469/robot-localization-imu-setup-or-other-problem">https://robotics.stackexchange.com/questions/83469/robot-localization-imu-setup-or-other-problem</a>.</p>
+        <p>Hi ROS friends,</p>
+
+<p>I&#39;m building a custom ROS robot using the SenseHat  (<a href="https://projects.raspberrypi.org/en/projects/getting-started-with-the-sense-hat">https://projects.raspberrypi.org/en/projects/getting-started-with-the-sense-hat</a>) for the IMU.</p>
+
+<p>I have followed REP-105 to define a set of frames published by TF2. All frames move consistently as seen in RViz (see image)  </p>
+
+<p>I&#39;m now trying to use the EKF filter in robot_localization to fuse odometry and the IMU. After hours of hacking the EKF node doesnt output anything!! </p>
+
+<p>I think my main issue is the IMU configuration and wondering if any expert out there can help me with this! </p>
+
+<p>What the robot is providing at the moment:</p>
+
+<ul>
+<li><p>odometry : pose (x,y, theta) and velocity (vx,vy, w)</p></li>
+<li><p>TF:  odom, baselink, trinibot<em>imu (imu frame) and depth</em>frame (for a ToF)  (As shown in the image below)</p></li>
+</ul>
+
+<p>Following transforms are being published:</p>
+
+<p>odom-&gt;baselink</p>
+
+<p>base<em>link -&gt; trinibot</em>imu</p>
+
+<p>base<em>link -&gt; depth</em>frame</p>
+
+<p>The IMU frame, trinibot<em>imu provides a static transform of the IMU relative to base</em>link like so</p>
+
+<pre><code>imu_tr.header.frame_id = &quot;base_link&quot;
+    imu_tr.child_frame_id = &quot;trinibot_imu&quot;
+    imu_tr.transform.translation.x = 0.008
+    imu_tr.transform.translation.z = 0.084788
+    imu_tr.transform.translation.y = 0.0
+    imu_tr.transform.rotation.x = 0
+    imu_tr.transform.rotation.y = 0
+    imu_tr.transform.rotation.z = 0
+    imu_tr.transform.rotation.w = 1
+</code></pre>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15085867668587752.png" alt="image description"></p>
+
+<p>The IMU (sensehat) seemed to be providing a NED transform. The sensehat API only provides Euler angles so I transformed these into a quaternion and then applied a ENU transformation like so:</p>
+
+<pre><code> quat = tf.transformations.quaternion_from_euler(sense.get_orientation_degrees()[&#39;roll&#39;]*D2R, \
+                                                sense.get_orientation_degrees()[&#39;pitch&#39;]*D2R, \
+                                                sense.get_orientation_degrees()[&#39;yaw&#39;]*D2R) 
+quat= quat_NED2ENU(quat)
+
+def quat_NED2ENU(iquat):
+        a  = np.array([0.707, 0.707, 0, 0 ])
+        b = np.array([[[iquat[3], -iquat[2], iquat[1], -iquat[0]], \
+                    [iquat[2], iquat[3], -iquat[0], -iquat[1]], \
+                    [-iquat[1], iquat[0], iquat[3], -iquat[2]], \
+                    [iquat[0], iquat[1], iquat[2], iquat[3]]]])
+
+        c = np.array([[[0, 0, -0.707, 0.707], \
+                    [0 , 0, 0.707, 0.707], \
+                    [0.707, -0.707, 0, 0], \
+                    [-0.707, -0.707, 0 ,0]]])
+        return (a.dot(b)).dot(c)
+</code></pre>
+
+<p>The above seems to transform the NED frame in an ENU frame. When aligning the rear of the robot against magnetic north  (using my phone app), the quaternion looks like this and oriented as seen by the trinibot_frame in the image</p>
+
+<pre><code>orientation: 
+  x: -0.00801062127965
+  y: 0.00182113633242
+  z: -0.973651144752
+  w: 0.226565780595
+</code></pre>
+
+<p>Pitching the robot (clock-wise base<em>link Y) results in CW rotation around the imu</em>frame RED axis</p>
+
+<p>Rolling the robot positive (clock-wise base<em>link X) results in a Counter-clockwise rotation around the imu</em>frame GREEN axis</p>
+
+<p>Yaw around base_link Y is aligned with the imu yaw rotation</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15085877891373675.png" alt="image description"></p>
+
+<p>and accelerations of the IMU correspond ;</p>
+
+<p>+9.81 in the Z axis</p>
+
+<p>+9.81 in the Y axis (base_link roll 90 deg)</p>
+
+<p>-9.81 in the X axis (base_link pitch 90 deg)</p>
+
+<p>as stated here <a href="http://docs.ros.org/lunar/api/robot_localization/html/preparing_sensor_data.html">http://docs.ros.org/lunar/api/robot_localization/html/preparing_sensor_data.html</a></p>
+
+<p>QUESTION 1: The robot_localization docs states that the IMU can be arbitrarily oriented. However it  suggests a body fixed frame for the acceleration vector!!! </p>
+
+<blockquote>
+<p>Acceleration: Be careful with
+acceleration data. The state
+estimation nodes in robot_localization
+assume that an IMU that is placed in
+its neutral right-side-up position on
+a flat surface will: Measure +9.819.81
+meters per second squared for the ZZ
+axis. If the sensor is rolled +9090
+degrees (left side up), the
+acceleration should be +9.819.81
+meters per second squared for the YY
+axis. If the sensor is pitched +9090
+degrees (front side down), it should
+read -9.819.81 meters per second </p>
+</blockquote>
+
+<p>The config file for the EKF is below:</p>
+
+<pre><code>frequency: 10
+sensor_timeout: 2
+two_d_mode: true
+transform_time_offset: 0.0
+transform_timeout: 0.0
+print_diagnostics: true
+ debug: true
+debug_out_file: ~/sandbox/external-rospacks/src/trinibot_core/scripts/ekf_debug.txt
+publish_tf: true
+publish_acceleration: false
+map_frame: map              # Defaults to &quot;map&quot; if unspecified
+odom_frame: odom            # Defaults to &quot;odom&quot; if unspecified
+base_link_frame: base_link  # Defaults to &quot;base_link&quot; if unspecified
+world_frame: odom           # Defaults to the value of odom_frame if unspecified
+
+odom0: /trinibot/odometry
+odom0_config: [true,  true,  false,
+               false, false, false,
+               true, true, false,
+               false, false, true,
+               false, false, false]
+
+odom0_queue_size: 100
+odom0_nodelay: false
+ odom0_differential: false
+odom0_relative: true
+
+odom0_pose_rejection_threshold: 5
+odom0_twist_rejection_threshold: 1
+
+imu0: /trinibot_sensors/imu
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false , false,
+              true,  true,  true,
+              true,  true,  true]
+imu0_nodelay: false
+imu0_differential: false
+imu0_relative: false
+imu0_queue_size: 100
+imu0_pose_rejection_threshold: 0.8                 # Note the difference in parameter names
+imu0_twist_rejection_threshold: 0.8                #
+imu0_linear_acceleration_rejection_threshold: 0.8  #
+imu0_remove_gravitational_acceleration: true
+
+use_control: true
+stamped_control: false
+control_timeout: 0.2
+control_config: [true, false, false, false, false, true]
+acceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 3.4]
+deceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 4.5]
+acceleration_gains: [0.8, 0.0, 0.0, 0.0, 0.0, 0.9]
+deceleration_gains: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+process_noise_covariance: [0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]
+
+initial_estimate_covariance: [1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9,  0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     1e-9,  0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     1e-9,  0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     1e-9, 0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    1e-9, 0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    1e-9]
+</code></pre>
+
+<p>Launch file:</p>
+
+<pre><code>&lt;launch&gt;
+    &lt;node pkg=&quot;trinibot_core&quot; type=&quot;tbmotioncontroller.py&quot; args=&quot;/dev/ttyACM0 200 1 1&quot; name=&quot;robotcontroller&quot; machine=&quot;$(arg machine_bot)&quot; respawn=&quot;false&quot; output=&quot;screen&quot;&gt;
+        &lt;remap from=&quot;/velocity_cmd&quot; to=&quot;/trinibot_gui/velocity_cmd&quot;  /&gt;
+        &lt;remap from=&quot;/string_cmd&quot; to= &quot;/trinibot_gui/string_cmd&quot;  /&gt;
+    &lt;/node&gt;
+    &lt;node pkg=&quot;trinibot_core&quot; type=&quot;tbsensehat.py&quot; name=&quot;sensehat&quot;  machine=&quot;$(arg machine_bot)&quot; respawn=&quot;false&quot; /&gt;
+    &lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_se&quot; machine=&quot;$(arg machine_c2i)&quot; clear_params=&quot;true&quot;/&gt;
+    &lt;rosparam command=&quot;load&quot; file=&quot;$(find trinibot_core)/params/tb_ekf.yaml&quot; /&gt;
+    &lt;node pkg=&quot;trinibot_core&quot; type=&quot;tbteleopgui.py&quot; name=&quot;teleoperation_gui&quot; machine=&quot;$(arg machine_c2i)&quot; respawn=&quot;false&quot; output=&quot;screen&quot; /&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Echoing the /diagnostics topic provides;</p>
+
+<pre><code>header: 
+  seq: 1856
+  stamp: 
+    secs: 1508590386
+    nsecs: 474118459
+  frame_id: &#39;&#39;
+status: 
+  - 
+    level: 2
+    name: ekf_se: Filter diagnostic updater
+    message: Erroneous data or settings detected for a robot_localization state estimation node.
+    hardware_id: none
+    values: 
+      - 
+        key: PITCH_configuration
+        value: Neither PITCH nor its velocity is being measured. This will result in unbounded error growth and erratic filter behavior.
+      - 
+        key: ROLL_configuration
+        value: Neither ROLL nor its velocity is being measured. This will result in unbounded error growth and erratic filter behavior.
+      - 
+        key: X_configuration
+        value: Neither X nor its velocity is being measured. This will result in unbounded error growth and erratic filter behavior.
+      - 
+        key: YAW_configuration
+        value: Neither YAW nor its velocity is being measured. This will result in unbounded error growth and erratic filter behavior.
+      - 
+        key: Y_configuration
+        value: Neither Y nor its velocity is being measured. This will result in unbounded error growth and erratic filter behavior.
+      - 
+        key: Z_configuration
+        value: Neither Z nor its velocity is being measured. This will result in unbounded error growth and erratic filter behavior.
+  - 
+    level: 2
+    name: ekf_se: odometry/filtered topic status
+    message: No events recorded.
+    hardware_id: none
+    values: 
+      - 
+        key: Events in window
+        value: 0
+      - 
+        key: Events since startup
+        value: 0
+      - 
+        key: Duration of window (s)
+        value: 10.166661
+      - 
+        key: Actual frequency (Hz)
+        value: 0.000000
+      - 
+        key: Minimum acceptable frequency (Hz)
+        value: 25.200000
+      - 
+        key: Maximum acceptable frequency (Hz)
+        value: 35.200000
+</code></pre>
+
+<p>Is there something missing here? e.g. do I need to use /set_pose or some other params to get this working. I&#39;ve read the docs over and over again, but cant progress! </p>
+
+        <div class="owner"><p>Asked by <a href="/users/29273">fastestindian</a> on 2017-10-21 08:05:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Some quick thoughts:</p>
+
+<ol>
+<li>Turn off debug mode.</li>
+<li>Turn off your rejection thresholds, all of them (and then make sure you clear the parameter server before running again).</li>
+<li>This won&#39;t hurt anything, but you are trying to fuse 3D variables like Z, roll, and pitch, but you have <code>two_d_mode</code> on. Again, that data will just be ignored, but it&#39;s not helping you.</li>
+</ol>
+
+<p>My general feedback is that you need to really simplify your configuration. You&#39;re using a lot of advanced settings and parameters, but you should really just be starting with the basics. It looks like you&#39;ve taken the time to get your data streams working, which is great, but I&#39;d start by fusing just wheel odometry until that&#39;s working, and then add the IMU.</p>
+
+<p>Also, please post sample messages from each sensor input (wheel odometry too).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3384"></a> on 2018-01-18 12:19:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

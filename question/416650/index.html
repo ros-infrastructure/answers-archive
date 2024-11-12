@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 rclpy:Launching a child node class duplicates node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/416650">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 rclpy:Launching a child node class duplicates node</h2>
+      <div class="question">
+        <p>ROS2 Humble on Ubuntu 22.04
+I want to create a child class interface in order to simplify the creation of Nodes (especially with regards to callbackgroups and calling services from a callback). To do so, I created this child class:</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.qos import QoSProfile
+
+class ChildNode(Node):
+
+    def __init__(self, node_name : str):
+        super().__init__(node_name)
+        self.srv_node = rclpy.create_node(&quot;srv_&quot; + node_name)
+        self.security_callback_group = MutuallyExclusiveCallbackGroup()
+
+    def create_client(
+        self,
+        srv_type,
+        srv_name: str):
+        return self.srv_node.create_client(srv_type, srv_name)
+
+    def create_security_service(
+        self,
+        srv_type,
+        srv_name: str,
+        callback):
+        return self.create_service(srv_type, srv_name,callback,callback_group=self.security_callback_group)
+
+    def spin_until_future_complete(
+        self,
+        future):
+        rclpy.spin_until_future_complete(self.srv_node,future)
+
+    def create_security_subscription(self, msg_type, topic: str, callback, qos_profile: QoSProfile | int):
+        return super().create_subscription(msg_type, topic, callback, qos_profile, callback_group=self.security_callback_group)
+
+    def spin(self):
+        executor = MultiThreadedExecutor()
+        executor.add_node(self)
+        executor.spin()
+</code></pre>
+
+<p>Here is an example of the instance of the Child Node:</p>
+
+<pre><code>import rclpy
+from example_interfaces.srv import SetBool
+from msgs.srv import Trigger
+from ChildNodeModule import ChildNode
+
+class VelocityControlNode(ChildNode):
+
+    def __init__(self):
+        super().__init__(&#39;velocity_control_node&#39;)
+        #Launch parameters
+        self.declare_parameter(&#39;zeroPWM&#39;,1500)
+        self.declare_parameter(&#39;minPWM&#39;,1100)
+        self.declare_parameter(&#39;maxPWM&#39;,1900)
+        self.zeroPWM = self.get_parameter(&#39;zeroPWM&#39;).get_parameter_value().integer_value
+        self.minPWM = self.get_parameter(&#39;minPWM&#39;).get_parameter_value().integer_value
+        self.maxPWM = self.get_parameter(&#39;maxPWM&#39;).get_parameter_value().integer_value
+
+        # Services
+        self.arm_srv = self.create_security_service(SetBool, &#39;arm_disarm&#39;, self.arm_disarm_cb)
+        self.throttle_srv = self.create_service(SetBool, &#39;throttle_switch&#39;, self.throttle_switch_cb)
+
+        #Service clients
+        self.get_frame_srv = self.create_client(Trigger, &#39;get_frame&#39;)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    velocity_control_node = VelocityControlNode()
+    velocity_control_node.spin()
+    velocity_control_node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>When trying to launch the child node from a launch file, it gives me the error:</p>
+
+<pre><code>[VelocityControlNode.py-1] [WARN] [1687227974.743260442] [rcl.logging_rosout]: Publisher already registered for provided node name. If this is due to multiple nodes with the same name then all logs for that logger name will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.
+</code></pre>
+
+<p>On top of that, the <strong>init</strong> function of the ChildNode class is never called. </p>
+
+<p>Any guesses?</p>
+
+<p>Here is the launch file for reference:</p>
+
+<pre><code>    from launch import LaunchDescription
+from launch_ros.actions import Node
+
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(
+            package=&#39;control&#39;,
+            executable=&#39;VelocityControlNode.py&#39;,
+            name=&#39;velocity_control_node&#39;,
+            parameters=[{&#39;minPWM&#39;: 1100,
+             &#39;zeroPWM&#39;: 1500,
+             &#39;maxPWM&#39;: 1900}]
+        ),
+    ])
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/154871">vietri22</a> on 2023-06-19 21:50:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>You are remapping the name of the node if you use the name arguments:</p>
+
+<pre><code>Node(
+            package=&#39;control&#39;,
+            executable=&#39;VelocityControlNode.py&#39;,
+            name=&#39;velocity_control_node&#39;,
+            parameters=[{&#39;minPWM&#39;: 1100,
+             &#39;zeroPWM&#39;: 1500,
+             &#39;maxPWM&#39;: 1900}]
+        ),
+</code></pre>
+
+<p>You have two ways to solve your issue:</p>
+
+<ol>
+<li><p>You avoid remapping the name from the launch file</p></li>
+<li><p>When you create the child node you use of the following two arguments</p></li>
+</ol>
+
+<p>2.1 cli_args: You can override the remap rules like __node or even __ns (namespace)</p>
+
+<blockquote>
+<p>self.srv_node =
+rclpy.create_node(&quot;srv_&quot; + node_name,
+                                                    cli_args=[&quot;--ros-args&quot;, &quot;-r&quot;,
+&quot;_<em>node:=&quot; + &quot;srv</em>&quot; + node_name]</p>
+</blockquote>
+
+<p>2.2 use_global_arguments: You just avoid using global arguments, so the constructor of the node will be able to give the correct name passed as argument to the <strong>init</strong></p>
+
+<blockquote>
+<p>self.srv_node =
+rclpy.create_node(&quot;srv_&quot; + node_name,
+                                                    use_global_arguments=False)</p>
+</blockquote>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40719">Mrmara</a> on 2023-08-08 07:41:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

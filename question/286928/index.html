@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unable to show pointcloud in Rviz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/286928">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Unable to show pointcloud in Rviz</h2>
+      <div class="question">
+        <p>Hi, I have two PointCloud2 topics which are <strong>/map</strong> and <strong>/scene</strong> and I want to show them in two frames, &quot;map&quot; and &quot;scene&quot;, respectively. I can successfully read their info using command <code>rostopic echo /map</code>. Also I am sure that both &quot;map&quot; and &quot;scene&quot; frame exist. However, I still could not see them in rviz. Can anyone provide some hints and sorry for any grammar mistakes. I will be really appreciated.</p>
+
+<p>Here is my rviz screen shot: <a href="https://imgur.com/a/kRVdZ">Rviz</a></p>
+
+<p>Here is my tf tree:<a href="https://imgur.com/a/Ti73S">tf tree</a></p>
+
+<p>Below is my code:</p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &lt;pcl_ros/point_cloud.h&gt;
+#include &lt;pcl/io/pcd_io.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/registration/icp.h&gt;
+#include &lt;Eigen/Dense&gt;
+
+//Convert euler angle to quaterion
+float* euler_to_quaterion(float q[], float roll, float pitch, float yaw)
+{
+    double cy = cos(yaw * 0.5);
+    double sy = sin(yaw * 0.5);
+    double cr = cos(roll * 0.5);
+    double sr = sin(roll * 0.5);
+    double cp = cos(pitch * 0.5);
+    double sp = sin(pitch * 0.5);
+
+    q[0] = cy * sr * cp - sy * cr * sp;
+    q[1] = cy * cr * sp + sy * sr * cp;
+    q[2] = sy * cr * cp - cy * sr * sp;
+    q[3] = cy * cr * cp + sy * sr * sp;
+
+    return q;
+}
+
+int main(int argc, char **argv)
+{
+    //Initialize ROS
+    ros::init(argc, argv, &quot;hw4_node&quot;);
+    ros::NodeHandle nh;
+
+    ros::Publisher map_pub;
+    ros::Publisher scene_pub;
+    tf::StampedTransform transform;
+    tf::TransformBroadcaster br;
+
+    //Create a ROS publisher for the output point cloud
+    map_pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;/map&quot;, 100);
+    scene_pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;/scene&quot;, 100);
+
+    //Load .pcd files
+    const pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr map (new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+    pcl::io::loadPCDFile (&quot;/home/parallels/SDC_ws/src/0310126_hw4/target.pcd&quot;, *map);
+    const pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr scene (new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+    pcl::io::loadPCDFile (&quot;/home/parallels/SDC_ws/src/0310126_hw4/scene.pcd&quot;, *scene);
+
+    //Perform ICP
+    pcl::IterativeClosestPoint&lt;pcl::PointXYZ, pcl::PointXYZ&gt; icp;
+    //Set the input source and target
+    icp.setInputSource(scene);
+    icp.setInputTarget(map);
+    //Set the max correspondence distance
+    icp.setMaxCorrespondenceDistance(0.05);
+    //Set the maximum number of iterations (criterion 1)
+    icp.setMaximumIterations(1000);
+    //Set the transformation epsilon (criterion 2)
+    icp.setTransformationEpsilon(1e-8);
+    //Set the euclidean distance difference epsilon (criterion 3)
+    icp.setEuclideanFitnessEpsilon(1);
+    //Perform the alignment
+    pcl::PointCloud&lt;pcl::PointXYZ&gt; scene_cloud_registered;
+    icp.align(scene_cloud_registered);
+
+    //Obtain the transformation that aligned scene_cloud to scene_cloud_registered
+    Eigen::Matrix4f transformation = icp.getFinalTransformation();
+    std::cout &lt;&lt; &quot;Transformation matrix : &quot; &lt;&lt; std::endl &lt;&lt; transformation;
+    Eigen::Affine3f tROTA(transformation);
+    float x, y, z, roll, pitch, yaw;
+    pcl::getTranslationAndEulerAngles(tROTA, x, y, z, roll, pitch, yaw);
+
+    //Convert euler angle to quaterion
+    float arr[3];
+    float *q = euler_to_quaterion(arr, roll, pitch, yaw);
+
+    //Send /map and /scene transform
+    br.sendTransform(tf::StampedTransform(tf::Transform(tf::Quaternion(0, 0, 0, 1), tf::Vector3(0.0, 0.0, 0.0)), ros::Time(0), &quot;/world&quot;, &quot;/map&quot;));
+    br.sendTransform(tf::StampedTransform(tf::Transform(tf::Quaternion(q[0], q[1], q[2], q[2]), tf::Vector3(x, y, z)), ros::Time(0), &quot;/map&quot;, &quot;/scene&quot;));
+
+    //Convert pcd data type to ROS message type
+    sensor_msgs::PointCloud2 map_cloud;
+    sensor_msgs::PointCloud2 scene_cloud;
+    pcl::toROSMsg(*map, map_cloud);
+    pcl::toROSMsg(*scene, scene_cloud);
+
+    //Set PointCloud2 parameters
+    map_cloud.header.frame_id = &quot;/map&quot;;
+    map_cloud.header.stamp = ros::Time::now();
+    scene_cloud.header.frame_id = &quot;/scene&quot;;
+    scene_cloud.header.stamp = ros::Time::now();
+
+    //Publish the point cloud message and tf
+    map_pub.publish(map_cloud);
+    scene_pub.publish(scene_cloud);
+
+    //Spin
+    ros::spin();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/34220">arthur0304</a> on 2018-03-28 12:16:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Need to add <code>true</code> in these two publishers:</p>
+
+<p><code>map_pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;/map&quot;, 100, true);</code></p>
+
+<p><code>scene_pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;/scene&quot;, 100, true);</code></p>
+
+<p>Since the default is <code>false</code> and it will not store data in a latch.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/34220">arthur0304</a> on 2018-03-29 12:12:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

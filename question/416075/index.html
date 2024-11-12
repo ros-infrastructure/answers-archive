@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Set parameters to multiple rclcpp::Node instances in a single executable / share object across nodes/components - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/416075">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Set parameters to multiple rclcpp::Node instances in a single executable / share object across nodes/components</h2>
+      <div class="question">
+        <p>Hello, </p>
+
+<p>I am looking in to a autonomy application setup, where I have one map and several &quot;applications&quot; (=nodes?) accessing its data. For organizational purposes I would like a separate nodes for the map and every other component, as each might have individual subscriptions. 
+As the autonomy nodes will have to query data from the same map, I thought about moving the node to a separate component and communicate via ROS2 services. But this is to slow for the application at hand. Thus I came up with the following setup:</p>
+
+<p><strong>Main executable</strong></p>
+
+<pre><code>#include &lt;pluginlib/class_loader.hpp&gt;
+
+#include &lt;test_pkg/TesteNode1.hpp&gt;
+#include &lt;test_pkg/TesteNode2.hpp&gt;
+#include &lt;map_pkg/MapNode.hpp&gt;
+
+int main(int argc, char** argv)
+{
+    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor executor;
+
+    const auto logger = rclcpp::get_logger(&quot;OrganizerMain&quot;);
+    RCLCPP_WARN(logger, &quot;main started&quot;);
+
+    auto map_node = std::make_shared&lt;map_pkg::MapNode&gt;(
+            rclcpp::NodeOptions().use_intra_process_comms(true));
+
+    auto node_1 = std::make_shared&lt;test_pkg::TesteNode1&gt;(
+            rclcpp::NodeOptions().use_intra_process_comms(true));
+    node_1-&gt;setMap(map_node-&gt;getMap());
+
+    auto node_2 = std::make_shared&lt;test_pkg::TesteNode2&gt;(
+            rclcpp::NodeOptions().use_intra_process_comms(true));
+    node_2-&gt;setMap(map_node-&gt;getMap());
+
+    executor.add_node(map_node);
+    executor.add_node(node_1);
+    executor.add_node(node_2);
+    executor.spin();
+
+    rclcpp::shutdown();
+
+    return 0;
+}
+</code></pre>
+
+<p><strong>TestNode1 (TestNode2 similar)</strong></p>
+
+<pre><code>...
+TesteNode1::TesteNode1(const rclcpp::NodeOptions&amp; _options) 
+            : Node(&quot;TesteNode1&quot;, _options) {
+    this-&gt;declare_parameter(&quot;test_param&quot;, &quot;hello world&quot;);
+    RCLCPP_INFO_STREAM(this-&gt;get_logger(), &quot;test_param=&quot; &lt;&lt; this-&gt;get_parameter(&quot;test_param&quot;).as_string());
+}
+...
+</code></pre>
+
+<p><strong>launch file test.py</strong></p>
+
+<pre><code>from launch import LaunchDescription
+import launch_ros.actions
+
+def generate_launch_description():
+    return LaunchDescription([
+        launch_ros.actions.Node(
+            namespace= &quot;&quot;,
+            package=&#39;test_pkg&#39;,
+            executable=&#39;test_node&#39;,
+            output=&#39;screen&#39;,
+            emulate_tty=True,
+            parameters=[
+                { &quot;test_param&quot;: &quot;Hello1&quot; }
+            ],
+        )
+    ]
+)
+</code></pre>
+
+<p><strong>Output</strong></p>
+
+<pre><code>$ ros2 launch test_pkg test.py
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2023-06-01-15-41-43-435154-ubuntu-246267
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [test_node-1]: process started with pid [246268]
+[tester_node-1] [WARN] [1685626903.514494813] [OrganizerMain]: main started
+[tester_node-1] [INFO] [1685626903.523197282] [MapNode]: MapNode started
+[tester_node-1] [INFO] [1685626903.523408988] [MapNode]: ...
+[tester_node-1] [INFO] [1685626903.532038474] [TesteNode1]: test_param=Hello1
+[tester_node-1] [INFO] [1685626903.534378075] [TesteNode2]: test_param=Hello1
+</code></pre>
+
+<p>The issue running this is the parameter configuration, as I would like to choose different parameters for the nodes in the future and would not like to accidentally mix then in the different nodes. </p>
+
+<p><strong>Question: 
+Is this possible in the launch file or does anyone has another idea how to set this up?</strong>
+Something like
+    from launch import LaunchDescription
+    import launch_ros.actions</p>
+
+<pre><code>def generate_launch_description():
+    return LaunchDescription([
+        launch_ros.actions.Node(
+            namespace= &quot;&quot;,
+            package=&#39;test_pkg&#39;,
+            executable=&#39;test_node&#39;,
+            output=&#39;screen&#39;,
+            emulate_tty=True,
+            parameters=[
+                { &quot;node1&quot; : [
+                    { &quot;test_param&quot;: &quot;Hello1&quot; }
+                ]},
+                { &quot;node2&quot; : [
+                    { &quot;test_param&quot;: &quot;Hello2&quot; }
+                ]}
+            ],
+        )
+    ]
+)
+</code></pre>
+
+<p>TLDR;</p>
+
+<p>I looked a lot into composition and use it in other places, but indicated by the lines</p>
+
+<pre><code>node_1-&gt;setMap(map_node-&gt;getMap());
+node_2-&gt;setMap(map_node-&gt;getMap());
+</code></pre>
+
+<p>the setup needs a linking to the map inside test nodes TestNode1 and TestNode2 and the queries to the map are usually of a type response/request with request parameters (e.g. like a position of interest) so I can not use polling. 
+Additionally I tried a service implementation, but with &gt; 100 requests in 1s this is not usable.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28078">basti.hunter</a> on 2023-06-01 09:08:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

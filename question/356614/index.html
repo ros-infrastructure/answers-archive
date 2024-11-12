@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to implement bumper pointcloud on a custom robot? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/356614">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to implement bumper pointcloud on a custom robot?</h2>
+      <div class="question">
+        <p>I want to use the bumper information of my robot to add obstacles in the map. I have a custom robot and not a turtlebot so I can&#39;t simply use kobuki_bumper2pc. I tried reading the program and understanding their program, but I couldn&#39;t understand much.</p>
+
+<p>I am getting the bumper pressed and released information for the two bumpers that I have on my robot. How do I use that to add obstacles in the costmap?
+I read about sensor_msgs/Pointcloud2 and I think I should convert my bumper messages to a pointcloud and add the pointcloud2 plugin in the costmap. But how to convert the bumper data to get the bumper pointcloud?</p>
+
+<p>Lastly, since I want to use bumper data in mapping along with my laserscan, can I use this bumper pointcloud in gmapping as well? My other option is to use odometric navigation and store the global costmap, but it doesn&#39;t seem to be as accurate as gmapping obviously,
+Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35453"></a> on 2020-07-07 13:25:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Take a look at this implementation of a &quot;virtual bumper&quot; that does essentially what you want, but by using comparison of the odometry and pose data to detect collisions (no bump sensors needed!).</p>
+
+<p>The key part of the code that populates the pointcloud is:</p>
+
+<pre><code>  // place obstacle into point cloud 0.25 meters in front of robot
+  float val = 0.25;
+  memcpy(&amp;pointcloud_.data[0 * pointcloud_.point_step + pointcloud_.fields[0].offset], &amp;val, sizeof(float));
+  val = 0.0;
+  memcpy(&amp;pointcloud_.data[0 * pointcloud_.point_step + pointcloud_.fields[1].offset], &amp;val, sizeof(float));
+
+  pointcloud_.header.stamp = ros::Time::now();
+  pointcloud_pub_.publish(pointcloud_);
+
+  collision_pub_.publish(true);
+</code></pre>
+
+<p>In the above, an obstacle is placed 0.25 meters in front of the robot (when a collision occurs), and with a Y translation of zero. Note: if you have left and right bumpers, you would add +/-Y numbers for that instead of zero.</p>
+
+<p>To get it to work with gmapping, you could try converting the pointcloud into a laserscan and then publish that (on the same topic as the regular scan). There are tools for this conversion such as <a href="http://wiki.ros.org/pointcloud_to_laserscan">http://wiki.ros.org/pointcloud_to_laserscan</a></p>
+
+<p>Here&#39;s the full implementation of the virtual bumper. It&#39;s a working standalone node that you could run without modification. It assumes you have pose and odometry data from somewhere. This was tested with the navigation stack and worked fine when used to populate the costmap obstacle layer.</p>
+
+<pre><code>/*********************************************************************
+*
+* Software License Agreement (BSD License)
+*
+*  Copyright (c) 2019, Rhoeby Dynamics LLC
+*  All rights reserved.
+*
+*  Redistribution and use in source and binary forms, with or without
+*  modification, are permitted provided that the following conditions
+*  are met:
+*
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above
+*     copyright notice, this list of conditions and the following
+*     disclaimer in the documentation and/or other materials provided
+*     with the distribution.
+*   * Neither the name of the Rhoeby Dynamics nor the names of its
+*     contributors may be used to endorse or promote products derived
+*     from this software without specific prior written permission.
+*
+*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+*  &quot;AS IS&quot; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+*  POSSIBILITY OF SUCH DAMAGE.
+*
+*********************************************************************/
+
+#include &quot;ros/ros.h&quot;
+#include &quot;nav_msgs/Odometry.h&quot;
+#include &quot;geometry_msgs/Twist.h&quot;
+#include &quot;geometry_msgs/PoseWithCovarianceStamped.h&quot;
+#include &quot;tf/tf.h&quot;
+#include &quot;std_msgs/Bool.h&quot;
+#include &quot;sensor_msgs/PointCloud2.h&quot;
+
+class VirtualBumper
+{
+  public:
+    VirtualBumper();
+    virtual ~VirtualBumper() {};
+
+  protected:
+    void odomCallback(const nav_msgs::Odometry::ConstPtr&amp; twist);
+    void poseUpdateCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr&amp; pose);
+
+  private:
+    ros::NodeHandle private_nh_;
+    ros::NodeHandle node_;
+    ros::Subscriber odom_sub_;
+    ros::Subscriber poseupdate_sub_;
+    ros::Publisher  pointcloud_pub_;
+    ros::Publisher collision_pub_;
+
+    geometry_msgs::PoseWithCovarianceStamped prev_pose_;
+    geometry_msgs::Twist curr_odom_;
+    sensor_msgs::PointCloud2 pointcloud_;
+
+    bool inCollision_;
+    int collision_count_limit_;
+    double diff_tolerance_linear_;
+    double diff_tolerance_angular_;
+};
+
+/*---------------------------------------------------------------------
+ * main
+ *---------------------------------------------------------------------*/
+int main(int argc, char *argv[])
+{
+  ROS_INFO(&quot;Hello from VirtualBumper!&quot;);
+
+  ros::init(argc, argv, &quot;virtual_bumper&quot;);
+
+  VirtualBumper vb;
+
+  ros::spin();
+}
+
+/*---------------------------------------------------------------------
+ * VirtualBumper()
+ *---------------------------------------------------------------------*/
+VirtualBumper::VirtualBumper()
+  : private_nh_(&quot;~&quot;)
+  , inCollision_(false)
+{
+  private_nh_.param(&quot;collision_count_limit_&quot;, collision_count_limit_, 5);
+  private_nh_.param(&quot;diff_tolerance_linear_&quot;, diff_tolerance_linear_, 0.015);
+  private_nh_.param(&quot;diff_tolerance_angular_&quot;, diff_tolerance_angular_, 0.2);
+
+  ROS_INFO(&quot;collision_count_limit_: %d&quot;, collision_count_limit_);
+  ROS_INFO(&quot;diff_tolerance_linear_: %f&quot;, diff_tolerance_linear_);
+  ROS_INFO(&quot;diff_tolerance_angular_: %f&quot;, diff_tolerance_angular_);
+
+  odom_sub_ = node_.subscribe(&quot;odom&quot;, 100, &amp;VirtualBumper::odomCallback, this);
+  poseupdate_sub_ = node_.subscribe(&quot;poseupdate&quot;, 100, &amp;VirtualBumper::poseUpdateCallback, this);
+
+  prev_pose_.pose.pose.orientation.w = 1.0;
+
+  pointcloud_.header.frame_id = &quot;base_link&quot;;
+
+  pointcloud_.width  = 3;
+  pointcloud_.height = 1;
+  pointcloud_.fields.resize(3);
+
+  // Set x/y/z as the only fields
+  pointcloud_.fields[0].name = &quot;x&quot;;
+  pointcloud_.fields[1].name = &quot;y&quot;;
+  pointcloud_.fields[2].name = &quot;z&quot;;
+
+  int offset = 0;
+  // All offsets are *4, as all field data types are float32
+  for (size_t d = 0; d &lt; pointcloud_.fields.size(); ++d, offset += 4)
+  {
+    pointcloud_.fields[d].count    = 1;
+    pointcloud_.fields[d].offset   = offset;
+    pointcloud_.fields[d].datatype = sensor_msgs::PointField::FLOAT32;
+  }
+
+  pointcloud_.point_step = offset;
+  pointcloud_.row_step   = pointcloud_.point_step * pointcloud_.width;
+
+  pointcloud_.data.resize(3 * pointcloud_.point_step);
+  pointcloud_.is_bigendian = false;
+  pointcloud_.is_dense     = true;
+
+  // z: constant elevation from base frame
+  float val = 0.02;
+  memcpy(&amp;pointcloud_.data[0 * pointcloud_.point_step + pointcloud_.fields[2].offset], &amp;val, sizeof(float));
+  memcpy(&amp;pointcloud_.data[1 * pointcloud_.point_step + pointcloud_.fields[2].offset], &amp;val, sizeof(float));
+  memcpy(&amp;pointcloud_.data[2 * pointcloud_.point_step + pointcloud_.fields[2].offset], &amp;val, sizeof(float));
+
+  pointcloud_pub_ = node_.advertise &lt;sensor_msgs::PointCloud2&gt; (&quot;collision_pointcloud&quot;, 10);
+  collision_pub_ = node_.advertise&lt;std_msgs::Bool&gt;(&quot;collision_status&quot;, 50);
+}
+
+/*----------------------------------------------------------
+ * odomCallback()
+ *--------------------------------------------------------*/
+void VirtualBumper::odomCallback(const nav_msgs::Odometry::ConstPtr&amp; msg)
+{
+  ROS_DEBUG(&quot;twist linear.x: %f, y: %f, angular.z: %f\r&quot;, 
+           msg-&gt;twist.twist.linear.x, msg-&gt;twist.twist.linear.y, msg-&gt;twist.twist.angular.z);  
+
+  curr_odom_.linear = msg-&gt;twist.twist.linear;
+  curr_odom_.angular = msg-&gt;twist.twist.angular;
+}
+
+/*----------------------------------------------------------
+ * poseUpdateCallback()
+ *--------------------------------------------------------*/
+void VirtualBumper::poseUpdateCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr&amp; msg)
+{
+  ros::Time current_time = ros::Time::now();
+  static ros::Time last_time = current_time;
+
+  double vx = curr_odom_.linear.x;
+  double vy = curr_odom_.linear.y;
+  double vth = curr_odom_.angular.z;
+  double th = tf::getYaw(msg-&gt;pose.pose.orientation);
+  double prev_th = tf::getYaw(prev_pose_.pose.pose.orientation);
+
+  // compute deltas for ded reckoning, given odometry velocities
+  double dt = (current_time - last_time).toSec();
+  double delta_x = (vx * cos(th) - vy * sin(th)) * dt;
+  double delta_y = (vx * sin(th) + vy * cos(th)) * dt;
+  double delta_th = vth * dt;
+
+  // compare ded reckoning to current pose
+  double diff_x = (prev_pose_.pose.pose.position.x + delta_x) - msg-&gt;pose.pose.position.x;
+  double diff_y = (prev_pose_.pose.pose.position.y + delta_y) - msg-&gt;pose.pose.position.y;
+  double diff_th = (prev_th + delta_th) - th;
+
+  if(fabs(diff_x) &gt; diff_tolerance_linear_ || 
+     fabs(diff_y) &gt; diff_tolerance_linear_ || 
+     fabs(diff_th) &gt; diff_tolerance_angular_) {
+    inCollision_ = true;
+    ROS_INFO(&quot;diff_x: %f, diff_y: %f, diff_th: %f&quot;, diff_x, diff_y, diff_th);
+  }
+  else if(inCollision_) {
+    inCollision_ = false;
+    ROS_INFO(&quot;diff --&gt; no diff&quot;);
+  }
+
+  static int count = 0;
+  if(inCollision_) {
+    count++;
+    if(count &gt; collision_count_limit_) {
+      count = 0;
+      ROS_WARN(&quot;Robot in collision!&quot;);
+
+      // place obstacle into point cloud 0.25 meters in front of robot
+      float val = 0.25;
+      memcpy(&amp;pointcloud_.data[0 * pointcloud_.point_step + pointcloud_.fields[0].offset], &amp;val, sizeof(float));
+      val = 0.0;
+      memcpy(&amp;pointcloud_.data[0 * pointcloud_.point_step + pointcloud_.fields[1].offset], &amp;val, sizeof(float));
+
+      pointcloud_.header.stamp = ros::Time::now();
+      pointcloud_pub_.publish(pointcloud_);
+
+      collision_pub_.publish(true);
+    }
+  }
+  else {
+    count = 0;
+    collision_pub_.publish(false);
+  }
+
+  prev_pose_.pose = msg-&gt;pose;
+  prev_pose_.header = msg-&gt;header;
+
+  last_time = current_time;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/20512">jordan</a> on 2020-07-08 09:03:18 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your answer! I&#39;m however facing an issue with this. The pointcloud gets overwritten everytime there&#39;s a &#39;bump&#39; event, which leads to oscillation in navigation when I add it to costmap obstacle layer. I instead want it to append the pointcloud, so it has all the bump events in account. How do I do that?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35453">parzival</a> on 2020-12-15 08:43:01 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

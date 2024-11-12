@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to get a real-time map using the laser tf and laser scans - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/337859">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to get a real-time map using the laser tf and laser scans</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93854/how-to-get-a-real-time-map-using-the-laser-tf-and-laser-scans">https://robotics.stackexchange.com/questions/93854/how-to-get-a-real-time-map-using-the-laser-tf-and-laser-scans</a>.</p>
+        <p>Hello, I have written code based on the algorithm for Occupancy grid mapping presented in Probabilistic Robotics by Sebastian Thrun, Wolfram Burgard and Dieter Fox.
+However, I have ran into some issues as the mapping is extremely slow, since it iterates through every cell. The code:</p>
+
+<pre><code>def update_map(self):
+    #for each line of cells
+    for i in range(self.map.info.height):
+        #for each cell in that line of cells
+        for j in range(self.map.info.width):
+            self.logodds[i][j] += self.inverse_sensor_model(i, j) - self.l_0
+
+def inverse_sensor_model(self, j, i):
+    #distance from cell center of mass x-coordinate to laser center x-coordinate
+    x_dist = self.grid_cells_center[0][i][j] - self.pose1[0]
+    #distance from cell center of mass y-coordinate to laser center y-coordinate
+    y_dist = self.grid_cells_center[1][i][j] - self.pose1[1]
+    #Calculate r (relative range), phi (relative bearing) and k (beam index of the closet beam to cell mi)
+    r = sqrt((x_dist**2)+(y_dist**2))
+    phi = np.arctan2(y_dist, x_dist) - self.pose1[2]
+    k = np.argmin(np.abs(self.scanner_bearings - phi))
+
+    out_of_perceptual_field = (r &gt; min(self.z_max, self.scanner_ranges[k] + self.alpha/2.0)) or(abs(phi - self.scanner_bearings[k]) &gt; self.beta/2.0) or (self.scanner_ranges[k] &gt; self.z_max) or (self.scanner_ranges[k] &lt; self.z_min)
+    condition_occ = (self.scanner_ranges[k] &lt; self.z_max) and (abs(r - self.scanner_ranges[k]) &lt; self.alpha/2.0)
+    condition_free = r &lt;= self.scanner_ranges[k]
+    inside_perceptual_field = not (out_of_perceptual_field)
+
+    if out_of_perceptual_field:
+        return self.l_0
+    elif (inside_perceptual_field and condition_occ):
+        return self.l_occ
+    elif (inside_perceptual_field and condition_free):
+        return self.l_free
+</code></pre>
+
+<p>So I found somewhere on the internet an example using masks to access only the required cells and implemented that too, however it did not save more than 3 seconds from the time it takes for each update to finish. The Code:</p>
+
+<pre><code>def update_map(self):
+
+    dist = self.grid_cells_center.copy()
+    #distance from cell center of mass x-coordinate to laser center x-coordinate
+    dist[0, :, :] = self.grid_cells_center[0] - self.pose1[0]
+    #distance from cell center of mass y-coordinate to laser center y-coordinate
+    dist[1, :, :] = self.grid_cells_center[1] - self.pose1[1]
+    #Calculate r (relative range), phi (relative bearing) and k (beam index of the closet beam to cell mi)
+    self.relative_ranges = scipy.linalg.norm(dist, axis = 0)
+    self.relative_bearings = np.arctan2(dist[1, :, :], dist[0, :, :]) - self.pose1[2]
+
+    for i in range(len(self.scanner_ranges)):
+
+        out_of_perceptual_field = (self.relative_ranges &gt; min(self.z_max, self.scanner_ranges[i] + self.alpha/2.0)) | (np.abs(self.relative_bearings - self.scanner_bearings[i]) &gt; self.beta/2.0) | (self.scanner_ranges[i] &gt; self.z_max) | (self.scanner_ranges[i] &lt; self.z_min)
+        inside_perceptual_field = ~(out_of_perceptual_field)
+
+        occupied_cells = (np.abs(self.relative_ranges - self.scanner_ranges[i]) &lt; self.alpha/2.0)
+        free_cells = (self.relative_ranges &lt;= self.scanner_ranges[i])
+
+        occupied_mask = inside_perceptual_field &amp; occupied_cells
+        free_mask = inside_perceptual_field &amp; free_cells
+
+        occupied_mask = occupied_mask.T
+        free_mask = free_mask.T
+
+        self.logodds[free_mask] += self.l_free - self.l_0
+        self.logodds[occupied_mask] += self.l_occ - self.l_0
+</code></pre>
+
+<p>Timing cell by cell update_map() function returned:</p>
+
+<pre><code>Time: 15.9444479942
+Time: 16.2612850666
+Time: 16.1209139824
+Time: 15.9952340126
+Time: 16.3198771477
+Time: 16.2745289803
+</code></pre>
+
+<p>Timing masks update_map() function returned:</p>
+
+<pre><code>Time: 12.6104559898
+Time: 13.7843110561
+Time: 12.5238349438
+Time: 14.500497818
+Time: 13.8072030544
+Time: 13.7702701092
+</code></pre>
+
+<p>I am using the same values for map width and height: 30m, grid size: 0.2 and laser scanner wide angle: 180º  which is equivalent to 720 laser beams.</p>
+
+<p>My goal is to make the map update function faster since as you can see it is pretty slow for this grid size and I need the grid size to be this small for the map to have good detail. But since I&#39;m working with booleans and the second implementation with masks has a lot less iterations (= to the number of laser beams) I don&#39;t know how else I can optimize it.</p>
+
+<p>Thanks in advance</p>
+
+        <div class="owner"><p>Asked by <a href="/users/49517">Robotics_1920</a> on 2019-11-18 07:57:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>you may implement it in C++ may this help, or use somethink like Cuda, OpenCL, OpemMP, TBB, multi Thread</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22870">duck-development</a> on 2019-11-18 12:58:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Indeed, Python is a Scripting language, thus any Python implementation usually produces low performance results. </p>
+
+<p>It is get worse when we talk about the SLAM problem when you have multiple things running, processing and computing. The advice given by @duck-development is accurate because having a program in a compilation language will give you better result when processing, iterating and computing things.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34184">Weasfas</a> on 2019-11-21 06:55:44 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

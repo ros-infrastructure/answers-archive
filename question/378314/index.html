@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Difference between loaned message and normal way of message creation - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/378314">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Difference between loaned message and normal way of message creation</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99043/difference-between-loaned-message-and-normal-way-of-message-creation">https://robotics.stackexchange.com/questions/99043/difference-between-loaned-message-and-normal-way-of-message-creation</a>.</p>
+        <p>Hi, </p>
+
+<p>I am going through the ros2 demos and came across <a href="https://github.com/ros2/demos/blob/master/demo_nodes_cpp/src/topics/talker.cpp">talker.cpp</a> and <a href="https://github.com/ros2/demos/blob/master/demo_nodes_cpp/src/topics/talker_loaned_message.cpp">talker<em>loaned</em>message.cpp</a>. In talker<em>loaned</em>message.cpp, there is a bit of explanation regarding POD (plain old data types) and non-POD and corresponding allocation on stack and heap. </p>
+
+<p>Question:
+Now that i have two ways of creating message instance.. direct allocation using (std::make<em>unique) and other using borrow</em>loaned_message.</p>
+
+<pre><code>// talker.cpp
+msg_ = std::make_unique&lt;std_msgs::msg::String&gt;();
+
+// talker_loaned_message.cpp
+auto pod_loaned_msg = pod_pub_-&gt;borrow_loaned_message();
+auto non_pod_loaned_msg = non_pod_pub_-&gt;borrow_loaned_message();
+</code></pre>
+
+<p>Which one is preferred way of doing it and why ?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28829">BhanuKiran.Chaluvadi</a> on 2021-05-14 00:50:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The design document on loaned messages provides some more background and info:
+<a href="https://design.ros2.org/articles/zero_copy.html">https://design.ros2.org/articles/zero_copy.html</a></p>
+
+<p>It mentions that what actually happens when borrowing loaned messages depends on the middleware used and that not all support this concept, but that ROS 2 should fall back to allocating a message &#39;as normal&#39;. This means you should not be worse off when using the borrowing method, and in some configurations you would be saving some unnecessary copies. So you could choose to use this method as your default safely.</p>
+
+<p>However, one situation that is also mentioned where it won&#39;t give much benefit is when you need to keep the message around after publishing it. Because you have to relinquish ownership in zero-copy setup to prevent issues like data races, you need to make a copy in your node of the message to be able to keep it around. That would partky defeat the purpose of zero-copy publishing. You may still end up with less copying in the end but I don&#39;t dare guaranteeing it :).</p>
+
+<p>Finally, message borrowing does not work together with <a href="http://design.ros2.org/articles/intraprocess_communications.html">intra-process communication</a>, ROS 2&#39;s own middleware-bypassing zero-copy solution. You also give up ownership of the data with that too make zero-copy possible, and you can&#39;t give something away that you only borrowed!</p>
+
+<p>So with all that I would suggest the following policy:</p>
+
+<ul>
+<li>If you need to retain ownership of the message after publishing it, use standard message creation, with <code>make_unique</code> as you mentioned, but it could also be <code>make_shared</code> or heap allocation based on the further usage of the message and resulting ownership semantics. If possible perform message reuse yourself within your node, possibly with a message pool if needed.</li>
+<li>If you don&#39;t need to retain ownership, use intra-process communication and <code>unique_ptr</code>s. I don&#39;t think the default middlewares of Foxy and upcoming Galactic support message loaning, so by default intra-process communication is the way to go for zero-copy.</li>
+<li>If you&#39;re a public package maintainer you can add optional support for message loaning to make your package more widely useful. You could also still do this for your own packages just in case since it doesn&#39;t hurt things (though see @gvdhoorn&#39;s comment below), but unless you explicitly run with a middleware that supports it, I feel that&#39;d just muddle things with additional boilerplate and I would first like to see some profiling showing that message copying is indeed a performance bottleneck for your use case.</li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/72841">sgvandijk</a> on 2021-05-14 04:22:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This is a good answer, but I&#39;d just like to add: if you don&#39;t know <em>why</em> you&#39;d be potentially interested in using messages (pre)allocated by the RMW, or you don&#39;t know why you should care, you should probably not be using <code>borrow_loaned_message()</code>.</p>
+
+<p>There are quite a few nuances to using it, some of which could introduce subtle bugs and would need proper use of the appropriate pointer types and methods.</p>
+
+<p>For &quot;simple&quot; ROS 2 nodes, using the normal way of instantiating a message yourself and then passing it to your normal publisher would probably be a good default.</p>
+
+<p>If/when you start running into performance issues, or have other reasons to not allocate your own messages (such as determinism requirements), using loaned message support from the RMWs which have support for it could be interesting to look into.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-05-14 04:28:02 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

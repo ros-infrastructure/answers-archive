@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>robot localization package does not fuse imu data - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/400533">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>robot localization package does not fuse imu data</h2>
+      <div class="question">
+        <p>Hi ! 
+I&#39;m using ros2 galactic to build a differential drive robot.
+I&#39;m trying to fuse the encoder wheels odometry with the bno055 imu data 
+I&#39;m publishing the odom msg and the odom to base<em>link tf in the odom node , and publishing the imu msg and base</em>link to imu_link tf using urdf file .</p>
+
+<p>everything looks fine up to this point 
+So , now i&#39;m trying to fuse the odom data with the imu data using robot localization package
+this is my ekf config file</p>
+
+<h3>ekf config file</h3>
+
+<p>ekf<em>filter</em>node:
+    ros__parameters:</p>
+
+<pre><code>    frequency: 30.0
+
+    two_d_mode: true
+
+    publish_acceleration: true
+
+    publish_tf: false
+
+    #map_frame: map              # Defaults to &quot;map&quot; if unspecified
+    odom_frame: odom            # Defaults to &quot;odom&quot; if unspecified
+    base_link_frame: base_link  # Defaults to &quot;base_link&quot; ifunspecified
+    world_frame: odom           # Defaults to the value ofodom_frame if unspecified
+
+    odom0: /odometry
+    odom0_config: [false,  false,  false,
+                   false, false, true,
+                   true, true, false,
+                   false, false, true,
+                   false, false, false]
+
+    imu0: bno055/imu
+    imu0_config: [false, false, false,
+                  false,  false,  true,
+                  false, false, false,
+                  false, false, true,
+                  true, false, false]
+</code></pre>
+
+<p>the ekf<em>filter</em>node subscribe to both topics and also everything looks fine , however when I hold the robot and rotate the wheels using keyboard teleport the robot in rviz moves even though the physical robot stand still.
+it looks like there is no imu at all .
+note : I checked the Imu data in rviz in looks fine as well.
+any help will be great.
+this is my odom code</p>
+
+<p>def <strong>init</strong>(self):</p>
+
+<pre><code>        super().__init__(&#39;odometry_node&#39;)                                   #node name
+        self.nodename = &quot;odometry_node&quot;
+        self.get_logger().info(f&quot;-I- {self.nodename} started&quot;) 
+
+
+        #### parameters #######
+        self.rate_hz = self.declare_parameter(&quot;rate_hz&quot;, 10.0).value # the rate at which to publish the transform
+        self.create_timer(1.0/self.rate_hz, self.update)
+        self.base_width = float(self.declare_parameter(&#39;base_width&#39;, 0.185).value)  # The wheel base width in meters
+        self.gear_ratio = float(self.declare_parameter(&#39;gear_ratio&#39;, 20).value)  # The gearbox ratio
+        self.wheel_radius = float(self.declare_parameter(&#39;wheel_radius&#39;, 0.05).value)  # The wheel radius in meter
+        self.base_frame_id = self.declare_parameter(&#39;base_frame_id&#39;,
+                                                &#39;base_link&#39;).value  # the name of the base frame of the robot
+        self.odom_frame_id = self.declare_parameter(&#39;odom_frame_id&#39;,
+                                                &#39;odom&#39;).value  # the name of the odometry reference frame
+
+        #internal data
+        self.angle_left = 0.0
+        self.angle_right = 0.0  
+        self.omega_left = 0.0
+        self.omega_right = 0.0          
+        self.x = 0.0
+        self.y = 0.0
+        self.th = 0.0
+        self.dx = 0.0
+        self.dr = 0.0
+        self.then = self.get_clock().now()
+
+        #subscriptions
+        self.create_subscription(Float32, &quot;left_angle&quot;, self.lwheel_callback, 10)
+        self.create_subscription(Float32, &quot;right_angle&quot;, self.rwheel_callback, 10)
+        self.create_subscription(Float32, &quot;left_omega&quot;, self.lomega_callback, 10)
+        self.create_subscription(Float32, &quot;right_omega&quot;, self.romega_callback, 10)
+
+        self.odom_pub = self.create_publisher(Odometry, &quot;odom&quot;, 10)
+        self.odom_broadcaster = TransformBroadcaster(self)
+
+    def update(self):
+        now = self.get_clock().now()
+        elapsed = now - self.then
+        self.then = now
+        elapsed = elapsed.nanoseconds / NS_TO_SEC
+
+        #calculate odometry
+
+
+        #forward kinematics
+        self.dr = (self.wheel_radius/( 2* self.base_width))*(self.omega_right - self.omega_left)
+        self.dx = 0.5 * self.wheel_radius * (self.omega_right + self.omega_left)
+        #Compute odometry in typical way given the velocities of the robot
+        delta_x = (self.dx * cos(self.th)) * elapsed
+        delta_y = (self.dx * sin(self.th)) * elapsed
+        delta_th = self.dr * elapsed
+
+        self.x += delta_x
+        self.y += delta_y
+        self.th += delta_th
+
+
+        # publish the odom information
+        quaternion = Quaternion()
+        quaternion.x = 0.0
+        quaternion.y = 0.0
+        quaternion.z = sin(self.th / 2)
+        quaternion.w = cos(self.th / 2)                
+
+        transform_stamped_msg = TransformStamped()
+        transform_stamped_msg.header.stamp = self.get_clock().now().to_msg()
+        transform_stamped_msg.header.frame_id = self.odom_frame_id
+        transform_stamped_msg.child_frame_id = self.base_frame_id #check the frames
+        transform_stamped_msg.transform.translation.x = self.x
+        transform_stamped_msg.transform.translation.y = self.y
+        transform_stamped_msg.transform.translation.z = 0.0
+        transform_stamped_msg.transform.rotation.x = quaternion.x
+        transform_stamped_msg.transform.rotation.y = quaternion.y
+        transform_stamped_msg.transform.rotation.z = quaternion.z
+        transform_stamped_msg.transform.rotation.w = quaternion.w
+
+        self.odom_broadcaster.sendTransform(transform_stamped_msg)
+
+        odom = Odometry()
+        odom.header.stamp = now.to_msg()
+        odom.header.frame_id = self.odom_frame_id
+        odom.pose.pose.position.x = self.x
+        odom.pose.pose.position.y = self.y
+        odom.pose.pose.position.z = 0.0
+        odom.pose.pose.orientation = quaternion
+        odom.child_frame_id = self.base_frame_id
+        odom.twist.twist.linear.x = self.dx
+        odom.twist.twist.linear.y = 0.0
+        odom.twist.twist.angular.z = self.dr
+        self.odom_pub.publish(odom)
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/97973">Husam</a> on 2022-05-12 14:03:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

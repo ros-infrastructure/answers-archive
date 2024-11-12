@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ExternalShutdownException in thread - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407544">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ExternalShutdownException in thread</h2>
+      <div class="question">
+        <p>Hey all,</p>
+
+<p>I implemented a simple state machine using smach (migrated to ROS2), that includes moveit action server in one of the states. The state machine, after succeeding, was not terminating, so I added a </p>
+
+<pre><code>node.destroy_node()
+rclpy.shutdown()
+</code></pre>
+
+<p>at the end of the state machine. This resulted in terminating the node, but giving me this exception:</p>
+
+<pre><code>Exception in thread Thread-1:
+Traceback (most recent call last):
+  File &quot;/usr/lib/python3.8/threading.py&quot;, line 932, in _bootstrap_inner
+    self.run()
+  File &quot;/usr/lib/python3.8/threading.py&quot;, line 870, in run
+    self._target(*self._args, **self._kwargs)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 290, in spin
+    self.spin_once()
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 712, in spin_once
+    handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 698, in wait_for_ready_callbacks
+    return next(self._cb_iter)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 599, in _wait_for_ready_callbacks
+    raise ExternalShutdownException()
+rclpy.executors.ExternalShutdownException
+</code></pre>
+
+<p>I am not very familiar with threads, so I was wondering whether someone could explain me how I could track down this error. </p>
+
+<p>The code for my state machine is:</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+import smach
+import smach_ros
+import sys
+
+from ccbts_api_msgs.action import Move
+from ccbts_api_msgs.action import Grasp
+
+from action_msgs.msg import GoalStatus
+from rclpy.action import ActionClient
+
+from rclpy.parameter import Parameter
+
+# Webots
+from std_msgs.msg import Bool
+
+# Pymoveit2
+from pymoveit2 import MoveIt2
+from pymoveit2.robots import universal_robot
+from rclpy.callback_groups import ReentrantCallbackGroup
+from threading import Thread
+
+
+class SendGoal(smach.State):  #Create state SendGoal
+    def __init__(self):
+        smach.State.__init__(self, 
+                             outcomes=[&#39;succeeded&#39;,&#39;failed&#39;],
+                             input_keys=[&#39;move_goal_in&#39;])
+        self.goal_msg = Move.Goal()
+        self.node_ = rclpy.create_node(&#39;moveToPose_action_client&#39;)
+        self.node_.get_logger().info(&#39;Created Webots move node&#39;)
+
+        self.callback_group = ReentrantCallbackGroup()
+
+        self.wait_rate = self.node_.create_rate(1.0)
+
+
+    def execute(self, userdata):
+
+        # Create MoveIt 2 interface
+        self.moveit2 = MoveIt2(
+            node=self.node_,
+            joint_names=universal_robot.joint_names(),
+            base_link_name=universal_robot.base_link_name(),
+            end_effector_name=universal_robot.end_effector_name(),
+            group_name=universal_robot.MOVE_GROUP_ARM,
+            callback_group=self.callback_group,
+        )
+        # Spin the node in background thread(s)
+        self.executor = rclpy.executors.MultiThreadedExecutor(2)
+        self.executor.add_node(self.node_)
+        self.executor_thread = Thread(target=self.executor.spin, daemon=True, args=())
+        self.executor_thread.start()
+
+        # Get parameters
+        position = userdata.move_goal_in
+        quat_xyzw = [0.70710678, 0.70710678, 0.0, 0.0]
+        cartesian = False
+        self.node_.get_logger().info(
+                f&quot;Moving to {{position: {list(position)}, quat_xyzw: {list(quat_xyzw)}}}&quot;
+            )
+        self.moveit2.move_to_pose(position=position, quat_xyzw=quat_xyzw, cartesian=cartesian)
+
+        while not self.moveit2.done_moving:
+            self.wait_rate.sleep()
+            self.node_.get_logger().info(&quot;Waiting&quot;)
+
+
+        return &#39;succeeded&#39;
+
+
+
+class Grip(smach.State):  #Create state Grip
+    def __init__(self):
+        smach.State.__init__(self, 
+                             outcomes=[&#39;succeeded&#39;,&#39;failed&#39;])
+
+        self.msg = Bool()
+        self.grasp_node = rclpy.create_node(&#39;grasp_command&#39;)
+        self.grasp_node.get_logger().info(&#39;Created grasping node&#39;)
+        self.publisher = self.grasp_node.create_publisher(Bool, &#39;vacuum_pump_center&#39;, 10)
+
+    def execute(self, userdata):
+        self.msg.data = True
+        self.publisher.publish(self.msg)
+        self.grasp_node.get_logger().info(&#39;Grasping&#39; )
+        self.grasp_node.destroy_node()
+        return &#39;succeeded&#39;
+
+
+def pick_sm(x = sys.argv[2], y = sys.argv[3], z = sys.argv[4]): 
+
+    rclpy.init(args=None)
+    node = rclpy.create_node(&#39;pick&#39;)
+
+    sm = smach.StateMachine(outcomes=[&#39;succeeded&#39;,&#39;failed&#39;])
+    sm.userdata.move_goal = [x, y, z]   #Set all the goals you want to sent to the robot.
+    with sm:
+        smach.StateMachine.add(&#39;SendGoal&#39;, SendGoal(),
+                               transitions={&#39;succeeded&#39;:&#39;Grip&#39;,
+                                            &#39;failed&#39;:&#39;failed&#39;,},
+                               remapping={&#39;move_goal_in&#39;:&#39;move_goal&#39;})
+        smach.StateMachine.add(&#39;Grip&#39;, Grip(),
+                               transitions={&#39;succeeded&#39;:&#39;succeeded&#39;,
+                                            &#39;failed&#39;:&#39;failed&#39;,})
+
+    sis = smach_ros.IntrospectionServer(&#39;smach_server&#39;, sm, &#39;/SM_ROOT&#39;)
+    sis.start()
+    sm.execute()
+    sis.stop()
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    pick_sm()
+</code></pre>
+
+<p>How can I terminate the node without having a threading error?
+Any input is appreciated. Thank you in advance.</p>
+
+<p>PS: I used ROS2 foxy, smach, moveit2, pymoveit2 (a python moveit action server)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/45283">AlexandrosNic</a> on 2022-10-07 07:13:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Instead of manually terminating the node, I found out that actually the state machine did not terminate automatically (as it should) because there was a blocked spin. </p>
+
+<p>The solution I found was to add the &quot;Grip&quot; state in a MultiThreadedExecutor, using a ReentrantCallback, and then spin_once:</p>
+
+<p>In the state:</p>
+
+<pre><code>self.executor = rclpy.executors.MultiThreadedExecutor()
+self.executor.add_node(self.grasp_node)
+self.executor.spin_once(self.grasp_node)
+</code></pre>
+
+<p>the subscriber:</p>
+
+<pre><code>self.__node.create_subscription(Bool, &#39;vacuum_pump_center&#39;, self.__control_center_vacuum_pump, 1, callback_group=ReentrantCallbackGroup())
+</code></pre>
+
+<p>Then I destroyed the node and rclpy.shutdown()</p>
+
+<p>This achieved the desired result: the state machine spins once, it goes through the callback, and then terminates.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/45283">AlexandrosNic</a> on 2022-10-11 03:30:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

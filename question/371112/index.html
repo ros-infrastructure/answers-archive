@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Motion performance between fanuc_driver/fanuc_driver_exp vs offline trajectory generation - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/371112">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Motion performance between fanuc_driver/fanuc_driver_exp vs offline trajectory generation</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98218/motion-performance-between-fanuc-driver-fanuc-driver-exp-vs-offline-trajectory-g">https://robotics.stackexchange.com/questions/98218/motion-performance-between-fanuc-driver-fanuc-driver-exp-vs-offline-trajectory-g</a>.</p>
+        <p>Hi,</p>
+
+<p>We are using a Fanuc robot model for dense cartesian trajectories.</p>
+
+<p>I have read a few topics to understand what would be the best way to interface with ROS to do that (#q299442, #q291577 and <a href="https://github.com/gavanderhoorn/fanuc_driver_exp/issues/18">gavanderhoorn/fanuc<em>driver</em>exp#18</a>), but I need some clarifications on the difference between using fanuc<em>driver or driver</em>exp and generating a TP program with an offline post-processor.</p>
+
+<p>From what I understood, motion performance using fanuc<em>driver or fanuc</em>driver_exp is lower because they use position streaming, so the robot velocity is fixed by the robot controller and there is no &quot;look-ahead&quot; functionality. Is this the only reason?
+Generating the TP program offline will still result in keeping the CNT vs accuracy limitation as far as I understand, but could this limitation be removed some other way?</p>
+
+<p>Thanks for the clarification</p>
+
+        <div class="owner"><p>Asked by <a href="/users/68834">dq18</a> on 2021-02-05 01:45:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>First: let me start by saying this answer is based on my personal understanding, which is based on a few years of experience with Fanuc robots and writing external trajectory generation programs (or drivers) for them. I could be completely wrong, or have misunderstood some critical aspect of how they work. Keep that in mind when reading this.</p>
+
+<blockquote>
+<p>From what I understood, motion performance using fanuc_driver or fanuc_driver_exp is lower because they use position streaming, so the robot velocity is fixed by the robot controller and there is no &quot;look-ahead&quot; functionality. </p>
+</blockquote>
+
+<p>The &#39;fixed velocity&#39; is not really a result of position streaming, it&#39;s just how <code>fanuc_driver</code> was implemented. <code>fanuc_driver_exp</code> does pass on velocities (or segment durations) to the Fanuc controller.</p>
+
+<p>The biggest problem with the available implementations is the lack of look-ahead (or: both implementations deprive the controller of the possibility to use its look-ahead functionality, as it only ever has a single <code>PR</code> which is also constantly updating).</p>
+
+<blockquote>
+<p>Is this the only reason? Generating the TP program offline will still result in keeping the CNT vs accuracy limitation as far as I understand</p>
+</blockquote>
+
+<p>Whatever interface you use, as long as you use TP programs, there will always be the smoothness vs accuracy problem.</p>
+
+<p>You can mitigate it somewhat by using <code>CR</code> termination types instead of <code>CNT</code>, as the former allows you to specify a radius instead of a percentage, but that is not supported by default in either <code>fanuc_driver</code> or <code>fanuc_driver_exp</code> (there is a branch in <code>fanuc_driver_exp</code> which was the result of some testing, see <a href="https://github.com/gavanderhoorn/fanuc_driver_exp/tree/linear_support">gavanderhoorn/fanuc_driver_exp@linear_support</a>, which uses <code>CR</code>, but there is still no look-ahead (note: you cannot use the regular <code>industrial_robot_client</code> nor <code>fanuc_driver</code> nodes with that branch, as it uses a custom message type)).</p>
+
+<blockquote>
+<p>could this limitation be removed some other way?</p>
+</blockquote>
+
+<p>If &quot;this limitation&quot; refers to the smoothness vs accuracy then fundamentally all (industrial) robots suffer from this problem: smooth motions require continuity (up to the Nth derivative) so with sparse trajectories, you <em>must</em> introduce some form of cornering/blending/rounding (the robot cannot change direction instantaneously). Planners which are capable of taking jerk constraints (for instance) or higher into account and produce dense trajectories might get away with very little blending, but it&#39;ll probably still be there/necessary.</p>
+
+<p>Off-line generation of TP programs is not inherently any better. It will however allow the controller to fully use look-ahead, which will improve motion smoothness. Dense trajectories will still slow-down the controller.</p>
+
+<p>With newer controllers and the newest software versions, you have some alternatives to full off-line-and-upload approaches:</p>
+
+<ul>
+<li><code>J519</code> (or <em>Stream Motion</em>): this is a real-time external motion interface which gets you 125 Hz joint and Cartesian position control over a UDP connection. Requires a real-time system and is difficult to buy from Fanuc (except in the US)</li>
+<li><code>R912</code> (or <em>Remote Motion Interface</em>): this is essentially a drip-feed for TP programs. Look-ahead works, but same smoothness-vs-accuracy with <code>CNT</code> termination. Main advantage: unlimited program length and programs can be generated on-the-fly</li>
+<li>use the <em>spline</em> motions on <code>V9.30</code> and up: Fanuc added support for spline motions in <code>V9.30</code> system software, which is a different interpolation method (from <code>J</code> and <code>L</code>). Instead of considering only the current and next (and next) point, spline motions allow for the definition of <em>trajectories</em>. You essentially control the <em>control points</em> of a spline which runs through all the trajectory points added to it</li>
+</ul>
+
+<p>The first allows closed-loop control applications over Fanuc hardware (in the traditional sense of the word, ie: real-time closed-loop in the millisecond range).</p>
+
+<p>The second not really: minimum motion length is 40 ms and there is a minimum queue depth (due to look-ahead requirements).</p>
+
+<p>The third is different from the first two in that it&#39;s not an external interface, but it does affect motion performance: the controller should do much better with dense trajectories as it considers the spline and not the individual trajectory segments when interpolating.</p>
+
+<p>ROS support for the first two options is limited. Or at least: support in <em>publicly available</em> packages is limited.</p>
+
+<p>I&#39;ve not tested spline motions in a ROS context yet.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-02-05 02:29:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Note: there isn&#39;t really anything ROS specific here. Any software using any of the available motion interfaces to Fanuc controllers should run into the same limitations/problems/performance issues.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-05 02:50:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Very detailed answer as usual. Thanks for that! I am trying to find which industrial robot brand would give less difficulty to use in our application, so your answer definitely helps.</p>
+
+<p>I am in China, so I am expecting even less support from Fanuc concerning the J519 and R912 interfaces, but will try and see with them.</p>
+
+<p>I am leaving this thread open for a bit longer, in case someone wants to add something or his/her personal opinion</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/68834">dq18</a> on 2021-02-05 06:40:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So what did you end up using/trying?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-28 02:55:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>We are just using fanuc_driver for now and testing offline TP generation. I would like to test with J519 as we have the option but I need to do some more research before</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/68834">dq18</a> on 2021-03-01 21:37:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m interested in knowing what the results/findings of your tests yielded. Any updates would be appreciated dq18, thank you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/89403">robertdagenais</a> on 2021-12-14 15:27:55 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The main finding is that Fanuc is not great for this kind of project :)
+We could not access J519 so we ended up using offline planning with a post-processor, similar to <a href="https://gitlab.com/InstitutMaupertuis/fanuc_post_processor">link text</a>, but repurposed to our needs. That gave the best motion performance when motion is cartesian.
+To get a kind of &quot;control&quot; loop (i.e. reading stuff from the controller), we were using fanuc_driver_exp mostly for reading robot state and dominh.
+We eventually switched to ABB after pushing for months, but I left the project before I could see how much better it is.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/68834">dq18</a> on 2021-12-17 12:18:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for the update dq18!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/89403">robertdagenais</a> on 2022-01-06 11:04:17 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

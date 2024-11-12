@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 uses 6 times more cpu than FastRTPS? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/327477">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 uses 6 times more cpu than FastRTPS?</h2>
+      <div class="question">
+        <p>I&#39;m experiencing performance issues with ROS2. To investigate the problems I implemented a test scenarios in a number of ways:
+<strike><a href="https://github.com/scgroot/ros2_performance">https://github.com/scgroot/ros2_performance</a></strike>  <a href="https://github.com/nobleo/ros2_performance">https://github.com/nobleo/ros2_performance</a></p>
+
+<p>Then most interesting difference is that between ROS2 (on FastRTPS) and FastRTPS directly. On my system the ros2 (see ros.cc) uses around 70% cpu, where FastRTPS (see rtps.cc) uses only 12%. Only having a ROS timer (see nopub.cc) is already using a considerable amount of resource.</p>
+
+<p>Am I doing something wrong here? </p>
+
+<p>I do not expect ROS2 to cause such an extreme overhead on top of the middleware. Any suggestions are welcome!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/43771">scg</a> on 2019-07-02 05:07:00 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>What tool did you use to get those results?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29634">christophebedard</a> on 2019-07-18 02:58:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>top</p>
+
+<p>I also used perf to investigate a bit. I noticed it spends a lot of time in the ros executor... (using ros dashing)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/43771">scg</a> on 2019-07-22 03:30:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yeah I&#39;m looking into the executor as well.
+Another interesting thing is, if I modify your nopub testcase and only create 1 node with 10 timers (instead of 10 nodes with 1 timer each) I get around 2% CPU usage (vs. 14-15% with the original nopub).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29634">christophebedard</a> on 2019-07-22 03:54:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The discussion on Discourse about the SingleThreadedExecutor is now live at <a href="https://discourse.ros.org/t/singlethreadedexecutor-creates-a-high-cpu-overhead-in-ros-2/10077">https://discourse.ros.org/t/singlethreadedexecutor-creates-a-high-cpu-overhead-in-ros-2/10077</a> : . Please post all your interesting findings there. The link to the Discourse discussion will also be added at the bottom of the github README. Hopefully we can come in contact with the right people to optimize the executor. The more data we collect and share there, the more response we can expect. More detailed results will also speed up the process of fixing/optimizing the executor.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/44213">MCornelis</a> on 2019-07-26 05:03:39 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I looked into the problem together with scgroot. I&#39;ve added a dockerfile and a docker-compose to the github page, this way people familiar with docker can quickly recreate the problem stated above. I&#39;ve also added one extra piece of example code which uses 1 node instead of 10.</p>
+
+<p>A description of what each binary contains is given here:  </p>
+
+<pre><code>Binary    |  Publishers|   Subscribers|   ROS|   ROS nodes|  ROS timers| DDS participants|
+ros       |          20|           200|   yes|          10|          10|               10|
+rosonenode|          20|           200|   yes|           1|           1|                1|
+nopub     |           0|             0|   yes|          10|          10|               10|
+rtps      |          20|           200|    no|           0|           0|                1|
+noros     |         20*|          200*|    no|           0|           0|                0|
+*C++ implementation no network publishing/subscribing
+</code></pre>
+
+<p>The resulting CPU usage when the binaries each get their own isolated docker container is given here:</p>
+
+<pre><code>Name         CPU%   MEM USAGE   PIDS
+ros          63.36   103.70MiB   43
+rosonenode   21.13    17.35MiB    7
+nopub         6.55    67.77MiB   43
+rtps          6.48    15.20MiB    6
+noros         0.32     3.98MiB    1
+</code></pre>
+
+<p>Inspection with valgrind (callgrind) and perf gives: </p>
+
+<pre><code>Binary        Total     DDS   Executor   Other
+rtps          3.6e9   3.0e9        NA    6.0e8
+rosonenode    1.3e10  2.5e9     9.1e9    1.4e9
+ros           3.8e10  1.2e10    1.6e10   1.0e10
+Values given in average #CPU cycles
+
+Binary        Total     DDS   Executor   Other
+rtps            100    83.7        NA    16.3
+rosonenode      100    19.6      70.0    10.4
+ros             100    32.0      43.9    24.1
+Values given in % of total CPU usage contribution 
+</code></pre>
+
+<p>Conclusions:</p>
+
+<ol>
+<li> Both the rtps implementation and the rosonenode implementation have 1 DDS participant leading to very similar work done in the eProsima part of the appliation (3.0e9 vs 2.5e9). The SingleThreadedExecutor adds a lot of overhead (70% of the work for rosonenode is done here), this overhead  increases with the number of nodes added to the executor ( 9.1e9 increases to 1.6e10 for the same runtime). </li>
+<li>The 1 to 1 mapping of ROS2 nodes to DDS participants increases CPU usage in the eProsima part of the application (2.5e9 vs 1.2e10). </li>
+</ol>
+
+<p>Solution / Answer:</p>
+
+<ol>
+<li>The SingleThreadedExecutor needs to be optimized or implemented differently.</li>
+<li>The ROS2 middleware needs to be changed to allow for an option where nodes do not have a  1-to-1 mapping to DDS participants.</li>
+</ol>
+
+<p>A more in-depth explanation of our research and measurements can be found in the README.md of the github page mentioned in the question. Since there does not appear to be a quick and easy solution to these problems (besides using 1 node for your entire application to reduce CPU usage) we opened two discussions on ROS discourse. People who are interested in discussing either problem can follow the links that will be posted on the github page.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/44213">MCornelis</a> on 2019-07-25 10:09:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

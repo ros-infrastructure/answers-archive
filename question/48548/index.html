@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Rosserial Service &quot;Failed to parse subscriber&quot; - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/48548">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Rosserial Service &quot;Failed to parse subscriber&quot;</h2>
+      <div class="question">
+        <p>I am attempting to create a simple service on an arduino. My arduino sketch compiles (verify), downloads, and runs on my arduino duemilanove.
+However, when I run rosserial<em>python serial</em>node, I get the following:</p>
+
+<pre><code>$ rosrun rosserial_python serial_node.py 
+[INFO] [WallTime: 1353276138.035460] ROS Serial Python Node
+[INFO] [WallTime: 1353276138.041617] Connected on /dev/ttyUSB0 at 57600 baud
+[ERROR] [WallTime: 1353276140.194715] Failed to parse subscriber. &#39;module&#39; object has no attribute &#39;gripper&#39;
+</code></pre>
+
+<p>Any clue what&#39;s going on here? My arduino node does not include any subscribers (or publishers), just a service server for a service called gripper in a package called abby<em>gripper.
+I have run rosmake abby</em>gripper to create the message headers, and run rosserial<em>client make</em>library.py on abby<em>gripper to put these in my arduino ros</em>lib, and the arduino sketch appears to be running.</p>
+
+<p><strong>Update 1:</strong></p>
+
+<p>Determined that the serial node thinks my service is a subscriber because it casts services to subcribers. Changing line 323 of node_handle.h (in the arduino roslib) as follows allows the serial node to properly identify the service as a service, but I still have a parsing issue. I think this is due to incorrectly identifying my service name in my arduino sketch.</p>
+
+<p>node_handle.h, line 316-326:</p>
+
+<pre><code>    for(i = 0; i &lt; MAX_SUBSCRIBERS; i++)
+    {
+      if(receivers[i] != 0) // non-empty slot
+      {
+        ti.topic_id = receivers[i]-&gt;id_;
+        ti.topic_name = (char *) receivers[i]-&gt;topic_;
+        ti.message_type = (char *) receivers[i]-&gt;getMsgType();
+        no_.publish( receivers[i]-&gt;_getType(), &amp;ti );
+        //Above changed from no_.publish( TopicInfo::ID_SUBSCRIBER, &amp;ti );
+      }
+    }
+  }
+</code></pre>
+
+<p>Now when I run it, I get:</p>
+
+<pre><code>$ rosrun rosserial_python serial_node.py 
+[INFO] [WallTime: 1353292452.468408] ROS Serial Python Node
+[INFO] [WallTime: 1353292452.472808] Connected on /dev/ttyUSB0 at 57600 baud
+[ERROR] [WallTime: 1353292454.598246] Failed to parse service server
+</code></pre>
+
+<p>Progress, I guess. I&#39;ll post if I make any more.</p>
+
+<p><strong>Update 2:</strong></p>
+
+<p>I am beginning to suspect that I am the first person to attempt to run a service server on a serial client.</p>
+
+<p>I found that the load<em>pkg</em>module method in SerialClient.py only works for messages, not services. I modified lines 52-69 as follows to allow it to be used for srvs as well as msgs:</p>
+
+<pre><code>def load_pkg_module(package, ext=&#39;msg&#39;):
+    #check if its in the python path
+    in_path = False
+    path = sys.path
+    pkg_src = package+&#39;/src&#39; #check for the source directory which
+                             # is added to path by roslib boostrapping
+    for entry in sys.path:
+        if pkg_src in entry:
+            in_path = True
+    if not in_path:
+        roslib.load_manifest(package)
+    try:
+        m = __import__( package +&#39;.&#39;+ext)
+    except:
+        rospy.logerr( &quot;Cannot import package : %s&quot;% package )
+        rospy.logerr( &quot;sys.path was &quot; + str(path) )
+        return None
+    return m
+</code></pre>
+
+<p>and call it from ServiceServer on line 127 like so:</p>
+
+<pre><code>    m = load_pkg_module(package, &#39;srv&#39;)
+</code></pre>
+
+<p>Now, when I run serial_node, I get the following output:</p>
+
+<pre><code>$ rosrun rosserial_python serial_node.py 
+[INFO] [WallTime: 1353296694.048375] ROS Serial Python Node
+[INFO] [WallTime: 1353296694.054464] Connected on /dev/ttyUSB0 at 57600 baud
+[INFO] [WallTime: 1353296696.198338] Setup ServiceServer on abby_gripper/gripper [abby_gripper/gripper]
+</code></pre>
+
+<p>Success! Now I try to call my service using rosservice:</p>
+
+<pre><code>$ rosservice call /abby_gripper/gripper &quot;command: 0&quot;
+ERROR: service [/abby_gripper/gripper] responded with an error: error processing request: global name &#39;data_buffer&#39; is not defined
+</code></pre>
+
+<p>and from the rosserial_python node:</p>
+
+<pre><code>Traceback (most recent call last):
+    File &quot;/opt/ros/fuerte/lib/python2.7/dist-packages/rospy/impl/tcpros_service.py&quot;, line 615, in _handle_request
+        response = convert_return_to_response(self.handler(request), self.response_class)
+    File &quot;/opt/ros/fuerte/stacks/rosserial/rosserial_python/src/rosserial_python/SerialClient.py&quot;, line 139, in callback
+        msg.serialize(data_buffer)
+NameError: global name &#39;data_buffer&#39; is not defined
+[ERROR] [WallTime: 1353296740.254393] Error processing request: global name &#39;data_buffer&#39; is not defined
+None
+</code></pre>
+
+<p>I&#39;ll keep plugging away on this.</p>
+
+<p><strong>Update 3:</strong></p>
+
+<p>After a bit of a rewrite to SerialClient.py, I now have a working service. It seems that services were added as an afterthought and never tested, because it looks like most/all of the service code was copied from the subscriber and publisher code, and there&#39;s no way it could have worked as-is. Worth noting as well, I was calling rosservice incorrectly above, but that was not the source of any of my problems. I&#39;ll be submitting my changes to the maintainer of rosserial, but in the mean time, post a comment if you want me to post my code here/elsewhere.</p>
+
+<p><strong>Update 4:</strong></p>
+
+<p>It appears that the latest code in the mercurial repo for rosserial has almost completely rewritten the python node. Presumably this is for groovy. I haven&#39;t tested it (and I&#39;m sticking with fuerte on my platforms). It probably implements services properly. In the mean time, if anyone&#39;s running fuerte and wants to having working rosserial services, my fork is on my github at evenator/rosserial (I don&#39;t have enough karma to post links)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2636">Ed Venator</a> on 2012-11-18 11:18:58 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>openni2_tracker and rgb data - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/204234">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>openni2_tracker and rgb data</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/66179/openni2-tracker-and-rgb-data">https://robotics.stackexchange.com/questions/66179/openni2-tracker-and-rgb-data</a>.</p>
+        <p>Hi all!
+I&#39;m using the openni2_tracker with an ASUS Xtion Pro Live for controlling a mobile robot through a gesture recognition node I made. 
+I&#39;m using ROS Indigo on Ubuntu 14.04.
+I also need the RGB image provided by the Xtion. 
+I tried </p>
+
+<pre><code>roslaunch openni2_launch openni.launch
+</code></pre>
+
+<p>while running the openni2_tracker, but as also stated <a href="http://answers.ros.org/question/195459/skeletal-tracker-for-asus-xtion-pro-live/">here</a> it does not work. </p>
+
+<p>Is there a way to get the RGB image while running the openni2_tracker node? I&#39;m interested ONLY in the RGB raw image.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-03-04 11:51:51 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Using openni::Videostream. Find below some example relevant source code (header and footer to see where it goes in the main of tracker.cpp). I am also copying the complete file but it is a mess and <em>read the bold text</em> as you need to change two variables.</p>
+
+<p><em>Relevant snippet</em></p>
+
+<pre><code>// Get Tracker Parameters
+if(!pnh.getParam(&quot;tf_prefix&quot;, tf_prefix)){
+    ROS_ERROR(&quot;tf_prefix not found on Param Server! Check your launch file!&quot;);
+    return -1;
+}
+if(!pnh.getParam(&quot;relative_frame&quot;, relative_frame)){
+    ROS_ERROR(&quot;relative_frame not found on Param Server! Check your launch file!&quot;);
+    return -1;
+}
+
+// Initial OpenNI
+if( openni::OpenNI::initialize() != openni::STATUS_OK )
+{
+    ROS_ERROR(&quot;openni initial error: \n&quot;);
+    //cerr &lt;&lt; &quot;OpenNI Initial Error: &quot; &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+    return -1;
+}
+
+// Open Device
+openni::Device  devDevice;
+if( devDevice.open( openni::ANY_DEVICE ) != openni::STATUS_OK )
+{
+    ROS_ERROR(&quot;Can&#39;t Open Device: \n&quot;);
+    return -1;
+}
+ROS_INFO(&quot;device opened\n&quot;);
+
+// NITE Stuff
+nite::UserTracker userTracker;
+nite::Status niteRc;
+nite::NiTE::initialize();
+niteRc = userTracker.create(&amp;devDevice);
+if (niteRc != nite::STATUS_OK){
+    printf(&quot;Couldn&#39;t create user tracker\n&quot;);
+    return 3;
+}
+
+
+// Create color stream
+openni::VideoStream vsColorStream;
+
+if( vsColorStream.create( devDevice, openni::SENSOR_COLOR ) == openni::STATUS_OK )
+{
+    // set video mode
+    openni::VideoMode mMode;
+    //mMode.setResolution( 640, 480 );
+    mMode.setResolution( 640, 480 );
+    mMode.setFps( 30 );
+    mMode.setPixelFormat( openni::PIXEL_FORMAT_RGB888 );
+
+    if( vsColorStream.setVideoMode( mMode) != openni::STATUS_OK )
+    {
+        ROS_INFO(&quot;Can&#39;t apply videomode\n&quot;);
+        //cout &lt;&lt; &quot;Can&#39;t apply VideoMode: &quot; &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+    }
+
+    // image registration
+    if( devDevice.isImageRegistrationModeSupported( openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR ) )
+    {
+        devDevice.setImageRegistrationMode( openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR );
+    }
+    vsColorStream.setMirroringEnabled(false);
+}
+else
+{
+    ROS_ERROR(&quot;Can&#39;t create color stream on device: &quot;);// &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+    //cerr &lt;&lt;  &quot;Can&#39;t create color stream on device: &quot; &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+    return -1;
+}
+
+
+// Loop
+printf(&quot;\nStart moving around to get detected...\n(PSI pose may be required for skeleton calibration, depending on the configuration)\n&quot;);
+
+nite::UserTrackerFrameRef userTrackerFrame;
+
+// create OpenCV Window
+cv::namedWindow( &quot;User Image&quot;,  CV_WINDOW_AUTOSIZE );
+
+// start
+vsColorStream.start();
+
+// while (!wasKeyboardHit()){
+ros::Rate rate(100.0);
+while (nh.ok()){
+    niteRc = userTracker.readFrame(&amp;userTrackerFrame);
+    if (niteRc != nite::STATUS_OK){
+        printf(&quot;Get next frame failed\n&quot;);
+        continue;
+    }
+
+    // get depth frame
+    openni::VideoFrameRef depthFrame;
+    depthFrame = userTrackerFrame.getDepthFrame();
+
+    // get color frame
+    openni::VideoFrameRef vfColorFrame;
+    cv::Mat mImageBGR;
+    if( vsColorStream.readFrame( &amp;vfColorFrame ) == openni::STATUS_OK )
+    {
+        // convert data to OpenCV format
+        const cv::Mat mImageRGB( vfColorFrame.getHeight(), vfColorFrame.getWidth(), CV_8UC3, const_cast&lt;void*&gt;( vfColorFrame.getData() ) );
+        // convert form RGB to BGR
+        cv::cvtColor( mImageRGB, mImageBGR, CV_RGB2BGR );
+        vfColorFrame.release();
+    }
+
+    const nite::Array&lt;nite::UserData&gt;&amp; users = userTrackerFrame.getUsers();
+    for (int i = 0; i &lt; users.getSize(); ++i) {
+</code></pre>
+
+<p>Complete file and fairly messy but to compare with yours:</p>
+
+<p><strong>You need to change in main the following two variables as I am saving the images and the skeleton</strong>:
+<code>std::string path(&quot;/home/yiannis/datasets/recorded/scrap/&quot;);</code>
+<code>std::string filename_skeleton(&quot;/home/yiannis/datasets/recorded/scrap/skeleton.csv&quot;);</code></p>
+
+<p><em>Full file</em></p>
+
+<pre><code>/*********************************************************************
+* Software License Agreement (BSD License)
+*
+* Copyright (c) 2013, Johns Hopkins University
+* All rights reserved.
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions
+* are met:
+*
+* * Redistributions of source code must retain the above copyright
+* notice, this list of conditions and the following disclaimer.
+* * Redistributions in binary form must reproduce the above
+* copyright notice, this list of conditions and the following
+* disclaimer in the documentation and/or other materials provided
+* with the distribution.
+* * Neither the name of the Johns Hopkins University nor the names of its
+* contributors may be used to endorse or promote products derived
+* from this software without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+* &quot;AS IS&quot; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+* LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+* FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+* COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+* INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+* BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+* CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+* LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+* ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+* POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+/*
+ * Author: Kelleher Guerin, futureneer@gmail.com, Johns Hopkins University
+ */
+
+// ROS Dependencies
+#include &lt;ros/ros.h&gt;
+#include &lt;ros/package.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;kdl/frames.hpp&gt;
+#include &lt;iostream&gt;
+#include &lt;sstream&gt;
+#include &lt;fstream&gt;
+// OpenCV Header
+#include &lt;opencv2/core/core.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+// NITE Dependencies
+#include &quot;NiTE.h&quot;
+#include &quot;NiteSampleUtilities.h&quot;
+// Tracker Messages
+#include &lt;openni2_tracker/TrackerUser.h&gt;
+#include &lt;openni2_tracker/TrackerUserArray.h&gt;
+// OpenCV Header
+#include &lt;opencv2/core/core.hpp&gt;
+#include &lt;opencv2/highgui/highgui.hpp&gt;
+#include &lt;opencv2/imgproc/imgproc.hpp&gt;
+
+
+#define SSTR( x ) dynamic_cast&lt; std::ostringstream &amp; &gt;( \
+    ( std::ostringstream() &lt;&lt; std::dec &lt;&lt; x ) ).str()
+
+#define GL_WIN_SIZE_X   1280
+#define GL_WIN_SIZE_Y   1024
+
+#define MAX_USERS 10
+bool g_visibleUsers[MAX_USERS] = {false};
+nite::SkeletonState g_skeletonStates[MAX_USERS] = {nite::SKELETON_NONE};
+
+#define USER_MESSAGE(msg) \
+    {printf(&quot;[%08llu] User #%d:\t%s\n&quot;,ts, user.getId(),msg);}
+
+typedef std::map&lt;std::string, nite::SkeletonJoint&gt; JointMap;
+
+
+void updateUserState(const nite::UserData&amp; user, unsigned long long ts){
+    if (user.isNew())
+        USER_MESSAGE(&quot;New&quot;)
+    else if (user.isVisible() &amp;&amp; !g_visibleUsers[user.getId()])
+        USER_MESSAGE(&quot;Visible&quot;)
+    else if (!user.isVisible() &amp;&amp; g_visibleUsers[user.getId()])
+        USER_MESSAGE(&quot;Out of Scene&quot;)
+    else if (user.isLost())
+        USER_MESSAGE(&quot;Lost&quot;)
+
+    g_visibleUsers[user.getId()] = user.isVisible();
+
+
+    if(g_skeletonStates[user.getId()] != user.getSkeleton().getState())
+    {
+        switch(g_skeletonStates[user.getId()] = user.getSkeleton().getState())
+        {
+        case nite::SKELETON_NONE:
+            USER_MESSAGE(&quot;Stopped tracking.&quot;)
+            break;
+        case nite::SKELETON_CALIBRATING:
+            USER_MESSAGE(&quot;Calibrating...&quot;)
+            break;
+        case nite::SKELETON_TRACKED:
+            USER_MESSAGE(&quot;Tracking!&quot;)
+            break;
+        case nite::SKELETON_CALIBRATION_ERROR_NOT_IN_POSE:
+        case nite::SKELETON_CALIBRATION_ERROR_HANDS:
+        case nite::SKELETON_CALIBRATION_ERROR_LEGS:
+        case nite::SKELETON_CALIBRATION_ERROR_HEAD:
+        case nite::SKELETON_CALIBRATION_ERROR_TORSO:
+            USER_MESSAGE(&quot;Calibration Failed... :-|&quot;)
+            break;
+        }
+    }
+}
+
+bool publishJointTF(ros::NodeHandle&amp; nh, tf::TransformBroadcaster&amp; br, std::string j_name, nite::SkeletonJoint j, std::string tf_prefix, std::string relative_frame, int uid){
+
+    if (j.getPositionConfidence() &gt; 0.0){
+      tf::Transform transform;
+      transform.setOrigin(tf::Vector3(j.getPosition().x/1000.0, j.getPosition().y/1000.0, j.getPosition().z/1000.0));
+      transform.setRotation(tf::Quaternion(0, 0, 0, 1));
+      std::stringstream frame_id_stream;
+      std::string frame_id;
+      frame_id_stream &lt;&lt; &quot;/&quot; &lt;&lt; tf_prefix &lt;&lt; &quot;/user_&quot; &lt;&lt; uid &lt;&lt; &quot;/&quot; &lt;&lt; j_name;
+      frame_id = frame_id_stream.str();
+      // std::cout &lt;&lt; frame_id &lt;&lt; std::endl;
+      br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), relative_frame, frame_id));
+    }
+    return true;
+}
+
+int main(int argc, char** argv){
+    ROS_INFO(&quot;START\n&quot;);
+
+    std::string path(&quot;/home/yiannis/datasets/recorded/scrap/&quot;);
+    std::string prefix(&quot;img&quot;);
+    std::string ext(&quot;.jpg&quot;);
+    std::string filename_color;
+    std::string filename_skeleton(&quot;/home/yiannis/datasets/recorded/scrap/skeleton.csv&quot;);
+    int i;
+    int g_nXRes = 0, g_nYRes = 0;
+    std::ofstream fp_skeleton;
+
+    ros::init(argc, argv, &quot;openni2_tracker&quot;);
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(&quot;~&quot;); //private node handler
+    std::string tf_prefix, relative_frame = &quot;&quot;;
+    tf::TransformBroadcaster br;
+    pnh.setParam(&quot;frame_counter&quot;, 0);
+
+/*
+openni::Status rc = openni::OpenNI::initialize();
+openni::Device device ;
+rc = device.open(&quot;file.oni&quot;);
+nite::UserTracker userTracker;
+nite::NiTE::initialize();
+niteRc = userTracker.create(&amp;device);
+*/
+
+
+    // Get Tracker Parameters
+    if(!pnh.getParam(&quot;tf_prefix&quot;, tf_prefix)){
+        ROS_ERROR(&quot;tf_prefix not found on Param Server! Check your launch file!&quot;);
+        return -1;
+    }
+    if(!pnh.getParam(&quot;relative_frame&quot;, relative_frame)){
+        ROS_ERROR(&quot;relative_frame not found on Param Server! Check your launch file!&quot;);
+        return -1;
+    }
+
+    // Initial OpenNI
+    if( openni::OpenNI::initialize() != openni::STATUS_OK )
+    {
+        ROS_ERROR(&quot;openni initial error: \n&quot;);
+        //cerr &lt;&lt; &quot;OpenNI Initial Error: &quot; &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+        return -1;
+    }
+
+    // Open Device
+    openni::Device  devDevice;
+    if( devDevice.open( openni::ANY_DEVICE ) != openni::STATUS_OK )
+    {
+        ROS_ERROR(&quot;Can&#39;t Open Device: \n&quot;);
+        return -1;
+    }
+    ROS_INFO(&quot;device opened\n&quot;);
+
+    //bool modeIsSupported = false;
+    //modeIsSupported = devDevice.isImageRegistrationModeSupported(openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR);
+    //printf(&quot;%d\n&quot;, modeIsSupported);
+    devDevice.setImageRegistrationMode(openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR);
+    devDevice.setDepthColorSyncEnabled(true);
+
+    // NITE Stuff
+    nite::UserTracker userTracker;
+    nite::Status niteRc;
+    nite::NiTE::initialize();
+    niteRc = userTracker.create(&amp;devDevice);
+    if (niteRc != nite::STATUS_OK){
+        printf(&quot;Couldn&#39;t create user tracker\n&quot;);
+        return 3;
+    }
+
+
+    // Create color stream
+    openni::VideoStream vsColorStream;
+
+    if( vsColorStream.create( devDevice, openni::SENSOR_COLOR ) == openni::STATUS_OK )
+    {
+        // set video mode
+        openni::VideoMode mMode;
+        //mMode.setResolution( 640, 480 );
+        mMode.setResolution( 640, 480 );
+        mMode.setFps( 30 );
+        mMode.setPixelFormat( openni::PIXEL_FORMAT_RGB888 );
+
+        if( vsColorStream.setVideoMode( mMode) != openni::STATUS_OK )
+        {
+            ROS_INFO(&quot;Can&#39;t apply videomode\n&quot;);
+            //cout &lt;&lt; &quot;Can&#39;t apply VideoMode: &quot; &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+        }
+
+        // image registration
+        if( devDevice.isImageRegistrationModeSupported( openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR ) )
+        {
+            devDevice.setImageRegistrationMode( openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR );
+        }
+        vsColorStream.setMirroringEnabled(false);
+    }
+    else
+    {
+        ROS_ERROR(&quot;Can&#39;t create color stream on device: &quot;);// &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+        //cerr &lt;&lt;  &quot;Can&#39;t create color stream on device: &quot; &lt;&lt; OpenNI::getExtendedError() &lt;&lt; endl;
+        return -1;
+    }
+
+
+    // Loop
+    printf(&quot;\nStart moving around to get detected...\n(PSI pose may be required for skeleton calibration, depending on the configuration)\n&quot;);
+
+    nite::UserTrackerFrameRef userTrackerFrame;
+
+    // create OpenCV Window
+    cv::namedWindow( &quot;User Image&quot;,  CV_WINDOW_AUTOSIZE );
+
+    // start
+    vsColorStream.start();
+
+    // while (!wasKeyboardHit()){
+    ros::Rate rate(100.0);
+    while (nh.ok()){
+        niteRc = userTracker.readFrame(&amp;userTrackerFrame);
+        if (niteRc != nite::STATUS_OK){
+            printf(&quot;Get next frame failed\n&quot;);
+            continue;
+        }
+
+        // get depth frame
+        openni::VideoFrameRef depthFrame;
+        depthFrame = userTrackerFrame.getDepthFrame();
+
+        // get color frame
+        openni::VideoFrameRef vfColorFrame;
+        cv::Mat mImageBGR;
+        if( vsColorStream.readFrame( &amp;vfColorFrame ) == openni::STATUS_OK )
+        {
+            // convert data to OpenCV format
+            const cv::Mat mImageRGB( vfColorFrame.getHeight(), vfColorFrame.getWidth(), CV_8UC3, const_cast&lt;void*&gt;( vfColorFrame.getData() ) );
+            // convert form RGB to BGR
+            cv::cvtColor( mImageRGB, mImageBGR, CV_RGB2BGR );
+            vfColorFrame.release();
+        }
+
+        const nite::Array&lt;nite::UserData&gt;&amp; users = userTrackerFrame.getUsers();
+        for (int i = 0; i &lt; users.getSize(); ++i) {
+            if (i &gt; 0)
+                ROS_ERROR(&quot;Handling more than one skeleton is not implemented\n&quot;);
+            const nite::UserData&amp; user = users[i];
+            updateUserState(user,userTrackerFrame.getTimestamp());
+            if (user.isNew()){
+                userTracker.startSkeletonTracking(user.getId());
+            } else if (user.getSkeleton().getState() == nite::SKELETON_TRACKED){
+                pnh.getParam(&quot;frame_counter&quot;, i);
+
+                std::string line;
+                line = SSTR(i) + &quot;,&quot; + SSTR(user.getId());
+
+                JointMap named_joints;              
+                named_joints[&quot;head&quot;] = (user.getSkeleton().getJoint(nite::JOINT_HEAD) );
+                named_joints[&quot;neck&quot;] = (user.getSkeleton().getJoint(nite::JOINT_NECK) );
+                named_joints[&quot;left_shoulder&quot;] = (user.getSkeleton().getJoint(nite::JOINT_LEFT_SHOULDER) );
+                named_joints[&quot;right_shoulder&quot;] = (user.getSkeleton().getJoint(nite::JOINT_RIGHT_SHOULDER) );
+                named_joints[&quot;left_elbow&quot;] = (user.getSkeleton().getJoint(nite::JOINT_LEFT_ELBOW) );
+                named_joints[&quot;right_elbow&quot;] = (user.getSkeleton().getJoint(nite::JOINT_RIGHT_ELBOW) );
+                named_joints[&quot;left_hand&quot;] = (user.getSkeleton().getJoint(nite::JOINT_LEFT_HAND) );
+                named_joints[&quot;right_hand&quot;] = (user.getSkeleton().getJoint(nite::JOINT_RIGHT_HAND) );
+                named_joints[&quot;torso&quot;] = (user.getSkeleton().getJoint(nite::JOINT_TORSO) );
+                named_joints[&quot;left_hip&quot;] = (user.getSkeleton().getJoint(nite::JOINT_LEFT_HIP) );
+                named_joints[&quot;right_hip&quot;] = (user.getSkeleton().getJoint(nite::JOINT_RIGHT_HIP) );
+                named_joints[&quot;left_knee&quot;] = (user.getSkeleton().getJoint(nite::JOINT_LEFT_KNEE) );
+                named_joints[&quot;right_knee&quot;] = (user.getSkeleton().getJoint(nite::JOINT_RIGHT_KNEE) );
+                named_joints[&quot;left_foot&quot;] = (user.getSkeleton().getJoint(nite::JOINT_LEFT_FOOT) );
+                named_joints[&quot;right_foot&quot;] = (user.getSkeleton().getJoint(nite::JOINT_RIGHT_FOOT) );
+
+                for (JointMap::iterator it=named_joints.begin(); it!=named_joints.end(); ++it){
+                    line += &quot;,&quot; + SSTR(it-&gt;second.getPosition().x) + &quot;,&quot; + SSTR(it-&gt;second.getPosition().y) +&quot;,&quot; + SSTR(it-&gt;second.getPosition().z);
+                    //printf(&quot;%s\n&quot;, it-&gt;first.c_str());
+                    publishJointTF(nh,br,it-&gt;first,it-&gt;second,tf_prefix,relative_frame,user.getId());
+                }
+                //line = SSTR(named_joints[&quot;left_hand&quot;].getPosition().x) + &quot;,&quot; + SSTR(named_joints[&quot;left_hand&quot;].getPosition().y) + &quot;,&quot; + SSTR(named_joints[&quot;left_hand&quot;].getPosition().z);
+                /*
+                std::string foo = &quot;right_hand&quot;;
+                float coordinates[2] = {0};
+                userTracker.convertJointCoordinatesToDepth(named_joints[foo.c_str()].getPosition().x, named_joints[foo.c_str()].getPosition().y, named_joints[foo.c_str()].getPosition().z, &amp;coordinates[0], &amp;coordinates[1]);
+
+                g_nXRes = depthFrame.getVideoMode().getResolutionX();
+                g_nYRes = depthFrame.getVideoMode().getResolutionY();
+                //printf(&quot;%f %f %d %d\n&quot;, coordinates[0], coordinates[1], g_nXRes, g_nYRes);
+                //nite::SkeletonJoint joint1 = userData.getSkeleton().getJoint(nite::JOINT_LEFT_HAND);
+                coordinates[0] *= GL_WIN_SIZE_X/g_nXRes;
+                coordinates[1] *= GL_WIN_SIZE_Y/g_nYRes;
+                */
+
+                //line += &quot;\n&quot;;
+                //printf(&quot;%f %f %f\n&quot;, named_joints[&quot;left_hand&quot;].getPosition().x, named_joints[&quot;left_hand&quot;].getPosition().y, named_joints[&quot;left_hand&quot;].getPosition().z);
+                //printf(&quot;%s\n&quot;, line.c_str());
+
+                fp_skeleton.open(filename_skeleton.c_str(), std::ios::app);
+                fp_skeleton &lt;&lt; line &lt;&lt; std::endl;
+                fp_skeleton.close();
+
+                cv::imshow(&quot;User Image&quot;, mImageBGR);                
+                filename_color = path + prefix + SSTR(i) + ext;
+                //printf(&quot;%s\n&quot;, filename_color.c_str());
+                imwrite(filename_color.c_str(), mImageBGR);
+                pnh.setParam(&quot;frame_counter&quot;, ++i);
+            }
+        }
+        rate.sleep();
+
+        // check keyboard
+        if( cv::waitKey( 1 ) == &#39;q&#39; )
+            break;
+    }
+    fp_skeleton.close();
+    vsColorStream.stop();
+    devDevice.close();
+    nite::NiTE::shutdown();
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/215">Yianni</a> on 2015-05-05 09:18:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi Yianni!
+Unfortunately it gives me the error:</p>
+
+<pre><code>[ERROR] [1430909562.362226973]: Can&#39;t Open Device:
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-05-06 05:54:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hi @Chaos Please use ATtags otherwise it was fluke I saw this comment. Does the &quot;original/unmodified&quot; openni2_tracker run fine? <code>roslaunch openni2_tracker tracker.launch</code> Bear in mind that the above is a snippet rather than the complete file. If you need the complete file I can post it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/215">Yianni</a> on 2015-05-06 07:15:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Yianni The original node works fine. 
+Actually, starting from your suggestion, I&#39;m working on it. I managed to make the node run by adding:</p>
+
+<pre><code>nite::NiTE::initialize();
+</code></pre>
+
+<p>Unfortunately, it&#39;s still not working. Anyway, I&#39;m still working on it</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-05-06 07:39:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Chaos Although it is not ideal to put not cleaned up code,  I updated my answer with my complete file that runs fine, for me at least :). Feel free to use it. Make sure you read the bold text as you need to change a couple of variables.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/215">Yianni</a> on 2015-05-06 09:41:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Yianni Thank you very much! Thanks to your code I managed the openni2_tracker node to publish also the captured video stream! Your help was extremely useful!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-05-07 04:16:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Chaos Glad it worked :). Out of curiosity do you save as raw format the images or in some other format such as jpg/png?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/215">Yianni</a> on 2015-05-08 10:07:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Yianni Actually I&#39;m not saving the images. I&#39;m just streaming the video over ros. Now I&#39;m trying to publish also the point cloud.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-05-08 10:43:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@chaos This might be of general interest. Do you have it anywhere in a public repository?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/215">Yianni</a> on 2015-05-18 03:45:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Yianni I don&#39;t have a public access repository. I will create it and share the link ASAP.
+PS: I did it! Now the node publishes the video stream and the Point cloud, as well as the skeleton.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-05-18 04:06:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Yianni: here&#39;s the <a href="https://github.com/Chaos84/skeleton_tracker.git">link</a> for cloning the repo.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/15091">Chaos</a> on 2015-05-18 05:30:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Chaos Nice one! Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/215">Yianni</a> on 2015-05-18 07:45:26 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

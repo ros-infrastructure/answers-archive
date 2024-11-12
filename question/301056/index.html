@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2: rviz in docker container - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/301056">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2: rviz in docker container</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88607/ros2-rviz-in-docker-container">https://robotics.stackexchange.com/questions/88607/ros2-rviz-in-docker-container</a>.</p>
+        <p>Hi,</p>
+
+<p>I&#39;m trying to use Rviz2 from within a Docker container.</p>
+
+<p>I&#39;m working on top of this Docker image</p>
+
+<pre><code>FROM osrf/ros2:bouncy-desktop
+</code></pre>
+
+<p>This is my run script </p>
+
+<pre><code>#!/bin/bash
+
+XSOCK=/tmp/.X11-unix
+XAUTH=/tmp/.docker.xauth
+
+touch $XAUTH
+
+xauth nlist $DISPLAY | sed -e &#39;s/^..../ffff/&#39; | xauth -f $XAUTH nmerge -
+
+docker run -it --rm \
+ -e XAUTHORITY=${XAUTH} \
+ -e DISPLAY=$DISPLAY \
+ -e QT_GRAPHICSSYSTEM=native \
+ -v $XSOCK:$XSOCK:rw \
+ -v $XAUTH:$XAUTH:rw \
+ ros2_docker \
+ bash
+</code></pre>
+
+<p>Everything works fine, but then I needed to make the Docker container communicate with other machines on the host network.
+I accomplished that by adding the following option to docker run
+<code>--net=host \</code></p>
+
+<p>This solves the connectivity issue, but has the side effect of making rviz not working anymore.
+If I try to run rviz, I only get the following error.</p>
+
+<pre><code> ros2 run rviz2 rviz2
+
+QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to &#39;/tmp/runtime-root&#39;
+dbus[1041]: The last reference on a connection was dropped without closing the connection. This is a bug in an application. See dbus_connection_unref() documentation for details.
+Most likely, the application was supposed to call dbus_connection_close(), since this is a private connection.
+  D-Bus not built with -rdynamic so unable to print a backtrace
+</code></pre>
+
+<p>Any idea about how to fix this? Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30341">alsora</a> on 2018-08-20 15:11:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>That&#39;s peculiar. I&#39;m using nvidia docker, yet I can reproduce your rviz(1 or 2) <code>XDG_RUNTIME_DIR</code> error when adding <code>--net=host</code> for both melodic and bouncy images.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2018-08-20 16:10:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p><code>XDG_RUNTIME_DIR</code> doesn&#39;t seem to be necessary the issue, given it otherwise would normally default to something like  <code>&#39;/tmp/runtime-root&#39;</code>. The privilege issue with managing the dbus connection seem to be the setback here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2018-08-20 16:31:06 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I&#39;m not yet totally sure yet as to why, but it appears that using the host network driver then necessitates adding the privileged flag if one also wishes to use the host&#39;s X11 unix socket simultaneously. I.e. just add <code>--privileged</code> upon using <code>--net=host</code> with the docker run command when expecting to forward containerised GUIs to the host&#39;s X11 display.</p>
+
+<p>A small example I used to check this:</p>
+
+<h2>Dockerfile</h2>
+
+<pre><code>FROM osrf/ros2:bouncy-desktop
+
+# nvidia-container-runtime
+ENV NVIDIA_VISIBLE_DEVICES \
+    ${NVIDIA_VISIBLE_DEVICES:-all}
+ENV NVIDIA_DRIVER_CAPABILITIES \
+    ${NVIDIA_DRIVER_CAPABILITIES:+$NVIDIA_DRIVER_CAPABILITIES,}graphics
+</code></pre>
+
+<h2>run.bash</h2>
+
+<pre><code>#!/bin/bash
+
+XSOCK=/tmp/.X11-unix
+
+docker run -it --rm \
+ --runtime=nvidia \
+ -e DISPLAY=$DISPLAY \
+ -v $XSOCK:$XSOCK \
+ -v $HOME/.Xauthority:/root/.Xauthority \
+ --privileged \
+ --net=host \
+ osrf/ros2:bouncy-desktop-nvidia &quot;$@&quot;
+</code></pre>
+
+<h2>terminal</h2>
+
+<pre><code>docker build -t osrf/ros2:bouncy-desktop-nvidia .
+bash run.bash ros2 run rviz2 rviz2
+</code></pre>
+
+<p>Note that if you&#39;re not using nvidia, you can use intel&#39;s embedded graphics just as well instead:<br>
+<a href="http://wiki.ros.org/docker/Tutorials/Hardware%20Acceleration#Intel">http://wiki.ros.org/docker/Tutorials/Hardware%20Acceleration#Intel</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5234"></a> on 2018-08-20 16:22:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@ruffsl - did you ever figure out why <code>--privileged</code> was needed in this case? We use <code>--net=host</code> and we see gazebo, rviz, and rqt fail with that same dbus error message unless we  use the <code>--privileged</code> flag. I&#39;d like to avoid running containers in privileged mode if at all possible, but i haven&#39;t yet found another workaround.  This feels potentially related to <a href="https://bugs.launchpad.net/ubuntu/+source/qtbase-opensource-src/+bug/1774739">https://bugs.launchpad.net/ubuntu/+source/qtbase-opensource-src/+bug/1774739</a> , but we&#39;re on a much newer version of docker now (19.03.8)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3292">jbinney</a> on 2020-05-11 17:06:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Update: i managed to workaround the problem by downloading the newest docker seccomp config from <a href="https://raw.githubusercontent.com/moby/moby/master/profiles/seccomp/default.json">https://raw.githubusercontent.com/moby/moby/master/profiles/seccomp/default.json</a> and passing it to &quot;docker run&quot; using &quot; --security-opt seccomp=/path/to/config.json&quot;. See <a href="https://docs.docker.com/engine/security/seccomp/">https://docs.docker.com/engine/security/seccomp/</a></p>
+
+<p>This seems preferable to running with &quot;--privilieged&quot;</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3292">jbinney</a> on 2020-05-11 18:48:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Update to the update: i was wrong... that didn&#39;t fix it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3292">jbinney</a> on 2020-05-11 19:50:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ah! It was (at least for me) a problem with the default apparmor profile blocking that dbus call. Adding &quot;--security-opt apparmor:unconfined&quot; works, and seems better than &quot;--privileged&quot;. This seems to be the issue: <a href="https://github.com/moby/moby/issues/38442">https://github.com/moby/moby/issues/38442</a></p>
+
+<p>Hopefully docker/apparmor and qt sync up on this in 20.04 so that the default apparmor profile allows running QT apps in docker more easily.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3292">jbinney</a> on 2020-05-12 01:02:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Wow, that&#39;s a deep rabbit hole. Still looks like a pain to patch and document everyware. Is this still needed for Ubuntu 20.04, or have you not gotten around to trying it out on the latest distro?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2020-05-14 00:54:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@ruffsl i haven&#39;t tried 20.04 yet - I&#39;ll update this issue when i do (might be a while)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3292">jbinney</a> on 2020-05-14 17:22:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@jbinney, what are you running as the host. I can run <code>rocker --nvidia --x11 --network host osrf/ros2:nightly &#39;bash -c &quot;. /opt/ros/foxy/setup.bash &amp;&amp; rviz2&quot;&#39;</code> successfully</p>
+
+<p>which runs <code>docker run -it   --rm    --network host   --gpus all  -e DISPLAY -e TERM   -e QT_X11_NO_MITSHM=1   -e XAUTHORITY=/tmp/.docker.xauth -v /tmp/.docker.xauth:/tmp/.docker.xauth   -v /tmp/.X11-unix:/tmp/.X11-unix   -v /etc/localtime:/etc/localtime:ro    cdfc90f87eb4 bash -c &quot;. /opt/ros/foxy/setup.bash &amp;&amp; rviz2&quot;</code> </p>
+
+<p>With a host of 18.04</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2020-05-14 17:36:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@jbinney repeated all you step to start the container, still same error exist. I am using a non-root user (id 1000).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50229">ThomasL624</a> on 2022-11-28 23:11:39 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rclpy BufferClient strange timeout on lookup_transform - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/381983">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rclpy BufferClient strange timeout on lookup_transform</h2>
+      <div class="question">
+        <p><strong>System Info:</strong></p>
+
+<ul>
+<li>Operating System:
+
+<ul>
+<li>Docker + Ubuntu 20.04</li>
+</ul></li>
+<li>Installation type:
+
+<ul>
+<li>From binaries</li>
+</ul></li>
+<li>Version or commit hash:
+
+<ul>
+<li>Foxy</li>
+</ul></li>
+<li>DDS implementation:
+
+<ul>
+<li>Fast-RTPS</li>
+</ul></li>
+</ul>
+
+<h2>Steps to reproduce issue</h2>
+
+<p>Calling <code>BufferClient.lookup_transform</code> always timeouts although if I call the buffer server via ros2 cli it works. </p>
+
+<p>TestNode </p>
+
+<p>Create a node like the following:</p>
+
+<pre><code>#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from tf2_ros.buffer_client import BufferClient
+from rclpy.duration import Duration
+from std_msgs.msg import Empty
+
+class TestNode(Node):
+    def __init__(
+        self,
+    ):
+        super().__init__(&quot;test_node&quot;)
+        self.cb_group = None
+        self.buffer = BufferClient(
+            self,
+            &quot;/tf2_buffer_server&quot;,
+            timeout_padding=1.0,
+            callback_group=self.cb_group,
+        )
+        self.sub = self.create_subscription(
+            msg_type=Empty,
+            topic=&quot;/test_buffer_client&quot;,
+            callback=self.buffer_cb,
+            qos_profile=1,
+        )
+
+    def buffer_cb(self, msg):
+        _ = self.buffer.lookup_transform(
+            &quot;map&quot;,
+            &quot;odom&quot;,
+            rclpy.time.Time(seconds=0, nanoseconds=0),
+            timeout=Duration(seconds=1.0),
+        )
+        self.get_logger().info(&quot;Success&quot;)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TestNode()
+    executor = None
+    rclpy.spin(node, executor)
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<p>Make sure the buffer server is already running (<code>ros2 run tf2_ros buffer_server</code>) and there is a valid transform between map-&gt;odom (it could be as simple as an identity transform -&gt; <code>ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0  map odom</code>). </p>
+
+<p>Then publish to the topic that calls <code>BufferClient.lookup_transform</code>.</p>
+
+<pre><code>ros2 topic pub -1 /test_buffer_client std_msgs/msg/Empty
+</code></pre>
+
+<p>The traceback is:</p>
+
+<pre><code>Traceback (most recent call last):
+  File &quot;/workspace/rover/ros2/install/navigation/lib/navigation/navigation_test&quot;, line 33, in &lt;module&gt;
+    sys.exit(load_entry_point(&#39;navigation&#39;, &#39;console_scripts&#39;, &#39;navigation_test&#39;)())
+  File &quot;/workspace/rover/ros2/build/navigation/navigation/node_test.py&quot;, line 53, in main
+    rclpy.spin(node, executor)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/__init__.py&quot;, line 191, in spin
+    executor.spin_once()
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 711, in spin_once
+    raise handler.exception()
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/task.py&quot;, line 239, in __call__
+    self._handler.send(None)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 426, in handler
+    await call_coroutine(entity, arg)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 351, in _execute_subscription
+    await await_or_execute(sub.callback, msg)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py&quot;, line 118, in await_or_execute
+    return callback(*args)
+  File &quot;/workspace/rover/ros2/build/navigation/navigation/node_test.py&quot;, line 33, in buffer_cb
+    _ = self.buffer.lookup_transform(
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/tf2_ros/buffer_client.py&quot;, line 87, in lookup_transform
+    return self.__process_goal(goal)
+  File &quot;/opt/ros/foxy/lib/python3.8/site-packages/tf2_ros/buffer_client.py&quot;, line 201, in __process_goal
+    raise tf2.TimeoutException(&quot;The LookupTransform goal sent to the BufferServer did not come back in the specified time. Something is likely wrong with the server&quot;)
+tf2.TimeoutException: The LookupTransform goal sent to the BufferServer did not come back in the specified time. Something is likely wrong with the server
+</code></pre>
+
+<h3>Expected behavior</h3>
+
+<p>It shouldn&#39;t crash since it works with the ros2 cli. If you use the following it works:</p>
+
+<pre><code>ros2 action send_goal /tf2_buffer_server tf2_msgs/action/LookupTransform &#39;{target_frame: map, source_frame: odom}&#39;
+</code></pre>
+
+<h3>Actual behavior</h3>
+
+<p>It timeouts every time.</p>
+
+<h3>Additional notes</h3>
+
+<p>I modified <a href="https://github.com/ros2/geometry2/blob/ros2/tf2_ros_py/tf2_ros/buffer_client.py#L61">https://github.com/ros2/geometry2/blob/ros2/tf2_ros_py/tf2_ros/buffer_client.py#L61</a> to accept also a callback group that is passed to the <code>ActionClient</code>. Then, in the <code>TestNode</code> example above I set the <code>self.cb_group=ReentrantCallbackGroup()</code> and the executor to be a <code>MultiThreadedExecutor</code>. Only that way it works.</p>
+
+<p>I am missing something?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/64524">charlie92</a> on 2021-07-07 15:22:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Robot link and Robot attached collision in MoveIt! - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/300637">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Robot link and Robot attached collision in MoveIt!</h2>
+      <div class="question">
+        <p>I&#39;m trying to grasp an object on a table, attach it to the hand, and drop it off somewhere else with the Jaco2 robotic arm.
+Grasping works fine: I attach the object and close the grippers, which leads me to believe the collision is (correctly!) ignored for gripping the object, but as soon as I want to drop it, I often get the following error.</p>
+
+<pre><code>[INFO] Found a contact between &#39;cup&#39; [Robot attached] and &#39;jaco_finger_tip_1&#39; [Robot link] 
+
+[WARN] Start State seems to be in collision with respect to group arm.
+</code></pre>
+
+<p>This happens in 1 out of 5 times, I would say. The Planner I use is RTTConnectkDefaultConfig.</p>
+
+<p>I am sure, that the object is attached, for multiple reasons:</p>
+
+<p>a. I have a fixed tabletop already in the planning scene. If i don&#39;t lower it a cm or so lower than it actually is, I get this error: </p>
+
+<p><code>[INFO] Found a contact between &#39;cup&#39; [Robot attached] and &#39;jaco_finger_tip_1&#39; [Robot link]</code></p>
+
+<p>b. I check again and again with the move_group interface, if object exists and if it is attached. I get no error messages here</p>
+
+<pre><code>  auto all_objects = planning_scene_interface_.getObjects();
+  if (all_objects.find(box.description) == all_objects.end()) {
+    ROS_ERROR_STREAM(&quot;Object &quot; &lt;&lt; box.description &lt;&lt; &quot; hasn&#39;t been created&quot;);
+    return;
+  }
+//  moveit_visuals_.attachObstacle(box);
+  auto all_attached_objects = planning_scene_interface_.getAttachedObjects();
+  if (all_attached_objects.find(box.description) != all_attached_objects.end()) {
+    ROS_WARN_STREAM(&quot;Object &quot; &lt;&lt; box.description &lt;&lt; &quot; is already attached&quot;);
+    return;
+  }
+
+  ROS_STATUS(&quot;Attaching obstacle &quot; &lt;&lt; box.description);
+  move_group_.attachObject(box.description);
+</code></pre>
+
+<p>Adding objects to the planning scene works fine:</p>
+
+<pre><code>  const auto&amp; pose_goal = goal-&gt;pose_goal;
+  const auto&amp; box = goal-&gt;bounding_box;
+
+  moveit_msgs::CollisionObject collision_object;
+  collision_object.header.frame_id = move_group_.getPlanningFrame();
+  collision_object.id = box.description;
+
+  shape_msgs::SolidPrimitive primitive;
+  primitive.type = primitive.BOX;
+  primitive.dimensions.resize(3);
+  primitive.dimensions[0] = box.dimensions.x;
+  primitive.dimensions[1] = box.dimensions.y;
+  primitive.dimensions[2] = box.dimensions.z;
+
+  geometry_msgs::PointStamped out_pt;
+  geometry_msgs::PointStamped in_pt;
+  in_pt.header = box.header;
+  in_pt.point = box.point;
+
+  // transform point
+  try {
+    tf_listener_.waitForTransform(&quot;root&quot;, box.header.frame_id, box.header.stamp, ros::Duration(1));
+    tf_listener_.transformPoint(&quot;root&quot;, in_pt, out_pt);
+  }
+  catch (tf::TransformException &amp;exception) {
+    ROS_INFO_STREAM(&quot;Transform failed. Why? - &quot; &lt;&lt; exception.what());
+  }
+
+  geometry_msgs::Pose pose;
+  pose.position.x = out_pt.point.x;
+  pose.position.y = out_pt.point.y;
+  pose.position.z = out_pt.point.z;
+  pose.orientation.w = 1.0;
+
+  collision_object.operation = collision_object.ADD;
+  collision_object.primitives.push_back(primitive);
+  collision_object.primitive_poses.push_back(pose);
+
+  std::vector&lt;moveit_msgs::CollisionObject&gt; collision_objects;
+  collision_objects.push_back(collision_object);
+  planning_scene_interface_.addCollisionObjects(collision_objects);
+
+  ROS_STATUS(&quot;Added Object &quot; &lt;&lt; box.description);
+</code></pre>
+
+<p>detaching/attaching in accordance with tutorials</p>
+
+<pre><code>void JacoManipulationServer::attachObstacle(const jaco_manipulation::BoundingBox &amp;box) {
+  ROS_STATUS(&quot;Attaching obstacle &quot; &lt;&lt; box.description);
+  move_group_.attachObject(box.description);
+}
+
+void JacoManipulationServer::detachObstacle(const jaco_manipulation::BoundingBox &amp;box) {
+  ROS_STATUS(&quot;Detaching obstacle &quot; &lt;&lt; box.description);
+  move_group_.detachObject(box.description);
+}
+</code></pre>
+
+<p>this is my gripping code</p>
+
+<pre><code> addObstacle(goal);
+
+  bool moved = planAndMove(goal-&gt;pose_goal);
+  if (!moved) return false;
+
+  attachObstacle(goal-&gt;bounding_box);
+  closeGripper();
+
+  ROS_STATUS(&quot;Gripper closed. Object grasped.&quot;);
+
+  return true;
+</code></pre>
+
+<p>where i add the obstacle (code above), let moveit do planning and moeving towards goal, attach the obstacle, so it can be gripped, and close the gripper.</p>
+
+<p>Similarly, for dropping</p>
+
+<pre><code> bool moved = planAndMove(goal-&gt;pose_goal);
+  if (!moved) {
+    openGripper();
+    detachObstacle(goal-&gt;bounding_box);
+    return false;
+  }
+
+  openGripper();
+  detachObstacle(goal-&gt;bounding_box);
+
+  ROS_STATUS(&quot;Gripper opened. Object dropped.&quot;);
+
+  return true;
+</code></pre>
+
+<p>I plan and move with moveit, open the grippers (and then detach the object, not the other way around, so opening the gripper on the detached object doesn&#39;t show collision)</p>
+
+<p>Thanks a lot for the help</p>
+
+        <div class="owner"><p>Asked by <a href="/users/33628">snowee</a> on 2018-08-15 07:49:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>did you find a solution? can u post it? i have a problem very much like this one, and i&#39;m also using planing scene interface</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52056">Wasadim</a> on 2020-02-25 04:16:23 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

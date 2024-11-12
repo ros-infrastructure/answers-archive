@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to attach the exact timestamp to &quot;/gazebo/link_states&quot; msg? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/295047">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to attach the exact timestamp to &quot;/gazebo/link_states&quot; msg?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87500/how-to-attach-the-exact-timestamp-to-gazebo-link-states-msg">https://robotics.stackexchange.com/questions/87500/how-to-attach-the-exact-timestamp-to-gazebo-link-states-msg</a>.</p>
+        <p>Hi all,</p>
+
+<p>I made a simulated <a href="https://github.com/schizzz8/lucrezio_simulation_environments">environment</a> and robot in Gazebo. Since Gazebo <a href="http://gazebosim.org/tutorials/?tut=ros_comm">publishes</a> the robot pose w.r.t. the world, I&#39;d like to use this information to &quot;simulate&quot; a localizer.</p>
+
+<p>So far, this is what I did:</p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf/tf.h&gt;
+#include &lt;tf/transform_datatypes.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;gazebo_msgs/LinkStates.h&gt;
+#include &lt;Eigen/Geometry&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+
+class PoseBroadcaster{
+public:
+  PoseBroadcaster(ros::NodeHandle nh_):
+    _nh(nh_){
+
+    _camera_pose_sub = _nh.subscribe(&quot;/gazebo/link_states&quot;,
+                                     1000,
+                                     &amp;PoseBroadcaster::cameraPoseCallback,
+                                     this);
+    _scan_sub = _nh.subscribe(&quot;/scan&quot;,
+                              1000,
+                              &amp;PoseBroadcaster::scanCallback,
+                              this);
+  }
+
+  void cameraPoseCallback(const gazebo_msgs::LinkStates::ConstPtr&amp; camera_pose_msg){
+    const std::vector&lt;std::string&gt; &amp;names = camera_pose_msg-&gt;name;
+    for(size_t i=0; i&lt;names.size(); ++i){
+      if(names[i].compare(&quot;robot::camera_link&quot;) == 0){
+        const geometry_msgs::Pose camera_pose = camera_pose_msg-&gt;pose[i];
+        _camera_transform=poseMsg2eigen(camera_pose);
+        break;
+      }
+    }
+  }
+
+  void scanCallback(const sensor_msgs::LaserScan::ConstPtr &amp;laser_msg){
+
+    ros::Time stamp = laser_msg-&gt;header.stamp;
+
+    tf::StampedTransform camera_tf;
+
+    try{
+      _listener.waitForTransform(&quot;/odom&quot;,
+                                 &quot;/camera_link&quot;,
+                                 stamp,
+                                 ros::Duration(0.5));
+      _listener.lookupTransform(&quot;/odom&quot;,
+                                &quot;/camera_link&quot;,
+                                stamp,
+                                camera_tf);
+    } catch (tf::TransformException ex){
+      ROS_ERROR(&quot;%s&quot;,ex.what());
+    }
+    Eigen::Isometry3f camera_transform = tfTransform2eigen(camera_tf);
+
+    tf::Transform odom_to_map_tf = eigen2tfTransform(_camera_transform*camera_transform.inverse());
+    _br.sendTransform(tf::StampedTransform(odom_to_map_tf, stamp, &quot;/map&quot;, &quot;/odom&quot;));
+  }
+
+  Eigen::Isometry3f tfTransform2eigen(const tf::Transform&amp; p){
+  ...
+  }
+
+  Eigen::Isometry3f poseMsg2eigen(const geometry_msgs::Pose &amp;p){
+  ...
+  }
+
+  tf::Transform eigen2tfTransform(const Eigen::Isometry3f&amp; T){
+  ...
+  }
+
+protected:
+  ros::NodeHandle _nh;
+  tf::TransformListener _listener;
+
+  tf::TransformBroadcaster _br;
+
+  ros::Subscriber _scan_sub;
+
+  ros::Subscriber _camera_pose_sub;
+  Eigen::Isometry3f _camera_transform;
+
+};
+
+int main(int argc, char **argv){
+
+  ros::init(argc, argv, &quot;pose_broadcaster_node&quot;);
+  ros::NodeHandle nh;
+
+  PoseBroadcaster dummy(nh);
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>In few words, what it does is to:</p>
+
+<ul>
+<li><p>listen to &quot;/gazebo/link_states&quot; and store the last pose</p></li>
+<li><p>subscribe to &quot;/scan&quot; topic</p></li>
+<li><p>when a scan is received, listen to the camera pose at that time istant and publish the odom-&gt;map transform to &quot;close&quot; the tree</p></li>
+</ul>
+
+<p>The main problem is that there is a delay between the moment the callback is executed and the laser scan timestamp. So, what should happen is that the pose that I get from Gazebo is more new w.r.t. to camera_link-&gt;odom transform.</p>
+
+<p>A better solution would be to use <code>message_filters::Synchronizer</code>, but since gazebo_msgs/LinkStates is not stamped, this is not possible.</p>
+
+<p>My question is: is it possible (perhaps through a Gazebo plugin) to attach a timestamp to the gazebo_msgs/LinkStates message?</p>
+
+<p>Of course also better solutions are welcome :)</p>
+
+<p>Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3511">schizzz8</a> on 2018-06-22 09:56:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Wouldn&#39;t this be a job for <code>gazebo_ros_p3d</code>? See #q222033.</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<blockquote>
+<p>No. This publishes the robot odometry. Which is different from the robot pose wrt the gazebo world.</p>
+</blockquote>
+
+<p>The code seems to indicate otherwise. See <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/905146560772a80f76d9c595b6d7346067de24a1/gazebo_plugins/src/gazebo_ros_p3d.cpp#L309-L312">here</a>. The <code>pose.position.{x, y, z}</code> elements do not get calculated, but are initialised from the <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/905146560772a80f76d9c595b6d7346067de24a1/gazebo_plugins/src/gazebo_ros_p3d.cpp#L267">world pose</a> of the configured link.</p>
+
+<p><del>If you set the <code>gaussianNoise</code> parameter to 0, it should be absolute ground truth (ie: pose in Gazebo world).</del> not even strictly necessary: noise is only added to linear and angular velocity estimates. But might be nice to do still if you want to use this as input to another node that takes <a href="https://github.com/ros-simulation/gazebo_ros_pkgs/blob/905146560772a80f76d9c595b6d7346067de24a1/gazebo_plugins/src/gazebo_ros_p3d.cpp#L333-L348">covariance</a> into account.</p>
+
+<p>Other answers (such as #q258748) also seem to confirm/suggest that.</p>
+
+<hr>
+
+<p>Edit2:</p>
+
+<blockquote>
+<p>I agree with you that this plugin is publishing the world pose of the robot. Nevertheless, if I run it (inserting the lines specified in #q258748 in my urdf) I don&#39;t have a tf between /map and /odom frame which is what I really need.</p>
+</blockquote>
+
+<p>Getting the odometry data out of Gazebo is only the first step. If you got that working, you should be able to use <a href="http://wiki.ros.org/fake_localization">fake_localization</a> to do the rest.</p>
+
+<p>The <code>base_pose_ground_truth</code> subscription would get its data from the <code>p3d</code> plugin.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2018-06-25 06:33:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>No. This publishes the robot odometry. Which is different from the robot pose wrt the gazebo world.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3511">schizzz8</a> on 2018-06-25 07:26:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I agree with you that this plugin is publishing the world pose of the robot. Nevertheless, if I run it (inserting the lines specified in #q258748 in my urdf) I don&#39;t have a tf between /map and /odom frame which is what I really need.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3511">schizzz8</a> on 2018-06-26 03:15:02 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

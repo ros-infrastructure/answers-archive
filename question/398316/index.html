@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rclpy.spin_until_future_complete() removes node from executor added by rclpy.spin() - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/398316">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rclpy.spin_until_future_complete() removes node from executor added by rclpy.spin()</h2>
+      <div class="question">
+        <p>I&#39;m writing a ROS2 <code>rclpy</code> node (using Galactic and Ubuntu 20.04LTS) that is executed using <code>rclpy.spin</code>, but also uses a<code>rclpy.spin_until_future_complete</code> for waiting for a TF transform to become available. I&#39;m having trouble with the node stopping execution, due to the <code>rclpy.spin_until_future_complete</code> unregistering the node in the <code>SingleThreadedExecutor</code>, making it stop.</p>
+
+<p>I&#39;m not sure if this is intentional, or if I&#39;m doing something unappropriate here. Initially I tried just looking up the transform using <code>lookup_transform</code> with a timeout, but this blocks the executor in whole making the TF transform callbacks not being served - therefore I&#39;m attempting to use the <code>wait_for_transform_async</code> function instead.</p>
+
+<p>I&#39;m getting this to work by replacing the <code>rclpy.spin_until_future_complete()</code> with my own using <code>rclpy.spin_once()</code>, but that seems like an unintended workaround.</p>
+
+<p>MWE:</p>
+
+<pre><code>import rclpy
+from rclpy.time import Time
+from rclpy.node import Node
+import geometry_msgs.msg as geomsgs
+import tf2_ros
+
+
+class Blah(Node):
+    def __init__(self):
+        super().__init__(&#39;blahblah&#39;)
+
+        # Set up tf
+        self.__tf_buffer = tf2_ros.Buffer()
+        self.__tf_listener = tf2_ros.TransformListener(self.__tf_buffer, self)
+
+        self.__timer = self.create_timer(
+            1., self.run_once)
+
+    def run_once(self):
+        self.get_logger().info(&#39;Running, list of nodes in executor: {}&#39;.format(self.executor.get_nodes()))
+
+        # Look up transform
+        self._lookup_transform(&#39;frame1&#39;, &#39;frame2&#39;)
+
+    def _lookup_transform(self, target_frame: str, source_frame: str) -&gt; geomsgs.TransformStamped:
+        # Wait for transform using future
+        t_trans = Time(seconds=0)
+        transform_available_future = self.__tf_buffer.wait_for_transform_async(
+            target_frame, source_frame, t_trans)
+
+        self.get_logger().info(&#39;Executor nodes before spin_until_future_complete: {}&#39;.format(self.executor.get_nodes()))
+        rclpy.spin_until_future_complete(
+            self, transform_available_future, timeout_sec=1.0)
+        self.get_logger().info(&#39;Executor nodes after spin_until_future_complete: {}&#39;.format(self.executor.get_nodes()))
+
+        # Get transform
+        try:
+            trans = self.__tf_buffer.lookup_transform(
+                target_frame, source_frame, t_trans)
+        except tf2_ros.TransformException as e:
+            self.get_logger().fatal(&#39;TF lookup exception {}&#39;.format(e))
+            raise e
+        return trans
+
+
+def main():
+    rclpy.init()
+    node = Blah()
+    rclpy.spin(node)
+    rclpy.shutdown()
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<p>Running the node, I get the following output:</p>
+
+<pre><code>[INFO] [1648739520.263017100] [blahblah]: Running, list of nodes in executor: [&lt;package.blah.Blah object at 0x7fc77e2c6a90&gt;]
+[INFO] [1648739520.263507200] [blahblah]: Executor nodes before spin_until_future_complete: [&lt;package.blah.Blah object at 0x7fc77e2c6a90&gt;]
+[INFO] [1648739520.264210100] [blahblah]: Executor nodes after spin_until_future_complete: []
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/47245">bjoernolav</a> on 2022-03-31 10:18:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Were you able to solve it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/102152">märve</a> on 2022-07-06 08:19:38 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Not really. I made it work using <code>rclpy.spin_once()</code> instead. It&#39;s probably better to use a MultiThreadedExecutor instead, and let the thread block until the transform becomes available. The TF listener uses a seaparate callback group (<a href="https://github.com/ros2/geometry2/blob/rolling/tf2_ros_py/tf2_ros/transform_listener.py#L84">https://github.com/ros2/geometry2/blob/rolling/tf2_ros_py/tf2_ros/transform_listener.py#L84</a>) - so using this approach will make the TF callback being handled by a separate thread.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/47245">bjoernolav</a> on 2022-07-12 15:06:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m assuming there is no new news on this? When you say you were able to use rclpy.spin_once(), I&#39;m assuming it was in the main loop and not used instead of rclpy.spin_until_future_complete()? Something like?:</p>
+
+<pre><code>def main():
+    rclpy.init()
+    node = MyNode()
+    while True:
+        rclpy.spin_once(node)
+    node.destroy()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>I&#39;m encountering this issue on Humble and the above seems to work as it constantly re-registers my node to spin after the internal call removes the node from the <code>spin()</code> tasks. As this behavior isn&#39;t called out in the examples (<a href="https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Writing-A-Simple-Py-Service-And-Client.html">https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Writing-A-Simple-Py-Service-And-Client.html</a>) the need to do this really feels like a bug.</p>
+
+<p>How might one use MultiThreadedExecutor to solve this?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/133851">Doom4535</a> on 2023-01-10 19:24:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Running into a very similar problem. A callback containing spin_until_future_complete( ) which executes fine the first time, but then stops responding to any future service calls after its first callback returns. Putting in a fixed 10s wait stops the problem so the culprit is spin_until_future_complete, but this &quot;workaround&quot; is far far from ideal.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/142713">SMCC94</a> on 2023-03-30 04:49:04 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

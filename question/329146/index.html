@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>In robot_localization, why does differential mode not use static transforms? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/329146">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>In robot_localization, why does differential mode not use static transforms?</h2>
+      <div class="question">
+        <p>Hello, 
+My setup is ROS Kinetic, using the kinetic level of robot<em>localization on Ubuntu 16.04
+    I am running into a problem using the differential parameter in the robot localization package. Below is my launch file and a YAML file with the parameters. I am using the differential parameter for my visual odometry which is outputting a PoseWithCovarianceStamped (I know this is unusual output for visual odometry but it is what I have) which I pass as pose0 to the ekf filter I am using (ekf</em>se_odom). I want the differential data instead so if visual odometry resets it will not start providing data based on an origin centered at its location when it re-initializes. </p>
+
+<p>However, when I turn the differential parameter on, the filter ignores a 180 degree roll I am applying with a static transform publisher (in the launch file below) from my visual odometry sensor. Thus my y-axis values get flipped and yaw changes in the wrong direction. I traced the code that handles this in the robot<em>localization package. Specifically, ros</em>filter.cpp starting at line 2542:</p>
+
+<pre><code>// Handle issues where frame_id data is not filled out properly
+// @todo: verify that this is necessary still. New IMU handling may
+// have rendered this obsolete.std::string finalTargetFrame;
+if (targetFrame == &quot;&quot; &amp;&amp; msg-&gt;header.frame_id == &quot;&quot;)
+{
+  // Blank target and message frames mean we can just
+  // use our world_frame
+  finalTargetFrame = worldFrameId_;
+  poseTmp.frame_id_ = finalTargetFrame;
+}
+else if (targetFrame == &quot;&quot;)
+{
+  // A blank target frame means we shouldn&#39;t bother
+  // transforming the data
+  finalTargetFrame = msg-&gt;header.frame_id;
+  poseTmp.frame_id_ = finalTargetFrame;
+}
+else
+{
+  // Otherwise, we should use our target frame
+  finalTargetFrame = targetFrame;
+  poseTmp.frame_id_ = (differential ? finalTargetFrame : msg-&gt;header.frame_id);
+}
+</code></pre>
+
+<p>The trinary statement on the last line seems to suggest that when differential mode is on, the source and target frames are both set to targetFrame (which I traced to be the world frame for the filter). So in my case it will cause an odom to odom transformation and thus my static transform is not used.</p>
+
+<p><strong>So my question is why is this the case? Does anybody know the reasoning behind this?</strong>
+Please let me know if any more information is needed from me.</p>
+
+<p>Launch File:</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;!-- starting middleman covariance nodes (allows setting of covarainces after data collection) --&gt;
+  &lt;rosparam command=&quot;load&quot; file=&quot;$(find tractor_localization)/params/dual_ekf_navsat_IMU.yaml&quot; /&gt;
+  &lt;node pkg=&quot;pose_covariances&quot; type=&quot;pose_covariances.py&quot; name=&quot;pose_covariances&quot; clear_params=&#39;true&#39; output=&quot;screen&quot; /&gt;
+  &lt;node pkg=&quot;imu_covariances&quot; type=&quot;imu_covariances.py&quot; name=&quot;imu_covariances1&quot; clear_params=&#39;true&#39; output=&quot;screen&quot; /&gt;
+  &lt;node pkg=&quot;pose_covariances&quot; type=&quot;pose_to_odom.py&quot; name=&quot;pose_to_odom&quot; clear_params=&#39;true&#39; output=&quot;screen&quot; /&gt;
+
+   &lt;!-- starting static transform publishers --&gt;
+  &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot;
+    name=&quot;gps_transform&quot;
+    args=&quot;0.055 -0.095 0 0 0 0 base_link gps 30&quot; /&gt; &lt;!-- should this be to the map frame?? --&gt;
+
+  &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot;
+    name=&quot;imu_transform&quot;
+    args=&quot;-0.068 -0.062 0 -1.763 0 0 base_link base_link_imu1 30&quot; /&gt;
+
+
+  &lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot;
+    name=&quot;svo_transform_odom&quot;
+    args=&quot;0.023 0.1 0 0 0 3.1415 odom cam0 30&quot; /&gt;
+
+    &lt;!-- x y z yaw pitch roll frame_id child_frame_id  period_in_ms --&gt;
+
+  &lt;!-- starting Kalman filter nodes --&gt;
+  &lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_se_odom&quot; clear_params=&quot;true&quot;/&gt;
+
+  &lt;node pkg=&quot;robot_localization&quot; type=&quot;ekf_localization_node&quot; name=&quot;ekf_se_map&quot; clear_params=&quot;true&quot;&gt;
+    &lt;remap from=&quot;odometry/filtered&quot; to=&quot;odometry/filtered_map&quot;/&gt;
+  &lt;/node&gt;
+
+  &lt;node pkg=&quot;robot_localization&quot; type=&quot;navsat_transform_node&quot; name=&quot;navsat_transform_node&quot; clear_params=&quot;true&quot;&gt;
+    &lt;remap from=&quot;odometry/filtered&quot; to=&quot;odometry/filtered_map&quot;/&gt;
+    &lt;remap from=&quot;imu/data&quot; to=&quot;imu_covar1&quot; /&gt;
+    &lt;remap from=&quot;gps/fix&quot; to=&quot;fix&quot; /&gt;
+  &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>My parameters:</p>
+
+<pre><code>ekf_se_odom:
+  frequency: 30
+  sensor_timeout: 0.1
+  two_d_mode: true
+  transform_time_offset: 0.0
+  transform_timeout: 0.0
+  print_diagnostics: true
+  debug: false
+
+  map_frame: map
+  odom_frame: odom
+  base_link_frame: base_link
+  world_frame: odom
+
+  # odom0: /odometry/svo
+  # odom0_config: [false, false, false,
+  #                false, false, false,
+  #                true,  true,  true,
+  #                false, false, false,
+  #                false, false, false]
+  # odom0_queue_size: 10
+  # odom0_nodelay: true
+  # odom0_differential: false
+  # odom0_relative: false
+
+  pose0: /pose_covar
+  pose0_config: [true, true, true,
+                true,  true,  true,
+                false, false, false,
+                false,  false,  false,
+                false,  false,  false]
+  pose0_nodelay: false
+  pose0_differential: true 
+  pose0_relative: false
+  pose0_queue_size: 10
+
+  imu0: /imu_covar1
+  imu0_config: [false, false, false,
+                true,  true,  false,
+                false, false, false,
+                true,  true,  true,
+                true,  true,  true]
+  imu0_nodelay: false
+  imu0_differential: false
+  imu0_relative: false
+  imu0_queue_size: 10
+  imu0_remove_gravitational_acceleration: true
+  reset_on_time_jump: true
+  use_control: false
+
+  process_noise_covariance: [1e-3, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    1e-3, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    1e-3, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0.1,  0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0.1,  0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0.01, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0.5,   0,     0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0.5,   0,    0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0.5,  0,    0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0,    0.3,  0,    0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.3,  0,    0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.3,  0,    0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.3,  0,    0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.3,  0,
+                             0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.3]
+
+  initial_estimate_covariance: [1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    1.0,  0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    1.0,  0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    1.0,  0,    0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    1.0,  0,    0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    1.0,  0,     0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    0,    1.0,   0,     0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     1.0,   0,     0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     1.0,   0,    0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     1.0,  0,    0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    1.0,  0,
+                                0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    1.0]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/44183">Louis Stromeyer</a> on 2019-07-23 11:50:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Let me start with defining a few things.</p>
+
+<p>First, we&#39;ll call the pose at time 0 <code>p0</code>, and the pose at time 1 <code>p1</code>. We could just as easily use <code>N</code> and <code>N+1</code>; I&#39;m just trying to refer to consecutive poses from your sensor. The measurements arrive at times <code>t0</code> and <code>t1</code>, respectively.</p>
+
+<p>Now, let&#39;s say you have a system like this:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15665797693799773.png" alt="image description"></p>
+
+<p>Here, your <em>odom</em> frame is your EKF world frame, and <em>pose_frame</em> is the pose of your robot in some other world-fixed frame. This could be from, e.g., a motion capture system, or an indoor GPS system. For this example, let&#39;s assume it comes from some sensor that is not affixed to the robot, and that measures the robot&#39;s full 3D pose. <strong>Note that these are both right-handed frames (and therefore compliant to ROS standards)</strong>; it&#39;s just that the <em>odom</em> frame has <code>z</code> pointing &quot;out&quot; of the page, and the <em>pose_frame</em> has <code>z</code> pointing &quot;into&quot; the page.</p>
+
+<p>In <code>differential</code> mode, the EKF computes a delta from two consecutive poses as:</p>
+
+<pre><code>delta1 = p0^-1 * p1
+</code></pre>
+
+<p>We then convert that to a velocity:</p>
+
+<pre><code>v1 = detla1 / (t1 - t0)
+</code></pre>
+
+<p>We then feed that data to the filter as a velocity, not as a pose.</p>
+
+<p>Note that as soon as we do that transform, both <code>delta1</code> and <code>v1</code> are no longer in the original coordinate frame. They are both actually in the <em>base_link</em> frame of the robot itself. This is correct for velocity data.</p>
+
+<p><strong>EDIT</strong>: It&#39;s really the case that differentiating two poses will produce a velocity in the sensor frame. It&#39;s just that in my example, the sensor in question is measuring the pose of the robot.</p>
+
+<p>Referring back to the figure, we can see that:</p>
+
+<ol>
+<li>In the <em>odom</em> frame, <code>p0</code> is at position <code>(2, 2, 0)</code> with Euler roll, pitch, yaw values of <code>(0, 0, 0)</code></li>
+<li>In the <em>odom</em> frame, <code>p1</code> is at position <code>(5, 4, 0)</code> with Euler roll, pitch, yaw values of <code>(0, 0, pi / 2)</code></li>
+<li>In the <em>pose_frame</em> frame, <code>p0</code> is at position <code>(14, 9, 0)</code> with Euler roll, pitch, yaw values of <code>(pi, 0, -pi/2)</code> * We&#39;ll revisit these - this is where the trouble lies</li>
+<li>In the <em>pose_frame</em> frame, <code>p1</code> is at position <code>(12, 6, 0)</code> with Euler roll, pitch, yaw values of <code>(pi, 0, pi)</code></li>
+</ol>
+
+<p>Here&#39;s a code snippet that uses <code>tf2</code> to compute the deltas:</p>
+
+<pre><code>{
+  tf2::Transform p0;
+  p0.setOrigin(tf2::Vector3(2.0, 2.0, 0.0));
+  p0.setRotation(tf2::Quaternion::getIdentity());
+
+  tf2::Transform p1;
+  tf2::Quaternion quat1;
+  quat1.setRPY(0.0, 0.0, M_PI / 2.0);
+  p1.setOrigin(tf2::Vector3(5.0, 4.0, 0.0));
+  p1.setRotation(quat1);
+
+  auto delta1 = p0.inverseTimes(p1);
+
+  double r, p, y;
+  tf2::getEulerYPR(delta1.getRotation(), y, p, r);
+  std::cout &lt;&lt; &quot;Delta is (&quot; &lt;&lt; delta1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getZ() &lt;&lt; &quot;), (&quot; &lt;&lt; r &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;)\n&quot;;
+}
+
+{
+  tf2::Transform p0;
+  tf2::Quaternion quat0;
+  quat0.setRPY(M_PI, 0.0, -M_PI / 2.0);  // Note the roll angle of pi
+  p0.setOrigin(tf2::Vector3(14.0, 9.0, 0.0));
+  p0.setRotation(quat0);
+
+  tf2::Transform p1;
+  tf2::Quaternion quat1;
+  quat1.setRPY(M_PI, 0.0, M_PI);  // Note the roll angle of pi
+  p1.setOrigin(tf2::Vector3(12.0, 6.0, 0.0));
+  p1.setRotation(quat1);
+
+  auto delta1 = p0.inverseTimes(p1);
+
+  double r, p, y;
+  tf2::getEulerYPR(delta1.getRotation(), y, p, r);
+  std::cout &lt;&lt; &quot;Delta is (&quot; &lt;&lt; delta1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getZ() &lt;&lt; &quot;), (&quot; &lt;&lt; r &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;)\n&quot;;
+}
+</code></pre>
+
+<p>The output is:</p>
+
+<pre><code>Delta is (3, 2, 0), (0, -0, 1.5708)
+Delta is (3, 2, 2.44929e-16), (-1.22465e-16, -1.22465e-16, 1.5708)
+</code></pre>
+
+<p>Those deltas are the same. So as long as the robot&#39;s pose is reported consistently in both frames, the differentiation logic will work the same. The actual transform from <code>pose_frame</code> to <code>odom</code> is irrelevant, because the differentiation puts everything in the robot&#39;s <em>base_link</em> frame.</p>
+
+<p>The issue in your case is that your sensor&#39;s coordinate frame is upside-down, but the poses it&#39;s generating for your robot assume the robot is right-side-up <em>within</em> that frame. In other words, if we revise (3) and (4) above, it would be this:</p>
+
+<ol>
+<li>In the <em>pose_frame</em> frame, <code>p0</code> is at position <code>(14, 9, 0)</code> with Euler roll, pitch, yaw values of <code>(0, 0, -pi/2)</code></li>
+<li>In the <em>pose_frame</em> frame, <code>p1</code> is at position <code>(12, 6, 0)</code> with Euler roll, pitch, yaw values of <code>(0, 0, pi)</code></li>
+</ol>
+
+<p>However, your robot is really upside-down within that frame, so its pose in that frame should have the non-zero roll angles. Contrast this with a 3D motion capture system, which, if your robot was flipped upside-down within it, would detect the roll angle.</p>
+
+<p>In any case, when we compute the new delta as</p>
+
+<pre><code>{
+  tf2::Transform p0;
+  tf2::Quaternion quat0;
+  quat0.setRPY(0.0, 0.0, -M_PI / 2.0);  // Note the roll angle of 0
+  p0.setOrigin(tf2::Vector3(14.0, 9.0, 0.0));
+  p0.setRotation(quat0);
+
+  tf2::Transform p1;
+  tf2::Quaternion quat1;
+  quat1.setRPY(0.0, 0.0, M_PI);  // Note the roll angle of 0
+  p1.setOrigin(tf2::Vector3(12.0, 6.0, 0.0));
+  p1.setRotation(quat1);
+
+  auto delta1 = p0.inverseTimes(p1);
+
+  double r, p, y;
+  tf2::getEulerYPR(delta1.getRotation(), y, p, r);
+  std::cout &lt;&lt; &quot;Delta is (&quot; &lt;&lt; delta1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getZ() &lt;&lt; &quot;), (&quot; &lt;&lt; r &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;)\n&quot;;
+}
+</code></pre>
+
+<p>we get</p>
+
+<pre><code>Delta is (3, -2, 0), (0, 0, -1.5708)
+</code></pre>
+
+<p>which is the issue you&#39;re seeing.</p>
+
+<p>While transforming the poses <em>before</em> we differentiate them will still work for the use case I want, I am not yet convinced it would work in the general case for what you want. For example:</p>
+
+<pre><code>{
+  // Transforms data to the odom frame from the pose frame
+  tf2::Transform pose_frame_to_odom;
+  tf2::Quaternion quat_pose_frame_to_odom;
+  quat_pose_frame_to_odom.setRPY(M_PI, 0.0, -M_PI / 2.0);
+  pose_frame_to_odom.setOrigin(tf2::Vector3(11.0, 16.0, 0.0));
+  pose_frame_to_odom.setRotation(quat_pose_frame_to_odom);
+
+  tf2::Transform p0;
+  tf2::Quaternion quat0;
+  quat0.setRPY(M_PI, 0.0, -M_PI / 2.0);  // Note that we have the roll angle of pi again
+  p0.setOrigin(tf2::Vector3(14.0, 9.0, 0.0));
+  p0.setRotation(quat0);
+
+  p0 = pose_frame_to_odom * p0;
+
+  double r, p, y;
+  tf2::getEulerYPR(p0.getRotation(), r, p, y);
+  std::cout &lt;&lt; &quot;p0 transformed to odom is &quot; &lt;&lt; p0.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; p0.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; r &lt;&lt; &quot;\n&quot;;
+
+  tf2::Transform p1;
+  tf2::Quaternion quat1;
+  quat1.setRPY(M_PI, 0.0, M_PI);  // Note that we have the roll angle of pi again
+  p1.setOrigin(tf2::Vector3(12.0, 6.0, 0.0));
+  p1.setRotation(quat1);
+
+  p1 = pose_frame_to_odom * p1;
+
+  tf2::getEulerYPR(p1.getRotation(), r, p, y);
+  std::cout &lt;&lt; &quot;p1 transformed to odom is &quot; &lt;&lt; p1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; p1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; r &lt;&lt; &quot;\n&quot;;
+
+  auto delta1 = p0.inverseTimes(p1);
+
+  tf2::getEulerYPR(delta1.getRotation(), r, p, y);
+  std::cout &lt;&lt; &quot;Delta is &quot; &lt;&lt; delta1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; r &lt;&lt; &quot;\n&quot;;
+}
+</code></pre>
+
+<p>This yields</p>
+
+<pre><code>p0 transformed to odom is 2, 2, -1.22465e-16, 1.22465e-16, -1.36846e-48
+p1 transformed to odom is 5, 4, 1.27036e-33, -1.6268e-32, 1.5708
+Delta is 3, 2, -1.22465e-16, -1.22465e-16, 1.5708
+</code></pre>
+
+<p>...all of which is right. However, if we zero out the roll angles again:</p>
+
+<pre><code>{
+  // Transforms data to the odom frame from the pose frame
+  tf2::Transform pose_frame_to_odom;
+  tf2::Quaternion quat_pose_frame_to_odom;
+  quat_pose_frame_to_odom.setRPY(M_PI, 0.0, -M_PI / 2.0);
+  pose_frame_to_odom.setOrigin(tf2::Vector3(11.0, 16.0, 0.0));
+  pose_frame_to_odom.setRotation(quat_pose_frame_to_odom);
+
+  tf2::Transform p0;
+  tf2::Quaternion quat0;
+  quat0.setRPY(0.0, 0.0, -M_PI / 2.0);
+  p0.setOrigin(tf2::Vector3(14.0, 9.0, 0.0));
+  p0.setRotation(quat0);
+
+  p0 = pose_frame_to_odom * p0;
+
+  double r, p, y;
+  tf2::getEulerYPR(p0.getRotation(), r, p, y);
+  std::cout &lt;&lt; &quot;p0 transformed to odom is &quot; &lt;&lt; p0.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; p0.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; r &lt;&lt; &quot;\n&quot;;
+
+  tf2::Transform p1;
+  tf2::Quaternion quat1;
+  quat1.setRPY(0.0, 0.0, M_PI);
+  p1.setOrigin(tf2::Vector3(12.0, 6.0, 0.0));
+  p1.setRotation(quat1);
+
+  p1 = pose_frame_to_odom * p1;
+
+  tf2::getEulerYPR(p1.getRotation(), r, p, y);
+  std::cout &lt;&lt; &quot;p1 transformed to odom is &quot; &lt;&lt; p1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; p1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; r &lt;&lt; &quot;\n&quot;;
+
+  auto delta1 = p0.inverseTimes(p1);
+
+  tf2::getEulerYPR(delta1.getRotation(), r, p, y);
+  std::cout &lt;&lt; &quot;Delta is &quot; &lt;&lt; delta1.getOrigin().getX() &lt;&lt; &quot;, &quot; &lt;&lt; delta1.getOrigin().getY() &lt;&lt; &quot;, &quot; &lt;&lt; y &lt;&lt; &quot;, &quot; &lt;&lt; p &lt;&lt; &quot;, &quot; &lt;&lt; r &lt;&lt; &quot;\n&quot;;
+}
+</code></pre>
+
+<p>we get this</p>
+
+<pre><code>p0 transformed to odom is 2, 2, 3.14159, 1.22465e-16, -1.58728e-48
+p1 transformed to odom is 5, 4, -3.14159, -2.46519e-32, 1.5708
+Delta is 3, -2, 2.54072e-33, -2.56585e-48, -1.5708
+</code></pre>
+
+<p>I may have made a math error in here somewhere, but I&#39;m not yet convinced that (a) there&#39;s an issue with the code, or that (b) changing the line in question will work in the general case. But I can be convinced otherwise. :)</p>
+
+<p><strong>EDIT</strong>: I think that, given another recent <a href="https://github.com/cra-ros-pkg/robot_localization/issues/482">issue</a> on the GH repo, it makes sense to just transform all pose data into the target frame, and then differentiate it. If we find that fixes your issue, great. If not, we can talk about it more.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3384"></a> on 2019-08-23 12:09:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Regardless of whether this answers the OP&#39;s question: @Tom Moore: this is a very nicely formatted, articulate and <em>very</em> extensive post. I take off my hat to you sir, and give you an imaginary +100 (which unfortunately still only counts as 10 points).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-08-24 06:24:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Related: <a href="https://github.com/cra-ros-pkg/robot_localization/issues/482">https://github.com/cra-ros-pkg/robot_localization/issues/482</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/39272">rmensing</a> on 2019-08-26 04:30:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@gvdhoorn thanks. It was as much an exercise for me to make sure I wasn&#39;t doing something stupid. And now that I&#39;ve had more time to think about it, I&#39;m not convinced that I wasn&#39;t. :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3384">Tom Moore</a> on 2019-08-26 05:06:06 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

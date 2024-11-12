@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gazebo freaks when joints hit limits - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/12695">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gazebo freaks when joints hit limits</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/37194/gazebo-freaks-when-joints-hit-limits">https://robotics.stackexchange.com/questions/37194/gazebo-freaks-when-joints-hit-limits</a>.</p>
+        <p>I&#39;m finishing up a gazebo plugin for servo control of joints.  I&#39;ve noticed that whenever a joint goes past the lower/upper limits defined in the urdf, that all joints in my model fly off to Neverland and Gazebo starts reporting NaNs for velcoities.</p>
+
+<p>This is non-idel abviously, but it&#39;s not even clear how to stop this other than putting rather large padding around the limits.  In the case where the limit is close to, the natural variance of the ODE system can cause the joints to move around in the noise and even move the joint as much as 0.001 radians from it&#39;s last position, so any padding has to be at least 0.01 radians that I&#39;m noticing now.</p>
+
+<p>Any ideas on how to get Gazebo to not freak out when a joint goes (barely) over the limits?  I generally drive my real robot to physical limits on certain kinds of joints, and I&#39;d like to simulate this in Gazebo.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/695">pbeeson</a> on 2012-01-19 12:26:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I figured out that the joint fly away because the Force was set too high.  But even if you lower the force, the joints ALL shake whenever a single joint is not in the limits (een if this is something like -1.e-7 for position with a limit of 0.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/695">pbeeson</a> on 2012-01-20 02:35:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>What you are seeing is numerical instability of your simulation.  Assuming it&#39;s a problem of numerical stiffness of your simulated system, one way to fix this problem is by making the time steps smaller - i.e. update your world file&#39;s <code>&lt;physics:ode&gt;</code> block by decreasing <code>&lt;stepTime&gt;</code>, for example:</p>
+
+<pre><code>&lt;physics:ode&gt;
+  &lt;stepTime&gt;0.00001&lt;/stepTime&gt;
+  &lt;gravity&gt;0 0 -9.8&lt;/gravity&gt;
+  &lt;cfm&gt;0.0000000001&lt;/cfm&gt;
+  &lt;erp&gt;0.2&lt;/erp&gt;
+  &lt;quickStep&gt;true&lt;/quickStep&gt;
+  &lt;quickStepIters&gt;10&lt;/quickStepIters&gt;
+  &lt;quickStepW&gt;1.3&lt;/quickStepW&gt;
+  &lt;contactMaxCorrectingVel&gt;100.0&lt;/contactMaxCorrectingVel&gt;
+  &lt;contactSurfaceLayer&gt;0.001&lt;/contactSurfaceLayer&gt;
+&lt;/physics:ode&gt;
+</code></pre>
+
+<p>Another fix is to force the constraint solver to provide a better solution of the system by increasing the number of inner iterations by increasing <code>&lt;quickstepIters&gt;</code>:</p>
+
+<pre><code>&lt;physics:ode&gt;
+  &lt;stepTime&gt;0.001&lt;/stepTime&gt;
+  &lt;gravity&gt;0 0 -9.8&lt;/gravity&gt;
+  &lt;cfm&gt;0.0000000001&lt;/cfm&gt;
+  &lt;erp&gt;0.2&lt;/erp&gt;
+  &lt;quickStep&gt;true&lt;/quickStep&gt;
+  &lt;quickStepIters&gt;1000&lt;/quickStepIters&gt;
+  &lt;quickStepW&gt;1.3&lt;/quickStepW&gt;
+  &lt;contactMaxCorrectingVel&gt;100.0&lt;/contactMaxCorrectingVel&gt;
+  &lt;contactSurfaceLayer&gt;0.001&lt;/contactSurfaceLayer&gt;
+&lt;/physics:ode&gt;
+</code></pre>
+
+<p>Note that both modifications above help stabilize simulation but slow things down as well.</p>
+
+<p>Alternatively, you can modify the joint constraint properties by tuning <strong>stopKp</strong> and <strong>stopKd</strong> for your joint (try lowering <strong>ERP</strong> at the joint limit).  For example, add this XML extension to your model urdf:</p>
+
+<pre><code>&lt;gazebo reference=&quot;your_problematic_joint&quot;&gt;
+  &lt;stopKd value=&quot;1000000.0&quot; /&gt;
+  &lt;stopKp value=&quot;1000000.0&quot; /&gt;
+&lt;/gazebo&gt;
+</code></pre>
+
+<p>Note that the relationship between time step size h, kp, kd, cfm and erp are (as extracted from ODEPhysics.cc in gazebo):</p>
+
+<pre><code>    // Compute the CFM and ERP by assuming the two bodies form a
+    // spring-damper system.
+    kp = 1.0 / (1.0 / geom1-&gt;surface-&gt;kp + 1.0 / geom2-&gt;surface-&gt;kp);
+    kd = geom1-&gt;surface-&gt;kd + geom2-&gt;surface-&gt;kd;
+    contact.surface.soft_erp = h * kp / (h * kp + kd);
+    contact.surface.soft_cfm = 1.0 / (h * kp + kd);
+</code></pre>
+
+<p>More details on the <strong>CFM</strong> and <strong>ERP</strong> parameters can be found in the <a href="http://ode-wiki.org/wiki/index.php?title=Manual:_All#Joint_error_and_the_error_reduction_parameter_.28ERP.29">ODE manual</a>.</p>
+
+<p>If you can&#39;t stabilize the system via one or all of the above suggestions, please provide</p>
+
+<ul>
+<li>Your complete model specification.</li>
+<li>Specify what kind of controller are you using  (e.g. pid force control, velocity control, ... etc.).</li>
+<li>Plots of position/velocity/force vs. time for the joint right before the instability happens will be very helpful as well.</li>
+<li>And preferably a way for others to reproduce the same issue you are seeing.</li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/91">hsu</a> on 2012-02-09 06:40:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I am trying to impelment force control using the ft sensor gazebo_ros_plugin mounted inside a joint which connects the <em>base link</em> with the <em>contact link</em> of my robot. My problem is how to specifiy the elasticity coeff. and the damping coeff. in the joint. Do you have any suggestions?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30687">Beva</a> on 2017-06-08 10:49:00 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I&#39;m currently facing a similar issue: a gimbal i&#39;m modeling rapidly oscillates when it reaches a joint limit. No reasonable amount of force could return it to acceptable joint range. </p>
+
+<p>Setting &lt;<a href="http://sdformat.org/spec?ver=1.6&elem=physics#constraints_contact_max_correcting_vel">contact_max_correcting_vel</a>&gt; to a small (1 digit) number/ or 0 fixes this issue. The default value of 100 seems to have been causing the behavior. Unfortunately this also changes the entire system behavior so this may not be a viable solution.</p>
+
+<p>I&#39;m not widely knowledgeable in this area, so I can&#39;t explain why this solution works, or confidently predict if it will work for different models.</p>
+
+<p>cheers</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35977">jstm</a> on 2018-12-03 20:56:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

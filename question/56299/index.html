@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Infra Red Sensor in Gazebo - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/56299">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Infra Red Sensor in Gazebo</h2>
+      <div class="question">
+        <p>Hi </br>
+I&#39;m using <strong>ROS electric</strong> and I want to simulate an <strong>IRSensor</strong> in <strong>Gazebo</strong>. I&#39;ve found a tutorial about creating new plugins but it works only for Fuerte. Anyone can help me to understand how to create a new controller gazebo<em>ros</em>IR similar to gazebo<em>ros</em>laser.</br></p>
+
+<p>EDIT:
+I looked at gazebo plugins and on the base of gazebo<em>ros laser I created a new package with two files:</br>
+**ir</em>controller_file.h**,</br></p>
+
+<pre><code>#ifndef GAZEBO_ROS_IR_HH
+#define GAZEBO_ROS_IR_HH
+
+#define USE_CBQ
+#ifdef USE_CBQ
+#include &lt;ros/callback_queue.h&gt;
+#include &lt;ros/advertise_options.h&gt;
+#endif
+
+#include &lt;gazebo/Controller.hh&gt;
+#include &lt;gazebo/Param.hh&gt;
+
+#include &lt;ros/ros.h&gt;
+#include &lt;boost/thread/mutex.hpp&gt;
+#include &lt;sensor_msgs/Range.h&gt;
+
+namespace gazebo
+{
+  class IRSensor;
+
+class GazeboRosIr : public Controller
+{
+  /// \brief Constructor
+  /// \param parent The parent entity, must be a Model or a Sensor
+  public: GazeboRosIr(Entity *parent);
+
+  /// \brief Destructor
+  public: virtual ~GazeboRosIr();
+
+  /// \brief Load the controller
+  /// \param node XML config node
+  protected: virtual void LoadChild(XMLConfigNode *node);
+
+  /// \brief Init the controller
+  protected: virtual void InitChild();
+
+  /// \brief Update the controller
+  protected: virtual void UpdateChild();
+
+  /// \brief Finalize the controller
+  protected: virtual void FiniChild();
+
+  /// \brief Put laser data to the ROS topic
+  private: void PutIrData();
+
+  /// \brief Keep track of number of connctions
+  private: int IrConnectCount;
+  private: void IrConnect();
+  private: void IrDisconnect();
+  private: int deprecatedIrConnectCount;
+  private: void DeprecatedIrConnect();
+  private: void DeprecatedIrDisconnect();
+
+  /// \brief The parent sensor
+  private: IRSensor *myParent;
+
+  /// \brief pointer to ros node
+  private: ros::NodeHandle* rosnode_;
+  private: ros::Publisher pub_;
+  private: ros::Publisher deprecated_pub_;
+
+  /// \brief ros message
+  private: sensor_msgs::Range irMsg;
+
+  /// \brief topic name
+  private: ParamT&lt;std::string&gt; *topicNameP;
+  private: std::string topicName;
+  private: ParamT&lt;std::string&gt; *deprecatedTopicNameP;
+  private: std::string deprecatedTopicName;
+
+  /// \brief frame transform name, should match link name
+  private: ParamT&lt;std::string&gt; *frameNameP;
+  private: std::string frameName;
+
+  /// \brief Gaussian noise
+  private: ParamT&lt;double&gt; *gaussianNoiseP;
+  private: double gaussianNoise;
+
+  /// \brief Gaussian noise generator
+  private: double GaussianKernel(double mu,double sigma);
+
+  /// \brief A mutex to lock access to fields that are used in message callbacks
+  private: boost::mutex lock;
+
+  /// \brief hack to mimic hokuyo intensity cutoff of 100
+  private: ParamT&lt;double&gt; *hokuyoMinIntensityP;
+  private: double hokuyoMinIntensity;
+
+  /// \brief for setting ROS name space
+  private: ParamT&lt;std::string&gt; *robotNamespaceP;
+  private: std::string robotNamespace;
+
+#ifdef USE_CBQ
+  private: ros::CallbackQueue ir_queue_;
+  private: void IrQueueThread();
+  private: boost::thread callback_queue_thread_;
+#endif
+
+};
+
+/** \} */
+/// @}
+
+}
+
+#endif
+</code></pre>
+
+<p>and <strong>ir<em>controller</em>file.cpp</strong></p>
+
+<pre><code>#include &lt;algorithm&gt;
+#include &lt;assert.h&gt;
+
+
+#include &lt;ir_controller_package/ir_controller_file.h&gt;
+
+#include &lt;gazebo/Sensor.hh&gt;
+#include &lt;gazebo/Global.hh&gt;
+#include &lt;gazebo/XMLConfig.hh&gt;
+#include &lt;gazebo/HingeJoint.hh&gt;
+#include &lt;gazebo/World.hh&gt;
+#include &lt;gazebo/Simulator.hh&gt;
+#include &lt;gazebo/gazebo.h&gt;
+#include &lt;gazebo/GazeboError.hh&gt;
+#include &lt;gazebo/ControllerFactory.hh&gt;
+#include &lt;gazebo/IRSensor.hh&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+
+namespace gazebo
+{
+
+GZ_REGISTER_DYNAMIC_CONTROLLER(&quot;ir_controller_package&quot;, GazeboRosIr);
+
+////////////////////////////////////////////////////////////////////////////////
+// Constructor
+GazeboRosIr::GazeboRosIr(Entity *parent)
+    : Controller(parent)
+{
+  this-&gt;myParent = dynamic_cast&lt;IRSensor*&gt;(this-&gt;parent);
+
+  if (!this-&gt;myParent)
+    gzthrow(&quot;GazeboRosIr controller requires a IR Sensor as its parent&quot;);
+
+  Param::Begin(&amp;this-&gt;parameters);
+  this-&gt;robotNamespaceP = new ParamT&lt;std::string&gt;(&quot;robotNamespace&quot;, &quot;/&quot;, 0);
+  //this-&gt;hokuyoMinIntensityP = new ParamT&lt;double&gt;(&quot;hokuyoMinIntensity&quot;, 101.0, 0);
+  this-&gt;gaussianNoiseP = new ParamT&lt;double&gt;(&quot;gaussianNoise&quot;, 0.0, 0);
+  this-&gt;topicNameP = new ParamT&lt;std::string&gt;(&quot;topicName&quot;, &quot;&quot;, 1);
+  this-&gt;deprecatedTopicNameP = new ParamT&lt;std::string&gt;(&quot;deprecatedTopicName&quot;, &quot;&quot;, 0);
+  this-&gt;frameNameP = new ParamT&lt;std::string&gt;(&quot;frameName&quot;, &quot;default_gazebo_ros_ir_frame&quot;, 0);
+  Param::End();
+
+  this-&gt;IrConnectCount = 0;
+  this-&gt;deprecatedIrConnectCount = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Destructor
+GazeboRosIr::~GazeboRosIr()
+{
+  delete this-&gt;robotNamespaceP;
+  //delete this-&gt;hokuyoMinIntensityP;
+  delete this-&gt;gaussianNoiseP;
+  delete this-&gt;topicNameP;
+  delete this-&gt;deprecatedTopicNameP;
+  delete this-&gt;frameNameP;
+  delete this-&gt;rosnode_;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Load the controller
+void GazeboRosIr::LoadChild(XMLConfigNode *node)
+{
+  this-&gt;robotNamespaceP-&gt;Load(node);
+  this-&gt;robotNamespace = this-&gt;robotNamespaceP-&gt;GetValue();
+
+  if (!ros::isInitialized())
+  {
+    int argc = 0;
+    char** argv = NULL;
+    ros::init(argc,argv,&quot;gazebo&quot;,ros::init_options::NoSigintHandler|ros::init_options::AnonymousName);
+  }
+
+  this-&gt;rosnode_ = new ros::NodeHandle(this-&gt;robotNamespace);
+
+  //this-&gt;hokuyoMinIntensityP-&gt;Load(node);
+  //this-&gt;hokuyoMinIntensity = this-&gt;hokuyoMinIntensityP-&gt;GetValue();
+  //ROS_INFO(&quot;INFO: gazebo_ros_ir plugin artifically sets minimum intensity to %f due to cutoff in hokuyo filters.&quot; , this-&gt;hokuyoMinIntensity);
+
+  this-&gt;topicNameP-&gt;Load(node);
+  this-&gt;topicName = this-&gt;topicNameP-&gt;GetValue();
+  this-&gt;deprecatedTopicNameP-&gt;Load(node);
+  this-&gt;deprecatedTopicName = this-&gt;deprecatedTopicNameP-&gt;GetValue();
+  this-&gt;frameNameP-&gt;Load(node);
+  this-&gt;frameName = this-&gt;frameNameP-&gt;GetValue();
+  this-&gt;gaussianNoiseP-&gt;Load(node);
+  this-&gt;gaussianNoise = this-&gt;gaussianNoiseP-&gt;GetValue();
+
+  if (this-&gt;topicName != &quot;&quot;)
+  {
+#ifdef USE_CBQ
+    ros::AdvertiseOptions ao = ros::AdvertiseOptions::create&lt;sensor_msgs::Range&gt;(
+      this-&gt;topicName,1,
+      boost::bind( &amp;GazeboRosIr::IrConnect,this),
+      boost::bind( &amp;GazeboRosIr::IrDisconnect,this), ros::VoidPtr(), &amp;this-&gt;ir_queue_);
+    this-&gt;pub_ = this-&gt;rosnode_-&gt;advertise(ao);
+#else
+    this-&gt;pub_ = this-&gt;rosnode_-&gt;advertise&lt;sensor_msgs::Range&gt;(this-&gt;topicName,1,
+      boost::bind( &amp;GazeboRosIr::IrConnect, this),
+      boost::bind( &amp;GazeboRosIr::IrDisconnect, this));
+#endif
+  }
+
+  if (this-&gt;deprecatedTopicName != &quot;&quot;)
+  {
+#ifdef USE_CBQ
+    ros::AdvertiseOptions ao = ros::AdvertiseOptions::create&lt;sensor_msgs::Range&gt;(
+      this-&gt;deprecatedTopicName,1,
+      boost::bind( &amp;GazeboRosIr::DeprecatedIrConnect,this),
+      boost::bind( &amp;GazeboRosIr::DeprecatedIrDisconnect,this), ros::VoidPtr(), &amp;this-&gt;ir_queue_);
+    this-&gt;deprecated_pub_ = this-&gt;rosnode_-&gt;advertise(ao);
+#else
+    this-&gt;deprecated_pub_ = this-&gt;rosnode_-&gt;advertise&lt;sensor_msgs::IrScan&gt;(this-&gt;deprecatedTopicName,1,
+      boost::bind( &amp;GazeboRosIr::DeprecatedIrConnect, this),
+      boost::bind( &amp;GazeboRosIr::DeprecatedIrDisconnect, this));
+#endif
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Initialize the controller
+void GazeboRosIr::InitChild()
+{
+  // sensor generation off by default
+  this-&gt;myParent-&gt;SetActive(false);
+#ifdef USE_CBQ
+  // start custom queue for Ir
+  this-&gt;callback_queue_thread_ = boost::thread( boost::bind( &amp;GazeboRosIr::IrQueueThread,this ) );
+#endif
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Increment count
+void GazeboRosIr::IrConnect()
+{
+  this-&gt;IrConnectCount++;
+}
+////////////////////////////////////////////////////////////////////////////////
+// Decrement count
+void GazeboRosIr::IrDisconnect()
+{
+  this-&gt;IrConnectCount--;
+
+  if (this-&gt;IrConnectCount == 0 &amp;&amp; this-&gt;deprecatedIrConnectCount == 0)
+    this-&gt;myParent-&gt;SetActive(false);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Increment count
+void GazeboRosIr::DeprecatedIrConnect()
+{
+  ROS_WARN(&quot;you are subscribing to a deprecated ROS topic %s, please change your code/launch script to use new ROS topic %s&quot;,
+           this-&gt;deprecatedTopicName.c_str(), this-&gt;topicName.c_str());
+  this-&gt;deprecatedIrConnectCount++;
+}
+////////////////////////////////////////////////////////////////////////////////
+// Decrement count
+void GazeboRosIr::DeprecatedIrDisconnect()
+{
+  this-&gt;deprecatedIrConnectCount--;
+
+  if (this-&gt;IrConnectCount == 0 &amp;&amp; this-&gt;deprecatedIrConnectCount == 0)
+    this-&gt;myParent-&gt;SetActive(false);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Update the controller
+void GazeboRosIr::UpdateChild()
+{
+  // as long as ros is connected, parent is active
+  //ROS_ERROR(&quot;debug ir count %d&quot;,this-&gt;irConnectCount);
+  if (!this-&gt;myParent-&gt;IsActive())
+  {
+    // do this first so there&#39;s chance for sensor to run 1 frame after activate
+    if ((this-&gt;IrConnectCount &gt; 0 &amp;&amp; this-&gt;topicName != &quot;&quot;) ||
+        (this-&gt;deprecatedIrConnectCount &gt; 0 &amp;&amp; this-&gt;deprecatedTopicName != &quot;&quot;))
+      this-&gt;myParent-&gt;SetActive(true);
+  }
+  else
+  {
+    this-&gt;PutIrData();
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Finalize the controller
+void GazeboRosIr::FiniChild()
+{
+  this-&gt;ir_queue_.clear();
+  this-&gt;ir_queue_.disable();
+  this-&gt;rosnode_-&gt;shutdown();
+  sleep(1);
+#ifdef USE_CBQ
+  this-&gt;callback_queue_thread_.join();
+#endif
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Put Ir data to the interface
+void GazeboRosIr::PutIrData()
+{
+ // int i, ja, jb;
+  //double ra, rb, r, b;
+  //double intensity;
+
+  //Angle maxAngle = this-&gt;myParent-&gt;GetMaxAngle();
+  //Angle minAngle = this-&gt;myParent-&gt;GetMinAngle();
+
+  //double maxRange = this-&gt;myParent-&gt;GetMaxRange();
+  //double minRange = this-&gt;myParent-&gt;GetMinRange();
+  int irCount = this-&gt;myParent-&gt;GetIRCount();
+  //int rangeCount = this-&gt;myParent-&gt;GetRangeCount();
+
+  /***************************************************************/
+  /*                                                             */
+  /*  point scan from Ir                                      */
+  /*                                                             */
+  /***************************************************************/
+  this-&gt;lock.lock();
+  // Add Frame Name
+  this-&gt;irMsg.header.frame_id = this-&gt;frameName;
+  this-&gt;irMsg.header.stamp.sec = (Simulator::Instance()-&gt;GetSimTime()).sec;
+  this-&gt;irMsg.header.stamp.nsec = (Simulator::Instance()-&gt;GetSimTime()).nsec;
+
+
+  //double tmp_res_angle = (maxAngle.GetAsRadian() - minAngle.GetAsRadian())/((double)(rangeCount -1)); // for computing yaw
+  this-&gt;irMsg.min_range = 0;
+  this-&gt;irMsg.max_range = 250;
+  //this-&gt;irMsg.angle_increment = tmp_res_angle;
+  //this-&gt;irMsg.time_increment  = 0; // instantaneous simulator scan
+  //this-&gt;irMsg.scan_time       = 0; // FIXME: what&#39;s this?
+  //this-&gt;irMsg.range_min = minRange;
+  //this-&gt;irMsg.range_max = maxRange;
+  //this-&gt;irMsg.ranges.clear();
+  //this-&gt;irMsg.intensities.clear();
+/*
+  // Interpolate the range readings from the rays
+  for (i = 0; i&lt;rangeCount; i++)
+  {
+    b = (double) i * (rayCount - 1) / (rangeCount - 1);
+    ja = (int) floor(b);
+    jb = std::min(ja + 1, rayCount - 1);
+    b = b - floor(b);
+
+    assert(ja &gt;= 0 &amp;&amp; ja &lt; rayCount);
+    assert(jb &gt;= 0 &amp;&amp; jb &lt; rayCount);
+
+    ra = std::min(this-&gt;myParent-&gt;GetRange(ja) , maxRange-minRange); // length of ray
+    rb = std::min(this-&gt;myParent-&gt;GetRange(jb) , maxRange-minRange); // length of ray
+
+    // Range is linear interpolation if values are close,
+    // and min if they are very different
+    //if (fabs(ra - rb) &lt; 0.10)
+      r = (1 - b) * ra + b * rb;
+    //else r = std::min(ra, rb);
+
+    // Intensity is averaged
+    intensity = 0.5*( this-&gt;myParent-&gt;GetRetro(ja) + (int) this-&gt;myParent-&gt;GetRetro(jb));
+*/
+    /***************************************************************/
+    /*                                                             */
+    /*  point scan from Ir                                     */
+    /*                                                             */
+    /***************************************************************/
+    //this-&gt;irMsg.ranges.push_back(std::min(r + minRange + this-&gt;GaussianKernel(0,this-&gt;gaussianNoise), maxRange));
+    //this-&gt;irMsg.intensities.push_back(std::max(this-&gt;hokuyoMinIntensity,intensity + this-&gt;GaussianKernel(0,this-&gt;gaussianNoise)));
+ // }
+  this-&gt;irMsg.range=this-&gt;myParent-&gt;GetRange(0);
+  this-&gt;irMsg.field_of_view = 0;
+  this-&gt;irMsg.radiation_type=1; 
+  // send data out via ros message
+  if (this-&gt;IrConnectCount &gt; 0 &amp;&amp; this-&gt;topicName != &quot;&quot;)
+      this-&gt;pub_.publish(this-&gt;irMsg);
+
+  if (this-&gt;deprecatedIrConnectCount &gt; 0 &amp;&amp; this-&gt;deprecatedTopicName != &quot;&quot;)
+      this-&gt;deprecated_pub_.publish(this-&gt;irMsg);
+
+  this-&gt;lock.unlock();
+
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Utility for adding noise
+double GazeboRosIr::GaussianKernel(double mu,double sigma)
+{
+  // using Box-Muller transform to generate two independent standard normally disbributed normal variables
+  // see wikipedia
+  double U = (double)rand()/(double)RAND_MAX; // normalized uniform random variable
+  double V = (double)rand()/(double)RAND_MAX; // normalized uniform random variable
+  double X = sqrt(-2.0 * ::log(U)) * cos( 2.0*M_PI * V);
+  //double Y = sqrt(-2.0 * ::log(U)) * sin( 2.0*M_PI * V); // the other indep. normal variable
+  // we&#39;ll just use X
+  // scale to our mu and sigma
+  X = sigma * X + mu;
+  return X;
+}
+
+#ifdef USE_CBQ
+////////////////////////////////////////////////////////////////////////////////
+// Put ir data to the interface
+void GazeboRosIr::IrQueueThread()
+{
+  static const double timeout = 0.01;
+
+  while (this-&gt;rosnode_-&gt;ok())
+  {
+    this-&gt;ir_queue_.callAvailable(ros::WallDuration(timeout));
+  }
+}
+#endif
+
+}
+</code></pre>
+
+<p>I added <code>rosbuild_add_library(ir_controller_lib src/ir_controller_file.cpp)</code> to my CMakeLists.txt
+</br>
+Then I defined an IR element</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+
+&lt;robot
+    xmlns:sensor=&quot;http://playerstage.sourceforge.net/gazebo/xmlschema/#sensor&quot;
+    xmlns:controller=&quot;http://playerstage.sourceforge.net/gazebo/xmlschema/#controller&quot;
+    xmlns:interface=&quot;http://playerstage.sourceforge.net/gazebo/xmlschema/#interface&quot;&gt;
+
+    &lt;macro name=&quot;erratic_ir&quot; params=&quot;parent *origin&quot;&gt;
+    &lt;joint name=&quot;my_ir_joint&quot; type=&quot;fixed&quot;&gt;
+        &lt;insert_block name=&quot;origin&quot; /&gt;
+            &lt;parent link=&quot;${parent}&quot; /&gt;
+            &lt;child link=&quot;my_ir_link&quot; /&gt; 
+    &lt;/joint&gt;
+
+    &lt;link name=&quot;my_ir_link&quot;&gt;
+            &lt;inertial&gt;
+                &lt;mass value=&quot;0.01&quot;/&gt;
+                &lt;origin xyz=&quot;0 0 0&quot; /&gt;
+                &lt;inertia ixx=&quot;0.001&quot; ixy=&quot;0.0&quot; ixz=&quot;0.0&quot;
+                         iyy=&quot;0.001&quot; iyz=&quot;0.0&quot; izx=&quot;0.0&quot;
+                         izz=&quot;0.001&quot; /&gt;
+            &lt;/inertial&gt;
+
+            &lt;visual&gt;
+               &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 0 0&quot;/&gt;
+               &lt;geometry&gt;
+                  &lt;box size=&quot;0.01 0.01 0.01&quot; /&gt;
+               &lt;/geometry&gt;
+            &lt;/visual&gt;
+
+            &lt;collision&gt;
+                &lt;origin xyz=&quot;0.0 0.0 0.0&quot; rpy=&quot;0 0 0&quot; /&gt;
+                &lt;geometry&gt;
+                    &lt;box size=&quot;0.001 0.001 0.001&quot;/&gt;
+                &lt;/geometry&gt;
+            &lt;/collision&gt;
+        &lt;/link&gt;
+
+    &lt;gazebo reference=&quot;my_ir_link&quot;&gt;
+     &lt;sensor:ir name=&quot;my_ir_sensor&quot;&gt;
+     &lt;minRange&gt;0.06&lt;/minRange&gt;
+         &lt;maxRange&gt;4.0&lt;/maxRange&gt;
+     &lt;updateRate&gt;20.0&lt;/updateRate&gt;
+        &lt;controller:ir_controller_file name=&quot;my_ir_controller&quot; plugin=&quot;libir_controller_lib.so&quot;&gt;
+          &lt;alwaysOn&gt;true&lt;/alwaysOn&gt;
+          &lt;updateRate&gt;20.0&lt;/updateRate&gt;
+      &lt;topicName&gt;my_ir/ir&lt;/topicName&gt;
+          &lt;frameName&gt;my_ir_link&lt;/frameName&gt;
+          &lt;interface:irarray name=&quot;my_ir_iface&quot; /&gt;
+        &lt;/controller:ir_controller_file&gt;
+      &lt;/sensor:ir&gt;
+    &lt;!--  &lt;turnGravityOff&gt;true&lt;/turnGravityOff&gt;  --&gt;
+      &lt;material&gt;Erratic/White&lt;/material&gt;
+    &lt;/gazebo&gt;
+
+    &lt;/macro&gt;
+&lt;/robot&gt;
+</code></pre>
+
+<p>and tried to add it to a pioneer p3dx model simulated in gazebo.</br>
+But I receive the error:</p>
+
+<blockquote>
+<p>Failed to load
+libir<em>controller</em>lib.so:
+libir<em>controller</em>lib.so: cannot open
+shared object file: No such file or
+directory</p>
+</blockquote>
+
+<p>How can I let the simulation know where the library is?</br>
+Many thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2828">camilla</a> on 2013-02-26 00:27:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please ask gazebo questions on <a href="http://answers.gazebosim.org/questions/">http://answers.gazebosim.org/questions/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2015-06-24 13:40:35 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

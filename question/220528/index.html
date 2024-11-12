@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>People detector in RGB-D pointclouds - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/220528">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>People detector in RGB-D pointclouds</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/70251/people-detector-in-rgb-d-pointclouds">https://robotics.stackexchange.com/questions/70251/people-detector-in-rgb-d-pointclouds</a>.</p>
+        <p>Hello all;</p>
+
+<p>I need to perform a people detector for security tasks in robot cells. My initial idea has been to make a ros node adapting the work from Matteo Munaro, from the PCL tutorials, as it fits quite well my initial idea:
+<a href="http://pointclouds.org/documentation/tutorials/ground_based_rgbd_people_detection.php#ground-based-rgbd-people-detection">PCL people detector</a>
+However, when I run it, I obtain continuously this error, that is, not detecting people:</p>
+
+<pre><code>[pcl::people::pcl::people::HeadBasedSubclustering::subcluster] Cluster indices have not been set!
+[DEBUG] [1446646345.599799741]:  0 people found
+[DEBUG] [1446646345.641495873]: Ground plane: 0.0261189 -0.995346 -0.0927586 1.17296
+
+No groundplane update!
+</code></pre>
+
+<p>My pointcloud has this aspect, that complies with the requirements of the algorithm:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1446805152779477.png" alt="image description"></p>
+
+<p>And my node code is also quite simple:</p>
+
+<pre><code>void initPeopleDetector(void)
+{
+    // Create classifier for people detection:  
+  groundCoeffs.resize(4);
+  personClassifier.loadSVMFromFile(clasifFile);  
+  peopleDetector.setVoxelSize(voxelSize);                                                           
+  Eigen::Matrix3f rgb_intrinsics_matrix;
+  rgb_intrinsics_matrix &lt;&lt; 525, 0.0, 319.5, 0.0, 525, 239.5, 0.0, 0.0, 1.0; 
+  peopleDetector.setIntrinsics(rgb_intrinsics_matrix);                                          
+  peopleDetector.setClassifier(personClassifier);                                                   
+  peopleDetector.setHeightLimits(minPersonHeight, maxPersonHeight);                                                     
+}
+
+void scenePointcloudCallback(const sensor_msgs::PointCloud2::ConstPtr&amp; msg)
+{
+    pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;::Ptr scene(new pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;);  
+    pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;::Ptr floor(new pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;);  
+    pcl::fromROSMsg (*msg, *scene);
+
+    sceneMutex.lock();
+
+    //floor segmentation
+    pcl::PassThrough&lt;pcl::PointXYZRGBA&gt; pass;
+
+  pass.setInputCloud (scene);
+  pass.setFilterFieldName (&quot;x&quot;);
+  pass.setFilterLimits (x_min, x_max);
+  pass.filter (*floor);
+  pass.setInputCloud (scene);
+  pass.setFilterFieldName (&quot;y&quot;);
+  pass.setFilterLimits (y_min, y_max);
+  pass.filter (*floor);
+  pass.setInputCloud (floor);
+  pass.setFilterFieldName (&quot;z&quot;);
+  pass.setFilterLimits (z_min, z_max);
+  pass.filter (*floor);
+
+    pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+  pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+  pcl::SACSegmentation&lt;pcl::PointXYZRGBA&gt; seg;
+  seg.setOptimizeCoefficients (true);
+  seg.setModelType (pcl::SACMODEL_PLANE);
+  seg.setMethodType (pcl::SAC_RANSAC);
+  seg.setDistanceThreshold (0.01);
+  seg.setInputCloud (floor);
+  seg.segment (*inliers, *coefficients);
+  groundCoeffs[0]= coefficients-&gt;values[0]; groundCoeffs[1]= coefficients-&gt;values[1];
+  groundCoeffs[2]= coefficients-&gt;values[2]; groundCoeffs[3]= coefficients-&gt;values[3];
+    ROS_DEBUG_STREAM(&quot;Ground plane: &quot; &lt;&lt; coefficients-&gt;values[0] &lt;&lt; &quot; &quot; &lt;&lt; coefficients-&gt;values[1] &lt;&lt; &quot; &quot; &lt;&lt; coefficients-&gt;values[2] &lt;&lt; &quot; &quot; &lt;&lt; coefficients-&gt;values[3]&lt;&lt;&quot; &quot;);   
+
+    //people detection      
+    std::vector&lt;pcl::people::PersonCluster&lt;pcl::PointXYZRGBA&gt; &gt; clusters;   
+  peopleDetector.setInputCloud(scene);
+  peopleDetector.setGround(groundCoeffs);                                           
+  peopleDetector.compute(clusters);      
+  //update ground
+  groundCoeffs = peopleDetector.getGround();                                            
+
+  int i=0,j=0;
+  for(std::vector&lt;pcl::people::PersonCluster&lt;pcl::PointXYZRGBA&gt; &gt;::iterator it = clusters.begin(); it != clusters.end(); ++it)
+    {
+        if(it-&gt;getPersonConfidence() &gt; minConfidence)             
+        {
+            //Centroid, min and max points
+            Eigen::Vector3f centroid = clusters[j].getCenter();
+            Eigen::Vector3f minPoints = clusters[j].getMin();
+            Eigen::Vector3f maxPoints = clusters[j].getMax();
+            //draw a marker
+            mark_cluster(centroid, minPoints, maxPoints,scene-&gt;header.frame_id, &quot;person&quot; ,i, 255, 0, 0);
+            i++;
+        }
+        j++;
+    }
+    ROS_DEBUG_STREAM(&quot; &quot;&lt;&lt; i &lt;&lt; &quot; people found&quot; &lt;&lt; &quot; &quot;);
+
+    sceneMutex.unlock();
+}
+</code></pre>
+
+<p>Could anyone give me a hint about what is wrong in the procedure?
+Is there any other method in ROS to detect people in open environments using RGB-D pointclouds? 
+I have been looking at ROS wiki, and I cannot find any suitable solution....</p>
+
+<p>Thank you all in advance,</p>
+
+<p>Alberto</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4898">altella</a> on 2015-11-06 05:26:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Looking at source (<a href="https://github.com/PointCloudLibrary/pcl/blob/master/people/include/pcl/people/impl/ground_based_people_detection_app.hpp#L383">https://github.com/PointCloudLibrary/pcl/blob/master/people/include/pcl/people/impl/ground_based_people_detection_app.hpp#L383</a>) it seems like cluster indices are output from Euclidian Clustering. The first thing I think would be no cluster output from <code>pcl::EuclideanClusterExtraction</code>. </p>
+
+<p>Can you check value of <code>voxelSize</code> parameter since it will directly affect clustering result? Also you can check <code>minPersonHeight</code> and <code>maxPersonHeight</code>. Due to a reason there may be no cluster after Euclidian Clustering, and it may result in this error.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/23527">Akif</a> on 2015-11-06 13:20:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks a lot, exactly that was the problem... my mistake with data types.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4898">altella</a> on 2015-11-09 05:18:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>ran into the same question,my data.<strong>all  float:</strong> min_height = 1.3; max_height = 2.3;min_width  = 0.1; max_width  = 8.0; voxel_size = 0.06;
+I use ***people_detector.setPersonClusterLimits(min_height, max_height, min_width, max_width) instead of setHeightLimits(min_height, max_height),help me pls</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28425">voyage</a> on 2016-11-03 05:08:17 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Hello Altela 
+i&#39;m working on my Master&#39;s project, and i need a package for people detecting and tracking, can you please give your 
+ros package of RWTH tracking and detecting or Pcl detector ??
+this is my email <a href="mailto:seifeddine.benahmed@gmail.com">seifeddine.benahmed@gmail.com</a>
+please i need your help 
+Thank you </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26941">Sifou</a> on 2016-05-20 17:25:57 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

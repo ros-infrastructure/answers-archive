@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS control: rate.sleep() blocks in rostest - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374502">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS control: rate.sleep() blocks in rostest</h2>
+      <div class="question">
+        <p>Hi, I am using the <code>diff_drive_controller</code> from ROS control on a <a href="https://github.com/fjp/diffbot">real robot hardware</a>, which is working. </p>
+
+<p>When I try to use the hardware interface and control loop in <a href="https://github.com/fjp/diffbot/tree/test-hardware_interface/diffbot_base/test">my rostest</a> (based on the <a href="https://github.com/ros-controls/ros_controllers/blob/noetic-devel/diff_drive_controller/test/diff_drive_controller.test">tests in <code>diff_drive_controller</code></a>), the execution seems to get stuck in the call to <code>rate.sleep()</code> at the end of the <code>while(ros::ok())</code> loop:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;diffbot_base/diffbot_hw_interface.h&gt;
+#include &lt;controller_manager/controller_manager.h&gt;
+
+int main(int argc, char **argv)
+{
+    // Initialize the ROS node
+    ros::init(argc, argv, &quot;diffbot_hw_interface&quot;);
+    ros::NodeHandle nh;
+
+    // Setup a separate thread that will be used to service ROS callbacks.
+    // NOTE: We run the ROS loop in a separate thread as external calls such
+    // as service callbacks to load controllers can block the (main) control loop
+    ros::AsyncSpinner spinner(3);
+    spinner.start();
+
+    // Create an instance of your robot so that this instance knows about all 
+    // the resources that are available.
+    diffbot_base::DiffBotHWInterface diffBot(nh);
+
+    // Create an instance of the controller manager and pass it the robot, 
+    // so that it can handle its resources.
+    controller_manager::ControllerManager cm(&amp;diffBot);
+
+
+    // Setup for the control loop.
+    ros::Time prev_time = ros::Time::now();
+    ros::Rate rate(10.0); // 50 Hz rate
+
+    // Blocks until shutdown signal recieved
+    while (ros::ok())
+    {
+        // Basic bookkeeping to get the system time in order to compute the control period.
+        const ros::Time     time   = ros::Time::now();
+        const ros::Duration period = time - prev_time;
+        prev_time = time;
+
+        // Execution of the actual control loop.
+        diffBot.read(time, period);
+        // If needed, its possible to define transmissions in software by calling the 
+        // transmission_interface::ActuatorToJointPositionInterface::propagate()
+        // after reading the joint states.
+        cm.update(time, period);
+        // In case of software transmissions, use 
+        // transmission_interface::JointToActuatorEffortHandle::propagate()
+        // to convert from the joint space to the actuator space.
+        diffBot.write(time, period);
+
+        //ros::spinOnce();
+
+        // All these steps keep getting repeated with the specified rate.
+        ROS_INFO_STREAM(&quot;BEFORE&quot;);
+        rate.sleep();
+        ROS_INFO_STREAM(&quot;AFTER&quot;);
+    }
+    return 0;
+}
+</code></pre>
+
+<p>This loop is basically from the original ros controls documentation mentioned in the <a href="https://vimeo.com/107507546">ROSCon 2014 talk</a> and <a href="http://docs.ros.org/en/noetic/api/hardware_interface/html/c++/">doxygen docs</a>.</p>
+
+<p>In the above code, when running <a href="https://github.com/fjp/diffbot/blob/66d8df80ad57321b876543c6536cf1ed89430899/diffbot_base/test/diffbot_base.test#L1">the rostest</a>, I see the &quot;BEFORE&quot; output but not the &quot;AFTER&quot;. Also the calls to <code>diffBot.read()</code> and <code>diffBot.write()</code> log only once.</p>
+
+<p>What is the reason that this loop cycles continuously on the real robot hardware but blocks in the rostest?</p>
+
+<p>Is this problem related to the timing issues mentioned in <a href="https://groups.google.com/g/ros-sig-robot-control/c/18VRoTEV1vM?pli=1">https://groups.google.com/g/ros-sig-robot-control/c/18VRoTEV1vM?pli=1</a> and <a href="https://github.com/PickNikRobotics/ros_control_boilerplate/issues/4">https://github.com/PickNikRobotics/ros_control_boilerplate/issues/4</a> ? Should I work with <code>clock_gettime(CLOCK_MONOTONIC, &amp;current_time);</code> or <code>std::chrono::system_clock::now();</code> instead of just <code>ros::Time::now()</code>? If so, what are the problems that might happen when using just <code>ros::Time::now()</code> like I have it done currently to compute the period?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/9816">fjp</a> on 2021-03-22 15:53:42 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>What is the reason that this loop cycles continuously on the real robot hardware but blocks in the rostest?</p>
+</blockquote>
+
+<p>Just found out that the blocking inside <code>rate.sleep()</code> happens because of <code>use_sim_time = true</code>, which is set in the <a href="https://github.com/fjp/diffbot/blob/66d8df80ad57321b876543c6536cf1ed89430899/diffbot_base/test/diffbot_common.launch#L3">common test launch file</a>.</p>
+
+<p>When I don&#39;t set <code>use_sim_time</code>, then the loop iterates continuously, but I guess it would be better to work with the <code>/clock</code> topic in tests. Like it is done in your tests, e.g. here in <a href="https://github.com/ros-controls/ros_controllers/blob/a075bc36ebf5b81a7dafe911907cc1b781dd0185/diff_drive_controller/test/diffbot.cpp#L49">diffbot.cpp</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/9816">fjp</a> on 2021-03-22 18:21:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Regarding my second question, I would still be interested to know, if using only <code>ros::Time::now()</code> should be avoided and an implementation similar to <a href="https://github.com/PickNikRobotics/ros_control_boilerplate">PickNikRobotics/ros_control_boilerplate</a> is the recommended way? Thank</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/9816">fjp</a> on 2021-03-22 18:21:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why is the Future 'done callback' order reversed? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/367290">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why is the Future 'done callback' order reversed?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/97792/why-is-the-future-done-callback-order-reversed">https://robotics.stackexchange.com/questions/97792/why-is-the-future-done-callback-order-reversed</a>.</p>
+        <p>I&#39;d like to attach multiple callbacks to a <code>Future</code> provided by a <code>ClientGoalHandle</code>. However, when I do this I find that the callbacks are being called in reverse order. I&#39;m a little stumped as to why this is happening. When I look through the code for <code>rclpy.executor</code> or <code>rclpy.task</code> I can only see <code>for callback in callbacks</code>.</p>
+
+<p>Here&#39;s a snippet from my code:</p>
+
+<pre><code>@property
+def logger(self):
+    return self._node.get_logger()
+
+def foo(self, *args, **kwargs):
+    self.logger.info(&#39;foo&#39;)
+
+def bar(self, *args, **kwargs):
+    self.logger.info(&#39;bar&#39;)
+
+def baz(self, *args, **kwargs):
+    self.logger.info(&#39;baz&#39;)
+
+def qux(self, *args, **kwargs):
+    self.logger.info(&#39;qux&#39;)
+
+def next(self) -&gt; Optional[Future]:
+    self._clear_cache()
+    if self.goal_handle is not None:
+        self.logger.info(&quot;Cancelling current guidance.&quot;)
+        future = self.goal_handle.cancel_goal_async()
+        future.add_done_callback(self.foo)
+        future.add_done_callback(self.bar)
+
+        self._goal_future.add_done_callback(self.baz)
+        self._goal_future.add_done_callback(self.qux)
+
+        return self._goal_future
+    else:
+        return None
+</code></pre>
+
+<p>Here is the console readout in which you can see <code>bar</code> is called before <code>foo</code> and <code>qux</code> is called before <code>baz</code>:</p>
+
+<blockquote>
+<p>[simple<em>state</em>machine-2] [INFO] [1607502712.297026172] [state]: [GoalState] Cancelling current guidance.<br>
+[velocity<em>controller-3] [INFO] [1607502712.301784151] [vel</em>ctrl]: Received cancel request.<br>
+[simple<em>state</em>machine-2] [INFO] [1607502712.302841057] [state]: [GoalState] bar<br>
+[simple<em>state</em>machine-2] [INFO] [1607502712.303296070] [state]: [GoalState] foo<br>
+[velocity<em>controller-3] [INFO] [1607502712.397141220] [vel</em>ctrl]: Guidance cancelled.<br>
+[velocity<em>controller-3] [INFO] [1607502712.398128136] [vel</em>ctrl]: Goal status: 5.<br>
+[simple<em>state</em>machine-2] [INFO] [1607502712.399765926] [state]: [GoalState] qux<br>
+[simple<em>state</em>machine-2] [INFO] [1607502712.400109978] [state]: [GoalState] baz<br>
+[simple<em>state</em>machine-2] [WARN] [1607502712.400789882] [state]: [GoalState] Navigation ended with goal status code: 5 and guidance status code: 0.  </p>
+</blockquote>
+
+<p>I can &#39;fix&#39; this by reversing the future callback order:</p>
+
+<pre><code>with future._lock:
+    future._callbacks.reverse()
+</code></pre>
+
+<p>But it feels like a hack to mess around with private variables within the future class. Any ideas?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/56482">SmallJoeMan</a> on 2020-12-09 03:46:51 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>There are two modes that future callbacks are called. Either they&#39;re called directly by the future, or they&#39;re scheduled with an executor. It&#39;s up to the executor to decide what order to call them in.</p>
+
+<p>This example creates a future without an executor.</p>
+
+<pre><code>from functools import partial
+from rclpy.task import Future
+
+def callback(name, future):
+    print(f&quot;I am callback {name}&quot;)
+
+f = Future()
+f.add_done_callback(partial(callback, &#39;alice&#39;))
+f.add_done_callback(partial(callback, &#39;bob&#39;))
+f.add_done_callback(partial(callback, &#39;charlie&#39;))
+f.set_result(&quot;foobar&quot;)
+</code></pre>
+
+<p>It calls done callbacks in the order they&#39;re added</p>
+
+<pre><code>I am callback alice
+I am callback bob
+I am callback charlie
+</code></pre>
+
+<p>This future <a href="">schedules callbacks with a SingleThreadedExecutor</a>.</p>
+
+<pre><code>import rclpy
+from rclpy.executors import SingleThreadedExecutor
+
+rclpy.init()
+s = SingleThreadedExecutor()
+f = Future(executor=s)
+
+f.add_done_callback(partial(callback, &#39;amy&#39;))
+f.add_done_callback(partial(callback, &#39;brice&#39;))
+f.add_done_callback(partial(callback, &#39;cole&#39;))
+f.set_result(&quot;foobar&quot;)
+
+s.spin_once()
+s.spin_once()
+s.spin_once()
+s.spin_once()
+
+rclpy.shutdown()
+</code></pre>
+
+<p>It happens to call them in reverse.</p>
+
+<pre><code>I am callback cole
+I am callback brice
+I am callback amy
+</code></pre>
+
+<p>They&#39;re reversed because <a href="https://github.com/ros2/rclpy/blob/22816b41f66bcdb20adcca0b92fb7c8149710297/rclpy/rclpy/executors.py#L478-L483">the executor checks which tasks are ready in reverse</a>. Reversing the order means if an old task has <code>yield</code>&#39;d or <code>await</code>&#39;d because it&#39;s waiting for something to happen, then a new task (<a href="https://github.com/ros2/rclpy/blob/22816b41f66bcdb20adcca0b92fb7c8149710297/rclpy/rclpy/executors.py#L199">appended to the end of the task list</a>) gets to run first and potentially unblock the old task.</p>
+
+<p>That doesn&#39;t mean an executor is guaranteed to execute the tasks in reverse though. The order of callbacks in a Multithreaded executor depends on the order the operating system schedules threads.</p>
+
+<pre><code>import rclpy
+from rclpy.executors import MultiThreadedExecutor
+
+rclpy.init()
+s = MultiThreadedExecutor()
+f = Future(executor=s)
+
+for i in range(100):
+    f.add_done_callback(partial(callback, i))
+    f.set_result(&quot;foobar&quot;)
+
+for i in range(100):
+    s.spin_once()
+
+rclpy.shutdown()
+</code></pre>
+
+<p>It tends towards reverse order but is still pretty random</p>
+
+<pre><code>...
+I am callback 95
+I am callback 93
+I am callback 92
+I am callback 94
+I am callback 89
+I am callback 88
+I am callback 90
+...
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/23470"></a> on 2020-12-18 14:25:02 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

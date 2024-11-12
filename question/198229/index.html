@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Port Questions and (Initial) Feedback from Controller via Simple Message - ROS-I - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/198229">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Port Questions and (Initial) Feedback from Controller via Simple Message - ROS-I</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/64242/port-questions-and-initial-feedback-from-controller-via-simple-message-ros-i">https://robotics.stackexchange.com/questions/64242/port-questions-and-initial-feedback-from-controller-via-simple-message-ros-i</a>.</p>
+        <p>Hello ROS-Community!</p>
+
+<p>I would still like to use my computer (Matlab, Simulink, C++) like a &quot;controller&quot; and therefor write a little driver. It is not yet necessary to run it on the real B&amp;R Controller or to have some robot included yet. This is a goal for me to reach, at least for some better understanding. And I think I am pretty close to the solution.</p>
+
+<p>So what I do on the ROS-Side:
+I <code>roslaunch industrial_robot_client robot_interface_streaming.launch</code> and it connects to my &quot;controller&quot;. No further Error or Warnings, etc. My Controller runs at the moment <em>Hercules</em> as a server that listens to <em>Port 11000</em>.
+Afterwards I run my modified <code>test_move.py</code>. The changes are only because of the joint names, but more information can be found <a href="http://answers.ros.org/question/195376/rename-joint_names-in-ur_driver-test_movepy/">in one of my questions I got solved here earlier</a>.
+If I <code>rosrun anypkg test_move</code> it works and finishes but I get an error message on the tab where I roslaunched before from the action node:</p>
+
+<pre><code>[ERROR] [1416913963.582113224]: Joint trajectory action rejected: waiting for (initial) feedback from controller
+</code></pre>
+
+<p>We had this once earlier, if you follow to the mode of test_move, but now I am on to write my small &quot;conroller&quot;-specific driver. How do I need to build up an initial feedback for my laptop of a fake feedback and on which ports do I need to send them?</p>
+
+<p>Edit: If I wait long enough after the roslaunch I get this error message, which I may should look to work out first:</p>
+
+<pre><code>[ERROR] [1416915304.267290322]: Failed to connect to server, rc: -1. Error: &#39;Connection timed out&#39; (errno: 110)
+</code></pre>
+
+<p>I also get it if I do roslaunch and afterwards rosrun: I get the first error message first and some time later the next. Hercules thereby states that the Connection is established? Maybe some problems with the ports?</p>
+
+<p>As I found out over WireShark there are two ports in use when launching the robot<em>interface</em>streaming.launch.</p>
+
+<ul>
+<li>11000</li>
+<li>11002</li>
+</ul>
+
+<p>Why and how to use those, like what should be used to receive or send on which node?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/20405">RosBort</a> on 2014-11-25 06:06:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>First: there aren&#39;t necessarily really any ports that you <em>need</em> to use. <code>simple_message</code> was meant to be usable on top of different transports / protocols, so it doesn&#39;t really make sense to specify a TCP port that should <em>always be used</em>.</p>
+
+<p>However, if you want to re-use the nodes that the <code>industrial_robot_client</code> package provides, then you <em>are</em> expected to be using certain TCP ports in your <em>controller-specific driver</em> (in the general case).</p>
+
+<p>You can find which ports are used for what in the <code>simple_message</code> <a href="http://docs.ros.org/hydro/api/simple_message/html/namespaceindustrial_1_1simple__socket_1_1StandardSocketPorts.html#a2fda57a82dd99c8f6f614c61332379cb">api docs</a>, which are accessible through the ROS wiki page for <a href="http://wiki.ros.org/simple_message">simple_message</a>.</p>
+
+<p>A quote from the linked API doc page:</p>
+
+<blockquote>
+<p>Enumeration of standard socket ports (supported by all platforms). These are defined for convenience. Other ports may be used. Additional ports for application specific needs may also be defined.</p>
+
+<p>enum StandardSocketPort { MOTION = 11000, SYSTEM = 11001, STATE = 11002, IO = 11003 }</p>
+</blockquote>
+
+<hr>
+
+<p>As for the rest of your question: all you need to do is write a (server) program that starts transmitting <code>JOINT_FEEDBACK</code> or <code>JOINT_POSITION</code> packets as soon as something connects to it. That program is typically called the <em>state relay</em> or <em>joint state reporter</em>, and the default port is <code>11002</code>. On <code>11000</code>, the generic clients expect a server program that accepts <code>JOINT_TRAJ_PT</code> packets (or one of its variants).</p>
+
+<p>The <code>robot_interface_streaming.launch</code> that you mention starts a <code>robot_state</code> node, and a <code>motion_streaming_interface</code> node. The former tries to connect to port <code>11002</code>, the latter to <code>11000</code>. As your <em>Hercules</em> (server?) only listens on <code>11000</code>, the state relay will not be able to connect, and will time-out, after some time. Hence the <em>Failed to connect to server ..</em> error message you are seeing.</p>
+
+<p>The other error (<em>Joint trajectory action rejected: ..</em>) simply states that the <code>joint_trajectory_action</code> node (again from the <code>industrial_robot_client</code> package) has not yet received any state information from the robot controller. Without knowing the state of the robot (manipulator), it cannot control it in any meaningful way, so it refuses to propagate any commands. It should be obvious that ultimately this is caused by the fact that you don&#39;t have any state relay, so there is no state reporting anywhere in your system.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2014-11-26 07:27:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

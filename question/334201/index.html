@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Subscriber to sensor_msgs::Image with class member function callback not triggered - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/334201">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Subscriber to sensor_msgs::Image with class member function callback not triggered</h2>
+      <div class="question">
+        <p>I have created a singleton class as a ROS node. I want to subscribe to a sensor<em>msgs::Image topic (published by another node). I implemented a synchronization mechanism with std</em>srvs::Trigger as well. The idea is that as soon as the current node is ready to receive a new frame, it triggers the publisher which sends a frame over. This is then repeated until there are no more frames left to process. This mechanism works perfectly fine using rospy. Due to internal reasons I have to implement everything in roscpp as well. I&#39;ve reached the point that my node sends the publisher a trigger to send over a new frame, which does this. However, the callback for receiving a new image is never called.</p>
+
+<p>Here is the header of the class:</p>
+
+<hr>
+
+<pre><code>#pragma once
+
+#include &lt;ros/ros.h&gt;
+#include &lt;std_srvs/Trigger.h&gt;
+#include &lt;sensor_msgs/Image.h&gt;
+
+// Note: FakeVPClass implements a &#39;Singleton&#39; pattern
+class FakeVPClass
+{
+public:
+    static FakeVPClass&amp; get_instance();
+    void run_vp();
+
+private:
+    void request_new_raw_frame();
+    void cb_received_new_raw_frame(const sensor_msgs::Image::ConstPtr&amp; img);
+
+private:
+    FakeVPClass();                       // Forbid explicit construction (singleton)
+    ~FakeVPClass();                      // Forbid explicit destruction (singleton)
+    FakeVPClass(FakeVPClass const &amp;);    // Forbid copy constructor (singleton)
+    void operator=(FakeVPClass const &amp;); // Forbid implicit copy (singleton)
+
+private:
+    bool m_received_new_raw_frame;
+    ros::NodeHandle*  m_node;
+    ros::Rate*  m_rate;
+    ros::ServiceClient* m_raw_img_srv;
+    ros::Subscriber*    m_raw_camera_input_sub;
+};
+</code></pre>
+
+<hr>
+
+<p>And here is the implementation:</p>
+
+<hr>
+
+<pre><code>#include &quot;fake_vp_roscpp.h&quot;
+#include &lt;stdlib.h&gt;
+#include &lt;iostream&gt;
+
+FakeVPClass::FakeVPClass()
+{
+    std::cout &lt;&lt; &quot;FakeVPClass()&quot; &lt;&lt; std::endl;
+    m_received_new_raw_frame          = false;
+
+    m_node                            = new ros::NodeHandle();
+    m_rate                            = new ros::Rate(10);     // 10hz == 100ms
+
+    // Registering to ROS service(s)
+    ros::service::waitForService(&quot;/request_new_raw_frame&quot;);
+    m_raw_img_srv = new ros::ServiceClient(m_node-&gt;serviceClient&lt;std_srvs::Trigger&gt;(&quot;/request_new_raw_frame&quot;));
+
+    // ROS subscriber(s)
+    m_raw_camera_input_sub = new ros::Subscriber(m_node-&gt;subscribe&lt;sensor_msgs::Image&gt;(&quot;raw_camera_input&quot;, 1, &amp;FakeVPClass::cb_received_new_raw_frame,    this));
+
+    ROS_INFO(&quot;%s ready for operation.&quot;, ros::this_node::getName().c_str());
+}
+FakeVPClass::~FakeVPClass()
+{
+    std::cout &lt;&lt; &quot;~FakeVPClass()&quot; &lt;&lt; std::endl;
+    delete m_node;
+    delete m_rate;
+    delete m_raw_img_srv;
+    delete m_raw_camera_input_sub;
+}
+
+FakeVPClass&amp; FakeVPClass::get_instance()
+{
+    std::cout &lt;&lt; &quot;get_instance()&quot; &lt;&lt; std::endl;
+    static FakeVPClass m_instance;
+    return m_instance;
+}
+
+void FakeVPClass::request_new_raw_frame()
+{
+    std::cout &lt;&lt; &quot;request_new_raw_frame()&quot; &lt;&lt; std::endl;
+    try
+    {
+        std::cout &lt;&lt; &quot;Requesting new frame&quot; &lt;&lt; std::endl;
+        m_received_new_raw_frame = false;
+        std_srvs::Trigger t;
+        m_raw_img_srv-&gt;call(t);
+        std::cout &lt;&lt; &quot;...done&quot; &lt;&lt; std::endl;
+    }
+    catch(ros::Exception e)
+    {
+        ROS_ERROR(&quot;Service call unsuccessful: %s &quot;, e.what());
+        exit(EXIT_FAILURE);
+    }
+    catch(...)
+    {
+        ROS_ERROR(&quot;Unknown exception arose while trying to trigger service m_raw_img_srv.&quot;);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void FakeVPClass::cb_received_new_raw_frame(const sensor_msgs::Image::ConstPtr&amp; img)
+{
+    // ...DO SOME STUFF WITH THE IMAGE...
+    m_received_new_raw_frame = true;
+}
+
+void FakeVPClass::run_vp()
+{
+    std::cout &lt;&lt; &quot;run_vp()&quot; &lt;&lt; std::endl;
+    while(ros::ok())
+    {
+        // 1. Request new camera image
+        request_new_raw_frame();
+
+        // 2. Wait for new camera image to be sent
+        std::cout &lt;&lt; &quot;Waiting...&quot; &lt;&lt; std::endl;
+        while(!m_received_new_raw_frame)
+        {
+            std::cout &lt;&lt; &quot;...sleep...&quot; &lt;&lt; std::endl;
+            ros::spinOnce();
+            m_rate-&gt;sleep();
+        }
+        std::cout &lt;&lt; &quot;Done waiting!&quot; &lt;&lt; std::endl;
+
+        // DO ... SOME .... WORK
+    }
+}
+//////////////////////////////////////////////////////////////////////////
+int main(int argc, char** argv)
+{
+    // Register our node
+    ros::init(argc, argv, &quot;fake_vp_roscpp&quot;);
+
+    // Wait until master is operational
+    ros::Time::init();
+    while (!ros::master::check())
+    {
+        std::cout &lt;&lt; &quot;waiting...&quot; &lt;&lt; std::endl;
+        ros::Duration(0.5).sleep();
+    }
+
+    // Create and execute instance
+    FakeVPClass&amp; vp = FakeVPClass::get_instance();
+    vp.run_vp();
+    return 0;
+}
+</code></pre>
+
+<hr>
+
+<p>And now the output:</p>
+
+<hr>
+
+<pre><code>waiting... 
+get_instance() 
+FakeVPClass() 
+[ INFO] [1569775480.756903309]: /fake_vp_roscpp ready for operation. 
+run_vp() 
+request_new_raw_frame() 
+Requesting new frame 
+...done 
+Waiting... 
+...sleep... 
+...sleep... 
+...sleep...
+</code></pre>
+
+<hr>
+
+<p>Looking at the rostopics everything seems just fine:</p>
+
+<hr>
+
+<pre><code>$ rostopic list /raw_camera_input --verbose
+
+Published topics:
+ * /raw_camera_input [sensor_msgs/Image] 1 publisher
+
+Subscribed topics:
+ * /raw_camera_input [sensor_msgs/Image] 1 subscriber
+</code></pre>
+
+<hr>
+
+<p>I&#39;m very sure that the publisher sends a new frame (I traced the sending procedure), yet the callback function cb<em>received</em>new<em>raw</em>frame(...) is never triggered. I&#39;ve also tried the same idea using image_transport, but the no change. No callback occurs. I&#39;m doing something wrong, but I can&#39;t figure out what. I&#39;d really really appreciate some help.....</p>
+
+<p>(Note: I&#39;m using Ubuntu 14.04 and ROS Indigo version 1.11.21)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/46419">robeastbme</a> on 2019-09-29 13:56:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Your solution is overly complex for what you&#39;re trying to achieve. You could create a custom service type and request and return the image in a single service call. Message delivery is not  guaranteed in ROS but service calls are, so it would be a more reliable system.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2019-09-30 05:11:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Interesting idea, thank you. I will do it if I can&#39;t make the standard way work. The question remains: why is my callback not invoked?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46419">robeastbme</a> on 2019-09-30 07:08:38 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

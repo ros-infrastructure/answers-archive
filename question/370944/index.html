@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Passing an array of arrays of doubles from a yaml config file - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/370944">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Passing an array of arrays of doubles from a yaml config file</h2>
+      <div class="question">
+        <p>I am using ROS2 foxy and I have an array of arrays of doubles that should set one of the variables in the node.
+Is it possible to pass that from the yaml config file to c++?
+I tried to wrap it in a <strong>std::vector<a href="std::vector%3Cdouble">std::vector&lt;double</a>&gt;</strong> but I get an error.</p>
+
+<p>My yaml file looks like this:</p>
+
+<pre><code>offboard_navigator:
+  ros__parameters:
+    setpoints_lla: [[47.3977507,  8.5456073,  5],
+        [47.39774376, 8.54576301, 6],
+        [47.39781572, 8.54577784, 5],
+        [47.39781739, 8.54558749, 6],
+        [47.3977507,  8.5456073,  0]]
+</code></pre>
+
+<p>And this is how I declare the parameter in the ROS2 node code:</p>
+
+<pre><code>    this-&gt;declare_parameter&lt; std::vector&lt; std::vector &lt;double&gt; &gt; &gt;(&quot;setpoints_lla&quot;, {{0.0,0.0,0.0}});
+    this-&gt;get_parameter(&quot;setpoints_lla&quot;, setpoints_list_param_);
+</code></pre>
+
+<p>And this is the error I am getting:</p>
+
+<pre><code>/opt/ros/foxy/include/rclcpp/node_impl.hpp:166:15: error: no matching function for call to ‘rclcpp::ParameterValue::ParameterValue(const std::vector&lt;std::vector&lt;double, std::allocator&lt;double&gt; &gt; &gt;&amp;)’
+  166 |       rclcpp::ParameterValue(default_value)
+</code></pre>
+
+<p>Is there another way to implement this so that I can set one of my variables using an array of arrays.
+Note: all my inner arrays have the same size.</p>
+
+<p>,</p>
+
+        <div class="owner"><p>Asked by <a href="/users/65803">mamado</a> on 2021-02-03 09:04:18 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>No it&#39;s not possible to pass a vector 2D directly as a ros2 parameter. You have to define the parameter as a string:
+<code>
+setpoints_lla: &quot;[[47.3977507,  8.5456073,  5],
+        [47.39774376, 8.54576301, 6],
+        [47.39781572, 8.54577784, 5],
+        [47.39781739, 8.54558749, 6],
+        [47.3977507,  8.5456073,  0]]&quot;
+</code></p>
+
+<p>Then you can pass this to a parser like this (<a href="https://github.com/ros-planning/navigation2/blob/30b405c58e6d53ba8c96381416bc4679d35a1483/nav2_costmap_2d/src/array_parser.cpp">cite to the navigation stack</a> ):</p>
+
+<pre><code>  std::vector&lt;std::vector&lt;float&gt;&gt; parseVVF(const std::string &amp; input, std::string &amp; error_return)
+  {
+    std::vector&lt;std::vector&lt;float&gt;&gt; result;
+
+    std::stringstream input_ss(input);
+    int depth = 0;
+    std::vector&lt;float&gt; current_vector;
+    while (!!input_ss &amp;&amp; !input_ss.eof()) {
+      switch (input_ss.peek()) {
+      case EOF:
+        break;
+      case &#39;[&#39;:
+        depth++;
+        if (depth &gt; 2) {
+          error_return = &quot;Array depth greater than 2&quot;;
+          return result;
+        }
+        input_ss.get();
+        current_vector.clear();
+        break;
+      case &#39;]&#39;:
+        depth--;
+        if (depth &lt; 0) {
+          error_return = &quot;More close ] than open [&quot;;
+          return result;
+        }
+        input_ss.get();
+        if (depth == 1) {
+          result.push_back(current_vector);
+        }
+        break;
+      case &#39;,&#39;:
+      case &#39; &#39;:
+      case &#39;\t&#39;:
+        input_ss.get();
+        break;
+      default:  // All other characters should be part of the numbers.
+        if (depth != 2) {
+          std::stringstream err_ss;
+          err_ss &lt;&lt; &quot;Numbers at depth other than 2. Char was &#39;&quot; &lt;&lt; char(input_ss.peek()) &lt;&lt; &quot;&#39;.&quot;;
+          error_return = err_ss.str();
+          return result;
+        }
+        float value;
+        input_ss &gt;&gt; value;
+        if (!!input_ss) {
+          current_vector.push_back(value);
+        }
+        break;
+      }
+    }
+    if (depth != 0) {
+      error_return = &quot;Unterminated vector string.&quot;;
+    } else {
+      error_return = &quot;&quot;;
+    }
+    return result;
+  }
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26284">hosh</a> on 2021-06-27 21:40:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>According to the <a href="https://design.ros2.org/articles/ros_parameters.html">design document for params</a>, a 2D array of any type is not supported. </p>
+
+<p>However, if you want to have a 2D array, instead of adding a parser yourself you can use the <code>yaml-cpp</code> library to do a lot of the heavy lifting. You would still pass in a string, but then just call <code>YAML::Node yaml_node = YAML::Load(string)</code> and it will parse it, and you can use its interface to get the values. <a href="https://github.com/jbeder/yaml-cpp/wiki/Tutorial">Here is the yaml-cpp tutorial</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/46260">404RobotNotFound</a> on 2021-06-29 18:53:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

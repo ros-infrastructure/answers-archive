@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Offboard PX4 with T265 and ROS / Does not Take off - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/370761">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Offboard PX4 with T265 and ROS / Does not Take off</h2>
+      <div class="question">
+        <p>Hello Everyone. Dear Community
+I know this is not the place to ask but somehow it is related to ROS because I am using MAVROS.
+So I will appreciate any suggestion.
+I want to share with you guys what I am doing now and what are the issues I am facing.
+First of all, this is my setup:</p>
+
+<ul>
+<li>Pixhawk4 with PX4 v1.11.3 FMU V5</li>
+<li>Jeton TX2 with ROS Melodic</li>
+<li>Mavros, Gazebo, and <a href="https://github.com/Auterion/VIO">VIO_bridge</a> from Auterion.</li>
+</ul>
+
+<p>I have followed these <a href="https://docs.px4.io/master/en/computer_vision/visual_inertial_odometry.html#supported_setup">instructions</a> from the PX4 developer guide to use the offboard mode with a companion computer running ROS.</p>
+
+<p>These are the instructions:</p>
+
+<pre><code>cd ~/catkin_ws/src
+git clone https://github.com/Auterion/VIO.git
+//build the package
+cd ~/catkin_ws/src
+catkin build px4_realsense_bridge
+//Configure the camera orientation
+&lt;node pkg=&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;tf_baseLink_cameraPose&quot;
+    args=&quot;0 0 0 0 0 0 base_link camera_pose_frame 1000&quot;/&gt;
+//PX4 Tuning in QGroundControl
+EKF2_AID_MASK   344    Set vision position fusion, vision velocity fusion, vision yaw fusion and external vision rotation accoring to your desired fusion model.
+EKF2_HGT_MODE   Vision Set to Vision to use the vision a primary source for altitude estimation.
+EKF2_EV_DELAY   175    Set to the difference between the timestamp of the measurement and the &quot;actual&quot; capture time. For more information see below.
+EKF2_EV_POS_X   0.0    Set the position of the vision sensor with respect to the vehicles body frame.
+EKF2_EV_POS_Y   0.0    Set the position of the vision sensor with respect to the vehicles body frame.
+EKF2_EV_POS_Z   0    Set the position of the vision sensor with respect to the vehicles body frame.
+
+//Running VIO bridge
+cd ~/catkin_ws/src
+roslaunch px4_realsense_bridge bridge.launch
+//running mavros
+roslaunch mavros px4.launch fcu_url:=&quot;/dev/ttyTHS2:921600&quot; gcs_url:=&quot;udp://:14401@127.0.0.1:14550&quot;
+</code></pre>
+
+<p>Until here everything works well.
+Then, I read the mavlink inspector and I got the odometry messages including the quaternion and XYZ position. When I move the drone I can see those values changing. So that means everything is ok until here.</p>
+
+<p>The problem comes when I run the script to control the drone. The drone only is arming and is not taking-off. But when I run this code using the gazebo simulator it works fine and the iris drone fly. IN the real world is not working. Here is my code:</p>
+
+<pre><code>#!/usr/bin/env python
+&#39;&#39;&#39;
+This code is to control the position of the drone in the Z axis
+Author: @Diego Herrera
+email: alberto18_90@outlook.com
+&#39;&#39;&#39;
+
+import rospy
+import mavros
+from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import State
+from mavros_msgs.srv import CommandBool, SetMode
+from geometry_msgs.msg import Point
+
+# Callback method for state subscriber
+current_state = State()  # Reading the current state from mavros msgs
+
+
+def state_callback(state):
+    global current_state
+    current_state = state
+
+
+mavros.set_namespace()
+local_position_publisher = rospy.Publisher(mavros.get_topic(&#39;setpoint_position&#39;, &#39;local&#39;), PoseStamped,
+                                           queue_size=10)  #
+state_subscriber = rospy.Subscriber(mavros.get_topic(&#39;state&#39;), State, state_callback)
+
+arming_client = rospy.ServiceProxy(mavros.get_topic(&#39;cmd&#39;, &#39;arming&#39;), CommandBool)
+set_mode_client = rospy.ServiceProxy(mavros.get_topic(&#39;set_mode&#39;), SetMode)
+
+pose = PoseStamped()
+
+
+def coordinates_xyz(data):
+    print(&quot;Callback function&quot;)
+
+    X = data.x
+    Y = data.y
+    Z = data.z
+    print(&quot;X value: &quot;, X)
+    print(&quot;Y value: &quot;, Y)
+    print(&quot;Z value: &quot;, Z)
+    print(&quot;&quot;)
+    # pose = PoseStamped()
+    pose.pose.position.x = X
+    pose.pose.position.y = Y
+    pose.pose.position.z = Z
+    # pose.header.stamp = rospy.Time.now()
+    # local_position_publisher.publish(pose)
+
+
+def position_control():
+    print(&quot;Position control def&quot;)
+    rospy.init_node(&#39;Offboard_node&#39;, anonymous=True)
+    prev_state = current_state
+    rate = rospy.Rate(20.0)
+
+    # Sending a few points before start
+    for i in range(100):
+        local_position_publisher.publish(pose)
+        rate.sleep()
+
+    # We need to wait for FCU connection
+    while not current_state.connected:
+        rate.sleep()
+
+    last_request = rospy.get_rostime()
+
+    while not rospy.is_shutdown():
+        now = rospy.get_rostime()
+        if current_state.mode != &quot;OFFBOARD&quot; and (now - last_request &gt; rospy.Duration(5.)):
+            set_mode_client(base_mode=0, custom_mode=&quot;OFFBOARD&quot;)
+            last_request = now
+
+        else:
+            if not current_state.armed and (now - last_request &gt; rospy.Duration(5.)):
+                arming_client(True)
+                last_request = now
+
+        if current_state.armed:
+            print(&quot;Drone ready to fly&quot;)
+        if prev_state.armed != current_state.armed:
+            rospy.loginfo(&quot;Vehicle armed: %r&quot; % current_state.armed)
+        if prev_state.mode != current_state.mode:
+            rospy.loginfo(&quot;Current mode: %s&quot; % current_state.mode)
+
+        prev_state = current_state
+        rospy.Subscriber(&quot;SOKA_DRONE&quot;, Point, coordinates_xyz)
+        pose.header.stamp = rospy.Time.now()
+        local_position_publisher.publish(pose)
+        rate.sleep()
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        position_control()
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+<p>As I said, this code works fine in gazebo-simulator but running in the real-world is only arming and not takeoff.
+I really need help with this. Any suggestions I will appreciate.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/49972">subarashi</a> on 2021-02-01 08:47:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Did you try arming and taking off using QGroundControl ? I think you need to use an TAKEOFF service and then publish a setpoint.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50065">Sankeerth</a> on 2021-02-01 10:03:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi.
+I didn&#39;t try it, but I have another code that is calling takeoff service with 1 meter of altitude. I cannot call takeoff from Qgroundcontrol because I am afraid the altitude it will arrive, due to I am flying indoors it can crash the top of my lab.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49972">subarashi</a> on 2021-02-01 10:39:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You can configure QGroundControl Takeoff altitude. When you issue ReturnToHome from QGC the drone moves to a height of 25 meters and lands. Is the code with takeoff service working?. Get TX2 started first and then connect the Flight controller to it(otherwise it may cause some serial communication problems.).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50065">Sankeerth</a> on 2021-02-01 10:55:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The code with Takeoff service doesn&#39;t work. The communication with the TX2 works fine because I can see the odometry data in QGroundControl that comes from the Realsense T265 through Tx2...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49972">subarashi</a> on 2021-02-02 01:11:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think it would be better to post a query on the <a href="https://discuss.px4.io/">px4 forum</a> and analyze the <a href="https://docs.px4.io/v1.9.0/en/getting_started/flight_reporting.html">flight logs</a>. They can be of more help.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50065">Sankeerth</a> on 2021-02-02 08:41:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@subarashi Did you ever have an issue where the VIO node would always tell the Pixhawk it was facing due east?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61518">nabatta</a> on 2021-03-16 17:32:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@nabatta Sorry for replying late... Yes, indeed the VIO always tells pixhawk through quaternion that it is facing due east. Have you fixed it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49972">subarashi</a> on 2021-03-26 03:17:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@subarashi No, I never found a good solution. I just start the node with the drone always pointing east so it all lines up</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61518">nabatta</a> on 2021-04-04 14:31:20 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

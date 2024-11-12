@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to synchronize two topics without message loss ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/248677">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to synchronize two topics without message loss ?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/77474/how-to-synchronize-two-topics-without-message-loss">https://robotics.stackexchange.com/questions/77474/how-to-synchronize-two-topics-without-message-loss</a>.</p>
+        <p>Hi all,</p>
+
+<h3>Context</h3>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1479896687860714.png" alt="Synchronizer"></p>
+
+<p>In order to assess the performance of AMCL, I am trying to synchronize two topics : </p>
+
+<ul>
+<li>The estimated pose from AMCL output</li>
+<li>The scan from the laser range</li>
+</ul>
+
+<p><code>/scan</code> topic is published at 25Hz</p>
+
+<p><code>/localizer_pose</code> topic is published at a variable frequency depending on the robot&#39;s movement (Max is about 3Hz).</p>
+
+<p>The topics are not synchronized, as AMCL introduce a variable delay.
+As the <code>/localizer_pose</code> topic is published at a low frequency, I do not want to lose any pose message, or at worse very few.</p>
+
+<p>I use a bagfile to replay the scenario to be able to compare different solutions.
+I also added a simple subscriber on the <code>/localizer_pose</code> topic, to get the total amount of pose received.</p>
+
+<p>ROS Indigo, with Ubuntu Server 14.04.</p>
+
+<h3>Test1: Message filters, exact time</h3>
+
+<p>First test, add a TimeSynchronizer to see if an exact timestamp match could do the trick. </p>
+
+<pre><code>//Declarations
+message_filters::Subscriber&lt;sensor_msgs::LaserScan&gt;* m_scanSubscriber;
+message_filters::Subscriber&lt;geometry_msgs::PoseWithCovarianceStamped&gt;* m_localizerPoseMsgFilterSubscriber;
+message_filters::TimeSynchronizer&lt;geometry_msgs::PoseWithCovarianceStamped, sensor_msgs::LaserScan&gt;* m_scanLocalizerPoseSynchronizer;
+
+//Callbacks
+void MyClass::localizerPoseCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr&amp; pose)
+{
+    m_localizerPoseCount++;
+}
+
+void MyClass::localizerPoseWithScanCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr&amp; pose, const sensor_msgs::LaserScan::ConstPtr&amp; laserScan)
+{
+    m_localizerPoseWithScanCount++;
+}
+
+//Initialization
+m_localizerPoseMsgFilterSubscriber = new message_filters::Subscriber&lt;geometry_msgs::PoseWithCovarianceStamped&gt;(m_nodeHandle, m_localizerPoseInputTopic, 5);
+m_scanSubscriber = new message_filters::Subscriber&lt;sensor_msgs::LaserScan&gt;(m_nodeHandle, m_laserScanTopic, 50);
+
+m_scanLocalizerPoseSynchronizer = new message_filters::TimeSynchronizer&lt;geometry_msgs::PoseWithCovarianceStamped, sensor_msgs::LaserScan&gt;(*m_localizerPoseMsgFilterSubscriber, *m_scanSubscriber, 10);
+m_scanLocalizerPoseSynchronizer-&gt;registerCallback(boost::bind(&amp;MyClass::localizerPoseWithScanCallback, this, _1, _2));
+</code></pre>
+
+<p><strong>Results:</strong> I get 95 pairs for 203 poses, pretty bad, as expected.</p>
+
+<h3>Test2: Message filters, approximate time</h3>
+
+<p>That&#39;s the best candidate for now. </p>
+
+<pre><code>//Declarations
+message_filters::Subscriber&lt;sensor_msgs::LaserScan&gt;* m_scanSubscriber;
+message_filters::Subscriber&lt;geometry_msgs::PoseWithCovarianceStamped&gt;* m_localizerPoseMsgFilterSubscriber;
+typedef message_filters::sync_policies::ApproximateTime&lt;geometry_msgs::PoseWithCovarianceStamped, sensor_msgs::LaserScan&gt; SyncScanWithLocalizerPose;
+message_filters::Synchronizer&lt;SyncScanWithLocalizerPose&gt;* m_scanLocalizerPoseSynchronizer;
+
+//Callbacks
+void MyClass::localizerPoseCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr&amp; pose)
+{
+    m_localizerPoseCount++;
+}
+
+void MyClass::localizerPoseWithScanCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr&amp; pose, const sensor_msgs::LaserScan::ConstPtr&amp; laserScan)
+{
+    m_localizerPoseWithScanCount++;
+}
+
+//Initialization
+m_localizerPoseMsgFilterSubscriber = new message_filters::Subscriber&lt;geometry_msgs::PoseWithCovarianceStamped&gt;(m_nodeHandle, m_localizerPoseInputTopic, 5);
+m_scanSubscriber = new message_filters::Subscriber&lt;sensor_msgs::LaserScan&gt;(m_nodeHandle, m_laserScanTopic, 50);
+
+m_scanLocalizerPoseSynchronizer = new message_filters::Synchronizer&lt;SyncScanWithLocalizerPose&gt;(SyncScanWithLocalizerPose(10), *m_localizerPoseMsgFilterSubscriber, *m_scanSubscriber);
+m_scanLocalizerPoseSynchronizer-&gt;registerCallback(&amp;MyClass::localizerPoseWithScanCallback, this);
+</code></pre>
+
+<p><strong>Results:</strong> Unfortunately, the results are not better: 95 pairs for 204 poses.
+Another run gave me 84 pairs for 194 total poses.</p>
+
+<h3>Test2: Tuning</h3>
+
+<p>I tried with AMCL tf_tolerance at 0 and at 0.1 (this is the default value), no difference.</p>
+
+<p>I also tried to set the inter-message lower bound (parameter of ApproximateTime policy) to 0.02 (Half a period of laser scan)
+and to set the maximum interval duration (parameter of ApproximateTime policy) to 0.15 (maximum allowable time difference between pose and scan ?), but no difference.</p>
+
+<p>So far, the approximate time didn&#39;t gave me good results, so I am wondering what I am doing wrong ?
+According to the documentation I would expect to not loose any pose message, and without doing too much parameter tuning. </p>
+
+<p>Any thoughts ? </p>
+
+<p>Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28459">Inounx</a> on 2016-11-23 06:08:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I do not know how to make this work to be honest, so I usually have a workaround.</p>
+
+<p>I do it with a <a href="http://docs.ros.org/api/message_filters/html/c++/classmessage__filters_1_1Cache.html">message_filters::Cache</a>.</p>
+
+<ul>
+<li>Cache your <code>/scan</code>, if everything was smooth then a queue of (25/3) would be enough, but I would go for 100 messages at least.</li>
+<li>In your <code>/localizer_pose</code> callback, you can retrieve the latest message from the <code>/scan</code> cache with <a href="http://docs.ros.org/api/message_filters/html/c++/classmessage__filters_1_1Cache.html#a33c0e7e177d5b355d7d67da853941784"><code>getLatestTime()</code></a>. You can also retrieve the latest message before a given timestamp.</li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/19883">dotcom</a> on 2018-04-07 05:06:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Back then I worked around this problem by manually saving a laser scan and when receiving an AMCL pose, match with the last received scan. Didn&#39;t knew the option with the message filter cache, good to know.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28459">Inounx</a> on 2018-07-04 06:58:06 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

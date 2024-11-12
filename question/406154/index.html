@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unable to receive large messages - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/406154">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Unable to receive large messages</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102371/unable-to-receive-large-messages">https://robotics.stackexchange.com/questions/102371/unable-to-receive-large-messages</a>.</p>
+        <p>I&#39;m running into an odd problem. I&#39;m using ROS2 Galactic inside of docker images, one of which is running on my laptop, and another running on a Husky robot. In case network topology matters, here is a diagram of the setup: <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1662675644645803.png" alt="network config"> The robot is at 192.168.131.1, and my laptop is 192.168.131.116. Both images are run with <code>--net host --privileged</code>.</p>
+
+<p>If I run a simple talker in the Husky&#39;s docker image and echo the topic on my laptop docker image, I receive the data just fine. All data can be delivered in a single UDP packet, and so no reassembly needs to take place on either the robot or my laptop.</p>
+
+<p>However, when I send larger messages over topics, I can no longer receive the data. I have tested this with VLP-16 LIDAR PC2 data, as well as L515 Realsense camera data. I again captured packets on both the robot and my laptop, both still under the same IP. I can echo these topics fine locally on the robot&#39;s docker image, but not from my laptop&#39;s docker image.</p>
+
+<p>DISCLAIMER: I&#39;m not a network expert, so the analysis below could be wrong (and please tell me if it is).</p>
+
+<p>Here is a snippet of the capture from the robot: <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16626752713852189.png" alt="robot packet frags"> Packet #s 353708-353720 are fragments of the image. These are reassembled in packet #353721, and the top of the raw packet bytes at the bottom show the <code>camera_color_optical_frame</code> and <code>rgb8</code> metadata.</p>
+
+<p>Here is a snippet of the received data on my laptop: <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16626753122800757.png" alt="frags"> I believe that packets 3285-3302 should all be reassembled in 3303, but only 3294-3302 are reassembled. Here is the data for packet 3285: <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1662675325929335.png" alt="frag data"> This includes the aforementioned metadata <code>camera_color_optical_frame</code> and <code>rgb8</code>, but it never ends up in a reassembled packet.</p>
+
+<p>(note that the above packet captures are not the same same message; I don&#39;t have synced clocks between robot and laptop. I hope it illustrates the point about packet reassembly, but I can update with matching sends and receives if that helps.)</p>
+
+<p>I have tried:</p>
+
+<ul>
+<li><p>Swapping DDS implementations from CycloneDDS to Fast RTPS</p></li>
+<li><p>Following all debugging/tuning recommendations at <a href="https://docs.ros.org/en/rolling/How-To-Guides/DDS-tuning.html">https://docs.ros.org/en/rolling/How-To-Guides/DDS-tuning.html</a></p></li>
+<li><p>Changing publisher QOS to &quot;Best Effort&quot;</p></li>
+<li><p>Tried other large message publishers (namely VLP-16 pointclouds)</p></li>
+</ul>
+
+<p>to no avail. Furthermore, when subscribing to VLP-16 pointcloud topics, all network connections I have to the robot cease until ~30s after I kill the subscriber on my laptop. I believe that the issue is either a core networking driver problem, or a misconfiguration/bug of Cyclone DDS.</p>
+
+<p>What should I do to debug further, and/or resolve the problem? Thank you!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/56810">Ronoman</a> on 2022-09-08 17:06:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>That is weird. What happens if you publish only a single large message? I assume the &quot;L515&quot; publisher is publishing at some relatively fast frequency (10-30Hz)? Maybe you could record a bag file and play it back in its place and step through it with the cli or rqt_bag? Or you could write a python script to run on the husky which subscribes to the topic, republishes only the first message on a new topic, then just idles, and then you can echo the new topic on your laptop (effectively creating a throttled topic). I&#39;m wondering if the issue is related to resending packets, but you said best effort also fails... It&#39;s definitely strange.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2022-09-08 17:48:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Also, this is similar to how things failed with the IP fragments issue described in <a href="https://docs.ros.org/en/rolling/How-To-Guides/DDS-tuning.html">https://docs.ros.org/en/rolling/How-To-Guides/DDS-tuning.html</a> (which you said you looked at). Can you confirm that these settings are changed on both ends? I don&#39;t know how docker might interact with this... but my first guess is that it shouldn&#39;t be an issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2022-09-08 17:50:33 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Sharing info from our discussion on the ROS Discord here for others.</p>
+
+<p>First, the user informed me that they are receiving a few samples every now and then, but it is very sporadic. This helps us rule out anything fundamentally mismatched at the DDS level (incomplete discovery, failed matching, inability to get some pieces data through in both directions on the network, etc).</p>
+
+<p>The wireshark capture shows that UDP fragments are definitely being lost, but this could be at the network layer (routing over WiFi) or at the OS network stack layer (fragments dropped due to resource constraints). Because full-MTU size messages are being observed on both sides, we can also rule out most network configuration issues (routing, MTU size issues, etc).</p>
+
+<p>The first step I would take is to get a pretty good estimate of the actual bandwidth your software is trying to utilize. The most common scenario I see is that people try to push full framerate uncompressed video over limited network bandwidths and are surprised when it can&#39;t get through. As an example, if your camera is producing a 1920x1080 RGB8 image at 30fps, your bandwidth requirement is going to be at a minimum around 1.5Gbps (assuming 24-bit packing of the pixel data), plus overhead, any reliability traffic/retransmissions, and any other traffic in the system. This exceeds common ethernet speeds, let alone common WiFi capabilities. You need to make sure your network can support the bandwidth requirements, regardless of what type of network it is traversing. Having adequate theoretical bandwidth won&#39;t guarantee reliability, but it is a pre-requisite.</p>
+
+<p>You also have to consider other devices sharing the WiFi bandwidth, what WiFi technology you are using and how it supports concurrent usage, which frequencies you are operating on, whether you are in a noisy/saturated radio environment, etc. If the bandwidth requirement is adequately less than what your router can actually support over WiFi, then there are some optimizations that can be made at the router level to improve stability (long and short retransmit configurations, QOS settings, etc), the OS level to tune the network stack, and a number of techniques at the DDS QOS level that can be used to improve performance as well.</p>
+
+<p>Once you are confident that your bandwidth requirements are reasonable, the first action to take is to adjust the socket send/receive buffer sizes on both machines. This varies per OS and DDS implementation. See:
+<a href="https://docs.ros.org/en/rolling/How-To-Guides/DDS-tuning.html#cyclone-dds-tuning">https://docs.ros.org/en/rolling/How-To-Guides/DDS-tuning.html#cyclone-dds-tuning</a></p>
+
+<p>This is one of the most common issues that causes data loss with large, fast samples, despite there being adequate bandwidth available over the given network topology. In particular, the out-of-the-box socket receive buffer max/default values in most Linux distros is too small for many DDS applications, and I have seen this cause data loss on numerous occasions.</p>
+
+<p>After having done that, if possible, I&#39;d try taking the router out of the equation first and directly connecting both devices over ethernet (through USB adapters is fine) with the laptop in internet share mode so it acts as a DHCP server. If ethernet behavior is stable, then try again over WiFi. If that is still lossy, the task becomes optimizing for transmission over WiFi. Sending high-bandwidth, real-time video data over lossy networks, regardless of the underlying physical technology, is a complex and deep rabbit hole in itself, so I won&#39;t go much into that for now.</p>
+
+<p>Regardless of what technology you are communicating over, there are some DDS-specific things to consider as well.</p>
+
+<p>One thing that&#39;s worth noting is that DDS reliability applies at the DDS message fragment level (not the UDP fragment level). There is a QOS setting that controls the &quot;max message size&quot; that DDS will produce, which allows the middleware to fragment the message before it even gets to the OS&#39;s UDP fragmentation process. The reliability protocol can handle retransmission of lost DDS fragments, but not the individual MTU-sized UDP fragments. This has the effect that even though you may have successfully received 99/100 UDP fragments for your image sample, if it didn&#39;t reassemble, DDS never got it and all of that data has to be retransmitted. If you are using best effort, this has no impact and you can ignore the above about max message size, for the most part. Changing the QOS is vendor specific, so look for your particular vendor&#39;s method for doing this via XML or API.</p>
+
+<p>If you are using reliability, one technique for addressing sporadic fragment loss in DDS is to lower your DDS max message size such that sample repairs can happen more efficiently at a more granular level. The far end of that extreme is to limit the max message size such that all DDS sample fragments are less than the MTU size used across the network. The tradeoff there is increasing RTPS protocol overhead per packet sent, but repair latency and bandwidth cost could be greatly reduced depending on the loss characteristics of the network. There are other techniques to address loss as well, like error correction codes that can be combined with DDS in best-effort mode, but that&#39;s also outside the scope of getting basic comms working.</p>
+
+<p>There are many more techniques for improving reliable transmission of large data over ROS2 and lossy networks, but literal books can be written on the topic, so I&#39;ll stop here. Happy to answer any other specific questions on the topic.</p>
+
+<p>Edit: Another issue to consider is disabling multicast in your environment. Long story short, DDS+Multicast over a wifi network can have devastating performance impacts that will grind your entire network to a halt. I had typed up a detailed explanation on this, but something weird happened and my edit didn&#39;t save here, but a very detailed discussion on the many facets, workarounds, options for sane defaults, etc can be found here:</p>
+
+<p><a href="https://discourse.ros.org/t/ros2-default-behavior-wifi/13460">https://discourse.ros.org/t/ros2-default-behavior-wifi/13460</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/56359">spiderkeys</a> on 2022-09-09 11:43:41 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>For some reason, I can&#39;t edit my post anymore, so adding this here.</p>
+
+<p>Another issue to consider is disabling multicast in your environment. Long story short, DDS+Multicast over a wifi network can have devastating performance impacts that will grind your entire network to a halt. I had typed up a detailed explanation on this, but something weird happened and my edit didn&#39;t save here, but a very detailed discussion on the many facets, workarounds, options for sane defaults, etc can be found here:</p>
+
+<p><a href="https://discourse.ros.org/t/ros2-default-behavior-wifi/13460">https://discourse.ros.org/t/ros2-default-behavior-wifi/13460</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/56359">spiderkeys</a> on 2022-09-09 14:09:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>i edited your question to include your comment and gave you a bit of karma, though not sure if its enough to give you the ability to edit your answer or not...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69938">shonigmann</a> on 2022-09-09 15:35:05 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

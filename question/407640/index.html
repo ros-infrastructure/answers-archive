@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>understanding rcl and rclc - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407640">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>understanding rcl and rclc</h2>
+      <div class="question">
+        <p>I&#39;m a bit at a loss, when reading through the documentation of rcl and rclc on the micro-ros website, it does not clearly state if both a subscriber and publisher need individual rclc<em>executor and rcl</em>allocator.
+Maybe this is crystal clear to other, but I can not find any reference / mention of how to implement both a subscriber and publisher in a single program.</p>
+
+<p>This</p>
+
+<pre><code>rclc_executor_t executor;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_node_t node;
+</code></pre>
+
+<p>vs this:</p>
+
+<pre><code>rclc_executor_t pub_executor;
+rclc_executor_t sub_executor;
+rclc_support_t pub_support;
+rclc_support_t sub_support;
+rcl_allocator_t pub_allocator;
+rcl_allocator_t sub_allocator;
+rcl_node_t pub_node;
+rcl_node_t sub_node;
+</code></pre>
+
+<p>The following &quot;combined&quot; publisher and subscriber does Not work. I&#39;m unsure how to properly debug this, as it seems to immediately jump into the error_loop and then it&#39;s over. But why it does that, I&#39;m not sure. Below is the merged source code. If any of you has worked with rcl / rclc before and knows what might be worng, please do let me know.</p>
+
+<pre><code>#include &lt;Arduino.h&gt;
+#include &lt;micro_ros_platformio.h&gt;
+
+#include &lt;rcl/rcl.h&gt;
+#include &lt;rclc/rclc.h&gt;
+#include &lt;rclc/executor.h&gt;
+
+#include &lt;std_msgs/msg/int32.h&gt;
+
+#if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
+#error This example is only avaliable for Arduino framework with serial transport.
+#endif
+
+rcl_publisher_t publisher;
+rcl_subscription_t subscriber;
+std_msgs__msg__Int32 msg;
+
+//publisher
+rclc_executor_t pub_executor;
+rclc_support_t pub_support;
+rcl_allocator_t pub_allocator;
+rcl_node_t pub_node;
+
+// subscriber
+rclc_executor_t sub_executor;
+rclc_support_t sub_support;
+rcl_allocator_t sub_allocator;
+rcl_node_t sub_node;
+
+rcl_timer_t timer;
+
+#define LED_PIN 13
+
+#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){error_loop();}}
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
+
+
+
+// Error handle loop
+void error_loop() {
+  while(1) {
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    delay(100);
+  }
+}
+
+void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
+  RCLC_UNUSED(last_call_time);
+  if (timer != NULL) {
+    RCSOFTCHECK(rcl_publish(&amp;publisher, &amp;msg, NULL));
+    msg.data++;
+  }
+}
+
+void subscription_callback(const void * msgin)
+{  
+  const std_msgs__msg__Int32 * msg = (const std_msgs__msg__Int32 *)msgin;
+  digitalWrite(LED_PIN, (msg-&gt;data == 0) ? LOW : HIGH);  
+}
+
+void setup() {
+  // Configure serial transport
+  Serial.begin(115200);
+  set_microros_serial_transports(Serial);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); 
+
+  delay(2000);
+
+  sub_allocator = rcl_get_default_allocator();
+
+  //create init_options
+  RCCHECK(rclc_support_init(&amp;pub_support, 0, NULL, &amp;pub_allocator));
+  RCCHECK(rclc_support_init(&amp;sub_support, 0, NULL, &amp;sub_allocator));
+
+  // create node
+  // RCCHECK(rclc_node_init_default(&amp;sub_node, &quot;micro_ros_platformio_node&quot;, &quot;&quot;, &amp;sub_support));
+  RCCHECK(rclc_node_init_default(&amp;pub_node, &quot;uros_platformio_pub_node&quot;, &quot;&quot;, &amp;pub_support));
+  RCCHECK(rclc_node_init_default(&amp;sub_node, &quot;uros_platformio_sub_node&quot;, &quot;&quot;, &amp;sub_support));
+
+  // create publisher
+  RCCHECK(rclc_publisher_init_default(
+    &amp;publisher,
+    &amp;pub_node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+    &quot;micro_ros_platformio_node_publisher&quot;));
+
+  // create subscriber
+  RCCHECK(rclc_subscription_init_default(
+    &amp;subscriber,
+    &amp;sub_node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+    &quot;micro_ros_arduino_subscriber&quot;));
+
+  // create timer,
+  const unsigned int timer_timeout = 1000;
+  RCCHECK(rclc_timer_init_default(
+    &amp;timer,
+    &amp;pub_support,
+    RCL_MS_TO_NS(timer_timeout),
+    timer_callback));
+
+  // publisher executor
+  RCCHECK(rclc_executor_init(&amp;pub_executor, &amp;pub_support.context, 1, &amp;pub_allocator));
+  RCCHECK(rclc_executor_add_timer(&amp;pub_executor, &amp;timer));
+  //subscriber executor
+  RCCHECK(rclc_executor_init(&amp;sub_executor, &amp;sub_support.context, 1, &amp;sub_allocator));
+  RCCHECK(rclc_executor_add_subscription(&amp;sub_executor, &amp;subscriber, &amp;msg, &amp;subscription_callback, ON_NEW_DATA));
+
+
+  msg.data = 0;
+}
+
+void loop() {
+  delay(100);
+  RCSOFTCHECK(rclc_executor_spin_some(&amp;sub_executor, RCL_MS_TO_NS(100)));
+}
+</code></pre>
+
+<p>BTW:
+I have converted another example for  micro-ROS / micro<em>ros</em>platformio  on github. It is currently still a pull-request, but once approved and merged it will hopefully help others to get started as well.
+The link is here: <a href="https://github.com/micro-ROS/micro_ros_platformio/pull/69">micro-ros_platformio/examples</a></p>
+
+<p>Once I successfully create an example of a single program with subscriber and publisher I will create another pull-request to the github repository.</p>
+
+<p>Thanks guys, 
+appreciate any replies and especially hints / pointers in the right direction</p>
+
+        <div class="owner"><p>Asked by <a href="/users/73699">PointCloud</a> on 2022-10-08 18:52:43 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>please correct me if I&#39;m way off:
+executor, support and allocator are shared.
+the problem most likely is</p>
+
+<pre><code>// publisher executor
+RCCHECK(rclc_executor_add_timer(&amp;executor, &amp;timer));
+//subscriber executor
+RCCHECK(rclc_executor_init(&amp;executor, &amp;sub_support.context, 1, &amp;sub_allocator));
+RCCHECK(rclc_executor_add_subscription(&amp;executor, &amp;subscriber, &amp;msg, &amp;subscription_callback, ON_NEW_DATA));
+</code></pre>
+
+<p>Here are the issue I believe are with the code snippet above:
+the order is wrong
+rclc_executor_init needs to be the first statement, followed by rclc_executor_add_<whaterver needs adding></p>
+
+<p>is this correct?</p>
+
+<pre><code>RCCHECK(rclc_executor_init(&amp;executor, &amp;support.context, 1, &amp;allocator));
+RCCHECK(rclc_executor_add_subscription(&amp;executor, &amp;subscriber, &amp;msg, &amp;subscription_callback, ON_NEW_DATA));
+RCCHECK(rclc_executor_add_subscription(&amp;executor, &amp;publisher, &amp;msg, &amp;subscription_callback, ON_NEW_DATA));
+RCCHECK(rclc_executor_add_timer(&amp;executor, &amp;timer));
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/73699">PointCloud</a> on 2022-10-08 21:46:45 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Doubts about pointcloud to laser scan - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10595">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Doubts about pointcloud to laser scan</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/32993/doubts-about-pointcloud-to-laser-scan">https://robotics.stackexchange.com/questions/32993/doubts-about-pointcloud-to-laser-scan</a>.</p>
+        <p>I was referred to this code previously. I have some doubts about this code, like to clarify some of them.</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;pluginlib/class_list_macros.h&quot;
+#include &quot;nodelet/nodelet.h&quot;
+#include &quot;sensor_msgs/LaserScan.h&quot;
+#include &quot;pcl/point_cloud.h&quot;
+#include &quot;pcl_ros/point_cloud.h&quot;
+#include &quot;pcl/point_types.h&quot;
+#include &quot;pcl/ros/conversions.h&quot;
+
+
+
+
+namespace pointcloud_to_laserscan
+{
+typedef pcl::PointCloud&lt;pcl::PointXYZ&gt; PointCloud;
+
+class CloudToScan : public nodelet::Nodelet
+{
+public:
+  //Constructor
+  CloudToScan(): min_height_(0.10), max_height_(0.15), u_min_(100), u_max_(150), output_frame_id_(&quot;/openi_depth_frame&quot;)
+  {
+  };
+
+private:
+  virtual void onInit()
+  {
+    ros::NodeHandle&amp; nh = getNodeHandle();
+    ros::NodeHandle&amp; private_nh = getPrivateNodeHandle();
+
+    private_nh.getParam(&quot;min_height&quot;, min_height_);
+    private_nh.getParam(&quot;max_height&quot;, max_height_);
+
+    private_nh.getParam(&quot;row_min&quot;, u_min_);
+    private_nh.getParam(&quot;row_max&quot;, u_max_);
+
+    private_nh.getParam(&quot;output_frame_id&quot;, output_frame_id_);
+    pub_ = nh.advertise&lt;sensor_msgs::LaserScan&gt;(&quot;scan&quot;, 10);
+    sub_ = nh.subscribe&lt;PointCloud&gt;(&quot;cloud&quot;, 10, &amp;CloudToScan::callback, this);
+  };
+
+  void callback(const PointCloud::ConstPtr&amp; cloud)
+  {
+    sensor_msgs::LaserScanPtr output(new sensor_msgs::LaserScan());
+    NODELET_DEBUG(&quot;Got cloud&quot;);
+    //Copy Header
+    output-&gt;header = cloud-&gt;header;
+    output-&gt;header.frame_id = output_frame_id_;
+    output-&gt;angle_min = -M_PI/2;
+    output-&gt;angle_max = M_PI/2;
+    output-&gt;angle_increment = M_PI/180.0/2.0;
+    output-&gt;time_increment = 0.0;
+    output-&gt;scan_time = 1.0/30.0;
+    output-&gt;range_min = 0.45;
+    output-&gt;range_max = 10.0;
+
+    uint32_t ranges_size = std::ceil((output-&gt;angle_max - output-&gt;angle_min) / output-&gt;angle_increment);
+    output-&gt;ranges.assign(ranges_size, output-&gt;range_max + 1.0);
+
+    //pcl::PointCloud&lt;pcl::PointXYZ&gt; cloud;
+    //pcl::fromROSMsg(*input, cloud);
+
+    for (PointCloud::const_iterator it = cloud-&gt;begin(); it != cloud-&gt;end(); ++it)
+    {
+      const float &amp;x = it-&gt;x;
+      const float &amp;y = it-&gt;y;
+      const float &amp;z = it-&gt;z;
+
+    /*    for (uint32_t u = std::max((uint32_t)u_min_, 0U); u &lt; std::min((uint32_t)u_max_, cloud.height - 1); u++)
+      for (uint32_t v = 0; v &lt; cloud.width -1; v++)
+      {
+        //NODELET_ERROR(&quot;%d %d,  %d %d&quot;, u, v, cloud.height, cloud.width);
+        pcl::PointXYZ point = cloud.at(v,u); ///WTF Column major?
+        const float &amp;x = point.x;
+        const float &amp;y = point.y;
+        const float &amp;z = point.z;
+    */  
+
+      if ( std::isnan(x) || std::isnan(y) || std::isnan(z) )
+      {
+        NODELET_DEBUG(&quot;rejected for nan in point(%f, %f, %f)\n&quot;, x, y, z);
+        continue;  
+      }
+      if (-y &gt; max_height_ || -y &lt; min_height_)
+      {
+        NODELET_DEBUG(&quot;rejected for height %f not in range (%f, %f)\n&quot;, x, min_height_, max_height_);
+        continue;
+      }
+      double angle = -atan2(x, z);
+      if (angle &lt; output-&gt;angle_min || angle &gt; output-&gt;angle_max)
+      {
+        NODELET_DEBUG(&quot;rejected for angle %f not in range (%f, %f)\n&quot;, angle, output-&gt;angle_min, output-&gt;angle_max);
+        continue;
+      }
+      int index = (angle - output-&gt;angle_min) / output-&gt;angle_increment;
+      //printf (&quot;index xyz( %f %f %f) angle %f index %d\n&quot;, x, y, z, angle, index);
+      double range_sq = z*z+x*x;
+      if (output-&gt;ranges[index] * output-&gt;ranges[index] &gt; range_sq)
+        output-&gt;ranges[index] = sqrt(range_sq);
+
+
+      }
+
+    pub_.publish(output);
+  }
+
+
+  double min_height_, max_height_;
+  int32_t u_min_, u_max_;
+  std::string output_frame_id_;
+
+  ros::Publisher pub_;
+  ros::Subscriber sub_;
+
+};
+
+
+PLUGINLIB_DECLARE_CLASS(pointcloud_to_laserscan, CloudToScan, pointcloud_to_laserscan::CloudToScan, nodelet::Nodelet);
+}
+</code></pre>
+
+<p>1) where does the M<em>PI/2 in the angle</em>min and angle_max come from?</p>
+
+<p>2) why is it range<em>sq = x^2 + z^2? shldnt it be range</em>sq = y^2 + z^2?</p>
+
+<p>correct me if i am wrong.. if x is the horizontal and y is the vertical, then z shld be in the negative direction(coming out of the image plane? hence i think x i vertical and y is horizontal.</p>
+
+<p>3) there is another code called cloud_throttle. Is it necessary to add both together.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-14 05:41:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>1.) M_PI was likely #defined as 3.141592 (pi) in one of the header files.  Somewhere in ROS.</p>
+
+<p>2.) I think the input cloud is defined in a camera frame.  Camera frames are (annoyingly) different than the standard ROS frame.  X is horizontal along the image, Y is vertical along the image (often facing down), and Z is positive going into the image plane.  So here distance to point ahead is z and distance from center is x.</p>
+
+<p>In response to your edit, as stated in <a href="http://www.ros.org/reps/rep-0103.html#axis-orientation">REP 103</a>, the camera coordinate frame is &quot;z forward, x right, y down&quot;, assuming you are looking from the image sensor to the image plane and are centered at the optical focus point of the camera.</p>
+
+<p>3.) No, it&#39;s not.  However, if you are running these nodes on a slower computer, the throttling can help a lot.  It&#39;s just a very timing-imprecise node to slow things down so that you don&#39;t have to process every pointcloud.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29">Chad Rockey</a> on 2011-07-14 06:59:00 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>1 more qn:if (output-&gt;ranges[index] * output-&gt;ranges[index] &gt; range_sq) output-&gt;ranges[index] = sqrt(range_sq);, what is this statement trying to do.. not that sure...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-18 15:29:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The &quot;y&quot; axis is technically the one we&#39;re revolving around in camera frame.  Since it&#39;s pointing down, the angle rotates the wrong direction.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29">Chad Rockey</a> on 2011-07-17 15:31:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>1 more qn: why is it -atan2(x, z)? and not atan2(x,z)?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-17 15:21:08 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks a lot for correcting my mistake. Now i understand why it is z*z + x*x</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-17 14:18:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I edited my question.have a look..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/584">lakshmen</a> on 2011-07-14 17:23:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>M_PI should actually be in a std library header, likely math.h or cmath. It is indeed a macro that is #define&#39;d to 3.14159... I believe some ROS header somewhere pulls in math.h.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14">Eric Perko</a> on 2011-07-14 08:09:37 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

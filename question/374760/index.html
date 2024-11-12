@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Travel_distance receives 0.0 despite moving from one point to another point - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374760">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Travel_distance receives 0.0 despite moving from one point to another point</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am trying to program my robot to calculate the values of x-axis and y-axis for the total distance and the travel distance based on one point to another. However, the travel distance still displays 0.0 no matter which path I am taking. I have been searching online for hours, however I saw that most of the solutions are in python software. I am currently using C++ program and I am currently using Linux. Attached below are my codes shown</p>
+
+<p><strong>My codes</strong></p>
+
+<pre><code>// Subscribed topic : aiv_cmd_vel
+// Published topic : odom
+
+
+#include &lt;ros/ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;std_msgs/UInt16.h&gt;
+#include &lt;std_msgs/Float32.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;sstream&gt;
+#include &lt;fstream&gt;
+#include &lt;vector&gt;
+#include &lt;iostream&gt;
+#include &lt;cstdio&gt;
+#include &lt;time.h&gt;
+#include &lt;string&gt;
+#include &lt;stdio.h&gt;   /* Standard input/output definitions */
+#include &lt;string.h&gt;  /* String function definitions */
+#include &lt;unistd.h&gt;  /* UNIX standard function definitions */
+#include &lt;fcntl.h&gt;   /* File control definitions */
+#include &lt;errno.h&gt;   /* Error number definitions */
+#include &lt;termios.h&gt; /* POSIX terminal control definitions */
+#include &lt;stdlib.h&gt;
+#include &lt;cmath&gt;
+
+using namespace std;
+
+#define CRC16 0x8005
+
+#define REPLY_SIZE 1
+#define TIMEOUT 1000
+
+#define PI      3.14159  //Ratio of the circumference of a circle to its diameter
+#define RTD     180.0/PI //Radian to Degree
+#define DTR     PI/180.0 //Degree to Radian
+#define btoa(x) ((x)?&quot;true&quot;:&quot;false&quot;)
+//ROS Parameter Default
+#define MAIN_FREQ         40.0      //Controller main frequency
+#define TF_REV_DELAY_T     3.0        //TF of MAP_ODOM frame receive start delay units * ts
+#define MODBUS_CMD_SEND_DELAY_T 0.05     //unit:s, 0: not appcation, &gt;0: appcation
+#define AGV_ROBOT_R        0.09       //unit:m (wheel radius)
+#define AGV_ROBOT_L        0.517       //unit:m
+#define AGV_ROBOT_H        0.12       //unit:m
+#define AGV_WHEEL_MOTOR_GEAR_RATIO 0.05 //(1:20)
+#define AGV_WHEEL_RPM_MAX   3000      //RPM
+#define AGV_WHEEL_SPEED_MAX AGV_ROBOT_R*AGV_WHEEL_RPM_MAX*0.10472  //(m/s) The RPM to Linear Velocity formular is : v = r × RPM × 0.10472
+#define AGV_WHEEL_SPEED_MIN AGV_ROBOT_R*1.0*0.10472
+#define AGV_WHEEL_LV_TO_RPM 1/(AGV_ROBOT_R*0.10472)
+#define MODBUS_CMD_RESEND_MAX 0         //0: not appcation, &gt;0: appcation
+#define MODBUS_CMD_RESEND_TIME 0.5      //unit:s
+#define MODBUS_RECVEIE_TIMEOUT 1.0      //unit:s
+#define LEFT_MOTOR_ID 3
+#define LEFT_MOTOR_INVERSE 0
+#define LEFT_MOTOR_ENABLE 1
+#define RIGHT_MOTOR_ID 2
+#define RIGHT_MOTOR_INVERSE 0
+#define RIGHT_MOTOR_ENABLE 1
+#define FRAME_BUFF_MAX 64
+
+typedef struct
+{
+    double L;
+    double r;
+    double h;
+    double wmr;
+} rbtmdl;
+
+typedef struct
+{
+    double ts;
+
+    double w_L;
+    double w_R;
+
+    double v_L;
+    double v_R;
+
+    double v_t;
+    double w_t;
+
+    double v_cmd;
+    double w_cmd;
+
+    double w_La;
+    double w_Ra;
+
+    double v_La;    //to Balance Left wheel command
+    double v_Ra;    //to Balance Right wheel command
+
+    double ptv;
+} rbtctrl;
+
+rbtctrl rc;
+rbtmdl rm;
+
+//------------------------------------------
+unsigned char data[6];
+
+//------------------------------------------
+ros::Publisher chatter_pub_;
+ros::Publisher agv_vlr_pub_;
+ros::Publisher odom_pub_;
+
+
+//------------------------------------------
+//ROS Parameter
+double main_freq_=MAIN_FREQ ;
+double tf_rev_delay_t_=TF_REV_DELAY_T;
+double modbus_cmd_send_delay_t_=MODBUS_CMD_SEND_DELAY_T;
+double agv_wheel_motor_gear_ratio_=AGV_WHEEL_MOTOR_GEAR_RATIO;
+double agv_robot_r_=AGV_ROBOT_R;
+double agv_robot_l_=AGV_ROBOT_L;
+double agv_robot_h_=AGV_ROBOT_H;
+std::string base_frame_;
+std::string odom_frame_;
+std::string modbus_port_;
+std::string modbus_baud_;
+double modbus_cmd_resend_max_=MODBUS_CMD_RESEND_MAX;
+double modbus_cmd_resend_time_=MODBUS_CMD_RESEND_TIME;
+double modbus_recveie_timeout_=MODBUS_RECVEIE_TIMEOUT;
+int left_motor_id_=LEFT_MOTOR_ID;
+bool left_motor_inverse_=LEFT_MOTOR_INVERSE;
+bool left_motor_enable_=LEFT_MOTOR_ENABLE;
+int right_motor_id_=RIGHT_MOTOR_ID;
+bool right_motor_inverse_=RIGHT_MOTOR_INVERSE;
+bool right_motor_enable_=RIGHT_MOTOR_ENABLE;
+bool tf_output_enable_= false;
+bool system_interlock = true;
+bool system_interlock1 = true;
+
+//---------------------------------------------------
+//for UART recveier time-out setting
+fd_set rset;
+int ret = 0;
+struct timeval tv;
+
+//---------------------------------------------------
+int rev_frame_size=0;
+int frame_sent=0;
+int frame_recved=0;
+int frame_checked=0;
+unsigned char frame_bytes[FRAME_BUFF_MAX];
+unsigned int frame_idx=0;
+unsigned short frame_crc16=0;
+int frame_resend_cnt=0;
+int trans_step=0;
+int trans_next=0;
+static int get_new_cmd=0;
+static short trans_vLa=0;
+static short trans_vRa=0;
+//------------------------------------------
+double cmd_vel_v=0;
+double cmd_vel_w=0;
+
+
+static int left_wheel_rpm = 0;
+static int right_wheel_rpm = 0;
+static unsigned short comp_left_wheel_rpm = 0;
+static unsigned short comp_right_wheel_rpm = 0;
+static double left_w = 0.0;
+static double right_w = 0.0;
+
+double tf_out_x=0.0;
+double tf_out_y=0.0;
+geometry_msgs::Quaternion tf_out_odom_quat;
+
+
+static char temp_count = 0;
+
+
+int count = 0;
+int fd; /* File descriptor for the port */
+unsigned buffer[1000];
+unsigned int buf_cnt=0;
+bool frame_get_flag=0;
+unsigned int frame_rev_freq_cnt=0;
+unsigned char read_bytes[800];
+unsigned int read_idx=0;
+bool syn_flag=0;
+int syn_num=0;
+
+ros::Time current_ctime, last_ctime;
+double cdt=0;
+bool get_ctime=0;
+
+//Odometry
+ros::Time time1, time2, odom_current_time, odom_last_time;
+ros::Time current_time;
+double total_distance = 0.0;
+double previous_x;
+double previous_y;
+double x = 0.0;
+double y = 0.0;
+double th = 0.0;
+double vx = 0.0;
+double vy = 0.0;
+double vth = 0.0;
+bool first_run = true;
+bool get_time1=0;
+bool get_time2=0;
+bool get_dt=0;
+FILE *fptr;
+
+void Sat_Value(double *In, double Upp, double Low)
+{
+    double data;
+    data=*In;
+    if (data&gt;Upp)
+    {
+        data=Upp;
+        std::cout &lt;&lt; &quot;Motor command more than Limit&quot; &lt;&lt; std::endl;
+    }
+    if (data&lt;Low)
+    {
+        data=Low;
+        std::cout &lt;&lt; &quot;Motor command less than Limit&quot; &lt;&lt; std::endl;
+    }
+    *In=data;
+}
+
+unsigned short crc_fn(unsigned char *dpacket, unsigned int len) // CRC Function(Error calcualtion)
+{
+    unsigned short crc = 0xffff,poly = 0xa001; //Modbus CRC-16
+    unsigned short i=0;
+
+    for(i=0;i&lt;len;i++)
+    {
+        crc^= dpacket[i];
+        for(int j=0;j&lt;8;j++)
+        {
+            if(crc &amp; 0x01)
+            {
+                crc &gt;&gt;= 1;
+                crc ^= poly;
+            }
+            else
+                crc &gt;&gt;= 1;
+        }
+    }
+    return (crc);
+}
+
+void write_modbus(unsigned char *data, unsigned int len)
+{
+    unsigned short crc16;
+    unsigned char buff[40];
+    unsigned char crc16_data[2];
+    unsigned short i=0;
+
+    for (i=0;i&lt;len;i++)
+        buff[i]=data[i];
+    crc16=crc_fn(&amp;buff[0], len); //modbus CRC16
+    crc16_data[0]=(unsigned char)(crc16 &amp; 0xff);
+    crc16_data[1]=(unsigned char)((crc16 &gt;&gt; 8) &amp; 0xff);
+    buff[len+1-1]=crc16_data[0];
+    buff[len+2-1]=crc16_data[1];
+    printf(&quot;crc16=%d\n&quot;, crc16);
+    printf(&quot;crc16_data[0]=0x%02X, crc16_data[1]=0x%02X\n&quot;, crc16_data[0], crc16_data[1]);
+    printf(&quot;Mobus Data Sent:0x%02X %02X %02X %02X %02X %02X %02X %02X\n&quot;, buff[0], buff[1], buff[2], buff[3], buff[4], buff[5], buff[6], buff[7]);
+    write(fd, &amp;buff[0], len+2);
+}
+
+
+void ctrl_motors(short ws, short id)
+{
+
+    printf(&quot;wheelspeed_rpm=%d, Motor_ID=%d\n&quot;, ws ,id);
+    printf(&quot;lme=%s, lmi=%s, rme=%s, rmi=%s\n&quot;, btoa(left_motor_enable_) , btoa(left_motor_inverse_), btoa(right_motor_enable_), btoa(right_motor_inverse_));
+/*
+    if ((!left_motor_enable_) || (!right_motor_enable_))
+        ws=0;
+
+    if ((left_motor_inverse_) || (ws&lt;0) || (right_motor_inverse_))
+    {
+        printf(&quot;wheelspeed_rpm=%d, Motor_ID=%d\n&quot;, ws ,id); 
+        ws = -ws;
+
+    }
+
+*/
+    if ((!left_motor_enable_) &amp;&amp; (id == 3))
+        ws=0;
+    if ((!right_motor_enable_) &amp;&amp; (id == 2))
+        ws=0;
+    if ((left_motor_inverse_) &amp;&amp; (id == 3))
+        ws=-ws;
+    if ((right_motor_inverse_) &amp;&amp; (id == 2))
+        ws=-ws;
+
+    printf(&quot;wheelspeed_rpm=%d, Motor_ID=%d\n&quot;, ws ,id); 
+
+    unsigned short addr = 0x4e20; //0x4e20 - 20000
+    unsigned char buff[40];
+    buff[0] = id; //01 communication ID
+    buff[1] = 0x06; // Function code 6 for writing
+    buff[2] = (unsigned char)((addr &gt;&gt; 8) &amp; 0xff); //data address for first register starting with 2000 
+    buff[3] = (unsigned char)(addr &amp; 0xff);
+    buff[4] = (unsigned char)((ws &gt;&gt; 8) &amp; 0xff); //2000
+    buff[5] = (unsigned char)(ws &amp; 0xff);
+    write_modbus(&amp;buff[0], 6);
+
+    frame_sent=1;
+    rev_frame_size=8;
+    frame_checked=0;
+
+
+    current_ctime=ros::Time::now();
+    if (modbus_cmd_send_delay_t_!=0)
+        sleep(modbus_cmd_send_delay_t_);
+
+}
+
+
+void cmdVelReceived(const geometry_msgs::Twist::ConstPtr&amp; cmd_vel)
+{
+    //geometry_msgs::Twist vlr_cmd;
+    rc.v_cmd = cmd_vel-&gt;linear.x;
+    rc.w_cmd = cmd_vel-&gt;angular.z;
+
+    //printf(&quot;v=%+3.6f\n&quot;, rc.v_cmd);
+    //printf(&quot;W=%+3.6f\n&quot;, rc.w_cmd);
+
+    //set VW to set WLR (unit: rad/s)
+    rc.w_L= (1.0/rm.r)*rc.v_cmd - (rm.L/(2.0*rm.r))*rc.w_cmd;
+    rc.w_R= (1.0/rm.r)*rc.v_cmd + (rm.L/(2.0*rm.r))*rc.w_cmd;
+
+    //printf(&quot;WL=%+3.6f\n&quot;, rc.w_L);
+    //printf(&quot;WR=%+3.6f\n&quot;, rc.w_R);
+
+    //set WLR to AGV motor speed command (unit: m/s)
+    rc.v_La=rc.w_L*rm.r;
+    rc.v_Ra=rc.w_R*rm.r;
+
+
+    Sat_Value(&amp;rc.v_La, AGV_WHEEL_SPEED_MAX, -AGV_WHEEL_SPEED_MAX);
+    Sat_Value(&amp;rc.v_Ra, AGV_WHEEL_SPEED_MAX, -AGV_WHEEL_SPEED_MAX);
+
+    //printf(&quot;VL=%+3.6f\n&quot;, rc.v_La);
+    //printf(&quot;VR=%+3.6f\n&quot;, rc.v_Ra);
+
+    if ((rc.v_La&gt;=0.00001) &amp;&amp; (rc.v_La&lt;=AGV_WHEEL_SPEED_MIN))
+        rc.v_La=AGV_WHEEL_SPEED_MIN;
+    if ((rc.v_La&lt;=-0.00001) &amp;&amp; (rc.v_La&gt;=(-AGV_WHEEL_SPEED_MIN)))
+        rc.v_La=-AGV_WHEEL_SPEED_MIN;
+    if ((rc.v_Ra&gt;=0.00001) &amp;&amp; (rc.v_Ra&lt;=AGV_WHEEL_SPEED_MIN))
+        rc.v_Ra=AGV_WHEEL_SPEED_MIN;
+    if ((rc.v_Ra&lt;=-0.00001) &amp;&amp; (rc.v_Ra&gt;=(-AGV_WHEEL_SPEED_MIN)))
+        rc.v_Ra=-AGV_WHEEL_SPEED_MIN;
+
+    rc.v_La=rc.v_La*AGV_WHEEL_LV_TO_RPM;
+    rc.v_Ra=rc.v_Ra*AGV_WHEEL_LV_TO_RPM;
+   // printf(&quot;RPM VL2=%+3.6f\n&quot;, rc.v_La);
+    //printf(&quot;RPM VR2=%+3.6f\n&quot;, rc.v_Ra);
+
+    //printf(&quot;Check_data=%f %f\n&quot;,rc.v_La,rm.wmr);
+    rc.v_La=rc.v_La/rm.wmr; //Left Gear ratio
+    rc.v_Ra=rc.v_Ra/rm.wmr; //Right Gear ratio
+    //printf(&quot;LVRPM = %f\n&quot;,rc.v_La);
+    //printf(&quot;RVRPM = %f\n&quot;,rc.v_Ra);
+    trans_vLa=(short)rc.v_La;
+    trans_vRa=(short)rc.v_Ra;
+    //printf(&quot;LWRPM = %d\n&quot;,trans_vLa);
+    //printf(&quot;RWRPM = %d\n&quot;,trans_vRa);
+    printf(&quot;velocity received&quot;);
+/*
+
+    if ((trans_vLa&gt;0) &amp;&amp; ( trans_vRa &gt; 0))
+    {
+       trans_vRa = -trans_vRa;  
+    }
+
+    if ((trans_vLa&lt;0) &amp;&amp; ( trans_vRa &lt; 0))
+    {
+       trans_vRa = -trans_vRa;  
+    }
+
+*/
+}
+
+void motor_speed_read(short id)
+{
+    unsigned char buff_read[6];
+    unsigned short motor_speed_address = 0x0000; //0000 
+    buff_read[0] = id;
+    buff_read[1] = 0x03;
+    buff_read[2] = (unsigned char)((motor_speed_address &gt;&gt; 8) &amp; 0xff);
+    buff_read[3] = (unsigned char)(motor_speed_address  &amp; 0xff);
+    buff_read[4] = 0x00;
+    buff_read[5] = 0x01;
+    write_modbus(&amp;buff_read[0], 6);
+    frame_sent = 1;
+    frame_checked = 0;
+    rev_frame_size=7;
+    current_ctime=ros::Time::now();
+    if (modbus_cmd_send_delay_t_!=0)
+        sleep(modbus_cmd_send_delay_t_);    
+}
+
+//Quaternion to Yaw
+double Quat_to_Yaw(geometry_msgs::Quaternion msg_quat)
+{
+    double yaw;
+    //TF Function Converte to Yaw Angle (Euler Angle)
+    geometry_msgs::Pose msg_pose;
+    msg_pose.orientation=msg_quat;
+    tf::Pose tf_pose;
+    tf::poseMsgToTF(msg_pose, tf_pose);
+    yaw = tf::getYaw(tf_pose.getRotation());
+    return yaw;
+}
+
+
+const std::string currentDateTime() {
+    time_t now = time(0);
+    struct tm  tstruct;
+    char       buf[80];
+    tstruct = *localtime(&amp;now);
+
+    strftime(buf, sizeof(buf), &quot;%Y-%m-%d %X&quot;, &amp;tstruct);
+
+    return buf;
+
+}
+
+
+void odometry_publisher(void)
+{
+    odom_current_time = ros::Time::now();
+    if(temp_count == 0)
+    {
+        odom_last_time = odom_current_time;
+        temp_count = 1;
+    }
+
+    double left_wheel_val = ((left_wheel_rpm)*rm.wmr)*rm.r*0.10472;
+    double right_wheel_val = ((right_wheel_rpm)*rm.wmr)*rm.r*0.10472;
+
+    printf(&quot;left_wheel_speed = %f\n&quot;,left_wheel_val);
+    printf(&quot;right_wheel_speed = %f\n&quot;,right_wheel_val);    
+
+    double v = (left_wheel_val + right_wheel_val)/2.0;
+    double wz = ((right_wheel_val - left_wheel_val)/rm.L);
+
+    printf(&quot;linearV = %f %f\n&quot;,rc.v_cmd,v);
+    printf(&quot;angularZ = %f %f\n&quot;,rc.w_cmd,wz);       
+
+    double dt = (odom_current_time - odom_last_time).toSec();
+    double delta_x = (v * cos(th)) * dt;
+    double delta_y = (v * sin(th)) * dt;
+    double delta_th = wz * dt;
+
+    x += delta_x;
+    y += delta_y; 
+    th += delta_th;
+
+    vx = v * cos(th);
+    vy = v * sin(th);
+
+    std::cout&lt;&lt;&quot;========================================&quot;&lt;&lt;std::endl;
+    std::cout &lt;&lt; &quot;x: &quot; &lt;&lt; x &lt;&lt;  &quot;, y:&quot; &lt;&lt; y &lt;&lt; &quot;, th:&quot; &lt;&lt; th
+        &lt;&lt; &quot;, vx: &quot; &lt;&lt; vx &lt;&lt; &quot;, vy:&quot; &lt;&lt; vy
+        &lt;&lt; &quot;, delta_x:&quot; &lt;&lt; delta_x  
+        &lt;&lt; &quot;, delta_y:&quot; &lt;&lt; delta_y 
+        &lt;&lt; &quot;, delta_th:&quot; &lt;&lt; delta_th &lt;&lt; &quot;, dt:&quot; &lt;&lt; dt &lt;&lt; std::endl;
+    std::cout&lt;&lt;&quot;========================================&quot;&lt;&lt;std::endl;
+
+
+    //since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+    // th=Quat_to_Yaw(odom_quat); //Limit to -PI(-180) ~ PI(180)
+
+    // static tf::TransformBroadcaster odom_broadcaster_;
+
+    //first, we&#39;ll publish the transform over tf
+    // geometry_msgs::TransformStamped odom_trans;
+    // odom_trans.header.stamp = odom_current_time;
+    // odom_trans.header.frame_id = &quot;odom&quot;;
+    // odom_trans.child_frame_id = &quot;base_link&quot;;
+
+    // odom_trans.transform.translation.x = x;
+    // odom_trans.transform.translation.y = y;
+    // odom_trans.transform.translation.z = 0.0;
+    // odom_trans.transform.rotation = odom_quat;
+
+    //send the transform
+    //odom_broadcaster_.sendTransform(odom_trans);
+
+    //next, we&#39;ll publish the odometry message over ROS
+    nav_msgs::Odometry odom;
+    odom.header.stamp = odom_current_time;
+    odom.header.frame_id = &quot;odom&quot;;
+
+        //set the position
+    odom.pose.pose.position.x = x;
+    previous_x = odom.pose.pose.position.x;
+    odom.pose.pose.position.y = y;
+    previous_y = odom.pose.pose.position.y;
+    odom.pose.pose.position.z = 0.0;
+    odom.pose.pose.orientation = odom_quat;
+
+    //set the velocity
+    odom.child_frame_id = &quot;base_link&quot;;
+    odom.twist.twist.linear.x = vx;
+    odom.twist.twist.linear.y = vy;
+    odom.twist.twist.angular.z = wz;
+
+    double travel_distance = sqrt((previous_x - x) * (previous_x - x) + (previous_y - y) * (previous_y - y)); // Need help here
+    total_distance = total_distance + travel_distance;
+    printf(&quot;Travel distance travelled is: %.1f \n&quot;, travel_distance);
+    printf(&quot;Total distance travelled is: %.1f \n&quot;, total_distance);
+
+    //publish the message
+    odom_pub_.publish(odom);
+    x = odom.pose.pose.position.x;
+    y = odom.pose.pose.position.y;
+    //first_run = false;
+    odom_last_time = odom_current_time;
+
+
+
+
+
+
+
+        if (x == 0.0 &amp;&amp; y == 0.0 &amp; th == 0.0 &amp;&amp; vx == 0.0 &amp;&amp; vy == 0.0 &amp;&amp; delta_x == 0.0 &amp;&amp; delta_y == 0.0 &amp;&amp; delta_th == 0.0) {
+            system_interlock = true;
+            if (system_interlock1) {
+                std::ofstream logfile(&quot;/home/amros/aiv150321/src/SystemLog_TD02&quot;, std::ofstream::app); //or std::ofstream::app to append
+                logfile &lt;&lt; &quot;=============================================================================&quot; &lt;&lt; std::endl;
+                logfile &lt;&lt; currentDateTime() &lt;&lt; &quot; TD02 status: Not Moving\n&quot; &lt;&lt; std::endl;
+                logfile &lt;&lt; currentDateTime() &lt;&lt; &quot; TD02 docking status: enabled&quot; &lt;&lt; std::endl;
+
+                if (logfile.is_open())
+                        {
+                          logfile &lt;&lt; &quot;\n&quot;;
+                           system_interlock1 = false;
+                            logfile.close();
+                         }
+
+                         else printf(&quot;Unable to open file \n&quot;);
+
+                       }
+        }
+
+        else {
+                        system_interlock1 = true;
+                         if (system_interlock) {
+                             std::ofstream logfile(&quot;/home/amros/aiv150321/src/SystemLog_TD02&quot;, std::ofstream::app); //or std::ofstream::app to append
+                             logfile &lt;&lt; &quot;=============================================================================&quot; &lt;&lt; std::endl;
+                             logfile &lt;&lt; currentDateTime() &lt;&lt; &quot; TD02 status: Moving\n&quot; &lt;&lt; std::endl;
+                             logfile &lt;&lt; currentDateTime() &lt;&lt; &quot; TD02 docking status: disabled&quot; &lt;&lt; std::endl;
+
+
+                             if (logfile.is_open())
+                             {
+                              logfile &lt;&lt; &quot;\n&quot;;
+                              system_interlock = false;
+                              logfile.close();
+
+                             }
+                           else printf(&quot;Unable to open file \n&quot;);
+
+
+                        }                      
+        }
+
+}
+
+
+/// read at least frame_size bytes, returns number of bytes read -1 if timeout
+int polling_read(int frame_size)
+{
+    const int read_buffer_size = 64;
+    assert(frame_size &gt;= 0 &amp;&amp; frame_size &lt; read_buffer_size);
+
+    unsigned char read_buffer[read_buffer_size];   /* Buffer to store the data received */
+    int next_index = 0;
+    int bytes_read = 0;
+    int total_bytes_read = 0;
+    timeval tv_copy;
+
+    // tv_copy.tv_sec = tv.tv_sec;
+    // tv_copy.tv_usec = tv.tv_usec;
+    tv_copy.tv_sec = 0L;
+    tv_copy.tv_usec = 250000L;  // 100 milliseconds timeout
+    // printf(&quot;timeout settings: %ld secs, %ld usecs\n&quot;, tv_copy.tv_sec, tv_copy.tv_usec);
+
+    printf(&quot;Start Receiving...\n&quot;);
+    while (ros::ok())
+    {
+        //always need to zero it first, then add our new descriptor
+        FD_ZERO(&amp;rset);     /* clear the set */
+        FD_SET(fd, &amp;rset);  /* add our file descriptor to the set */
+        if (select(fd+1, &amp;rset, NULL, NULL, &amp;tv_copy) &gt; 0)  // wait for at least 1 byte of data
+        {
+            bytes_read = read(fd, &amp;read_buffer[next_index], read_buffer_size - next_index);
+            if (bytes_read &gt; 0)
+            {
+                for(int i=0;i&lt;bytes_read;i++)              /* Printing only the received characters*/
+                {
+                    printf(&quot;0x%02X &quot;, read_buffer[i + next_index + i]);
+                }
+                printf(&quot;...\n&quot;);
+                next_index += bytes_read;
+            }
+        }
+        if (next_index &gt;= frame_size)
+        {
+            total_bytes_read = next_index;
+            frame_idx = 0;
+            for(int i=0;i&lt;total_bytes_read;i++) 
+            {
+                frame_bytes[frame_idx]=read_buffer[i];
+                frame_idx++;
+            }
+            printf(&quot;Receive Bytes Rxed %d\n&quot;, total_bytes_read); /* Print the number of bytes read */
+            break;
+        }
+        if (tv_copy.tv_sec == 0 &amp;&amp; tv_copy.tv_usec == 0)
+        {
+            // timeout!
+             printf(&quot;Timeout!\n&quot;);
+            total_bytes_read = -1;
+            break;
+        }
+    }
+    return total_bytes_read;
+}
+
+
+void modbus_response(void)
+{
+    //Receive uart data
+    unsigned char read_buffer[64];   /* Buffer to store the data received */
+    int bytes_read=0;                /* Number of bytes read by the read() system call */
+    int retval = 0;
+    if (frame_sent) //frame transmit from Master, wait slave feedback message
+    {
+        printf(&quot;read: cdt=%+3.3f, modbus_cmd_resend_time=%+3.3f\n&quot;, cdt, modbus_cmd_resend_time_);
+
+        printf(&quot;fileId = %d\n&quot;,fd);
+        //always need to zero it first, then add our new descripto
+        // FD_ZERO(&amp;rset);     /* clear the set */
+        // FD_SET(fd, &amp;rset);  /* add our file descriptor to the set */
+        last_ctime=ros::Time::now();
+        bytes_read = polling_read(rev_frame_size);
+        // retval = select(fd+1, &amp;rset, NULL, NULL, &amp;tv);
+        current_ctime=ros::Time::now();        
+        cdt=(current_ctime-last_ctime).toSec();
+        printf(&quot;ctime=%+3.6f\n&quot;,cdt);
+        // printf(&quot;return_select=%d\n&quot;,retval);
+        if(bytes_read&gt; 0)
+        {
+            // if (FD_ISSET(fd, &amp;rset))
+            // {
+            //     bytes_read = read(fd, &amp;read_buffer, rev_frame_size); /* Read the data */
+            //     //------------------------------------------------------
+            //     if (bytes_read&gt;0) //Slave Data collection and display data
+            //     {
+            //         printf(&quot;Now Recveie Bytes Rxed %d\n&quot;, bytes_read); /* Print the number of bytes read */
+            //         for(int i=0;i&lt;bytes_read;i++)              /* Printing only the received characters*/
+            //         {
+            //             frame_bytes[frame_idx]=read_buffer[i];
+            //             frame_idx++;
+            //             if (frame_idx&gt;=(FRAME_BUFF_MAX-1))
+            //             {
+            //                 frame_idx=0;
+            //                 printf(&quot;Error: Frame Buff Overflow idx=%d!!\n&quot;, frame_idx);
+            //             }
+            //             printf(&quot;0x%02X &quot;, read_buffer[i]);
+            //         }
+
+            //         last_ctime=ros::Time::now();
+            //         cdt=(last_ctime-current_ctime).toSec();
+            //         printf(&quot; frame_idx=%d, ctime=%+3.6f\n&quot;, frame_idx, cdt);
+            //     }
+            // }
+            // last_ctime=ros::Time::now();
+            cdt=(last_ctime-current_ctime).toSec();
+            printf(&quot; frame_idx=%d, ctime=%+3.6f\n&quot;, frame_idx, cdt);
+        }
+        else //Receiver Timeout
+        {
+            frame_sent=0;
+            frame_resend_cnt++;
+            printf(&quot;Warning: Recveier Time-out:%+3.3f, Now Starting Resend (frame_resend_cnt=%d, trans_step=%d)\n&quot;, cdt, frame_resend_cnt, trans_step);
+
+            //Re-send command count----------------------------------
+            if (modbus_cmd_resend_max_!=0) //modbus_cmd_resend_max_=0 is not appcation
+            {
+                if (frame_resend_cnt&gt;=modbus_cmd_resend_max_)
+                {
+                    frame_resend_cnt=0;
+                    printf(&quot;Error: Modbus Recveie Error, Please check your connect!!\n&quot;);
+                }
+            }
+            else
+                frame_resend_cnt=0;
+        }
+
+            //------------------------------------------------------
+        if (frame_idx&gt;=rev_frame_size) //Frame received then crc16 check
+        {
+            unsigned short crc_num;
+            unsigned char crc_data[2];
+            frame_recved=1;
+            frame_idx=0;
+            frame_crc16=crc_fn(&amp;frame_bytes[0], rev_frame_size-2); //modbus CRC16
+            crc_data[1]=(unsigned char)(frame_crc16 &amp; 0xff);
+            crc_data[0]=(unsigned char)((frame_crc16 &gt;&gt; 8) &amp; 0xff);
+            frame_crc16=((crc_data[1] &lt;&lt; 8) &amp;0xFF00) | (crc_data[0] &amp; 0xFF);
+            crc_num= ((frame_bytes[rev_frame_size-2] &lt;&lt; 8) &amp;0xFF00) | (frame_bytes[rev_frame_size-1] &amp; 0xFF);
+
+            printf(&quot;frame: 0x&quot;);
+            for (int i=0;i&lt;rev_frame_size;i++)
+                printf(&quot;%02X &quot;, frame_bytes[i]);
+            printf(&quot;\n&quot;);
+            printf(&quot;frame_crc16=%d(0x%02X%02X), crc_num=%d(0x%02X%02X)\n&quot;, frame_crc16, crc_data[1], crc_data[0], crc_num, frame_bytes[rev_frame_size-2], frame_bytes[rev_frame_size-1]);
+            if (frame_crc16==crc_num)
+            {
+                frame_checked=1;
+                printf(&quot;CRC16 Check Pass.\n&quot;);
+
+                    if(bytes_read==7)
+                    {
+                        if(get_new_cmd==6)
+                        {
+                            right_wheel_rpm = (frame_bytes[3]&lt;&lt;8)+(frame_bytes[4]);
+                if ((right_wheel_rpm &amp; 0x8000)&gt;&gt;15)
+                {
+                comp_right_wheel_rpm = (~right_wheel_rpm) + 1;
+                right_wheel_rpm = -comp_right_wheel_rpm;
+                    }   
+                            printf(&quot;Right_wheel_rpm_read=%d\n&quot;,right_wheel_rpm);
+                        }   
+
+                        else if(get_new_cmd==8)
+                        {
+                            left_wheel_rpm = (frame_bytes[3]&lt;&lt;8)+(frame_bytes[4]);
+                if ((left_wheel_rpm &amp; 0x8000)&gt;&gt;15)
+                {
+                //printf(&quot;Compliment received&quot;);
+                comp_left_wheel_rpm = (~left_wheel_rpm) + 1;
+                left_wheel_rpm = comp_left_wheel_rpm;
+                    }
+                if (trans_vLa&lt;0)
+                {
+                left_wheel_rpm = -left_wheel_rpm;
+                    }       
+                            printf(&quot;Left_wheel_rpm_read=%d\n&quot;,left_wheel_rpm);
+                        }
+
+                    }
+
+            }
+            else
+            {
+                frame_sent=0;
+                frame_resend_cnt++;
+                printf(&quot;Error: CRC16 Check Fail, Now Starting Resend (frame_resend_cnt=%d, trans_step=%d) Command to Slave!!.\n&quot;, frame_resend_cnt, trans_step);
+
+                //printf(&quot;I am here\n&quot;);
+
+                //Re-send command count----------------------------------
+                if (modbus_cmd_resend_max_!=0) //modbus_cmd_resend_max_=0 is not appcation
+                {
+                    if (frame_resend_cnt&gt;=modbus_cmd_resend_max_)
+                    {
+                        frame_resend_cnt=0;
+                        printf(&quot;Error: Modbus Recveie Error, Please check your connect!!\n&quot;);
+                    }
+                }
+                else
+                    frame_resend_cnt=0;
+            }
+        }
+
+            //------------------------------------------------------
+        if (frame_checked) //Modbus receive and CRC16 check OK!!
+        {
+            last_ctime=ros::Time::now();
+            cdt=(last_ctime-current_ctime).toSec();
+            printf(&quot;OK: trans_step=%d, frame_checked:ctime=%+3.3f\n&quot;,trans_step, cdt);
+
+            frame_resend_cnt=0;
+            trans_step = 0;
+            //trans_step=trans_next;
+            frame_sent=0;
+            cdt=0;
+        }
+    }  
+}
+
+void uart_setting(void)
+{
+    //Std::String to char* (string)
+    char *cstr = new char[modbus_port_.length() + 1];
+    strcpy(cstr, modbus_port_.c_str());    
+
+    fd = open(cstr, O_RDWR | O_NOCTTY | O_NDELAY);
+    if (fd == -1)
+    {
+        perror(&quot;open_port: Unable to open Modbus Port - &quot;);
+        exit(-1);
+    }
+    else
+    fcntl(fd, F_SETFL, 1);
+
+    delete [] cstr; //delete temp char* (string)
+
+    struct termios options;
+
+    speed_t baud = B115200;//B115200;
+    if (modbus_baud_==&quot;115200&quot;)
+        baud = B115200;
+    else if (modbus_baud_==&quot;57600&quot;)
+    baud = B57600;
+    else if (modbus_baud_==&quot;38400&quot;)
+    baud = B38400;
+    else if (modbus_baud_==&quot;19200&quot;)
+    baud = B19200;
+    else if (modbus_baud_==&quot;9600&quot;)
+    baud = B9600;
+
+    tcgetattr(fd, &amp;options); /* Get the original setting */
+    cfsetispeed(&amp;options, baud); /* Setting the baudrate */
+    cfsetospeed(&amp;options, baud);
+    options.c_cflag |= (CLOCAL|CREAD); /* enable the receiver and set local mode */
+    options.c_cflag &amp;= ~CSIZE; /* setting the character size (8-bits) */
+    options.c_cflag |= CS8;
+    options.c_cflag &amp;= ~PARENB; /* Setting Parity Checking: NONE (NO Parity) */
+    options.c_cflag |= CSTOPB;
+    options.c_cflag &amp;= ~CRTSCTS; /* Disable Hardware flow control */
+    options.c_iflag &amp;= ~INPCK; /* Disable Input Parity Checking */
+    options.c_iflag &amp;= ~(IXON|IXOFF|IXANY); /* Disable software flow control */
+    options.c_iflag &amp;= ~(IGNPAR|ICRNL);
+    options.c_oflag &amp;= ~OPOST; /* output raw data */
+    options.c_lflag &amp;= ~(ICANON|ECHO|ECHOE|ISIG); /* disablestd input */
+    tcflush(fd, TCIFLUSH); /* clean the current setting */
+    tcsetattr(fd, TCSANOW, &amp;options); /* Enable the new setting right now */
+
+    //Timeout Receiver Setting
+    tv.tv_sec = modbus_recveie_timeout_; //unit: sec
+    tv.tv_usec = 0;                      //unit: usec
+}
+
+
+
+
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;aiv_modbus_link_node&quot;);
+    ros::NodeHandle n;
+
+    chatter_pub_= n.advertise&lt;std_msgs::String&gt;(&quot;agv_chatter&quot;, 1);
+    agv_vlr_pub_ = n.advertise&lt;geometry_msgs::Twist&gt;(&quot;agv_vlr_cmd&quot;, 1);
+    odom_pub_ = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 10);
+
+
+    //tf::TransformBroadcaster odom_broadcaster_;
+    tf::TransformBroadcaster odom_broadcaster_;
+    //----------------------------------------------------------------
+    ros::Subscriber cmd_vel_sub_;
+    cmd_vel_sub_= n.subscribe&lt;geometry_msgs::Twist&gt;(&quot;aiv_cmd_vel&quot;, 100, cmdVelReceived);
+
+    printf(&quot;Start: lme=%s, lmi=%s, rme=%s, rmi=%s\n&quot;, btoa(left_motor_enable_) , btoa(left_motor_inverse_), btoa(right_motor_enable_), btoa(right_motor_inverse_));
+
+    n.getParam(&quot;/main_freq&quot;, main_freq_) ;
+    n.getParam(&quot;/tf_rev_delay_t&quot;, tf_rev_delay_t_);
+    n.getParam(&quot;/comm_link/modbus_cmd_send_delay_t&quot;, modbus_cmd_send_delay_t_);
+    n.getParam(&quot;/comm_link/agv_wheel_motor_gear_ratio&quot;, agv_wheel_motor_gear_ratio_);
+    n.getParam(&quot;/comm_link/agv_robot_r&quot;, agv_robot_r_);
+    n.getParam(&quot;/comm_link/agv_robot_l&quot;, agv_robot_l_);
+    n.getParam(&quot;/comm_link/agv_robot_h&quot;, agv_robot_h_);
+    n.param(&quot;/agv_client/base_frame&quot;, base_frame_, std::string(&quot;base_footprint&quot;));
+    n.param(&quot;/agv_client/odom_frame&quot;, odom_frame_, std::string(&quot;odom&quot;));
+    n.param(&quot;/comm_link/modbus_port&quot;, modbus_port_, std::string(&quot;/dev/ttyModbusMotor&quot;));
+    n.param(&quot;/comm_link/modbus_baud&quot;, modbus_baud_, std::string(&quot;115200&quot;));
+    n.getParam(&quot;/comm_link/modbus_cmd_resend_max&quot;, modbus_cmd_resend_max_);
+    n.getParam(&quot;/comm_link/modbus_cmd_resend_time&quot;, modbus_cmd_resend_time_);
+    n.getParam(&quot;/comm_link/modbus_recveie_timeout&quot;, modbus_recveie_timeout_);
+    n.getParam(&quot;/comm_link/left_motor_id&quot;, left_motor_id_);
+    n.param&lt;bool&gt;(&quot;/comm_link/left_motor_inverse&quot;, left_motor_inverse_, false);
+    n.param&lt;bool&gt;(&quot;/comm_link/left_motor_enable&quot;, left_motor_enable_, true);
+    n.getParam(&quot;/comm_link/right_motor_id&quot;, right_motor_id_);
+    n.param&lt;bool&gt;(&quot;/comm_link/right_motor_inverse&quot;, right_motor_inverse_, false);
+    n.param&lt;bool&gt;(&quot;/comm_link/right_motor_enable&quot;, right_motor_enable_, true);
+
+    printf(&quot;Loaded: lme=%s, lmi=%s, rme=%s, rmi=%s\n&quot;, btoa(left_motor_enable_) , btoa(left_motor_inverse_), btoa(right_motor_enable_), btoa(right_motor_inverse_));
+
+    rm.r=agv_robot_r_;
+    rm.L=agv_robot_l_;
+    rm.h=agv_robot_h_;
+    rm.wmr=agv_wheel_motor_gear_ratio_;
+
+    ros::Rate loop_rate(MAIN_FREQ);
+
+    uart_setting();
+    printf(&quot;Start modbus!!\n&quot;);
+
+
+    while (ros::ok())
+    {
+        //vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+        get_new_cmd = 1; printf(&quot;1\n&quot;);
+        ctrl_motors(trans_vRa, right_motor_id_);         
+        get_new_cmd = 2; printf(&quot;2\n&quot;);
+        modbus_response();
+        get_new_cmd = 3; printf(&quot;3\n&quot;);
+        ctrl_motors(trans_vLa, left_motor_id_);         
+        get_new_cmd = 4; printf(&quot;4\n&quot;);
+        modbus_response();
+        get_new_cmd = 5; printf(&quot;5\n&quot;);
+
+        motor_speed_read(right_motor_id_); 
+        get_new_cmd = 6; printf(&quot;6\n&quot;);
+        modbus_response();
+        get_new_cmd = 7; printf(&quot;7\n&quot;);
+        motor_speed_read(left_motor_id_); 
+        get_new_cmd = 8; printf(&quot;8\n&quot;);
+        modbus_response();
+        odometry_publisher();
+
+
+        if (tf_output_enable_)
+        {
+            //Publish TF of odom
+            geometry_msgs::TransformStamped odom_trans;
+            odom_trans.header.stamp = odom_current_time;
+            odom_trans.header.frame_id = odom_frame_;
+            odom_trans.child_frame_id = base_frame_;
+            odom_trans.transform.translation.x = x;
+            odom_trans.transform.translation.y = y;
+            odom_trans.transform.translation.z = 0.0;
+            odom_trans.transform.rotation = tf::createQuaternionMsgFromYaw(th);
+            //send the transform
+            odom_broadcaster_.sendTransform(odom_trans);
+        }            
+        get_new_cmd = 1;
+
+        //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        ros::spinOnce();
+        loop_rate.sleep();
+
+    }
+
+    close(fd);
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/70657">Jefferson</a> on 2021-03-26 03:27:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

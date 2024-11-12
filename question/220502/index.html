@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Image subscriber lag (despite queue = 1) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/220502">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Image subscriber lag (despite queue = 1)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/70243/image-subscriber-lag-despite-queue-1">https://robotics.stackexchange.com/questions/70243/image-subscriber-lag-despite-queue-1</a>.</p>
+        <p>I am having some lag issues with a rospy subscriber listening to image messages.</p>
+
+<p><strong>Overview:</strong> </p>
+
+<p>I have a rosbag streaming images to /camera/image<em>raw at 5Hz. I also have an image</em>view node for displaying the images for reference. This image_view shows them at 5Hz.</p>
+
+<p>In my rospy subscriber (initialized with queue = 1), I also display the image (for comparing lag time against the image_view node). The subscriber subsequently does some heavy processing.</p>
+
+<p><strong>Expected result:</strong></p>
+
+<p>Since queue size is 1, the subscriber should process the latest frame, and skip all other frames in the meanwhile. Once it completes processing, it should then move on to the next latest frame. There should be no queuing of old frames. This would result in a choppy, but not laggy video (low fps, but no &quot;delay&quot; wrt rosbag stream, if that makes sense)</p>
+
+<p><strong>Actual result:</strong></p>
+
+<p>The subscriber is lagging behind the published stream. Specifically, the image_view node displays the images at 5Hz, and the subscriber seems to queue up all the images and processes them one by one, instead of just grabbing the latest image. The delay also grows over time. When I stop the rosbag stream, the subscriber continues to process images in the queue (even though queue = 1).</p>
+
+<p>Note that if I change the subscriber to have a very large buffer size, as below, the expected behavior is produced:</p>
+
+<pre><code>self.subscriber = rospy.Subscriber(&quot;/camera/image_raw&quot;, Image, self.callback,  queue_size = 1, buff_size=2**24)
+</code></pre>
+
+<p>However, this is not a clean solution.</p>
+
+<p>This issue has also been reported in the following links, where I found the buffer size solution. The official explanation hypothesizes that the publisher may actually be slowing down, but this is not the case since the image_view subscriber displays the images at 5Hz.</p>
+
+<p><a href="https://github.com/ros/ros_comm/issues/536">https://github.com/ros/ros_comm/issues/536</a>, <a href="http://stackoverflow.com/questions/26415699/ros-subscriber-not-up-to-date">http://stackoverflow.com/questions/26415699/ros-subscriber-not-up-to-date</a>, <a href="http://answers.ros.org/question/50112/unexpected-delay-in-rospy-subscriber/">http://answers.ros.org/question/50112/unexpected-delay-in-rospy-subscriber/</a></p>
+
+<p>Any help is appreciated. Thanks!</p>
+
+<p><strong>Code:</strong></p>
+
+<pre><code>def callback(self, msg):
+    print &quot;Processing frame | Delay:%6.3f&quot; % (rospy.Time.now() - msg.header.stamp).to_sec()
+    orig_image = self.bridge.imgmsg_to_cv2(msg, &quot;rgb8&quot;)
+    if (self.is_image_show_on):
+        bgr_image = cv2.cvtColor(orig_image, cv2.COLOR_RGB2BGR)
+        cv2.imshow(&quot;Image window&quot;, bgr_image)
+        cv2.waitKey(1)
+
+    result = process(orig_image) #heavy processing task
+    print result
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/25009">sr71</a> on 2015-11-05 22:40:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The description in the <a href="https://github.com/ros/ros_comm/issues/536">official bug report</a> is very clear: this is not a bug.</p>
+
+<p>This is what is happening:</p>
+
+<ol>
+<li><p>With a queue size of 1, and a buffer size smaller than your message size, the first message is processed with little delay, but the second message gets stuck in limbo: 64k of the message is in the subscriber&#39;s buffer, and the remainder is stuck in either the OS buffer or the publisher&#39;s buffer.</p></li>
+<li><p>While the second message is stuck halfway transmitted in the publisher&#39;s queue, it may or may not drop subsequent message, depending on the publisher queue size.</p></li>
+<li><p>Once your subscriber is done with the first message, rospy is free to finish the receive of the second message, and then your subscriber is triggered. The following message (3 if the publisher has not dropped any messages, or a later message if it is dropping messages), now becomes stuck halfway.</p></li>
+<li><p>(2) and (3) repeat, and the delay should eventually settle out to the publisher queue size times your processing time.</p></li>
+</ol>
+
+<p>Increasing the subscriber buffer size allows the subscriber to receive a complete message, instead of having it stuck halfway, and then the message can be put into the pending message queue and dealt with according to the queue size.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1034">ahendrix</a> on 2015-11-06 00:34:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I see, thank you for the explanation. For image msgs with varying resolution, is a good rule of thumb to set the buffer as their mean size? Or is it better to use a very large buffer that captures all the images?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25009">sr71</a> on 2015-11-06 09:39:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Read my answer carefully and think about the consequences of setting the buffer size to a value which is smaller than your maximum image size. (hint: you&#39;ll end up right back where you started)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2015-11-06 14:59:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have the same problem, but there is no buff_size to set in a C++ subscriber. Let alone that I&#39;m using an image_transport to do this job...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19863">Avio</a> on 2017-09-27 06:19:24 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I encounter the same problem, thanks a lot.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32001">Qinsheng</a> on 2019-10-04 22:47:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It seems I have this problem as well.  I&#39;m using c++ subscriber.  So, how to set the buff_size in this case?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/47291">Danielfann</a> on 2019-10-15 20:40:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Danielfann in C++, the subscriber queue size is typically the second argument to <code>subscribe()</code> : <a href="http://wiki.ros.org/roscpp/Overview/Publishers%20and%20Subscribers#Subscribing_to_a_Topic">http://wiki.ros.org/roscpp/Overview/Publishers%20and%20Subscribers#Subscribing_to_a_Topic</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-10-16 13:07:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ahendrix, thanks for reply.  But, I really need to keep the queue size as 1 since I have to use the latest msg only, which is a real-time video frame.  Currently, I have to check the time stamp and skip the frame with older time.  The ROS queue doesn&#39;t behave like a simple queue model describes, in which the older frame should be discarded immediately once a new frame is pushed in since the queue size of 1.  I searched and found people had similar problems in rospy, as you answered previously, if the message size is bigger than the buff_size, the older message can&#39;t be dropped properly.  I&#39;m just wondering how we can handle it in c++ (roscpp), any equivalence to buff_size in rospy, not queue_size.  Thanks!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/47291">Danielfann</a> on 2019-10-16 20:09:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The roscpp TCP transport does not have a buff_size argument. It reads the incoming message length, allocates a buffer of the required size, and then reads the entire incoming message in a single read.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2019-10-17 11:33:23 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

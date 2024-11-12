@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS Arduino Serial Issues - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/360146">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS Arduino Serial Issues</h2>
+      <div class="question">
+        <p>Hello! 
+I am attempting to send encoder values over serial from an arduino device to the master device using the Vector3 stamped message. 
+Currently, the encoders work using test code but once I add ros communication the Encoder values are not being sent. </p>
+
+<p>See below for my current arduino code.</p>
+
+<p>I am using the rosserial serial_node.py on the master to transmit published data from the Arduino.</p>
+
+<p>I am running Ubuntu 18.04 on x86 with ros melodic.</p>
+
+<p>Code:</p>
+
+<pre><code>#include &lt;ros.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;PID_v1.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;geometry_msgs/Vector3Stamped.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;ros/time.h&gt;
+#include &lt;Encoder.h&gt;
+
+Encoder myEnc(4, 5);
+Encoder myEnc2(2, 3);
+
+float x, z;
+
+int enA = 5, in1 = 3, in2 = 4, enB = 6, in3 = 2, in4 = 7, enC = 10, in5 = 12, in6 = 11, enD = 9, in7 = 13, in8 = 8;
+
+long oldPosition = -999, oldPosition2 = -999;
+
+#define LOOPTIME 100     //Looptime in millisecond
+const byte noCommLoopMax = 10;                //number of main loops the robot will execute without communication before stopping
+unsigned int noCommLoops = 0;                 //main loop without communication counter
+
+unsigned long lastMilli = 0;
+
+const double radius = 0.1016;                   //.   Wheel radius, in m
+const double wheelbase = 0.4;               //.   Wheelbase, in m
+const double encoder_cpr = 28.65;               //.   Encoder ticks or counts per rotation 
+const double speed_to_pwm_ratio = 0.00235;    //Ratio to convert speed (in m/s) to PWM value. It was obtained by plotting the wheel speed in relation to the PWM motor command (the value is the slope of the linear function).
+const double min_speed_cmd = 0.0882;          //(min_speed_cmd/speed_to_pwm_ratio) is the minimum command value needed for the motor to start moving. This value was obtained by plotting the wheel speed in relation to the PWM motor command (the value is the constant of the linear function).
+
+double speed_req = 0;                         //Desired linear speed for the robot, in m/s
+double angular_speed_req = 0;                 //Desired angular speed for the robot, in rad/s
+
+double speed_req_left = 0;                    //Desired speed for left wheel in m/s
+double speed_act_left = 0;                    //Actual speed for left wheel in m/s
+double speed_cmd_left = 0;                    //Command speed for left wheel in m/s 
+
+double speed_req_right = 0, speed_act_right = 0, speed_cmd_right = 0; //Command speed for wheels in m/s 
+
+const double max_speed = 0.4;                 //Max speed in m/s
+
+int PWM_leftMotor = 0, PWM_rightMotor = 0;  //PWM commands
+
+// PID Parameters
+const double PID_left_param[] = { 0, 0, 0.1 }; //Respectively Kp, Ki and Kd for left motor PID
+const double PID_right_param[] = { 0, 0, 0.1 }; //Respectively Kp, Ki and Kd for right motor PID
+
+double pos_left = 0, pos_right = 0;      //encoder positions
+
+PID PID_leftMotor(&amp;speed_act_left, &amp;speed_cmd_left, &amp;speed_req_left, PID_left_param[0], PID_left_param[1], PID_left_param[2], DIRECT);          //Setting up the PID for left motor
+PID PID_rightMotor(&amp;speed_act_right, &amp;speed_cmd_right, &amp;speed_req_right, PID_right_param[0], PID_right_param[1], PID_right_param[2], DIRECT);   //Setting up the PID for right motor
+
+ros::NodeHandle nh;
+
+void velcallback(const geometry_msgs::Twist&amp; cmd_vel) {
+
+  speed_req = cmd_vel.linear.x;                                     //Extract the commanded linear speed from the message
+  angular_speed_req = cmd_vel.angular.z;                            //Extract the commanded angular speed from the message
+
+  speed_req_left = speed_req - angular_speed_req*(wheelbase/2);     //Calculate the required speed for the left motor to comply with commanded linear and angular speeds
+  speed_req_right = speed_req + angular_speed_req*(wheelbase/2);    //Calculate the required speed for the right motor to comply with commanded linear and angular speeds
+
+}
+
+ros::Subscriber&lt;geometry_msgs::Twist&gt; sub(&quot;cmd_vel&quot;, &amp;velcallback);
+//publishes data for use in converting to odom on host machine
+geometry_msgs::Vector3Stamped speed_msg;                                //create a &quot;speed_msg&quot; ROS message
+ros::Publisher speed_pub(&quot;speed&quot;, &amp;speed_msg);
+
+
+void setup() {
+
+  //Serial.begin(9600);
+  //Serial.println(&quot;Basic Encoder Test:&quot;);
+  nh.initNode();
+  nh.subscribe(sub);
+  nh.advertise(speed_pub);
+
+  //initialize motor controller
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+
+  pinMode(enB, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  pinMode(enC, OUTPUT);
+  pinMode(in5, OUTPUT);
+  pinMode(in6, OUTPUT);
+
+  pinMode(enD, OUTPUT);
+  pinMode(in7, OUTPUT);
+  pinMode(in8, OUTPUT);
+
+  //setting PID parameters
+  PID_leftMotor.SetSampleTime(95);
+  PID_rightMotor.SetSampleTime(95);
+  PID_leftMotor.SetOutputLimits(-max_speed, max_speed);
+  PID_rightMotor.SetOutputLimits(-max_speed, max_speed);
+  PID_leftMotor.SetMode(AUTOMATIC);
+  PID_rightMotor.SetMode(AUTOMATIC); 
+
+  //setLeftMotorSpeed(0, &#39;s&#39;);
+  //setRightMotorSpeed(0, &#39;s&#39;);
+
+}
+
+void loop() {
+
+  nh.spinOnce();
+
+  if((millis()-lastMilli) &gt;= LOOPTIME) {   
+
+    lastMilli = millis();
+
+    pos_left = getEncoderOnePosition();
+    pos_right = getEncoderTwoPosition();
+    //Serial.println(pos_left);
+
+
+    publishSpeed(LOOPTIME);
+  }
+}
+
+//Publish function for odometry, uses a vector type message to send the data (message type is not meant for that but that&#39;s easier than creating a specific message type)
+void publishSpeed(double time) {
+  speed_msg.header.stamp = nh.now();      //timestamp for odometry data
+  speed_msg.vector.x = pos_right;    //left wheel speed (in m/s)  speed_act_left
+  speed_msg.vector.y = pos_left;   //right wheel speed (in m/s)
+  speed_msg.vector.z = time/1000;         //looptime, should be the same as specified in LOOPTIME (in s)
+  speed_pub.publish(&amp;speed_msg);
+  nh.spinOnce();
+  //nh.loginfo(;);
+}
+
+long getEncoderTwoPosition() {
+  long newPosition = myEnc.read();
+  if (newPosition != oldPosition) {
+    oldPosition = newPosition;
+  }
+  return newPosition;
+}
+
+long getEncoderOnePosition() {
+  long newPosition2 = myEnc2.read();
+  if (newPosition2 != oldPosition2) {
+    oldPosition2 = newPosition2;
+  }
+  return newPosition2;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/57091">boomer123</a> on 2020-08-22 21:44:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Which Arduino board are you using this code with?</p>
+
+<p>You say no values are sent - could you be a bit more explicit - do you get any error or warning messages</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4160">nickw</a> on 2020-08-23 01:52:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I don&#39;t receive any error messages. I am using an arduino uno.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/57091">boomer123</a> on 2020-08-23 11:23:46 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

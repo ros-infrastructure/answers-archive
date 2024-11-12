@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Rostest and move_base actionlib - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/258601">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Rostest and move_base actionlib</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80028/rostest-and-move-base-actionlib">https://robotics.stackexchange.com/questions/80028/rostest-and-move-base-actionlib</a>.</p>
+        <p>Hi</p>
+
+<p>I have a package which relies on the move<em>base action server interface.
+Is it possible to mock the move</em>base server in rostest/gtest, so i can perform unittests?
+I have tried creating a simple action server in the test, as </p>
+
+<pre><code>class MoveBaseAction
+{
+protected:
+  ros::NodeHandle nh_;
+  typedef actionlib::SimpleActionServer&lt;move_base_msgs::MoveBaseAction&gt; MoveBaseActionServer;
+  MoveBaseActionServer * as_; // NodeHandle instance must be created before this line. Otherwise strange error occurs.
+  std::string action_name_;
+  // create messages that are used to published feedback/result
+  move_base_msgs::MoveBaseFeedback feedback_;
+  move_base_msgs::MoveBaseResult result_;
+
+public:
+
+  MoveBaseAction(std::string name) :
+    action_name_(name)
+  {
+    ROS_ERROR(&quot;Starting server...&quot;);
+    //as_ = new actionlib::SimpleActionServer&lt;move_base_msgs::MoveBaseAction&gt;(nh_, name, boost::bind(&amp;MoveBaseAction::executeCB, this, _1), false),
+    as_ = new MoveBaseActionServer(ros::NodeHandle(), &quot;move_base&quot;, boost::bind(&amp;MoveBaseAction::executeCB, this, _1), false);
+    as_-&gt;registerGoalCallback(boost::bind(&amp;MoveBaseAction::goalCB, this));
+    as_-&gt;start();
+  }
+
+  ~MoveBaseAction(void)
+  {
+  }
+  void goalCB(){
+
+  }
+
+  void executeCB(const move_base_msgs::MoveBaseGoalConstPtr &amp;goal)
+  {
+    // helper variables
+    ros::Rate r(1);
+    bool success = true;
+
+    // push_back the seeds for the fibonacci sequence
+    move_base_msgs::MoveBaseFeedback feedback_;
+    double N = 100;
+    double dx = goal-&gt;target_pose.pose.position.x/N;
+    double dy = goal-&gt;target_pose.pose.position.y/N;
+    fprintf(stderr,&quot;goal is (%f,%f)&quot;, goal-&gt;target_pose.pose.position.x,goal-&gt;target_pose.pose.position.y);
+    // start executing the action
+    for(int i = 1; i &lt;= N; i++) {
+      // check that preempt has not been requested by the client
+      if (as_-&gt;isPreemptRequested() || !ros::ok()) {
+        printf(&quot;%s: Preempted&quot;, action_name_.c_str());
+        // set the action state to preempted
+        as_-&gt;setPreempted();
+        success = false;
+        break;
+      }
+
+      feedback_.base_position.pose.position.x = dx*i;
+      feedback_.base_position.pose.position.y = dy*i;
+      fprintf(stderr,&quot;Progress is (%f,%f)&quot;, feedback_.base_position.pose.position.x, feedback_.base_position.pose.position.y);
+
+      // publish the feedback
+      as_-&gt;publishFeedback(feedback_);
+      // this sleep is not necessary, the sequence is computed at 1 Hz for demonstration purposes
+      r.sleep();
+    }
+
+    if(success) {
+      fprintf(stderr,&quot;%s: Succeeded&quot;, action_name_.c_str());
+      // set the action state to succeeded
+      as_-&gt;setSucceeded(result_);
+    }
+  }
+};
+</code></pre>
+
+<p>And then use the class in the test as</p>
+
+<pre><code>typedef actionlib::SimpleActionClient&lt;move_base_msgs::MoveBaseAction&gt; MoveBaseClient;
+MoveBaseAction as(&quot;move_base&quot;);
+MoveBaseClient ac_(&quot;move_base&quot;, true);
+
+//wait for the action server to come up
+while(!ac_.waitForServer(ros::Duration(1.0)) &amp;&amp; ros::ok()){
+  ros::spinOnce();
+  ROS_ERROR(&quot;Waiting for the move_base action server&quot;);
+}
+</code></pre>
+
+<p>But it hangs in the waitForServer loop.
+I think it have something to do with the fact i am not spinning ros, but i cannot figure out a proper way to do it.
+I would like to able to test my own class, which works as an action client to move_base.
+Regards</p>
+
+<p>Christian</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26976">FOXTER</a> on 2017-04-05 03:57:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I think you are abit confused about how you would want to write your test. There are 2 ways to write test in your case:</p>
+
+<ol>
+<li>Library level test: since you can create an <code>MoveBaseAction</code> object, you can just you can access all the class attributes and functions (after add the FRIEND_TEST to header file, of course). So you dont have to use <code>waitForServer</code> , <code>sendGoal</code> , etc. Instead, you can just create a <code>MoveBaseGoal</code> object and call the <code>execute</code> function directly. After that, you can just compare the outcome of <code>result_</code> object.</li>
+<li>Node level test: you can create a proper node (something similar to <a href="https://github.com/ros-planning/navigation/blob/indigo-devel/move_base/src/move_base_node.cpp">https://github.com/ros-planning/navigation/blob/indigo-devel/move_base/src/move_base_node.cpp</a>). Then you can launch this node during your test. In this case, you can use your test node as action client (like <a href="http://wiki.ros.org/actionlib_tutorials/Tutorials/SimpleActionClient">http://wiki.ros.org/actionlib_tutorials/Tutorials/SimpleActionClient</a>)</li>
+</ol>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26292">DavidN</a> on 2017-04-05 07:03:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes thank you!.
+I Tried approach number 2, and basically put the class I attached into a node by it self, and launching it through the rostest launch file, and it works perfectly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26976">FOXTER</a> on 2017-04-05 09:05:21 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

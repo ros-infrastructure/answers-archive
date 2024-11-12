@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to write a deterministic unit test with rclcpp? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/322599">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to write a deterministic unit test with rclcpp?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91595/how-to-write-a-deterministic-unit-test-with-rclcpp">https://robotics.stackexchange.com/questions/91595/how-to-write-a-deterministic-unit-test-with-rclcpp</a>.</p>
+        <p>Hello,</p>
+
+<p>Assume I have a &quot;filter node&quot; that subscribe to a data, transform it, and re-publish it.</p>
+
+<pre><code>class Filter : public Node
+{
+public :
+    Filter() : Node(&quot;filter&quot;, &quot;&quot;, true)
+    {
+        filteredDataPub = create_publisher&lt;Float32&gt;(&quot;filtered&quot;);
+        dataIn = create_subscription&lt;Float32&gt;(&quot;dataIn&quot;, [this](Float32::SharedPtr in) {
+            auto res = std::make_shared&lt;Float32&gt;();
+            res-&gt;data = in-&gt;data * 2;
+            filteredDataPub-&gt;publish(res);
+        });
+    }
+
+protected:
+    Publisher&lt;Float32&gt;::SharedPtr filteredDataPub;
+    Subscription&lt;Float32&gt;::SharedPtr dataIn;
+};
+</code></pre>
+
+<p>I would like to test it.</p>
+
+<p>So I Wrote the following test :</p>
+
+<pre><code>class TesterNode : public Node
+{
+public:
+    TesterNode() : Node(&quot;tester&quot;, &quot;&quot;, true)
+    {
+        filteredSubscriber =
+            create_subscription&lt;Float32&gt;(&quot;filtered&quot;, [this](Float32::SharedPtr in) {
+                filteredPromise.set_value(in-&gt;data);
+            });
+        dataInPublisher = create_publisher&lt;Float32&gt;(&quot;dataIn&quot;);
+    }
+    void publishData(float data)
+    {
+        auto res = std::make_shared&lt;Float32&gt;();
+        res-&gt;data = data;
+        dataInPublisher-&gt;publish(res);
+    }
+    std::promise&lt;float&gt; filteredPromise;
+
+protected:
+    rclcpp::Publisher&lt;Float32&gt;::SharedPtr dataInPublisher;
+    rclcpp::Subscription&lt;Float32&gt;::SharedPtr filteredSubscriber;
+};
+
+class TestFixture : public ::testing::Test
+{
+protected:
+    void SetUp()
+    {
+
+        testerNode = std::make_shared&lt;TesterNode&gt;();
+        ASSERT_EQ(testerNode-&gt;count_subscribers(&quot;dataIn&quot;), static_cast&lt;size_t&gt;(0));
+        filterNode = std::make_shared&lt;Filter&gt;();
+        ASSERT_EQ(filterNode-&gt;count_publishers(&quot;dataIn&quot;), static_cast&lt;size_t&gt;(0));
+
+        executor.add_node(filterNode);
+        executor.add_node(testerNode);
+
+        ASSERT_FALSE(rclpp_utils::wait_for_subscriber_and_publisher(testerNode, filterNode, &quot;dataIn&quot;, 1000ms));
+    }
+
+    void TearDown()
+    {
+        executor.cancel();
+        executor.remove_node(filterNode);
+        executor.remove_node(testerNode);
+        testerNode.reset();
+        filterNode.reset();
+    }
+
+    std::shared_ptr&lt;TesterNode&gt; testerNode;
+    rclcpp::executors::SingleThreadedExecutor executor;
+
+private:
+    std::shared_ptr&lt;Filter&gt; filterNode;
+};
+
+TEST_F(TestFixture, weCanFilterOurDatas)
+{
+    auto future = std::shared_future&lt;float&gt;(testerNode-&gt;filteredPromise.get_future());
+    testerNode-&gt;publishData(5.0);
+    ASSERT_EQ(this-&gt;executor.spin_until_future_complete(future, std::chrono::seconds(1)),
+              FutureReturnCode::SUCCESS);
+    ASSERT_EQ(future.get(), 10.);
+}
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+    ::testing::InitGoogleTest(&amp;argc, argv);
+    auto res = RUN_ALL_TESTS();
+    rclcpp::shutdown();
+    return res;
+}
+</code></pre>
+
+<p>As you can see &quot;TesterNode&quot; is here to &quot;trigger&quot; the Filter Node, and TestFixture is the boilerplate required to instanciate both nodes.</p>
+
+<p>&quot;wait<em>for</em>subscriber<em>and</em>publisher&quot; function is a patched version of the one we can found in <a href="https://github.com/ros2/system_tests/blob/29c299669a766329dffcc91f459b17c0e1c46c15/test_rclcpp/include/test_rclcpp/utils.hpp">system_tests</a>. In my version the method return true if there is a timeout, and argument &quot;to be available&quot; is forced to TRUE. And in my version I wait for both publisher and subscriber.</p>
+
+<pre><code>bool wait_for_subscriber_and_publisher(std::shared_ptr&lt;rclcpp::Node&gt; publisherNode,
+                    std::shared_ptr&lt;rclcpp::Node&gt; subscriberNode,
+                    const std::string&amp; topic_name, std::chrono::milliseconds timeout)
+{
+    using std::chrono::duration_cast;
+    using std::chrono::microseconds;
+    using std::chrono::steady_clock;
+    auto start = steady_clock::now();
+    microseconds time_slept(0);
+    auto predicate = [&amp;publisherNode, &amp;subscriberNode, &amp;topic_name]() -&gt; bool {
+        // the subscriber is available if the count is gt 0
+        return publisherNode-&gt;count_subscribers(topic_name) &gt; 0 &amp;&amp;
+               subscriberNode-&gt;count_publishers(topic_name) &gt; 0;
+    };
+    while(!predicate() &amp;&amp; time_slept &lt; duration_cast&lt;microseconds&gt;(timeout))
+    {
+        rclcpp::Event::SharedPtr graph_event = publisherNode-&gt;get_graph_event();
+        publisherNode-&gt;wait_for_graph_change(graph_event, 5ms);
+        time_slept =
+            duration_cast&lt;std::chrono::microseconds&gt;(steady_clock::now() - start);
+    }
+    int64_t time_slept_count =
+        std::chrono::duration_cast&lt;std::chrono::milliseconds&gt;(time_slept).count();
+    RCLCPP_INFO(publisherNode-&gt;get_logger(),
+                &quot;Waited %d ms for the subscriber to connect to topic &#39;%s&#39;. Sub &quot;
+                &quot;count : %d Pub count : %d\n&quot;,
+                time_slept_count, topic_name.c_str(),
+                publisherNode-&gt;count_subscribers(topic_name),
+                subscriberNode-&gt;count_publishers(topic_name));
+
+    return !predicate();
+}
+</code></pre>
+
+<p>When I run my test several times, some times test pass, some times test doesn&#39;t pass. When test fails, this is because spin<em>until</em>future_complete return a TIMEOUT.
+As you can see I force my nodes to use intra process comunication (passing true as third argument of node constructor). But even if I use the default arguments, I have my problem.</p>
+
+<p>I carrefully read unit tests of rclcpp and system<em>tests (but maybe not enough carrefully...). I focus my attention on test</em>subscription.cpp, and I can&#39;t really see difference with my test. I guess test_subscription work every time, isn&#39;t it ?</p>
+
+<p>So my first question is :
+<strong>Does the above example is supposed to work ? Or what&#39;s wrong with it ?</strong></p>
+
+        <div class="owner"><p>Asked by <a href="/users/41347">Adrien BARRAL</a> on 2019-05-07 01:46:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I was able to reproduce the issue by inducing stress on my machine (e.g. <code>stress --cpu 8</code>). I tried also waiting for the publisher and that seemed to resolve the issue. I guess it&#39;s possible that even though the publisher can see the subscriber, the inverse is not necessarily true. Therefore, ensuring that both can see each other before executing the test will hopefully fix the problem.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26373"></a> on 2019-05-10 13:14:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I try to wait for publisher and subscriber as you suggest, but the problem is still there... I will update the question to take your remark into account.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/41347">Adrien BARRAL</a> on 2019-05-11 09:28:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Could you also include the implementation of <code>rclpp_utils::wait_for_subscriber_and_publisher</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26373">jacobperron</a> on 2019-05-13 11:50:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I updated the question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/41347">Adrien BARRAL</a> on 2019-05-13 11:55:52 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>One of the things I was experimenting with was making the nodes <code>lifecycle</code> nodes. It&#39;s not ideal because you are now forced to make things lifecycle enabled solely for the purpose of testing. However, I think the amount of extra code can be minimal.</p>
+
+<p>You can see an example here:
+<a href="https://github.com/ros-planning/navigation2/blob/master/nav2_util/test/test_lifecycle_utils.cpp">https://github.com/ros-planning/navigation2/blob/master/nav2_util/test/test_lifecycle_utils.cpp</a></p>
+
+<p>This test just brings up two lifecycle nodes and ensures they are activated. However, you could extend from there to do your specific test after that point.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/36816">Carl D</a> on 2019-05-10 13:53:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This is the type of determinism that lifecycle nodes are designed to support.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2019-05-10 14:58:03 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Does that means that &quot;raw nodes&quot; are not designed to support this type of determinism ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/41347">Adrien BARRAL</a> on 2019-05-11 09:31:51 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

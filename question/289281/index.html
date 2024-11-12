@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to find Jacobian using kdl that matches with bullet physics jacobian - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/289281">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to find Jacobian using kdl that matches with bullet physics jacobian</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I am trying to calculate jacobian with kdl (<a href="https://github.com/orocos/orocos_kinematics_dynamics">pyKDL</a>) and bullet physics (<a href="https://pybullet.org/wordpress/">pybullet</a>). With bullet physics I can only find Jacobian of whole robot, but I want to find Jacobian for a kinematic chain. So I wanted use kdl (pykdl) for the same.</p>
+
+<p>I use <a href="https://github.com/gt-ros-pkg/hrl-kdl">pykdl_utils</a>, which uses pykdl to calculate Jacobian for the given chain and to understand how kdl works, I am playing with a 7 DOF arm, after which I can try with the complex robot to get Jacobian for a given chain.</p>
+
+<p>For, now I calculate Jacobian for the entire arm with origin point [0, 0, 0] of an end-effector in pybullet and using JntToJac(q<em>kdl, j</em>kdl) in pykdl.</p>
+
+<p>I get the following results, which are approximately same,</p>
+
+<pre><code>jacobian from kdl
+[[  3.93204983e-13   3.50279896e-01  -6.08147439e-13   6.97201042e-02
+   -3.26970957e-13  -6.97201042e-02   0.00000000e+00]
+ [ -4.41232355e-01  -2.08808746e-12  -4.41232355e-01  -2.14611370e-12
+   -6.97201042e-02   1.96005964e-13   0.00000000e+00]
+ [  0.00000000e+00   4.41232355e-01   1.44669450e-25  -4.41232355e-01
+    5.57708303e-13   4.12323547e-02  -0.00000000e+00]]
+jacobian from pybullet
+((4.21021431342817e-08, 0.35027993596935714, 5.104112371956412e-08, 0.06972006581877463, 9.142687868923103e-09, -0.06972010078788882, 0.0), (-0.4412323331119607, 4.990932440307452e-08, -0.44123234585644516, 2.5382000887679235e-08, -0.06972010439253574, -4.292801227882336e-09, 0.0), (6.452008777913616e-23, 0.44123233311196214, -1.0899318209780877e-15, -0.4412323519515711, 1.2452388596192707e-09, 0.041232360892270135, 0.0))
+</code></pre>
+
+<p>But I don&#39;t get correct results when I try to calculate a Jacobian for a point other than origin, with j<em>kdl.changeRefPoint(pos</em>kdl) and through pybullet.</p>
+
+<p>I use the following code, where I have copied few necessary functions from pykdl_utils, to post the code here, so that its installation can be avoided.</p>
+
+<pre><code>import pybullet as p
+import math
+import pybullet_data
+import kdl_parser_py.urdf
+import PyKDL as kdl
+from urdf_parser_py.urdf import URDF
+import numpy as np
+
+def get_kdl_tree(robot_model, base_link, end_link):
+
+    status, tree = kdl_parser_py.urdf.treeFromUrdfModel(robot_model, quiet=True)
+    chain = tree.getChain(base_link, end_link)
+    return tree, chain
+
+def joint_list_to_kdl(q):
+    if q is None:
+        return None
+    if type(q) == np.matrix and q.shape[1] == 0:
+        q = q.T.tolist()[0]
+    q_kdl = kdl.JntArray(len(q))
+    for i, q_i in enumerate(q):
+        q_kdl[i] = q_i
+    return q_kdl
+
+def kdl_to_mat(m):
+    mat =  np.mat(np.zeros((m.rows(), m.columns())))
+    for i in range(m.rows()):
+        for j in range(m.columns()):
+            mat[i,j] = m[i,j]
+    return mat
+
+def do_kdl_fk(q, chain, link_number):
+    endeffec_frame = kdl.Frame()
+    fk_kdl = kdl.ChainFkSolverPos_recursive(chain)
+    kinematics_status = fk_kdl.JntToCart(joint_list_to_kdl(q),
+                                               endeffec_frame,
+                                               link_number)
+    if kinematics_status &gt;= 0:
+        p = endeffec_frame.p
+        M = endeffec_frame.M
+        return np.mat([[M[0,0], M[0,1], M[0,2], p.x()],
+                       [M[1,0], M[1,1], M[1,2], p.y()],
+                       [M[2,0], M[2,1], M[2,2], p.z()],
+                       [     0,      0,      0,     1]])
+    else:
+        return None
+
+def forward(q, chain, base_link, end_link):
+    base_trans = do_kdl_fk(q, chain, base_link)
+    if base_trans is None:
+        print &quot;FK KDL failure on base transformation.&quot;
+    end_trans = do_kdl_fk(q, chain, end_link)
+    if end_trans is None:
+        print &quot;FK KDL failure on end transformation.&quot;
+    return base_trans**-1 * end_trans
+
+
+def get_kdl_jacobian(q, chain, base_link, end_link, pos=None):
+    j_kdl = kdl.Jacobian(len(q))
+    q_kdl = joint_list_to_kdl(q)
+    jac_kdl = kdl.ChainJntToJacSolver(chain)
+
+    jac_kdl.JntToJac(q_kdl, j_kdl)
+    if pos is not None:
+        ee_pos = forward(q, chain, base_link, end_link)[:3,3]
+        pos_kdl = kdl.Vector(pos[0]-ee_pos[0], pos[1]-ee_pos[1],
+                              pos[2]-ee_pos[2])
+        j_kdl.changeRefPoint(pos_kdl)
+    J = kdl_to_mat(j_kdl)
+
+    return J[:3, :], J[3:, :]
+
+def transfomation_to_(frame_position, frame_orientation, point, inverse=False):
+    rotation = kdl.Rotation.Quaternion(frame_orientation[0], frame_orientation[1], frame_orientation[2],
+                                       frame_orientation[3])
+    position = kdl.Vector(frame_position[0], frame_position[1], frame_position[2])
+    frame = kdl.Frame(rotation, position)
+    point = kdl.Vector(point[0], point[1], point[2])
+
+    if inverse:
+        point_on_frame = frame.Inverse() * point
+    else:
+        point_on_frame = frame * point
+
+    return [point_on_frame[0], point_on_frame[1], point_on_frame[2]]
+
+def getJointStates(robot):
+    joint_states = p.getJointStates(robot, range(p.getNumJoints(robot)))
+    joint_positions = [state[0] for state in joint_states]
+    joint_velocities = [state[1] for state in joint_states]
+    joint_torques = [state[3] for state in joint_states]
+    return joint_positions, joint_velocities, joint_torques
+
+if __name__ == &#39;__main__&#39;:
+
+    # clid = p.connect(p.SHARED_MEMORY)
+    # p.connect(p.GUI)
+    p.connect(p.DIRECT)
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    p.loadURDF(&quot;plane.urdf&quot;, [0, 0, 0], useFixedBase=True)
+    kukaId = p.loadURDF(&quot;kuka_iiwa/model.urdf&quot;, [0, 0, 0], useFixedBase=True)
+    p.resetBasePositionAndOrientation(kukaId, [0, 0, 0], [0, 0, 0, 1])
+    kukaEndEffectorIndex = 6
+    numJoints = p.getNumJoints(kukaId)
+    if (numJoints != 7):
+        exit()
+
+    rp = [0, 0, 0, 0.5 * math.pi, 0, -math.pi * 0.5 * 0.66, 0]
+
+    for i in range(numJoints):
+        p.resetJointState(kukaId, i, rp[i])
+
+    p.setGravity(0, 0, -10)
+    t = 0.
+    prevPose = [0, 0, 0]
+    prevPose1 = [0, 0, 0]
+    hasPrevPose = 0
+    useNullSpace = 0
+
+    count = 0
+    useOrientation = 1
+    useSimulation = 1
+    useRealTimeSimulation = 0
+    p.setRealTimeSimulation(useRealTimeSimulation)
+
+    base_link, end_link = &quot;lbr_iiwa_link_0&quot;, &quot;lbr_iiwa_link_7&quot;
+    urdf_file = pybullet_data.getDataPath() + &quot;/kuka_iiwa/model.urdf&quot;
+    model = URDF.from_xml_file(urdf_file)
+    tree, chain = get_kdl_tree(model, base_link, end_link)
+
+    q = getJointStates(kukaId)[0]
+
+    # print q
+
+    link_state = p.getLinkState(kukaId, 6, computeLinkVelocity=1,
+                          computeForwardKinematics=1)
+
+    link_frame_position = link_state[0]
+    link_frame_orientation = link_state[1]
+
+    zero_vec = [0] * len(q)
+    pt = [0, 0, 0]
+    pt1 = None
+    pt2 = [0.02, 0, 0]
+    pt3 = transfomation_to_(link_frame_position, link_frame_orientation, pt2)
+    pt4 = transfomation_to_(link_frame_position, link_frame_orientation, pt2, inverse=True)
+
+    # jac_t, _ = get_kdl_jacobian(q, chain, 0, 7, pt)
+    jac_t, _ = get_kdl_jacobian(q, chain, 0, 7, pt1)
+    # jac_t, _ = get_kdl_jacobian(q, chain, 0, 7, pt2)
+    # jac_t, _ = get_kdl_jacobian(q, chain, 0, 7, pt3)
+    # jac_t, _ = get_kdl_jacobian(q, chain, 0, 7, pt4)
+
+    jac_t1, _ = p.calculateJacobian(kukaId, 6, pt, q, zero_vec, zero_vec)
+    # jac_t1, _ = p.calculateJacobian(kukaId, 6, pt1, q, zero_vec, zero_vec)
+    # jac_t1, _ = p.calculateJacobian(kukaId, 6, pt2, q, zero_vec, zero_vec)
+    # jac_t1, _ = p.calculateJacobian(kukaId, 6, pt3, q, zero_vec, zero_vec)
+    # jac_t1, _ = p.calculateJacobian(kukaId, 6, pt4, q, zero_vec, zero_vec)
+
+    # only combination giving correct result: pt1 and pt
+    print(&quot;jacobian from kdl&quot;)
+    print (jac_t)
+    print (&quot;jacobian from pybullet&quot;)
+    print (jac_t1)
+</code></pre>
+
+<p>Can someone please tell me, what is the mistake I am doing and how can I get correct results.</p>
+
+<p>Thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27849">Mahe</a> on 2018-04-21 08:39:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

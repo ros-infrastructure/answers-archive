@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Nav2 planner_server's compute_path_to_pose hangs indefinitely - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/401303">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Nav2 planner_server's compute_path_to_pose hangs indefinitely</h2>
+      <div class="question">
+        <p>We&#39;re attempting to implement a basic nav2 stack on our robot. We haven&#39;t included obstacle finding or any mapping at all. Our node setup contains the <code>nav2_bt_navigator</code> node, <code>nav2_planner</code>, and <code>nav2_controller</code>, plus a number of peripherals:</p>
+
+<ul>
+<li>Real-time localization is provided by integrating our wheel encoders. We do not have a robot_localization node running yet, so this odom value is fed directly into <code>tf</code> and the <code>/odom</code> topic.</li>
+<li>Global localization is provided using a proprietary VSLAM node. We do the necessary math such that the tf tree looks like: <code>map -&gt; odom -&gt; base_link</code></li>
+<li>Motor output is fed into our Odrive motor driver node. This bit hasn&#39;t been relevant yet because no such motor output is being produced.</li>
+<li>We provide a completely blank static map. The idea is to get the robot to move with no concern for  obstacles before we add those in.</li>
+<li>All obstacle detection, real-time mapping, etc., is disconnected.</li>
+</ul>
+
+<p>We generally duplicated the example configuration file from the <code>nav2_bringup</code> package. It&#39;s too long to include in this post, so I put it here: <a href="https://pastebin.com/FXaPuEFS">https://pastebin.com/FXaPuEFS</a></p>
+
+<p>And the relevant bits of our launch file:</p>
+
+<pre><code>param_substitutions = {&quot;use_sim_time&quot;: &quot;false&quot;, &quot;yaml_filename&quot;: &quot;turtlebot3_world.yaml&quot;}
+
+configured_params = RewrittenYaml(source_file=params_file, root_key=namespace, param_rewrites=param_substitutions, convert_types=True)
+lifecycle_nodes = [&quot;controller_server&quot;, &quot;planner_server&quot;, &quot;bt_navigator&quot;]
+load_nodes = GroupAction(
+    actions=[
+        PushRosNamespace(condition=IfCondition(use_namespace), namespace=namespace),
+        Node(
+            package=&quot;nav2_controller&quot;,
+            executable=&quot;controller_server&quot;,
+            output=&quot;screen&quot;,
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[configured_params],
+            remappings=remappings,
+            # arguments=[&#39;--ros-args&#39;, &#39;--log-level&#39;, &#39;debug&#39;]
+        ),
+        Node(
+            package=&quot;nav2_planner&quot;,
+            executable=&quot;planner_server&quot;,
+            name=&quot;planner_server&quot;,
+            output=&quot;screen&quot;,
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[configured_params],
+            # prefix=[&#39;xterm -e gdb -ex run --args&#39;],
+            remappings=remappings,
+            arguments=[&#39;--ros-args&#39;, &#39;--log-level&#39;, &#39;debug&#39;]
+        ),
+        Node(
+            package=&quot;nav2_bt_navigator&quot;,
+            executable=&quot;bt_navigator&quot;,
+            name=&quot;bt_navigator&quot;,
+            output=&quot;screen&quot;,
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[configured_params],
+            remappings=remappings,
+            # arguments=[&#39;--ros-args&#39;, &#39;--log-level&#39;, &#39;debug&#39;]
+        ),
+        # Node(
+        #     package=&quot;nav2_waypoint_follower&quot;,
+        #     executable=&quot;waypoint_follower&quot;,
+        #     name=&quot;waypoint_follower&quot;,
+        #     output=&quot;screen&quot;,
+        #     respawn=use_respawn,
+        #     respawn_delay=2.0,
+        #     parameters=[configured_params],
+        #     remappings=remappings,
+        #     # arguments=[&#39;--ros-args&#39;, &#39;--log-level&#39;, &#39;debug&#39;]
+        # ),
+        Node(
+            package=&quot;nav2_lifecycle_manager&quot;,
+            executable=&quot;lifecycle_manager&quot;,
+            name=&quot;lifecycle_manager_navigation&quot;,
+            output=&quot;screen&quot;,
+            parameters=[{&quot;use_sim_time&quot;: use_sim_time}, {&quot;autostart&quot;: autostart}, {&quot;node_names&quot;: lifecycle_nodes}],
+            # arguments=[&#39;--ros-args&#39;, &#39;--log-level&#39;, &#39;debug&#39;]
+        ),
+    ]
+)
+</code></pre>
+
+<p>The whole system starts (and activates) successfully. We&#39;ve tried sending goal poses through RVIZ. <code>bt_navigator</code> will recognize our actions:</p>
+
+<pre><code>[bt_navigator-8] [INFO] [1653423291.874302388] [bt_navigator]: Begin navigating from current location to (1.85, 3.77)
+</code></pre>
+
+<p>But then... nothing happens. We used Groot on the bt tree and found that it seems to hang on the planner_server. We manually called the planner server like this:</p>
+
+<pre><code>ros2 action send_goal -f /compute_path_to_pose nav2_msgs/action/ComputePathToPose &quot;{pose: {pose: {position: {x: 5, y: 5, z: 0}, orientation: {x: 0, y: 0, z: 0, w: 1}}, header: {frame_id: 0}}}&quot;
+Waiting for an action server to become available...
+Sending goal:
+     pose:
+  header:
+    stamp:
+      sec: 0
+      nanosec: 0
+    frame_id: &#39;0&#39;
+  pose:
+    position:
+      x: 5.0
+      y: 5.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+planner_id: &#39;&#39;
+
+[INFO] [1653422755.926925127] [_ros2cli_send_goal_nav2_msgs_action_ComputePathToPose]: sent goal sequence number 1 for action /compute_path_to_pose
+[INFO] [1653422755.927586914] [_ros2cli_send_goal_nav2_msgs_action_ComputePathToPose]: added goal sequence number 1 for action /compute_path_to_pose
+</code></pre>
+
+<p>But, after the goal state is set to &quot;executing&quot;, the action is just stuck.
+We&#39;ve searched through the source code and theorized that the issue is resulting from <a href="https://github.com/ros-planning/navigation2/blob/7abb3d983db1345b6d8bde6971ca2d5c4d44551c/nav2_planner/src/planner_server.cpp#L335">this line</a>, where the <code>compute_path_to_pose</code> action waits indefinitely for the costmap to become &quot;current&quot;. We thought this might cause our system to hang, since we have no obstacles configured. Yet, even after removing the &quot;obstacle<em>layer&quot; from the `global</em>costmap` plugin&#39;s config, the problem persists.</p>
+
+<p>What else could be causing this problem? We are quite at a loss.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/54113">hermanoid</a> on 2022-05-24 15:22:30 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hello,</p>
+
+<p>Any news on this issue ?<br>
+I have the same problem.  </p>
+
+<p>I had nav2 working but then I went from Foxy to Galactic and this happened.<br>
+I&#39;ve also prefixed all the frames of my robot by its name and use a namespace (in order to support multi robot in the future), maybe it has something to do with that...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30443">Acwok</a> on 2022-06-03 08:34:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Basically, no! I&#39;ll submit an answer to this question with what I <em>do</em> know.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/54113">hermanoid</a> on 2022-06-03 11:11:41 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>We did end up solving this problem, but not in a way that allows me to point to what the solution was. After fighting this issue for a <em>very</em> long time, we took a different approach and started with the turtlebot3 simulation that ships with nav2.   We gradually moved pieces of our physical robot into the simulation until we completely turned off the simulation and somehow everything was working.</p>
+
+<p>Assuming I was right to assume that the <code>controller_server</code> was stuck on that <code>wait_for_costmap(...)</code> function I mentioned in my original question:  I&#39;m guessing the solution can be found in the difference between our old, not working configuration and the new one that does work. That diff can be found here: <a href="https://www.diffchecker.com/gdBaSp4O">https://www.diffchecker.com/gdBaSp4O</a></p>
+
+<p>The key bit (I&#39;m guessing) is that, in the working version, we omit the <code>voxel_layer</code> that relies on a laser scan (which our robot doesn&#39;t have). The broken version was probably waiting indefinitely for a scan. This, of course, means that our robot cannot perceive obstacles, but we plan on replacing that piece with a depth-camera based obstacle detector.</p>
+
+<p>You can see that our launch file basically didn&#39;t change: <a href="https://www.diffchecker.com/O9FGdWuY">https://www.diffchecker.com/O9FGdWuY</a></p>
+
+<p>I can&#39;t guarantee that this was the breaking difference (especially because I remember trying to turn off the voxel layer when originally fighting this issue), but it&#39;s the best I&#39;ve got.</p>
+
+<p>I hope this helps someone in the future!</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/54113">hermanoid</a> on 2022-06-03 11:30:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

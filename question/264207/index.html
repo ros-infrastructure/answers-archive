@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Optionally disable ros publisher buffering - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/264207">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Optionally disable ros publisher buffering</h2>
+      <div class="question">
+        <p>Hi everyone,</p>
+
+<p>We are using ROS as a basis for our robotics/AI project. It&#39;s been great so far with all the tools and code it provides, however today I ran into a small (big?) problem.</p>
+
+<p>A small conceptual explanation of how our system is designed and how it works. We have some input on a socket port which is basically visual data. We have a ros node that reads this port out, does some processing, and publishes the data ready for consumption on a topic. This happens at 60Hz. We have another node that consumes this visual data and sends instructions out a serial port, the control node. This also happens at 60Hz. So far so good; this is standard ROS stuff and besides some minor caveats we&#39;ve had no problems using this model.</p>
+
+<p>Now here comes my problem. Some buffering takes place in the visual node when publishing the processed data. So at 60Hz we receive visual data from the socket, and at 60Hz we call <code>publisher.publish(processedVisualData);</code>. What sometimes happens is that new data from the socket arrives before the previously published data is actually sent to the control node. I know this for sure because sometimes this happens in the control node (function calls derived from print statements throughout my program):</p>
+
+<ul>
+<li>&quot;Start spinning...&quot;</li>
+<li><code>ros::spinOnce()</code></li>
+<li><code>visualUpdateCallback();</code></li>
+<li>&quot;Ros spinning complete&quot;</li>
+<li><code>runControl()</code></li>
+<li>&quot;Control finished.&quot;</li>
+<li>&quot;Start spinning...&quot;</li>
+<li><code>ros::spinOnce()</code></li>
+<li>&quot;Ros spinning complete&quot;</li>
+<li><code>runControl()</code></li>
+<li>&quot;Control finished.&quot;</li>
+</ul>
+
+<p>So what happens here is because of the buffering in the visual node (or in the TCP of the subscriber? I&#39;ve been looking at the ROS source code a lot lately and I&#39;ve seen buffers in literally every class I look at) the control node sometimes runs without a new visual update, even though that visual update was given to the publisher in the visual node. So even though both nodes run at 60Hz (I&#39;ve confirmed this with <code>rostopic hz</code>; the throughput of visual messages and control messages is almost 60Hz), the control nodes effectively runs at 30Hz, because every odd cycle it has to reuse &quot;stale&quot; data.</p>
+
+<p>There are a few possible solutions I&#39;ve found:</p>
+
+<ul>
+<li>Set the queue of the publisher in the visual node to one. That ensures that everytime a message is being sent it&#39;s guaranteed to be the most up-to-date. The buffering delay is somehow still in place however, so control still runs at 30Hz. (I tested this by only running the control function when new data arrived. It&#39;s output was 30 Hz even though the visual update frequency was 60Hz.)</li>
+<li>Produce more messages. I guess this can work, but there are 2 limitations
+
+<ul>
+<li>The visual input really runs strictly at 60Hz. I can&#39;t make it produce more data</li>
+<li>Buffering is still in place. So even if I could crank the visual data up to 100Hz, then my control node will still run at a percentage of that. That&#39;s bad because it makes performance unpredictable: for some topics, if I send messages at 60Hz, I would like any other nodes to receive them at 60Hz, and not at some buffered 30Hz as it is now.</li>
+</ul></li>
+<li>Use nodelets. Arguably this is the best solution IMO, since it also removes overhead from TCP (which we&#39;ve already had some performance issues with in the past w.r.t. many frequently accessed ROS parameters) and removes copying overhead, etc. However we are constrained by time and as far as I can tell this will be a pretty major rewrite that we can&#39;t afford.</li>
+<li>Change line 215 on <a href="http://docs.ros.org/jade/api/roscpp/html/transport__subscriber__link_8cpp_source.html">http://docs.ros.org/jade/api/roscpp/html/transport<strong>subscriber</strong>link<em>8cpp</em>source.html</a> from false to true. Disadvantages:
+
+<ul>
+<li>Will require me to build a custom version from ROS and merge it every once in a while. I don&#39;t want to add this complexity to our project since we already have enough of that.</li>
+<li>Will make every topic in the whole project immediate/eager, while I actually like this performance for some topics (mostly debug ones).</li>
+<li>Unsure about whether or not it will work, for two reasons:
+
+<ul>
+<li>Not sure if it even does what I think it does (i.e. transfer the message to TCP as soon as it appears. Maybe it only sends half the message and puts the rest in some other leftover buffer, which doens&#39;t solve the problem but is still immediate)</li>
+<li>Even if it does that buffering might still be a problem because, as mentioned before, ROS uses buffers everywhere, so somehow I&#39;d have to short-circuit all those buffers.</li>
+</ul></li>
+</ul></li>
+</ul>
+
+<p>In the best case scenario there would be an option in ROS publishers/subscribers or in the roscore program to make some topics &quot;real-time&quot;, i.e. to make sure that some pieces of data get pumped through the system A.S.A.P., and don&#39;t lie around for several milliseconds in some buffers. However I&#39;ve googled quite a bit already and read a lot of ROS source, and there doesn&#39;t seem to be a button for that (except for the earlier thing on line 215, but that&#39;s not configurable nor reliable). I really hope I&#39;m wrong though.</p>
+
+<p>We can probably work around it, but the situation as it is now is highly undesirable.</p>
+
+<p>EDIT: As suggested by @gvdhoorn <code>tcpNoDelay</code> can be set on subscribers. This improves my control throughput from 30 to 45 &quot;fresh&quot; cycles per second. The problem is still not solved but it&#39;s already better with very little effort. I have a feeling that if <code>tcpNoDelay</code> would also be present on publishers the problem would be solved; at the time of writing however this is not the case.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:07:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <blockquote>
+<p>Change line 215 on [link] from true to false</p>
+</blockquote>
+
+<p>I&#39;m confused here: according to <a href="https://github.com/ros/ros_comm/blob/lunar-devel/clients/roscpp/src/libros/transport_subscriber_link.cpp#L216">this</a> and the page you link, <code>immediate_write</code> is already <code>false</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:13:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Whoops, that&#39;s on me. Of course I meant to write true. Changing it now.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:14:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>And a question: have you looked into the <a href="http://wiki.ros.org/roscpp/Overview/Publishers%20and%20Subscribers#Transport_Hints">transport hints</a>? Especially <code>tcpNoDelay</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:15:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I assumed tcpNoDelay is true always and would only be false if you want to test your application under dire circumstances. Is this not the case?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:16:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As can be seen on <a href="http://docs.ros.org/api/roscpp/html/classros_1_1TransportHints.html#a03191a9987162fca0ae2c81fa79fcde9">http://docs.ros.org/api/roscpp/html/classros_1_1TransportHints.html#a03191a9987162fca0ae2c81fa79fcde9</a>, I suppose I&#39;m right? Please correct me if I&#39;m wrong.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:19:09 UTC</p></div>
+</div>
+<div class="comment">
+              <p>And a high-level comment: I think what you are seeing is the classic event-based vs polling (or periodic) system clash. ie: on the one hand you have an async comms pattern (pub-sub) and on the other a sync, periodic &#39;control system&#39;. Marrying those is always a bit of a challenge.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:20:34 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>I assumed tcpNoDelay is true always and would only be false if you want to test your application under dire circumstances. Is this not the case?</p>
+</blockquote>
+
+<p>Afaik, <code>tcpNoDelay</code> is not enabled by default. That is also not what the code shows. The function arg has a <code>true</code> default, but that is something else.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:22:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>About the high-level comment: I agree. With the information I have now after almost a year of development I&#39;m not sure if I would pick ROS&#39;s publisher/subscriber system again. At the very least I would go with nodelets (at least for the critical stuff. For debugging infrastructure pub/sub is great).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:24:45 UTC</p></div>
+</div>
+<div class="comment">
+              <p>About the tcpNoDelay: the docs say it only works for subscribers. I will test, but I&#39;m skeptical if it will solve my problem. Thanks for your input!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:25:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Setting <code>tcpNoDelay</code> by default would also probably not be such a good idea: it only really works well with small messages, and in some cases could actually be detrimental to performance.</p>
+
+<p>I&#39;m also not saying it&#39;ll necessarily solve your problem btw.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:25:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I would suggest you look at OROCOS: there is nothing inherently &#39;wrong&#39; with pub/sub, it&#39;s the scheduling of tasks and how they interact with their message queues. As ROS1 does not have a component runtime model, there is not too much that you can do about it, other than setting your buffer ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:27:22 UTC</p></div>
+</div>
+<div class="comment">
+              <p>.. depth to <code>1</code>. This should ensure you are always working with the latest data. At least on the subscriber side (but the data must have arrived first, of course).</p>
+
+<p>ROS2 should change this and should allow you much more control over node scheduling, similar to how other frameworks have done this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:28:07 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>there is not too much that you can do about it</p>
+</blockquote>
+
+<p>Not entirely true: with some effort, a custom CallbackQueue and scheduling mechanism could probably do something about this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:31:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Detting tcpNoDelay to true bumps up the control output to 45 per second instead of 30. Which makes sense, because now only the publisher side is not using the tcpNoDelay. If there would be a tcpNoDelay for publishers the problem would be solved I imagine.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:33:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Also, I think our messages are relatively small, just a bunch of ints and floats.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:33:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m not sure if I&#39;m willing to go as far as implementing my own message queue. As it is now we&#39;ve got enough complexity to deal with already. Maybe this is good enough.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:34:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Something else I noticed:</p>
+
+<blockquote>
+<p>we&#39;ve already had some performance issues with in the past w.r.t. many frequently accessed ROS parameters)</p>
+</blockquote>
+
+<p>this seems strange: the parameter server is not meant to be accessed frequently. That is what topics are for.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:51:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Btw: changing a node to a nodelet isn&#39;t really that much work - depending on what your dataflow is like and how you use the msgs. In a nutshell: Nodelet Nodehandle io regular one, subclass io <code>main</code>, <code>ConstPtr</code> io regular <code>Ptr</code>s for msgs.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:53:05 UTC</p></div>
+</div>
+<div class="comment">
+              <p>There&#39;s even a page that provides an overview of what to do: <a href="http://wiki.ros.org/nodelet/Tutorials/Porting%20nodes%20to%20nodelets">wiki/nodelet/Tutorials/Porting nodes to nodelets</a> (ignore the <code>rosbuild</code> references, obviously).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-20 05:54:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I think it is quite feasible to convert our current project to nodelets for the critical stuff. However we have a very critical deadline in less than a few weeks so we just can&#39;t afford it now. About params: hindsight is 20/20; I agree with you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-20 05:58:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>One more thing to check, as you don&#39;t mention it: how is your control flow set up in your subscriber(s)? You mention <code>spinOnce()</code>, but it&#39;s hard to tell whether you are running a <code>while(true) ..</code> or are using timers or something else.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-21 01:31:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;m using an ordinary while(ros::ok()) {....;spinOnce();....}. I could possibly call spinOnce() directly after publishing the &quot;critical&quot; data, but I&#39;m unsure if that wil solve the problem (ros will still buffer everything).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-21 04:39:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I was more interested in the consumer here (ie: subscriber). If you use a <code>while</code>-loop with a sleep or <code>ros::Rate</code> there as well, that could be limiting your throughput.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-06-22 11:08:24 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ah, ok. I use a rate at 60Hz. Disabling it doesn&#39;t change it, neither on the subscriber nor publisher side.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30829">bobismijnnaam</a> on 2017-06-22 11:29:26 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

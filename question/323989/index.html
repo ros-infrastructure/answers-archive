@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>OcTree is Null after dynamic_cast from AbstractOcTree - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/323989">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>OcTree is Null after dynamic_cast from AbstractOcTree</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91778/octree-is-null-after-dynamic-cast-from-abstractoctree">https://robotics.stackexchange.com/questions/91778/octree-is-null-after-dynamic-cast-from-abstractoctree</a>.</p>
+        <p>Hi! 
+I am trying to read an <code>Octomap</code> published by <code>/octomap_full</code> as <code>octomap_msgs::Octomap</code> type. My requirement is reading nodes of the octree and do further operations on the data. I have the following <code>cpp</code> function as explained in every documentation and source. </p>
+
+<pre><code>void octomap_callback(const octomap_msgs::Octomap::ConstPtr&amp; msg){
+   ROS_INFO(&quot;Octomap resolution: [%f]&quot;, msg-&gt;resolution); 
+   AbstractOcTree* tree = octomap_msgs::msgToMap(*msg); 
+   OcTree* octree = dynamic_cast&lt;OcTree*&gt;(tree);
+   ROS_INFO(&quot;Resolution of octree: [%f]&quot; , octree-&gt;getResolution()); 
+}
+</code></pre>
+
+<p>The program is compiled normally without any warning. But when I run it I get the following result. </p>
+
+<pre><code>[ INFO] [1558769545.208112901]: Octomap resolution: [0.020000]
+Segmentation fault (core dumped)
+</code></pre>
+
+<p>As I checked with the condition: <code>if(octree){ },</code> the octree seem to be <code>NULL</code>. </p>
+
+<p>What am I doing wrong here? </p>
+
+<p>How can I <code>dynamic_cast</code> the <code>AbstractOcTree</code> to <code>OcTree</code> correctly? </p>
+
+<p>Thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40232">TharushiDeSilva</a> on 2019-05-25 02:53:03 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>As stated in the octomap_msgs reference (<a href="http://docs.ros.org/melodic/api/octomap_msgs/html/namespaceoctomap__msgs.html#aebd9cf5ae6b6741b05e9f8dee383f410">http://docs.ros.org/melodic/api/octomap_msgs/html/namespaceoctomap__msgs.html#aebd9cf5ae6b6741b05e9f8dee383f410</a>)  , you have to free the memory after its use.</p>
+
+<pre><code>delete octree;
+</code></pre>
+
+<hr>
+
+<p>Edit:</p>
+
+<p>In more details:</p>
+
+<p>Simple Solution (not recommended if octomap is publishing map messages at some frequency) to get the idea across</p>
+
+<pre><code>void octomap_callback(const octomap_msgs::Octomap::ConstPtr&amp; msg){
+   ROS_INFO(&quot;Octomap resolution: [%f]&quot;, msg-&gt;resolution); 
+   AbstractOcTree* tree = octomap_msgs::msgToMap(*msg); 
+   OcTree* octree = dynamic_cast&lt;OcTree*&gt;(tree);
+   ROS_INFO(&quot;Resolution of octree: [%f]&quot; , octree-&gt;getResolution()); 
+   // do some processing with octree
+   delete octree;
+}
+</code></pre>
+
+<p>To re-iterate the point about freeing the memory of each created octomap object, not just at the end of the program, please have look at the following code snippet.</p>
+
+<p>Usual solution</p>
+
+<pre><code>ColorOcTree* octree = NULL;  // your global or class wide variable
+std::mutex mutex_;    // a mutex to resolve the race conditions. 
+
+void octomap_callback(const octomap_msgs::Octomap::ConstPtr&amp; msg){
+        octomap_msgs::Octomap received_msg = *msg; 
+        AbstractOcTree* tree = octomap_msgs::fullMsgToMap(received_msg); 
+        std::unique_lock&lt;std::mutex&gt; lock(mutex_); // lock the mutex
+        if( octree != NULL )  // in-case we are receiving a new octomap before we processed the last one
+            delete octree;      // so delete the previous stored object
+        octree = dynamic_cast&lt;OcTree*&gt;(tree);
+}    
+
+
+void process_octree(){
+    std::unique_lock&lt;std::mutex&gt; lock(mutex_); // lock the mutex
+    // process the octree_
+    // then delete it
+    delete octree_;
+    octree_ = NULL;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3870">Namal Senarathne</a> on 2019-05-26 20:00:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@Namal Senarathne, 
+<code>delete octree;</code> gave me the same result. </p>
+
+<p>I declared the AbstractOctree, and Octree as global variables, and assigned the values like the following. </p>
+
+<pre><code>AbstractOcTree* tree;
+ColorOcTree* octree; 
+void octomap_callback(const octomap_msgs::Octomap::ConstPtr&amp; msg){
+        octomap_msgs::Octomap received_msg = *msg; 
+        tree = octomap_msgs::fullMsgToMap(received_msg); 
+        octree = dynamic_cast&lt;OcTree*&gt;(tree);
+}
+</code></pre>
+
+<p>And at the end I cleared the nodes from the octrees like this; </p>
+
+<pre><code>tree-&gt;clear(); 
+octree-&gt;clear();
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40232">TharushiDeSilva</a> on 2019-05-27 03:59:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>clear() function is used to clear the internal tree data structure of the octree object. Not to free up the memory used by the entire object. I&#39;ve edited my answer with more details. Hope this helps.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3870">Namal Senarathne</a> on 2019-05-27 17:51:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I actually tried your snippet and it is semantically wrong. If your try it you get</p>
+
+<p><code>error: cannot convert ‘octomap::OcTree*’ to ‘octomap::ColorOcTree*’ in assignment
+  125 |         color_octree = dynamic_cast&lt;octomap::OcTree*&gt;(msg_octree);  // dynamic casting from octomap::AbstractOcTree to octomap::OcTree
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |                        |
+      |                        octomap::OcTree*
+</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/76126">hesham</a> on 2022-12-15 06:04:19 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

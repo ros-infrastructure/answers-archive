@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Docker container and host communication: source behaves oddly - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/408379">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Docker container and host communication: source behaves oddly</h2>
+      <div class="question">
+        <p><strong>TL;DR</strong>
+<em>Why can&#39;t my Docker container read host topics? And why is sourcing behaving in strange ways?</em></p>
+
+<p>I am trying to launch a <code>Docker</code> container on a host running <code>ROS2 Foxy</code> on <code>Ubuntu 20.04</code> with the default-shipped DDS.  The host has ROS nodes running that publish to topics and define services (duh). I want to subscribe to some of the topics and interact with some of the services.  I ran into an issue with using host networking and shared memory, and it seemed to expose some oddities with the initial <code>source /opt/ros/foxy/setup.bash</code> command when I was troubleshooting. I want to be able to launch a simple docker container to read these topics over <code>shared memory</code> (so not UDP if possible as the containers are on the same host) and not break anything running on the host, and upgrading ROS to a newer distro is not feasible.  Some non-breaking upgrades are possible if needed, but I don&#39;t know what I might need there. I&#39;m looking for guidance which might help others too.  Sorry if this gets long-winded, but I tried to make sure I looked under every rock I know before asking the community.</p>
+
+<p>I ended up launching a vanilla ROS2 Foxy deployment on an EC2 instance to test the issues I am seeing, with the following permutations. I am using the unmodified <code>osrf/ros:foxy-desktop</code> docker image and the host is running the latest ROS2 foxy-desktop distro (installed yesterday when I was testing). All host publishers are the following:</p>
+
+<pre><code># in a host terminal
+source /opt/ros/foxy/setup.bash
+ros2 topic pub /chatter std_msgs/String &quot;data: Hello ROS Developers&quot;
+</code></pre>
+
+<p>In each example, I start with fresh terminals and/or container runs, and sometimes I noticed I had to reboot the host.</p>
+
+<p><strong>Example 1: publishing a standard msg on <code>/chatter</code> from a host terminal, reading message from a subscriber on another host terminal</strong></p>
+
+<p>This works as expected, sourcing the secondary host terminal, then <code>ros2 topic list</code> and <code>ros2 topic echo /chatter</code> work as expected.</p>
+
+<p><strong>Example 2: publishing a standard msg on <code>/chatter</code> from a host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code></strong></p>
+
+<p>My host terminal publishes messages, but I can&#39;t list the topics nor subscribe to them</p>
+
+<p><strong>Example 3: publishing a standard msg on <code>/chatter</code> from a host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code> after listing the topics from another host terminal</strong></p>
+
+<pre><code># in a second host terminal
+source /opt/ros/foxy/setup.bash
+ros2 topic list
+</code></pre>
+
+<p>If i execute this on a second host terminal before doing so on the container&#39;s terminal, I can then list ros topics on the container&#39;s terminal.  I can event see all the topic metadata in the container with <code>ros2 topic info /chatter --verbose</code>, but I can&#39;t subscribe to the topic.  It just waits for messages indefinitely though the second host terminal prints out the messages.</p>
+
+<p>A secondary host terminal can read the messages just fine though.</p>
+
+<p><strong>Example 4: publishing a standard msg on <code>/chatter</code> from a host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code> and using shared memory by mapping <code>--v /dev/shm:/dev/shm</code> with the container launch</strong></p>
+
+<p>This doesn&#39;t work at all just like example 2.</p>
+
+<p><strong>Example 5: publishing a standard msg on <code>/chatter</code> from a host terminal, listing topic on a second host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code> and using shared memory as <code>/dev/shm</code></strong></p>
+
+<p>In this case, I can list the topic and metadata, but I cannot read the topic once subscribed.  Similar, if I go back to the second host terminal, it will list the topic but stall on subscribing. Weird!  So now I have a primary host terminal publishing and a secondary host terminal and a container terminal that can both see the topic but cannot subscribe.</p>
+
+<p><strong>Example 6: publishing a standard msg on <code>/chatter</code> from a host terminal, listing topic on a second host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code> and using <code>ipc=host</code></strong></p>
+
+<p>First, I had to reboot the machine because, event though all the terminals are newly created, I cannot list any topics in the subscriber terminals.  It looks like <code>source</code> with <code>shm</code> lasts longer than the terminal session, which I didn&#39;t expect.</p>
+
+<p>Once rebooted, then this behaves the same as mounting <code>/dev/shm</code> in examples 4 and 5</p>
+
+<p><strong>Example 7: publishing a standard msg on <code>/chatter</code> from a host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code> and using <code>ipc=host</code> without sourcing on the container terminal</strong></p>
+
+<p>Without rebooting, launching everything in brand new terminals, I can see the executable for ROS in the container terminal without executing <code>source /opt/ros/foxy/setup.bash</code>.  <code>which ros2</code> yields <code>/opt/ros/foxy/bin/ros2</code> but I cannot see the topic when I execute <code>ros2 topic list</code>.</p>
+
+<p>Similarly, in a secondary host terminal (brand new), I don&#39;t not have to source ros to see the executable, but I cannot list the topic.</p>
+
+<p><strong>Example 8: publishing a standard msg on /chatter from a host terminal, reading message from a subscriber on a secondary host terminal, then trying to read on a docker container terminal with <code>network=host</code> and using <code>ipc=host</code> without sourcing</strong></p>
+
+<p>In this example, my secondary host terminal will echo the messages on the topic, but my container will show the ros2 executable but not list out the topic.</p>
+
+<p><strong>Example 9: publishing a standard msg on <code>/chatter</code> from a host terminal, reading message from a subscriber on a docker container terminal with <code>network=host</code> and using shared memory (either <code>/dev/shm</code> mapping or <code>ipc=host</code>)and seeing RTSP transport errors</strong></p>
+
+<p>The original reason I started testing on a blank EC2 instance is that I was seeing this error with MANY other ports listed too  (same as in <a href="https://github.com/eProsima/Fast-DDS/issues/2003">this eProsima Fast-DDS github issue</a>):
+<code>[RTPS_TRANSPORT_SHM Error] Failed init_port fastrtps_port7415: open_and_lock_file failed -&gt; Function open_port_internal [13645]</code></p>
+
+<p>I was (sometimes) able to recreate this on EC2, but I couldn&#39;t reliably do that.  Rebooting the host didn&#39;t seem to matter, and <code>fastdds shm clean</code> throws an <code>AttributeException</code>, even though it says it was fixed in <a href="https://github.com/eProsima/Fast-DDS/issues/2071">this github issue</a>.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108233">brieb</a> on 2022-10-22 13:39:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>This question seems to be a duplicate of <a href="https://answers.ros.org/question/370595/ros2-foxy-nodes-cant-communicate-through-docker-container-border/">https://answers.ros.org/question/370595/ros2-foxy-nodes-cant-communicate-through-docker-container-border/</a>.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/64471">danambrosio</a> on 2023-06-06 12:23:11 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

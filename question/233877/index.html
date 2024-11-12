@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Method does not return after subscription - EDIT : ROS shutdowns after ros::spinOnce() - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/233877">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Method does not return after subscription - EDIT : ROS shutdowns after ros::spinOnce()</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/73823/method-does-not-return-after-subscription-edit-ros-shutdowns-after-rosspin">https://robotics.stackexchange.com/questions/73823/method-does-not-return-after-subscription-edit-ros-shutdowns-after-rosspin</a>.</p>
+        <p>I am drawing waypoints on a map. I have a MapViewer class with the following constructor.</p>
+
+<pre><code>// MapViewer default constructor
+MapViewer::MapViewer(std::queue&lt;geometry_msgs::PointStamped::ConstPtr&gt;* waypointQueue) {
+  this-&gt;waypointQueue = waypointQueue;
+  this-&gt;waypointColor = cv::Scalar(0,0,255);
+  this-&gt;pathColor = cv::Scalar(0,255,0);
+  this-&gt;mapFile = getenv(&quot;TURTLEBOT_NAVIGATION_MAP&quot;);
+  this-&gt;waypointFile = getenv(&quot;TURTLEBOT_WAYPOINT_FILE&quot;);
+  this-&gt;setMapMetaData();
+  ROS_INFO(&quot;4&quot;);
+  // TODO : Exception handling
+} 
+</code></pre>
+
+<p>My setMapMetaData method looks like this</p>
+
+<pre><code>// Get map meta data from /map_metadata topic (one time thing)
+void MapViewer::setMapMetaData() {
+  ros::NodeHandle n;
+  ROS_INFO(&quot;1&quot;);
+  ros::Subscriber sub = n.subscribe(
+    &quot;/map_metadata&quot;,
+    100,
+    &amp;MapViewer::mapMetaDataCb,
+    this
+  );
+  ROS_INFO(&quot;2&quot;);
+  ros::spinOnce();
+  ROS_INFO(&quot;3&quot;);
+  return; // I don&#39;t think this return is necessary
+}
+</code></pre>
+
+<p>My subscriber callback looks like this.</p>
+
+<pre><code>void MapViewer::mapMetaDataCb(const nav_msgs::MapMetaData::ConstPtr&amp; mapMetaData) {
+  this-&gt;mapMetaData = *mapMetaData;
+  ROS_INFO(&quot;Map metadata set&quot;);
+}
+</code></pre>
+
+<p>And when I run this, my output looks like this.</p>
+
+<pre><code>[ INFO] [1462745271.217146294]: Initializing ROS...
+[ INFO] [1462745271.221878557]: 1
+[ INFO] [1462745271.228107221]: 2
+[ INFO] [1462745271.228156984]: 3
+</code></pre>
+
+<p>The &quot;Initializing ROS...&quot; comes from the main method. The problem is even though &quot;3&quot; is logged, &quot;4&quot; never is!!!
+Maybe I am missing something obvious but I have no clue as to what it is. Obviously since &quot;3&quot; is printed, <code>ros::spinOnce</code> must have returned. But apparently <code>setMapMetaData</code> has not returned. </p>
+
+<p>Can someone help me figure out what I am missing?</p>
+
+<p><strong>EDIT</strong></p>
+
+<p>The method actually returns. Instead of <code>ROS_INFO(&quot;4&quot;)</code>, when I use <code>std::cout &lt;&lt; 4 &lt;&lt; std::endl;</code> it prints 4. The issue is (as a friend explained to me) that ROS is killed when I call <code>spinOne()</code> only once and stop calling it again. </p>
+
+<p>I solved the problem by changing the setMapMetaData method to</p>
+
+<pre><code>// Get map meta data from /map_metadata topic (one time thing)
+void MapViewer::setMapMetaData() {
+  ROS_INFO(&quot;Subscribing to topic %s&quot;, MapViewer::MAP_METADATA_TOPIC.c_str());
+  ros::NodeHandle n;
+  ros::Subscriber sub = n.subscribe(
+    MapViewer::MAP_METADATA_TOPIC,
+    1,
+    &amp;MapViewer::mapMetaDataCb,
+    this
+  );
+
+  while(!this-&gt;mapMetaDataSet) {
+    // Block until map metadata is set
+  }
+}
+</code></pre>
+
+<p>And executed it in a separate thread after MapViewer instance was created. 
+Because I subscribe to another topic in a different class (which calls <code>ros::spin()</code> ), the <code>mapMetaDataCb()</code> is also executed at that point. </p>
+
+<p>I am not accepting this as an answer because I need to figure out why ROS is killed when I don&#39;t call <code>spinOnce()</code> anymore and how to counter it. Appreciate if you could shed some light into this.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26723"></a> on 2016-05-08 17:23:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I figured the answer myself. 
+Quoting <a href="http://wiki.ros.org/roscpp/Overview/Initialization%20and%20Shutdown">roscpp wiki</a> , &quot;When the first <code>ros::NodeHandle</code> is created it will call <code>ros::start()</code>, and when the last <code>ros::NodeHandle</code> is destroyed, it will call <code>ros::shutdown()</code>.&quot;</p>
+
+<p>So in the first case, when the <code>setMapMetaData()</code> method returns, the <code>NodeHandler n</code> gets destroyed, because it&#39;s created within the scope of the method. Since there are no other NodeHandlers created at that moment, <code>ros::shutdown()</code> is called. </p>
+
+<p>In the second case, the method does not return until <code>mapMetaDataSet = true</code> which happens when the callback function is executed. The callback function executes when <code>ros::spin()</code> is called from another class. Then the method returns and the local <code>NodeHandler n</code> is destroyed <strong>BUT</strong> now there is another NodeHandler created for the same node. Hence <code>ros::shutdown()</code> is not called at that point. </p>
+
+<p>I guess my current implementation, even though it works, is not exactly the best way to get this done. Might do well to use a single NodeHandler that can be passed as an argument to subscribers / publishers etc. </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26723"></a> on 2016-05-08 21:03:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Also keep in mind that the subscriber callbacks will stop when the <code>ros::Subscriber</code> object goes out of scope and is destructed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2016-05-09 03:02:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

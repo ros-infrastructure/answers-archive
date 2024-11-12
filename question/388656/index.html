@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>teb_local_planner keeps selecting impossible trajectories for a carlike robot - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/388656">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>teb_local_planner keeps selecting impossible trajectories for a carlike robot</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100308/teb-local-planner-keeps-selecting-impossible-trajectories-for-a-carlike-robot">https://robotics.stackexchange.com/questions/100308/teb-local-planner-keeps-selecting-impossible-trajectories-for-a-carlike-robot</a>.</p>
+        <p>I am testing teb<em>local</em>planner for a carlike vehicle.
+I am trying to make the robot park backward, for which I would expect the planner to turn in 2-3 times (as a human driver would). However the local planner keeps generating and selecting trajectories that are just impossible for the car to follow (the min<em>turning</em>radius is set to 10 meters)</p>
+
+<p>For example here, the selected red path requires the vehicle to make a sharp U-turn, that should not be possible with my min<em>turning</em>radius. As the vehicle approaches and fails to follow the local path, the local planner keeps generating more and more complex and impossible paths.</p>
+
+<p><strong><em>How come the planner can generate such impossible plan?</em></strong></p>
+
+<p><img src="https://i.imgur.com/ep8s2XK.png" alt="this trajectory should be impossible"></p>
+
+<p>That said, it is not always the case. Sometimes, when I am lucky, the planner manages to generate a very nice 2-way turn curve (like in the picture below). </p>
+
+<p><img src="https://i.imgur.com/CWQn5LW.png" alt="this is better"></p>
+
+<p><strong><em>What parameters could I adjust to make the planner consistently generate (and select) paths like this instead?</em></strong></p>
+
+<p>Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36745">vrichard</a> on 2021-10-14 04:39:52 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Orientation maybe? Its hard to see, but whats the goal orientation? Also your painted arrows seem to suggest that the robot should reverse into position. Would be important to see your config file for the planner. Do those &quot;strange&quot; paths pass the feasability check or do they get errored out?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2021-10-14 04:56:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes the goal and start points are facing each other (see <a href="https://imgur.com/a/M0tvaqi">https://imgur.com/a/M0tvaqi</a>). So the vehicle has to park in reverse (or find a way to turn around at some point). For some reason the planner always prefer to reach the goal point first and then to try to turn around. As you can see with the walls near by the maneuver is not very wise from that point. All the impracticable paths pass the feasibility check and I never get any error.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/36745">vrichard</a> on 2021-10-14 20:12:19 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>After all, I might be caused by the size of my vehicle and the fact the goal is too close to the wall for teb_local_planner to find any good maneuver.</p>
+
+<p>I have just tested the same situation but with a smaller vehicle: I have simply reduced footprint and wheelbase parameters by a factor 2. And now it works rather nice:</p>
+
+<p><img src="https://i.imgur.com/5XHh1hT.png" alt="image description">
+<img src="https://i.imgur.com/udfa5Dh.png" alt="image description">
+<img src="https://i.imgur.com/XZ4p1py.png" alt="image description"></p>
+
+<p>So maybe I can solve my problem just by moving the goal point a bit further away from the wall</p>
+
+<p>EDIT:
+making it work for bigger robots was harder than I thought. There is not just the distance to the wall that matters. Actually even without obstacles around the planner was unable to find good turn around strategies for the bigger vehicle. It always ended up making in-place star shaped turns like this:
+<img src="https://user-images.githubusercontent.com/18645627/137458167-983115a9-5e8e-4556-96c5-347955d55f58.png" alt="inefficient turn"> </p>
+
+<p>I went through a lot tuning and still could not make it work properly. So I ended up implementing 2 extras cost functions to the planner: </p>
+
+<ul>
+<li>one that introduces a penalty when the vehicle changes from driving forward to driving backward (I described <a href="https://github.com/rst-tu-dortmund/teb_local_planner/issues/323">here</a>) to encourage the planner to find 2-3 point turns instead of star shape plans like above</li>
+<li>another which introduces a penalty for not being oriented the same than the local planner goal. Basically the idea with this one is to force the planner to orient the vehicle properly as soon as possible. This fixed the previous behavior I had most of the time: the planner would first want to reach destination position and from there would start to wonder how to turn around (and fail miserably at it)</li>
+</ul>
+
+<p>I have not tested much the individual contribution of each new penalty but the conjunction of both works rather nicely.</p>
+
+<p>I settled my weights like this:</p>
+
+<ul>
+<li>weight_kinematics_nh: 1000</li>
+<li>weight_same_orientation_than_goal, weight_forward_backward_switch, weight_optimal_time, weight_obstacle, weight_dynamic_obstacle : 50</li>
+<li>weight_kinematics_turning_radius: 10</li>
+<li>other weights: default</li>
+</ul>
+
+<p>As for the Homotopy class planning I increased the area width, scale and number of samples. I also reduced h_signature_prescaler to 0.75 which looks a bit magic to me but had a positive effect on the quality of the planner generated paths. In order to make this run fast enough, I had to reduce a bit the size and resolution of my costmap. Most other parameters are defaults (or just scaled to the size of the robot)</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/36745">vrichard</a> on 2021-10-14 21:00:05 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>To get a clean solution the planner should error out though. If the problem is indeed the distance to the wall (collision), increasing the costmap footprint will lead to the feasibility check failing, as far as I understand it. See <a href="https://wiki.ros.org/teb_local_planner/Tutorials/Obstacle%20Avoidance%20and%20Robot%20Footprint%20Model">this</a>  &quot;For detecting if a collision occurs, the costmap footprint is used.&quot; Or using a polygon to match the &quot;real&quot; footprint might work as well, high cpu cost though. 
+This is a really interessting problem, specially the planner planning  90° turns. Would really like to see that config.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2021-10-15 06:11:04 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

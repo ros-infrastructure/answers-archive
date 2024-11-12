@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>sending PCL binary stream - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/354454">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>sending PCL binary stream</h2>
+      <div class="question">
+        <p>I am trying to send the binary stream produced by the PCL library over ROS. I use the octree compression function to compress lidar data. This function returns a binary output stream. In their tutorial, they place it in a stringstream, so I did the same. Because you cannot publish a stringstream, I convert it to a string and publish this to the ROS network. </p>
+
+<p>At the decompression side, I try to convert the string back to binary and call the decompression function. When I run the compression node, everything works fine. I can see the message getting published. When I run the decompression node, it throws an std::bad_alloc error. </p>
+
+<p>Does someone as experience with sending a binary output stream with ROS or can tell why I get the bad allocation error?</p>
+
+<p>I run the following programs on a VM with Ubuntu 18.04 and ROS melodic.</p>
+
+<p>Decompression node:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+
+#include &lt;pcl/compression/octree_pointcloud_compression.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;sstream&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;chrono&gt;
+
+#include &lt;string&gt;
+#include &lt;std_msgs/String.h&gt;
+
+ros::Publisher pub;
+
+pcl::io::OctreePointCloudCompression&lt;pcl::PointXYZRGBA&gt;* PointCloudDecoder;
+
+void 
+cloud_cb (const std_msgs::String&amp; input)
+{
+  // Create a container for the data.
+  sensor_msgs::PointCloud2 output;
+  // stringstream to store compressed point cloud
+  std::stringstream compressedData;
+
+    compressedData &lt;&lt; input.data;
+
+  // output pointcloud
+
+  pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;::Ptr cloudOut (new pcl::PointCloud&lt;pcl::PointXYZRGBA&gt; ());
+
+  // decompress point cloud
+  PointCloudDecoder-&gt;decodePointCloud (compressedData, cloudOut);
+
+
+  //convert to pointcloud2
+  pcl::toROSMsg(*cloudOut, output);
+
+  // Publish the data.
+  pub.publish (output);
+}
+
+int
+main (int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init (argc, argv, &quot;decompressLidar&quot;);
+  ros::NodeHandle nh;
+
+  //\\
+  //setup compression algorithm
+
+  PointCloudDecoder = new pcl::io::OctreePointCloudCompression&lt;pcl::PointXYZRGBA&gt; ();
+  //\\
+
+  // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe (&quot;velodyne_points/compressed&quot;, 1, cloud_cb);
+
+  // Create a ROS publisher for the output point cloud
+  pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt; (&quot;decompress&quot;, 1);
+
+  // Spin
+  ros::spin ();
+}
+</code></pre>
+
+<p>Compression node:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl/visualization/cloud_viewer.h&gt;
+
+#include &lt;pcl/compression/octree_pointcloud_compression.h&gt;
+
+#include &lt;stdio.h&gt;
+#include &lt;sstream&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;chrono&gt;
+#include &lt;string&gt;
+#include &lt;std_msgs/String.h&gt;
+
+ros::Publisher pub;
+
+pcl::io::OctreePointCloudCompression&lt;pcl::PointXYZRGBA&gt;* PointCloudEncoder;
+
+void 
+cloud_cb (const sensor_msgs::PointCloud2ConstPtr&amp; input)
+{
+  // Create a container for the data.
+  std::string output;
+  std_msgs::String outputString;
+
+  //convert to pointxyzrgba type
+  pcl::PCLPointCloud2 pcl_pc2;
+  pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;::Ptr temp_cloud (new pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;);//convert to pointer to satisfy function requirement
+
+  pcl_conversions::toPCL(*input, pcl_pc2);
+  pcl::fromPCLPointCloud2(pcl_pc2, *temp_cloud); 
+
+  // stringstream to store compressed point cloud
+  std::stringstream compressedData;
+  // output pointcloud
+  pcl::PointCloud&lt;pcl::PointXYZRGBA&gt;::Ptr cloudOut (new pcl::PointCloud&lt;pcl::PointXYZRGBA&gt; ());
+
+  // compress point cloud
+  PointCloudEncoder-&gt;encodePointCloud (temp_cloud, compressedData);
+
+  output = compressedData.str();
+  outputString.data = output;
+
+  // Publish the data.
+  pub.publish (outputString);
+}
+
+int
+main (int argc, char** argv)
+{
+
+  // Initialize ROS
+  ros::init (argc, argv, &quot;my_pcl_tutorial&quot;);
+  ros::NodeHandle nh;
+
+  //\\
+  //setup compression algorithm
+
+  bool showStatistics = false;
+  pcl::io::compression_Profiles_e compressionProfile = pcl::io::LOW_RES_ONLINE_COMPRESSION_WITHOUT_COLOR;
+
+  // instantiate point cloud compression for encoding and decoding
+
+  PointCloudEncoder = new pcl::io::OctreePointCloudCompression&lt;pcl::PointXYZRGBA&gt; (compressionProfile, showStatistics);
+  //\\
+
+     // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe (&quot;velodyne_points&quot;, 1, cloud_cb);
+
+  // Create a ROS publisher for the output point cloud
+  pub = nh.advertise&lt;std_msgs::String&gt; (&quot;velodyne_points/compressed&quot;, 1);
+
+  // Spin
+  ros::spin ();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/55659">toml</a> on 2020-06-09 12:09:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just a note: a string is not a binary string necessarily. <code>string</code>s terminate on <code>\0</code> characters, binary strings don&#39;t.</p>
+
+<p>I&#39;ve not looked at what the output of <code>PointCloudEncoder-&gt;encodePointCloud(..)</code> is, but if it is a regular binary blob (ie: doesn&#39;t take any precautions) then it could be your data is getting truncated. That would be something to check.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-06-10 01:17:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes, you were correct. This was indeed the problem. I converted the data to uint8 to send them with ROS which solved that problem.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/55659">toml</a> on 2020-06-15 14:33:06 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi toml, I have encountered the same problem as you, but I can&#39;t solve it after transferring the stringstream to std_msgs::UInt8MultiArray, can you tell me your solution? Thank you so much!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/151164">eyeofhorus0928</a> on 2023-05-25 21:19:05 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

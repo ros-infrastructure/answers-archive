@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Change subscribed topic/subscriber based on condition during runtime - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/376055">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Change subscribed topic/subscriber based on condition during runtime</h2>
+      <div class="question">
+        <p>I have a robot with a front and back camera. I&#39;ve got a callback function in my node that can be used for the topics from either of the cameras. I want the callback to subscribe to one of the two topics depending on a condition.</p>
+
+<p>Something like:</p>
+
+<pre><code>If front mode engaged:
+   ros::Subscriber subPCL = n.subscribe&lt;PointCloud&gt;(&quot;/front_cloud&quot;, 10, pclCallback); 
+If back mode engaged:
+  ros::Subscriber subPCL = n.subscribe&lt;PointCloud&gt;(&quot;/back_cloud&quot;, 10, pclCallback); 
+</code></pre>
+
+<p>During runtime, the operation mode can change from front to back depending on which direction the robot is driving. So the topic the callback subscribes to should change.</p>
+
+<p>Currently, I just initialise one subscriber in my main function when starting the node but this will create conflicts if I want to do the same for two.</p>
+
+<p>I have a service callback in the same node that receives the direction the robot is going, which I thought I could use.</p>
+
+<pre><code>bool startrowCallback(row_follower::start_row_mode::Request &amp;req, row_follower::start_row_mode::Response &amp;res){
+
+    if (!rowMode){
+        rowMode = true;
+        drivingDirection = req.direction;
+        if (drivingDirection = &quot;front&quot;) {
+             ros::Subscriber subPCL = n.subscribe&lt;PointCloud&gt;(&quot;/front_cloud&quot;, 10, pclCallback); 
+        }
+        if (drivingDirection = &quot;back&quot;){
+            ros::Subscriber subPCL = n.subscribe&lt;PointCloud&gt;(&quot;/back_cloud&quot;, 10, pclCallback); 
+        }
+
+        res.done = true;
+    }
+    else{
+        res.done = false;
+    }
+
+    return res.done;
+}
+</code></pre>
+
+<p>But I&#39;m not sure that is the right place to initialise a subscriber and if it the callback will get called with ros::spin in the main function. As I&#39;m not passing the node handle from the main function I imagine what I wrote above won&#39;t compile. What would be the best way of doing this?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/52277">jorgemia</a> on 2021-04-13 10:30:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The node handle should work even if it is described in a service function.
+If you don&#39;t unsubscribe an existing one before subscribing a new one, it may continue to subscribe to the existing one.</p>
+
+<pre><code>ros::Subscriber subPCL; // added
+bool startrowCallback(row_follower::start_row_mode::Request &amp;req, row_follower::start_row_mode::Response &amp;res){
+    ros::NodeHandle n; // added
+    if (!rowMode){
+        rowMode = true;
+        drivingDirection = req.direction;
+        if (drivingDirection == &quot;front&quot;) {
+             subPCL.shutdown(); // added
+             subPCL = n.subscribe&lt;PointCloud&gt;(&quot;/front_cloud&quot;, 10, pclCallback); // changed
+        }
+        if (drivingDirection == &quot;back&quot;){
+            subPCL.shutdown(); // added
+            subPCL = n.subscribe&lt;PointCloud&gt;(&quot;/back_cloud&quot;, 10, pclCallback);  // changed
+        }
+
+        res.done = true;
+    }
+    else{
+        res.done = false;
+    }
+
+    return res.done;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/59801">miura</a> on 2021-04-14 08:15:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the answer. I already have a node handle that initialises some publishers/subscribers and gets parameters in the main function. Shouldn&#39;t I use the same node handle for these subscribers? Also, are you defining subPCL as a global subscriber?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52277">jorgemia</a> on 2021-04-14 14:08:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am going to try and pass the nodehandle as a parameter to the service using boost::bind and see if that works:</p>
+
+<p>This is what I wrote and it seems to have compiled correctly. In my main function:</p>
+
+<pre><code>ros::NodeHandle n;
+ros::ServiceServer StartRowModeService = n.advertiseService&lt;row_follower::start_row_mode::Request, row_follower::start_row_mode::Response&gt;(&quot;start_row_mode&quot;,boost::bind(startrowCallback, _1, _2, boost::ref(n)));
+</code></pre>
+
+<p>In my callback definition: </p>
+
+<pre><code>bool startrowCallback(row_follower::start_row_mode::Request &amp;req, row_follower::start_row_mode::Response &amp;res, ros::NodeHandle &amp;n)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52277">jorgemia</a> on 2021-04-15 04:54:45 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>Shouldn&#39;t I use the same node handle for these subscribers?</p>
+</blockquote>
+
+<p>I don&#39;t understand the detailed mechanism, but it seems to work fine with different node handles.</p>
+
+<blockquote>
+<p>Also, are you defining subPCL as a global subscriber?</p>
+</blockquote>
+
+<p>I think if you declare the subscriber in the service callback function, the subscriber will be released when the service callback function exits and finishes subscribing. Therefore, I think it needs to be declared as a global variable.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/59801">miura</a> on 2021-04-15 11:28:08 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

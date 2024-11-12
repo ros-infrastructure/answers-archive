@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Erratic movements with move_base, hector_mapping, mecanum wheels robot (bag file, source code) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/347237">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Erratic movements with move_base, hector_mapping, mecanum wheels robot (bag file, source code)</h2>
+      <div class="question">
+        <p>I have a 4 wheels mecanum robot with a <code>LMS111</code> laser and beacons that gives me the x,y position of the robot when it moves inside a 4x5 meters room. I&#39;m using Melodic with <code>move_base</code> and <code>hector_mapping</code> since I would like to make the robot move towards a (x, y) <code>goal</code> inside a defined <code>map</code>.</p>
+
+<p>I&#39;m successfully able to build a map by using hector_mapping and my laser (this is a <a href="https://www.youtube.com/watch?v=lSMS6MGiXvU">screen recording</a>),  the problem is that when I try to set a goal in <code>RVIZ</code>, then the robot starts to move but it doesn&#39;t move accordingly with the point, but starts to move erratically with no sense. 
+This is a <a href="http://www.robo-dyne.com/bags/bagfile.bag">BAG</a> file that contains all the topics.</p>
+
+<p>This is the map:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15848272032983904.png" alt="image description"></p>
+
+<p>The beacon mounted on the robot  gives me x,y,z coordinates and the quaternion of its orientation in the space and the fixed beacons are placed at the four corners of the room.
+Could the problem be related to the planner which is not able to correctly computer the <code>cmd_vel</code> commands for the mecanum wheel robot?
+I can&#39;t understand if the problem is related to the <code>odom</code> topic related to the beacon which publishes the tf from <code>odom-&gt;base_link</code> because may be I did a mistake when I calculated the <code>yaw</code> angle or the <code>linear velocity</code>:</p>
+
+<pre><code>  ....
+void hedgePosAngCallback(const beginner_tutorials::hedge_pos_ang&amp; hedge_pos_msg)
+{
+  ROS_INFO(&quot;Hedgehog data: Address= %d, timestamp= %d, X=%.3f  Y= %.3f  Z=%.3f  Angle: %.1f  flags=%d&quot;,     
+                (int) hedge_pos_msg.address, 
+                (int) hedge_pos_msg.timestamp_ms, 
+                (float) hedge_pos_msg.x_m, (float) hedge_pos_msg.y_m, (float) hedge_pos_msg.z_m,
+                (float) hedge_pos_msg.angle,  
+                (int) hedge_pos_msg.flags);
+
+ x = hedge_pos_msg.x_m;
+ y = hedge_pos_msg.y_m;
+ z = hedge_pos_msg.z_m;
+
+}
+
+void IMUFusionCallback(const beginner_tutorials::hedge_imu_fusion&amp; hedge_imu_fusion_msg)
+{
+    ROS_INFO(&quot;IMU fusion: Timestamp: %08d, X=%.3f  Y= %.3f  Z=%.3f  q=%.3f,%.3f,%.3f,%.3f v=%.3f,%.3f,%.3f  a=%.3f,%.3f,%.3f&quot;,  
+                (int) hedge_imu_fusion_msg.timestamp_ms,
+                (float) hedge_imu_fusion_msg.x_m, (float) hedge_imu_fusion_msg.y_m, (float) hedge_imu_fusion_msg.z_m,
+                (float) hedge_imu_fusion_msg.qw, (float) hedge_imu_fusion_msg.qx, (float) hedge_imu_fusion_msg.qy, (float) hedge_imu_fusion_msg.qz,
+                (float) hedge_imu_fusion_msg.vx, (float) hedge_imu_fusion_msg.vy, (float) hedge_imu_fusion_msg.vz,
+                (float) hedge_imu_fusion_msg.ax, (float) hedge_imu_fusion_msg.ay, (float) hedge_imu_fusion_msg.az);
+
+   orientation_qx= hedge_imu_fusion_msg.qx;
+   orientation_qy= hedge_imu_fusion_msg.qy;
+   orientation_qz= hedge_imu_fusion_msg.qz;
+   orientation_qw= hedge_imu_fusion_msg.qw;
+}
+....
+
+     while(n.ok()){    
+        ros::spinOnce();               // check for incoming messages
+        current_time = ros::Time::now();
+
+        //compute odometry in a typical way given the velocities of the robot
+        double dt = (current_time - last_time).toSec();
+
+
+        geometry_msgs::Quaternion odom_quat;
+        odom_quat.x = orientation_qx;
+        odom_quat.y = orientation_qy;
+        odom_quat.z = orientation_qz;
+        odom_quat.w = orientation_qw;
+
+       // double roll, pitch, yaw;
+       // tf::Matrix3x3(odom_quat).getRPY(roll, pitch, yaw);
+        double siny_cosp = 2 * (orientation_qw * orientation_qz + orientation_qx * orientation_qy);
+        double cosy_cosp = 1 - 2 * (orientation_qy * orientation_qy + orientation_qz * orientation_qz);
+        double yaw = std::atan2(siny_cosp, cosy_cosp);
+
+        //first, we&#39;ll publish the transform over tf
+        geometry_msgs::TransformStamped odom_trans;
+        odom_trans.header.stamp = current_time;
+        odom_trans.header.frame_id = &quot;odom&quot;;
+        odom_trans.child_frame_id = &quot;base_link&quot;;
+
+        odom_trans.transform.translation.x = x;
+        odom_trans.transform.translation.y = y;
+        odom_trans.transform.translation.z = z;
+        odom_trans.transform.rotation = odom_quat;
+
+        vx = (x-prev_x)/dt;
+        prev_x = x;
+
+        vy = (y-prev_y)/dt;
+        prev_y = y;
+
+        //send the transform
+        odom_broadcaster.sendTransform(odom_trans);
+
+        //next, we&#39;ll publish the odometry message over ROS
+        nav_msgs::Odometry odom;
+        odom.header.stamp = current_time;
+        odom.header.frame_id = &quot;odom&quot;;
+
+        //set the position
+        odom.pose.pose.position.x = x;
+        odom.pose.pose.position.y = y;
+        odom.pose.pose.position.z = 0.0;
+        odom.pose.pose.orientation = odom_quat;
+
+        //set the velocity
+        odom.child_frame_id = &quot;base_link&quot;;
+        odom.twist.twist.linear.x = vx;
+        odom.twist.twist.linear.y = vy;
+        odom.twist.twist.angular.z = yaw;
+
+        //publish the message
+        odom_pub.publish(odom);
+
+        last_time = current_time;
+        r.sleep();
+      }
+</code></pre>
+
+<p>or if the problem is related to my base<em>controller even if it seems to work fine when I manually send it some `cmd</em>vel` commands:</p>
+
+<pre><code>void RoboteqDevice::cmd_velCallback(const geometry_msgs::Twist::ConstPtr&amp; msg)
+{
+ROS_INFO(&quot;X=%.3f  Y= %.3f  Z=%.3f  Angle: %.1f &quot;, (float) msg-&gt;linear.x, (float) msg-&gt;linear.y, (float) msg-&gt;linear.z, (float) msg-&gt;angular.z);
+vel_x = msg-&gt;linear.x;
+vel_y = msg-&gt;linear.y;
+vteta_z = msg-&gt;angular.z;
+
+wheel_front_left = (1/wheel_radius) * (vel_x - vel_y - (wheel_separation_width + wheel_separation_length) * vteta_z);
+wheel_front_right = (1/wheel_radius) * (vel_x + vel_y + (wheel_separation_width + wheel_separation_length) * vteta_z);
+wheel_rear_left = (1/wheel_radius) * (vel_x + vel_y - (wheel_separation_width + wheel_separation_length) * vteta_z);
+wheel_rear_right = (1/wheel_radius) * (vel_x - vel_y + (wheel_separation_width + wheel_separation_length) * vteta_z);
+..
+}
+</code></pre>
+
+<p>This is my launch file for the <code>move_base</code> node:</p>
+
+<pre><code>&lt;launch&gt;
+
+ &lt;!--- Run AMCL --&gt; 
+
+
+   &lt;node pkg=&quot;move_base&quot; type=&quot;move_base&quot; respawn=&quot;false&quot; name=&quot;move_base&quot; output=&quot;screen&quot;&gt;
+    &lt;rosparam file=&quot;$(find robot_2dnav)/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;global_costmap&quot; /&gt; 
+    &lt;rosparam file=&quot;$(find robot_2dnav)/costmap_common_params.yaml&quot; command=&quot;load&quot; ns=&quot;local_costmap&quot; /&gt;
+    &lt;rosparam file=&quot;$(find robot_2dnav)/local_costmap_params.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;rosparam file=&quot;$(find robot_2dnav)/global_costmap_params.yaml&quot; command=&quot;load&quot; /&gt; 
+    &lt;rosparam file=&quot;$(find robot_2dnav)/dwa_local_planner_params.yaml&quot; command=&quot;load&quot; /&gt;
+    &lt;param name=&quot;base_local_planner&quot; value=&quot;dwa_local_planner/DWAPlannerROS&quot; /&gt;
+ &lt;/node&gt;
+
+&lt;/launch&gt; 
+</code></pre>
+
+<p>and:</p>
+
+<pre><code>DWAPlannerROS: 
+   acc_lim_th: 3.2 
+   acc_lim_x: 2.5 
+   acc_lim_y: 2.5 
+
+
+   max_vel_x: 1 
+   min_vel_x: 0.2
+
+   max_vel_y: 1
+   min_vel_y: 0.2 
+
+   max_vel_trans: 0.65 
+   min_vel_trans: 0.1 
+   max_vel_theta: 0.5 
+   min_vel_theta: -0.5 
+   sim_time: 1.7 
+   sim_granularity: 0.025 
+   goal_distance_bias: 32.0 
+   path_distance_bias: 24.0 
+   occdist_scale: 0.01 
+   stop_time_buffer: 0.2 
+   oscillation_reset_dist: 0.05 
+   forward_point_distance: 0.325 
+   scaling_speed: 0.25 
+   max_scaling_factor: 0.2 
+   vx_samples: 3 
+   vy_samples: 10 
+   vtheta_samples: 20 
+   sim_period: 0.1 
+   xy_goal_tolerance: 0.10 
+   yaw_goal_tolerance: 0.05 
+   theta_stopped_vel: 0.01 
+   trans_stopped_vel: 0.01
+   holonomic_robot: true
+</code></pre>
+
+<p>this is the <code>local coastmap</code>:
+local<em>costmap:
+  global</em>frame: odom
+  robot<em>base</em>frame: base<em>link
+  update</em>frequency: 5.0
+  publish<em>frequency: 2.0
+  static</em>map: true
+  rolling_window: true
+  width: 6.0
+  height: 6.0
+  resolution: 0.1</p>
+
+<p>and the <code>global coastmap</code>:</p>
+
+<pre><code>global_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 5.0
+  static_map: true
+  transform_tolerance: 10
+</code></pre>
+
+<p>Can it be that the <code>odom-&gt;base_link</code> is not oriented correctly compared to the <code>map-&gt;odom</code> tf?
+Or may be, the <code>cmd_vel</code> commands produced by the <code>move_base</code> are not correct because the planner can&#39;t know how to control the omniwheel robot?</p>
+
+<p>Note: This question is related to: <a href="http://answers.ros.org/question/346720/">346720</a> &amp;&amp; <a href="http://answers.ros.org/question/340495/">340495</a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/5421">Marcus Barnet</a> on 2020-03-21 17:10:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Related: #q346720 and #q340495.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-22 02:51:31 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I added the reference at the end of my post.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5421">Marcus Barnet</a> on 2020-03-22 05:31:52 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Accuracy / resolution of ROS time - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/35768">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Accuracy / resolution of ROS time</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/41140/accuracy-resolution-of-ros-time">https://robotics.stackexchange.com/questions/41140/accuracy-resolution-of-ros-time</a>.</p>
+        <p>I was doing some quick profiling of the execution time of a piece of code, and noticed that I was getting different answers depending on what method I use to get the current time.</p>
+
+<p><strong>EDIT: original test removed, added test as per Eric&#39;s suggestion.</strong></p>
+
+<p>I am running on: Ubuntu, 3.0.0-17-generic</p>
+
+<p>The following code is inserted in a callback function, which is called asynchronously.</p>
+
+<pre><code>struct timeval s_get, e_get;
+timespec s_crt, e_crt;
+ros::Time s_ros, e_ros;
+
+gettimeofday(&amp;s_get, NULL);
+clock_gettime(CLOCK_REALTIME,  &amp;s_crt);
+s_ros = ros::Time::now();
+
+// **** do something here... ****
+
+gettimeofday(&amp;e_get, NULL);
+clock_gettime(CLOCK_REALTIME,  &amp;e_crt);
+e_ros = ros::Time::now();
+
+// print results
+double dur_get = ((e_get.tv_sec * 10e6 + e_get.tv_usec) -
+                  (s_get.tv_sec * 10e6 + s_get.tv_usec)) * 1e-3;
+double dur_crt = ((e_crt.tv_sec * 10e9 + e_crt.tv_nsec) - 
+                  (s_crt.tv_sec * 10e9 + s_crt.tv_nsec)) * 1e-6;
+double dur_ros = (e_ros - s_ros).toNSec() * 1e-6;
+
+printf(&quot;Dur [ms]: %.1f \t %.1f \t %.1f \n&quot;, dur_get, dur_crt, dur_ros);
+</code></pre>
+
+<p><strong>Output:</strong></p>
+
+<pre><code>Dur [ms]: 8.5     8.5      0.0 
+Dur [ms]: 6.7     6.7     10.1 
+Dur [ms]: 15.9     15.9     10.1 
+Dur [ms]: 6.2     6.2      0.0 
+Dur [ms]: 13.6  13.6     10.1 
+Dur [ms]: 15.2  15.2     20.2 
+Dur [ms]: 13.0  13.0     20.2 
+Dur [ms]: 10.5  10.5     10.1 
+Dur [ms]: 14.2  14.2     20.2 
+Dur [ms]: 11.2  11.2     10.1 
+Dur [ms]: 10.5  10.5     10.2 
+Dur [ms]: 10.4  10.4     10.1 
+Dur [ms]: 16.4  16.4     20.1 
+Dur [ms]: 11.0  11.0     10.1 
+Dur [ms]: 17.6  17.6     20.2 
+Dur [ms]: 12.6  12.6     20.1 
+Dur [ms]: 18.5  18.5     20.1 
+Dur [ms]: 18.1  18.1     20.1 
+Dur [ms]: 14.8  14.8     10.1 
+Dur [ms]: 5.5     5.5      0.0 
+Dur [ms]: 8.5     8.5     10.1 
+Dur [ms]: 11.4  11.4     10.1 
+Dur [ms]: 18.4  18.4     20.2 
+Dur [ms]: 14.3  14.3     10.1 
+Dur [ms]: 10.8  10.8     10.1 
+Dur [ms]: 7.9     7.8      0.0 
+Dur [ms]: 17.2  17.2     20.2 
+</code></pre>
+
+<p><strong>Consclusion</strong></p>
+
+<p><code>gettimeofday</code> and <code>clock_gettime</code> result in similar durations, but <code>ros::Time::now()</code> durations are different. </p>
+
+<p>I noticed that if I insert the example above in a loop at startup (instead of asynchronously inside a function), and tell it to sleep a certain time each iteration, I get 0.0 ms reported duration by ROS, and the correct duration with the other 2 methods. My only explanation is that ros::spinOnce() hasn&#39;t been called, and this is interfering with ros::Time::now().</p>
+
+<p>This has very little impact on my profiling. However, I sometimes use the ros time to calculate velocities or other quantities in the form <code>x/dt</code>. In this case, poor temporal resolution like this would make a huge difference.</p>
+
+<p>Could anyone comment on this? Am I doing something wrong? </p>
+
+<p><strong>EDIT 2</strong></p>
+
+<p>I was running using <code>use_sim_time</code> set to <code>true</code>. Changing Time to WallTime everywhere in the code above fixed the issue. </p>
+
+        <div class="owner"><p>Asked by <a href="/users/79">Ivan Dryanovski</a> on 2012-06-05 17:57:48 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It looks like the <code>ros::Time</code> is using the highest precision clock it can find, so perhaps it&#39;s more accurate than <code>gettimeofday</code>. The relevant code for not using <code>sim_time</code> appears to be: <a href="http://www.ros.org/doc/api/rostime/html/time_8cpp_source.html#l00095">time.cpp:ros_walltime(uint32_t&amp; sec, uint32_t&amp; nsec)</a>. If we ignore all the WIN32 stuff, looks like the relevant snippet is here:</p>
+
+<pre><code>00101 #if HAS_CLOCK_GETTIME
+00102     timespec start;
+00103     clock_gettime(CLOCK_REALTIME, &amp;start);
+00104     sec  = start.tv_sec;
+00105     nsec = start.tv_nsec;
+00106 #else
+00107     struct timeval timeofday;
+00108     gettimeofday(&amp;timeofday,NULL);
+00109     sec  = timeofday.tv_sec;
+00110     nsec = timeofday.tv_usec * 1000;
+00111 #endif
+</code></pre>
+
+<p>I couldn&#39;t find anything with a quick Google search comparing the two, but it might be interesting to see if you have the same results as <code>ros::Time</code> if you use <code>clock_gettime</code> instead of <code>gettimeofday</code> in your profiling code.</p>
+
+<p>If you need to get the current time for profiling reasons even when using sim_time, you should use <a href="http://www.ros.org/wiki/roscpp/Overview/Time#Wall_Time">ros::WallTime</a> instead of <code>ros::Time</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/14">Eric Perko</a> on 2012-06-05 18:34:33 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the answer Eric, I have updated the original question with a more detailed test.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79">Ivan Dryanovski</a> on 2012-06-05 20:13:23 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The issue was ros::WallTime (I was running in simulation). Once I used that, everything worked fine!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/79">Ivan Dryanovski</a> on 2012-06-05 20:19:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Ya... those being in units of 10ms and not matching up with the jitter in the non ROS clock_gettime seemed suspicious...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/14">Eric Perko</a> on 2012-06-05 20:20:46 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

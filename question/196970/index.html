@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Odometry Pose NaN - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/196970">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Odometry Pose NaN</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/63873/odometry-pose-nan">https://robotics.stackexchange.com/questions/63873/odometry-pose-nan</a>.</p>
+        <p>Hello,</p>
+
+<p>I&#39;m trying to set up the odometry for a robot. I&#39;ve followed the robot setup tutorial on the wiki, edited for my own robot. The package can be found on <a href="https://github.com/Icehawk101/ax2550">github</a> in the src/omni<em>odom</em>take<em>2.cpp file. When I subscibe to the omni</em>odom topic I am getting NaN for the pose. The velocities, covariance, and header info is there, but nothing for the pose. Any ideas what I am doing wrong?</p>
+
+<p>Thanks</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;ax2550/StampedEncoders.h&gt;
+#include &lt;tf/transform_datatypes.h&gt;
+
+int wheel1_new = 0;
+int wheel2_new = 0;
+int wheel3_new = 0;
+int wheel4_new = 0;
+double dt_front = 0;
+double dt_rear = 0;
+
+double x = 0.0;
+double y = 0.0;
+double th = 0.0;
+
+double vx = 0.0;
+double vy = 0.0;
+double vth = 0.0;
+
+const double wheel_radius = 0.125;
+const double wheel_circumference = 0.785;
+const double encoder_resolution = 1250*4*20;
+const double k = 0.47 + 0.55; //the sum of the distance between the wheel&#39;s x-coord and the origin, and the y-coord and the origin
+const double dist_per_tick = wheel_circumference / encoder_resolution;
+
+void feCallBack(const ax2550::StampedEncoders::ConstPtr&amp; msg)
+{
+  wheel1_new = msg-&gt;encoders.left_wheel;
+  wheel4_new = msg-&gt;encoders.right_wheel;
+  dt_front = msg-&gt;encoders.time_delta;
+}
+
+void reCallBack(const ax2550::StampedEncoders::ConstPtr&amp; msg)
+{
+  wheel2_new = msg-&gt;encoders.left_wheel;
+  wheel3_new = msg-&gt;encoders.right_wheel;
+  dt_rear = msg-&gt;encoders.time_delta;
+}
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;omni_odom&quot;);
+
+  ros::NodeHandle n;
+  ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;omni_odom&quot;, 60);
+  ros::Subscriber fr_enc = n.subscribe(&quot;/omnimaxbot/front/encoders&quot;, 100, feCallBack);
+  ros::Subscriber rr_enc = n.subscribe(&quot;/omnimaxbot/rear/encoders&quot;, 100, reCallBack);
+  tf::TransformBroadcaster odom_broadcaster;
+
+  ros::Time current_time = ros::Time::now();
+  //ros::Time last_time = ros::Time::now();
+
+  ros::Rate r(1.0);
+  while(n.ok())
+  {
+    current_time = ros::Time::now();
+
+    double avg_dt = (dt_front + dt_rear)/2.0;
+
+    if(avg_dt == 0)
+    {
+        avg_dt = dt_front;
+    }
+
+    //compute the velocities
+    double v_w1 = (wheel1_new * dist_per_tick)/dt_front;
+    double v_w2 = (wheel2_new * dist_per_tick)/dt_rear;
+    double v_w3 = (wheel3_new * dist_per_tick)/dt_rear;
+    double v_w4 = (wheel4_new * dist_per_tick)/dt_front;
+
+    vx = (wheel_radius/4)*(v_w1+v_w2+v_w3+v_w4);
+    vy = (wheel_radius/4)*(-v_w1+v_w2-v_w3+v_w4);
+    vth = (wheel_radius/(4*k))*(-v_w1-v_w2+v_w3+v_w4);
+
+    //compute odometry in a typical way given the velocities of the robot
+    double delta_x = vx * avg_dt;
+    double delta_y = vy * avg_dt;
+    double delta_th = vth * avg_dt;
+
+    x = x + delta_x;
+    y = y + delta_y;
+    th = th + delta_th;
+
+    //since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+
+    //first, we&#39;ll publish the transform over tf
+    geometry_msgs::TransformStamped odom_trans;
+    odom_trans.header.stamp = current_time;
+    odom_trans.header.frame_id = &quot;odom&quot;;
+    odom_trans.child_frame_id = &quot;base_footprint&quot;;
+    odom_trans.transform.translation.x = x;
+    odom_trans.transform.translation.y = y;
+    odom_trans.transform.translation.z = 0.0;
+    odom_trans.transform.rotation = odom_quat;
+
+    //send the transform
+    odom_broadcaster.sendTransform(odom_trans);
+
+    //next, we&#39;ll publish the odometry message over ROS
+    nav_msgs::Odometry odom;
+    odom.header.stamp = current_time;
+    odom.header.frame_id = &quot;odom&quot;;
+
+    //set the position
+    odom.pose.pose.position.x = x;
+    odom.pose.pose.position.y = y;
+    odom.pose.pose.position.z = 0.0;
+    odom.pose.pose.orientation = odom_quat;
+
+    //set the covariance
+    odom.pose.covariance[0] = 0.2;
+    odom.pose.covariance[7] = 0.2;
+    odom.pose.covariance[14] = 1e100;
+    odom.pose.covariance[21] = 1e100;
+    odom.pose.covariance[28] = 1e100;
+    odom.pose.covariance[35] = 0.2;
+
+    //set the velocity
+    odom.child_frame_id = &quot;base_footprint&quot;;
+    odom.twist.twist.linear.x = vx;
+    odom.twist.twist.linear.y = vy;
+    odom.twist.twist.angular.z = vth;
+
+    //publish the message
+    odom_pub.publish(odom);
+
+    ros::spinOnce();
+    r.sleep();
+  }
+}
+</code></pre>
+
+<p>This is the output using rostopic echo:</p>
+
+<pre><code>header: 
+  seq: 15
+  stamp: 
+    secs: 1415374147
+    nsecs: 340470639
+  frame_id: odom
+child_frame_id: base_footprint
+pose: 
+  pose: 
+    position: 
+      x: nan
+      y: nan
+      z: 0.0
+    orientation: 
+      x: nan
+      y: nan
+      z: nan
+      w: nan
+  covariance: [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1e+100, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1e+100, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1e+100, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2]
+twist: 
+  twist: 
+    linear: 
+      x: -0.000250038701179
+      y: -0.000305255550259
+      z: 0.0
+    angular: 
+      x: 0.0
+      y: 0.0
+      z: 0.00645976072261
+  covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/4327">Icehawk101</a> on 2014-11-07 09:42:56 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Please insert the code that you use into this post. Also: Which values are NaN? Always? Computed from what input values?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2014-11-07 09:51:38 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I suspect that this is not ROS related, but a problem in your code. Can you output whatever you send out in your odometry code. I think it&#39;s gonna be the same.</p>
+
+<p>It seems that at some point you introduce NaNs from somewhere. Unless someone else spots something, you should just output your intermediate values to debug that.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2014-11-07 11:11:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Best guess - because you initialize dt_front and dt_rear as 0, until those get updated by the callbacks, you&#39;re dividing by 0, causing NaN to be stored in x.</p>
+
+<p>After the callbacks, your velocities will be processed properly, however x = NaN + delta_x will always be NaN.</p>
+
+<p>The key with NaNs is to think - where could you have divided by 0?</p>
+
+<hr>
+
+<p>This code could use some rearchitecting on the whole, it&#39;s not a good idea to be running the loop separately from the callbacks, as you have the significant chance of either dropping odometry information (getting callbacks faster than your code is looping), or looping over stale data (no data update between two loops - how does this affect your estimate?).</p>
+
+<p>Your best bet may be to look at odometry models for 4 wheel robots, it&#39;s definitely not trivial.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3632">paulbovbel</a> on 2014-11-07 11:16:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>You were correct. Thanks for the second set of eyes. I initialized them to be very small, but not quite 0, and it started working. I will look at rearchitecting the code. Isn&#39;t the SpinOnce() at the bottom of the loop supposed to check the callback to avoid missing data?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4327">Icehawk101</a> on 2014-11-07 11:32:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>spinOnce will process all the callbacks in the queue. So if you had:
+- two feCallBack&#39;s queued: you will lose all ticks from the first message
+- zero feCallback&#39;s queued: you will loop again over stale data</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3632">paulbovbel</a> on 2014-11-07 11:41:20 UTC</p></div>
+</div>
+<div class="comment">
+          <p>A more effective way would be to run a low-pass filter for your wheel velocities, and update within your message callbacks. Then run a ros::timer to call your odometry publish function at regular intervals (e.g. 10 Hz).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3632">paulbovbel</a> on 2014-11-07 11:43:52 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Still not great, because you&#39;re basically converting ticks -&gt; velocity -&gt; displacement, so you&#39;re going to get drift.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3632">paulbovbel</a> on 2014-11-07 11:44:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

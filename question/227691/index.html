@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Crash when calling init_node while holding GIL - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/227691">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Crash when calling init_node while holding GIL</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/72370/crash-when-calling-init-node-while-holding-gil">https://robotics.stackexchange.com/questions/72370/crash-when-calling-init-node-while-holding-gil</a>.</p>
+        <p>I&#39;m getting a crash when trying to invoke rospy from within an embedded Python interpreter.</p>
+
+<p>Ubuntu 14.04LTS
+Python 2.7.6
+rosdistro: jade
+rosversion: 1.11.16</p>
+
+<p>The following C/C++ file duplicates the problem:</p>
+
+<pre><code>#include &lt;Python.h&gt;
+
+int main(int argc, char* argv[])
+{
+    Py_InitializeEx(0);
+    PyEval_InitThreads();
+
+    static const char *argv0 = &quot;test&quot;;
+    PySys_SetArgv(1, (char **) &amp;argv0);
+
+    PyEval_ReleaseLock();
+
+    PyGILState_STATE gstate;
+    gstate = PyGILState_Ensure();
+
+    PyRun_SimpleString(&quot;import rospy&quot;);
+    printf (&quot;import rospy - successful\n&quot;);
+
+    PyRun_SimpleString(&quot;rospy.init_node(&#39;OpenCog_Eva&#39;)&quot;);
+    PyGILState_Release(gstate);
+
+    Py_Finalize();
+    printf (&quot;finished\n&quot;);
+    return 0;
+}
+</code></pre>
+
+<p>The crashes are of the form:</p>
+
+<pre><code>Fatal Python error: ceval: tstate mix-up
+Aborted
+</code></pre>
+
+<p>or</p>
+
+<pre><code>Segmentation fault
+</code></pre>
+
+<p>or</p>
+
+<pre><code>Fatal Python error: PyEval_SaveThread: NULL tstate
+Aborted
+</code></pre>
+
+<p>or</p>
+
+<pre><code>Fatal Python error: GC object already tracked
+Aborted
+</code></pre>
+
+<p>These are all problems that come about when the GIL locking isn&#39;t quite right.</p>
+
+<p>Any ideas how to fix this crash?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26089">inflector</a> on 2016-02-26 18:54:50 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Found it!! Use <code>PyEval_SaveThread()</code> instead of <code>PyEval_ReleaseLock()</code>.  Several websites clearly state that <code>PyEval_ReleaseLock()</code> is to be used, but it seems they&#39;re wrong.  The official python documentation has a cryptic warning that suggests that using  <code>PyEval_SaveThread()</code> is preferred.  And indeed, that fixes the bug!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26009">linas</a> on 2016-02-26 23:11:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Interesting, I tried that in the sample and it still crashed.</p>
+
+<p>I needed to do two additional things for the sample:</p>
+
+<p>1) Put a <code>rospy.spin()</code> in somewhere before releasing the GIL.</p>
+
+<p>2) Swap back in the main thread&#39;s state with <code>PyThreadState_Swap(thread_state)</code> before <code>Py_Finalize()</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26089">inflector</a> on 2016-02-27 06:52:04 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>The solution comes in three parts:</p>
+
+<p>1) As per Linas&#39;s answer, you need to save the thread state with <code>PyEval_SaveThread()</code></p>
+
+<p>2) You need to call <code>rospy.spin()</code> before shutting down to give time for all the rospy threads to terminate. If a rospy thread is active when you call <code>Py_Finalize()</code>, you may get a crash.</p>
+
+<p>3) You need to restore the main thread state as saved in 1) above via a call to <code>PyThreadState_Swap</code> before calling <code>Py_Finalize()</code>.</p>
+
+<p>The following is a working version of the above sample:</p>
+
+<pre><code>#include &lt;Python.h&gt;
+
+int main(int argc, char* argv[])
+{
+    Py_InitializeEx(0);
+    PyEval_InitThreads();
+
+    static const char *argv0 = &quot;test&quot;;
+    PySys_SetArgv(1, (char **) &amp;argv0);
+
+    // Call this instead of PyEval_ReleaseLock()
+    PyThreadState* thread_state = PyEval_SaveThread() ;
+
+    PyGILState_STATE gstate;
+    gstate = PyGILState_Ensure();
+
+    PyRun_SimpleString(&quot;import rospy&quot;);
+    printf (&quot;import rospy - successful\n&quot;);
+
+    PyRun_SimpleString(&quot;rospy.init_node(&#39;OpenCog_Eva&#39;)&quot;);
+
+    // Make sure the thread doesn&#39;t exit before rospy is shutdown.
+    PyRun_SimpleString(&quot;rospy.spin()&quot;);
+    PyGILState_Release(gstate);
+
+    // Restore the main thread saved above.
+    PyThreadState_Swap(thread_state);
+
+    Py_Finalize();
+    printf (&quot;finished\n&quot;);
+    return 0;
+} 
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26089">inflector</a> on 2016-02-27 07:18:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

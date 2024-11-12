@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf setup for sensor on a gimbal on a robot. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/237462">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf setup for sensor on a gimbal on a robot.</h2>
+      <div class="question">
+        <p>I looked through the <a href="http://wiki.ros.org/navigation/Tutorials/RobotSetup/TF">tf setup</a>, but it only show updating tf for a fixed system at arbitrary 1Hz interval. </p>
+
+<p>Anyways, I plan on using sensor information to navigate a map. So my tf tree will be something like this</p>
+
+<p>/world--&gt;/map--&gt;/odom--&gt;/base_link--&gt;/gimbal--&gt;/sensor</p>
+
+<p>/word===/map???</p>
+
+<p>I have a node that grabs the gimbal and odom information from the robot platform 60 times a second and publishes the information to their respective topics. Thus should I update broadcast tf information in the same node?</p>
+
+<p>(Note the code is just a simple rough outline of what I&#39;m trying to do. My actual code will probably be setup with classes so I can have tracking variables). </p>
+
+<pre><code>int main(int argc, char **argv) 
+{
+    ros::init(argc, argv, &quot;robot&quot;);
+    ros::NodeHandle nh;
+    ros::NodeHandle nh_private(&quot;~&quot;);
+
+    MyRobotClass robot; //just some class for my robot interface
+
+    nav_msgs::Odometry odometry;
+    my_msg::Gimbal gimbal
+    // simple gimbal message with header, yaw, roll, and pitch
+
+    tf::TransformBoardcaster odom_broadcaster;
+    tf::TransformBoardcaster gimbal_broadcaster;
+
+
+    ros::Publisher gimbal_publisher;
+    ros::Publisher global_position_publisher;
+
+    gimbal_publisher = nh.advertise&lt;my_msg::Gimbal&gt;(&quot;gimbal&quot;, 10);
+    odometry_publisher = nh.advertise&lt;nav_msgs::Odometry&gt;(&quot;odometry&quot;,10);
+
+    ros::Rate(60)
+    while(ros::ok())
+    {
+        time = ros::Time::now();
+
+        // update and publish odometry
+        odometry.header.frame_id = &quot;/world&quot;;
+        odometry.header.stamp = current_time;
+        odometry.pose.pose.position.x = robot.position.x;
+        odometry.pose.pose.position.y = robot.position.y;
+        odometry.pose.pose.position.z = robot.position.z;
+        odometry.pose.pose.orientation.w = robot.quaternion.q0;
+        odometry.pose.pose.orientation.x = robot.quaternion.q1;
+        odometry.pose.pose.orientation.y = robot.quaternion.q2;
+        odometry.pose.pose.orientation.z = robot.quaternion.q3;
+        odometry.twist.twist.angular.x = robot.velocity.wx;
+        odometry.twist.twist.angular.y = robot.velocity.wy;
+        odometry.twist.twist.angular.z = robot.velocity.wz;
+        odometry.twist.twist.linear.x = robot.velocity.vx;
+        odometry.twist.twist.linear.y = robot.velocity.vy;
+        odometry.twist.twist.linear.z = robot.velocity.vz;
+        odometry_publisher.publish(odometry);
+
+        // update and publish gimbal
+        gimbal.header.frame_id = &quot;/gimbal&quot;;
+        gimbal.header.stamp= current_time;
+        gimbal.roll = robot.gimbal.roll;
+        gimbal.pitch = robot.gimbal.pitch;
+        gimbal.yaw = robot.gimbal.yaw;
+        gimbal_publisher.publish(gimbal);
+
+        // update tf of odom here????
+        tf::Vector3 vectorOdom(robot.position.x, robot.position.y, robot.position.z);
+        tf::Quaternion quatOdom(robot.quaternion.q1, robot.quaternion.q2, robot.quaternion.q3,                                                     robot.quaternion.q0);
+        tf::Transform transformOdom(quatOdom, vectorOdom);
+
+        odom_broadcaster.sendTransform(transformOdom, time, &quot;/map&quot;, &quot;/base_link&quot;)
+
+        // update tf of gimbal here?
+        tf::Vector3 vectorGimbal(0.0, 0.0, 0.0);
+        tf::Quaternion quatGimbal;
+        quatGimbal.setEuler(robot.gimbal.yaw, robot.gimbal.pitch, robot.gimbal.roll);
+        tf::Transform transformGimbal(quatGimbal, vectorGimbal);
+
+        gimbal_broadcaster.sendTransform(transformGimbal, time, &quot;/base_link&quot;, &quot;/gimbal&quot;)
+    }
+
+    retrun 0;
+}
+</code></pre>
+
+<p>Then I have a node using the camera obtain position of object in reference to the camera. </p>
+
+<pre><code>void imageCb(const sensor_msgs::ImageConstPtr&amp; msg,const sensor_msgs::CameraInfoConstPtr&amp; cam_info)
+{
+    geometry_msg::PoseStamped tagPose;
+
+    //code that generates tag pose in reference to the camera in POSE_TAG_DATA
+
+    tagPose.header.frame_id = &quot;/camera&quot;;
+    tagPose.header.stamp = msg-&gt;header.stamp;
+    tagPose.header.seq = msg-&gt;header.seq;
+    tagPose.pose = POSE_TAG_DATA; //pose of the tag
+
+    pose_pub.publish(tagPose);
+
+    // Need to flip axis from camera frame to match frame of gimbal? (x, y, z) will map to (y, -z, x)
+    tf::Vector3 vectorTag(tagPose.pose.y, tagPose.pose.z * -1, tagPose.pose.x);
+    // For now I just need position, but maybe orientation in the future?
+    tf::Quaternion quatTag (0.0, 0.0, 0.0, 1.0);
+    tf::Transform transformTag(quatTag, vectorTag);
+
+    camera_boardcaster.sendTransform(transformTag, msg-&gt;header.stamp, &quot;/gimbal&quot;, &quot;/camera&quot;);
+
+}
+
+int main(int argc, char **argv) 
+{
+    ros::init(argc, argv, &quot;robot&quot;);
+    ros::NodeHandle nh;
+    ros::NodeHandle nh_private(&quot;~&quot;);
+
+    ros::Publisher pose_pub
+    image_transport::ImageTransport it;
+    image_transport::CameraSubscriber image_sub;
+
+    tf::TransformBroadcaster camera_boardcaster;
+
+
+    tag_publisher = nh.advertise&lt;geometry_msg::PoseStamped&gt;(&quot;tagPose&quot;, 10);
+    image_sub = it.subscribeCamera(&quot;image_raw&quot;, 1, &amp;imageCb);
+
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>I guess my question is does the tf setup look correct? </p>
+
+<p>Finally I need to write Node to subscribes &quot;tagPose&quot; to set as navigation goal. How would tf tree help me transform the tagPose pose in the &quot;/camera&quot; frame to the &quot;/map&quot; frame? What will the basic structure of the callbackfunction for subscribing to &quot;tagPose&quot; and listening to tf for &quot;/camera&quot; to &quot;/map&quot; look like?</p>
+
+<p>Is this, <a href="http://wiki.ros.org/tf/Tutorials/Using%20Stamped%20datatypes%20with%20tf%3A%3AMessageFilter">Using Stamped datatypes with tf::MessageFilter</a> the tutorial I should follow to setup using sensor and tf frames together with stamps?</p>
+
+<p>My goal is to have robot travel to the tag, but processing tag pose has a large delay of around 20-100ms. Thus I need to make sure the tag pose is transform into the world coordinates based on odom and gimbal states at the time the camera image was taken (i.e. 20-100ms in the past). My understanding is that tf should handle this with the correct setup?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26636">uwleahcim</a> on 2016-06-19 10:56:44 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

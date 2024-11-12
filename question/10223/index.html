@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to synchronize image and marker display between two ROS nodes - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/10223">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to synchronize image and marker display between two ROS nodes</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/32171/how-to-synchronize-image-and-marker-display-between-two-ros-nodes">https://robotics.stackexchange.com/questions/32171/how-to-synchronize-image-and-marker-display-between-two-ros-nodes</a>.</p>
+        <p>I have two ROS nodes, a &quot;display node&quot; and a &quot;detector node&quot;, that both use cv_bridge and subscribe to the same image topic.  The detector node publishes an array of ROI boxes around the objects it is designed to detect (e.g. faces).  While I could draw these boxes on an OpenCV image window using the same node,  I would like the boxes display along with potentially other markers from other detector nodes.</p>
+
+<p>So I have a display node that listens on both the raw image topic and the detector topics and draws the appropriate boxes on a marker image that it then merges with the raw image topic and updates an OpenCV image display window.</p>
+
+<p>The problem I am having is that the markers (e.g. boxes) significantly lag behind the raw image.  For instance, if my detector node uses the Haar face detector, and I move my head, the face boxes trail my head movement by a very noticeable amount.  (Maybe half of a second?)</p>
+
+<p>I am guessing this is because the display node can update the raw image display much faster than the detector node can update the face detections.  But I&#39;m not sure what I can do about it or if this approach is even a good idea.</p>
+
+<p><strong>UPDATE:</strong> Well, I&#39;ve run into a snag. I have no trouble with the CameraInfo Python example found <a href="http://www.ros.org/wiki/message_filters#Example_.28Python.29-1">here</a>.  However, I cannot get synchronization to work when trying to synchronize /camera/rgb/image<em>color (I&#39;m using a Kinect and the openni</em>camera node) and a test publisher I wrote.</p>
+
+<p>Here are the two test scripts I am using.  The first script simply publishes a <a href="http://www.ros.org/doc/api/rein/html/msg/DetectionArray.html">DetectionArray</a> message about 30 times per second with nothing but the header.stamp field set to rospy.Time.now().  The second script subscribes to this topic as well as /camera/rgb/image<em>color.  While the second script successfully prints out the value of header.stamp using the regular rospy.Subscriber callback, I never see the message &quot;Synchronized&quot; from the TimeSynchronizer callback.  Looking at the timestamps manually using rostopic echo on the /camera/rgb/image</em>color and /detections topics shows that they are very close to being synchronized already so I thought this should work.</p>
+
+<p>I must be missing something simple I can&#39;t see so any tips would be appreciated!</p>
+
+<p>Here is the test_pub.py publisher script:</p>
+
+<pre><code>#!/usr/bin/env python
+
+&quot;&quot;&quot; test_pub.py - Version 0.1 2011-06-10  
+&quot;&quot;&quot;
+
+import roslib
+roslib.load_manifest(&#39;pi_rein&#39;)
+import rospy
+import sys
+from std_msgs.msg import String
+from pi_rein.msg import *
+from pi_rein.srv import *
+import message_filters
+
+class TestSync:
+    def __init__(self):
+        rospy.init_node(&quot;test_pub&quot;)
+
+        self.test_pub = rospy.Publisher(&quot;detections&quot;, DetectionArray)
+
+        while not rospy.is_shutdown():
+            msg = DetectionArray()
+            msg.header.stamp = rospy.Time.now()
+            self.test_pub.publish(msg)
+            rospy.sleep(0.033)     
+
+def main(args):   
+    try:
+        TestSync()
+    except KeyboardInterrupt:
+        print &quot;Shutting down test pub node.&quot;
+
+if __name__ == &#39;__main__&#39;:
+    main(sys.argv)
+</code></pre>
+
+<p>Here is the test_sync.py script:</p>
+
+<pre><code>#!/usr/bin/env python
+
+&quot;&quot;&quot; test_sync.py - Version 0.1 2011-06-10  
+&quot;&quot;&quot;
+
+import roslib
+roslib.load_manifest(&#39;pi_rein&#39;)
+import rospy
+import sys
+from pi_rein.msg import *
+from sensor_msgs.msg import Image, CameraInfo
+import message_filters
+
+class TestSync:
+    def __init__(self):
+        rospy.init_node(&quot;test_sync&quot;)
+
+        &quot;&quot;&quot; Subscribe to the raw camera image topic and set the image processing callback &quot;&quot;&quot;
+        self.image_sub = message_filters.Subscriber(&quot;image&quot;, Image)
+
+        &quot;&quot;&quot; Subscribe to a topic that provides markers &quot;&quot;&quot;
+        self.detections_sub = message_filters.Subscriber(&quot;detections&quot;, DetectionArray)
+
+        self.nonsynced_detections_sub = rospy.Subscriber(&quot;detections&quot;, DetectionArray, self.detections_callback)
+
+        tss = message_filters.TimeSynchronizer([self.image_sub, self.detections_sub], 100)
+        tss.registerCallback(self.sync_callback)
+
+        rospy.wait_for_message(&quot;image&quot;, Image, timeout=15)
+
+    def sync_callback(self, image, detections):
+        rospy.loginfo(&quot;Synchronized!&quot;)
+
+    def detections_callback(self, detections):
+        rospy.loginfo(detections.header.stamp)
+
+
+def main(args):   
+    try:
+        TestSync()
+        rospy.spin()
+    except KeyboardInterrupt:
+        print &quot;Shutting down test sync node.&quot;
+
+if __name__ == &#39;__main__&#39;:
+    main(sys.argv)
+</code></pre>
+
+<p>And this is the launch file I use to fire them both up:</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;node pkg=&quot;pi_rein&quot; name=&quot;test_pub&quot; type=&quot;test_pub.py&quot; output=&quot;screen&quot;&gt;
+  &lt;/node&gt;
+
+  &lt;node pkg=&quot;pi_rein&quot; name=&quot;test_sync&quot; type=&quot;test_sync.py&quot; output=&quot;screen&quot;&gt;
+    &lt;remap from=&quot;image&quot; to=&quot;/camera/rgb/image_color&quot; /&gt;
+  &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+<p>Thanks!
+<br>
+patrick</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-06-10 02:51:00 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>My bad, sorry (in fact I discovered the REIN framework thanks to your post on the mailing list :) ).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72">Ugo</a> on 2011-06-10 03:59:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks Ugo--in fact I am trying to do something similar to REIN using Python.  (See my posting on ros-users at <a href="http://code.ros.org/lurker/message/20110609.184757.957cc335.en.html">http://code.ros.org/lurker/message/20110609.184757.957cc335.en.html</a>).  And even in the exiting C++/Nodelet REIN framework, I don&#39;t see a way to display markers from multiple detector nodes on the same image.  If I am just missing it, hopefully someone will point it out as it might help me solve my synchronization issue.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-06-10 03:54:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi Patrick, do you know about this: <a href="http://www.ros.org/wiki/rein">http://www.ros.org/wiki/rein</a> ? It seems to be a good framework for what you&#39;re doing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72">Ugo</a> on 2011-06-10 03:24:53 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You should obey the timestamps. Your detector node sends out the appropriate boxes with the image timestamp.</p>
+
+<p>The display node only displays image+markers from the same timestamp.
+A <a href="http://www.ros.org/wiki/message_filters#Time_Synchronizer">Time Synchronizer</a> filter should be applicable for this.</p>
+
+<p>Update:
+To make it work, try to set the timestamps exactly the same. I.e. for your application: The detector subscribes the image and sends out its detections with the image timestamp (not ros::Time::now()). The display subscribes image and detections for synchronization.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2011-06-10 03:52:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>That was it!  With the timestamp set to the image timestamp and the synchronizer queue set to 100, it works like a charm.  Thanks again!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-06-10 14:07:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks dornhege--this looks like exactly what I need!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30">Pi Robot</a> on 2011-06-10 04:00:19 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

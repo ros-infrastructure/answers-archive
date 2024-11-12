@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to play rosbag file from node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/144646">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to play rosbag file from node</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/58246/how-to-play-rosbag-file-from-node">https://robotics.stackexchange.com/questions/58246/how-to-play-rosbag-file-from-node</a>.</p>
+        <p>Long story short, I am trying to play a bag file from a node and mimic the same functionality of the following:</p>
+
+<pre><code>rosbag play -l recorded1.bag
+</code></pre>
+
+<p>Before I dive in to the rosbag API, I thought I&#39;d ask the question if there was a simpler way than using the API, which I am not completely familiar with.  </p>
+
+<p>If the API was the way, I was thinking something like this:</p>
+
+<pre><code>import rosbag
+bag = rosbag.Bag(&#39;test.bag&#39;)
+% Loop
+    for topic, msg, t in bag.read_messages(topics=[&#39;chatter&#39;, &#39;numbers&#39;]):
+        %Publish Messages
+</code></pre>
+
+<p>Am I on the right track?</p>
+
+<p>Cheers</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4405">TFinleyosu</a> on 2014-03-26 04:44:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>curiosity: Why would you want to implement that yourself? You can start rosbag like this also as node via launch file...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4478">Wolf</a> on 2014-03-26 06:27:26 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I am doing a research study and I need to be able to play a random bag file of Kinect data when a button is pressed in another node. The button will be used many times and I need to avoid any terminal commands. </p>
+
+<p>Am I able to launch a launch file from within a node?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4405">TFinleyosu</a> on 2014-03-26 06:57:16 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Yes the rosbag API seems to be the straight forward solution in this case I think. YOU could call into the rosbag via system command, but you would have to open the rosbag after every button press, so I think the application would be very slow and unresponsive...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4478">Wolf</a> on 2014-03-26 07:46:51 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the help Wolf</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4405">TFinleyosu</a> on 2014-03-27 04:16:33 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The rosbag play application itself is implemented in C++:
+<a href="https://github.com/ros/ros_comm/blob/indigo-devel/tools/rosbag/src/play.cpp">play.cpp</a></p>
+
+<p>The code relevant to publishing messages can be found in the method Player::publish(). The C++ file also contains code for pausing and resuming playback, console output etc., but maybe you can use this code to get a rough idea:
+<a href="https://github.com/ros/ros_comm/blob/indigo-devel/tools/rosbag/src/player.cpp">player.cpp</a></p>
+
+<p>I&#39;d expect Python to give slightly worse performance compared to C++ if you plan to play large bagfiles (e.g. containing camera images).</p>
+
+<hr>
+
+<p>Edit, to answer your question: I believe there is no other way than either</p>
+
+<ul>
+<li>using the C++ API (should provide best performance)</li>
+<li>using the Python API</li>
+<li>invoking &quot;rosbag play&quot; using a system() command.</li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/6556">timm</a> on 2014-03-27 03:42:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Great point. Thanks for the guidance. I will get to this soon and post my solution for reference.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4405">TFinleyosu</a> on 2014-03-27 04:16:18 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Here was my solution for future  reference. Please feel free to critique it. </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;rosbag/bag.h&gt;
+#include &lt;rosbag/view.h&gt;
+#include &lt;sensor_msgs/Image.h&gt;
+#include &lt;sensor_msgs/CameraInfo.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;boost/foreach.hpp&gt;
+#include &lt;sstream&gt;
+#include &lt;ros/package.h&gt;
+
+int main(int argc, char **argv) {
+    ros::init(argc, argv, &quot;publish_scene&quot;);
+
+    ros::NodeHandle n;
+
+    ros::Publisher d_info_pub = n.advertise&lt;sensor_msgs::CameraInfo&gt;(&quot;scene/depth/camera_info&quot;, 1);
+    ros::Publisher d_points_pub = n.advertise&lt;sensor_msgs::PointCloud2&gt;(&quot;scene/depth/points&quot;, 1);
+    ros::Publisher rgb_info_pub = n.advertise&lt;sensor_msgs::CameraInfo&gt;(&quot;scene/rgb/camera_info&quot;, 1);
+    ros::Publisher rgb_image_pub = n.advertise&lt;sensor_msgs::Image&gt;(&quot;scene/rgb/image&quot;, 1);
+    ros::Rate loop_rate(10);
+
+  std::string package_path = ros::package::getPath(&quot;pick&quot;);
+  std::string scene_path;
+
+  while (ros::ok()){
+
+    int scene_number;
+    if (n.getParam(&quot;/scene/number&quot;, scene_number))
+    {
+      ROS_INFO(&quot;Scene Number: %i \n&quot;,scene_number);
+      std::stringstream sstm;
+      if (scene_number &gt; 9)
+        sstm &lt;&lt; package_path &lt;&lt; &quot;/scenes/scene_&quot; &lt;&lt; scene_number &lt;&lt; &quot;.bag&quot;;
+      else
+        sstm &lt;&lt; package_path &lt;&lt; &quot;/scenes/scene_0&quot; &lt;&lt; scene_number &lt;&lt; &quot;.bag&quot;;
+
+      scene_path = sstm.str();
+    }
+    else
+    {
+      ROS_INFO(&quot;rosparam /scene/number not set&quot;);
+      break;
+    }
+
+    rosbag::Bag bag;
+    bag.open(scene_path, rosbag::bagmode::Read);
+
+    std::string depth_cam_info = &quot;/camera/depth_registered/camera_info&quot;;
+    std::string depth_points = &quot;/camera/depth_registered/points&quot;;
+    std::string rgb_cam_info = &quot;/camera/rgb/camera_info&quot;;
+    std::string rgb_cam_image = &quot;/camera/rgb/image_color&quot;;
+
+    std::vector&lt;std::string&gt; topics;
+    topics.push_back(depth_cam_info);
+    topics.push_back(depth_points);
+    topics.push_back(rgb_cam_info);
+    topics.push_back(rgb_cam_image);
+
+    rosbag::View view(bag, rosbag::TopicQuery(topics));
+
+    BOOST_FOREACH(rosbag::MessageInstance const m, view)
+    {
+      if (m.getTopic() == depth_cam_info) 
+      {
+        sensor_msgs::CameraInfo::ConstPtr d_info_ptr = m.instantiate&lt;sensor_msgs::CameraInfo&gt;();
+        if (d_info_ptr != NULL)
+          d_info_pub.publish(*d_info_ptr);
+      }
+
+      if (m.getTopic() == depth_points) 
+      {
+        sensor_msgs::PointCloud2::ConstPtr d_points_ptr = m.instantiate&lt;sensor_msgs::PointCloud2&gt;();
+        if (d_points_ptr != NULL)
+          d_points_pub.publish(*d_points_ptr);
+      }
+
+      if (m.getTopic() == rgb_cam_info) 
+      {
+        sensor_msgs::CameraInfo::ConstPtr rgb_info_ptr = m.instantiate&lt;sensor_msgs::CameraInfo&gt;();
+        if (rgb_info_ptr != NULL)
+          rgb_info_pub.publish(*rgb_info_ptr);
+      }
+
+      if (m.getTopic() == rgb_cam_image) 
+      {
+        sensor_msgs::Image::ConstPtr rgb_image_ptr = m.instantiate&lt;sensor_msgs::Image&gt;();
+        if (rgb_image_ptr != NULL)
+          rgb_image_pub.publish(*rgb_image_ptr);
+      }
+
+    }
+
+  bag.close();
+  ros::spinOnce();
+  loop_rate.sleep();
+
+  }
+
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4405">TFinleyosu</a> on 2014-03-31 15:56:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for sharing :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3662">emacsd</a> on 2015-02-27 12:57:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>In addition to excellent answer above, the <a href="http://wiki.ros.org/rosbag/Code%20API">rosbag API page</a> links to some <a href="http://wiki.ros.org/rosbag/Cookbook">cookbook code snippets</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21723">Will Chamberlain</a> on 2016-08-30 19:34:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hey does the above code preserve the desired output frequency on various topics?? Say our bag has 2 topics and if there are more messages in one topic than the other one. Does this approach publish data on these two topics at different( but appropriate) frequency rates ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38980">hannavaj</a> on 2018-12-12 17:30:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hello, could anyone suggest how can we add play rate of the rosbag in the above code as posted by @TFinleyosu ??</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122619">Wade</a> on 2022-11-02 11:04:11 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

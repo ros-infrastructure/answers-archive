@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>different encodings of depth image for real &amp; simulated kinect - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/295611">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>different encodings of depth image for real &amp; simulated kinect</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87583/different-encodings-of-depth-image-for-real-simulated-kinect">https://robotics.stackexchange.com/questions/87583/different-encodings-of-depth-image-for-real-simulated-kinect</a>.</p>
+        <p>Hi all</p>
+
+<p>I&#39;ve got a Gazebo simulation of a kinect camera, where I&#39;m subscribing to the ROS topic <code>/camera/depth/image_raw</code>, which is of type <a href="http://docs.ros.org/kinetic/api/sensor_msgs/html/msg/Image.html">sensor_msgs/Image</a>. I also have a real Kinect for Xbox 360 camera connected to my PC via USB, where I can also get the <code>/camera/depth/image_raw</code> topic.</p>
+
+<p>Unfortunately, these two messages are not exactly the same:</p>
+
+<p>message from real camera:</p>
+
+<pre><code>header: 
+  seq: 0
+  stamp: 
+    secs: 1527861646
+    nsecs: 997300811
+  frame_id: &quot;camera_depth_optical_frame&quot;
+height: 480
+width: 640
+encoding: &quot;16UC1&quot;
+is_bigendian: 0
+step: 1280
+data: [0, 0, ... ] # array is 614&#39;400 long, i.e. 2 entries per pixel
+</code></pre>
+
+<p>message from simulated camera:</p>
+
+<pre><code>header: 
+  seq: 0
+  stamp: 
+    secs: 27
+    nsecs: 854000000
+  frame_id: &quot;camera_link&quot;
+height: 480
+width: 640
+encoding: &quot;32FC1&quot;
+is_bigendian: 0
+step: 2560
+data: [9, 51, 243, ... ] # array is 1&#39;228’800 long, i.e. 4 entries per pixel
+</code></pre>
+
+<p>The important difference here is the different encodings used, which results in different length of the data array. I don&#39;t know why this is the case, but nevertheless I would like to have the same encoding for both the real and the simulated depth image (I don&#39;t really care which one). <strong>How can I convert one encoding into the other?</strong> Also, is it possible to convert the data array so that it contains height * width entries, where each entry corresponds to the distance for this pixel in mm (or meter)?</p>
+
+<p>I&#39;m using the <a href="https://github.com/OpenKinect/libfreenect">freenect</a> drivers for the real kinect camera (<code>sudo apt-get install libfreenect-dev, sudo apt-get install ros-indigo-freenect-launch</code>), because the <a href="http://wiki.ros.org/openni_camera">Openni</a> drivers didn&#39;t work for me, as I&#39;m on a Ubuntu VM, where Openni has their problems with.</p>
+
+<p>Thanks &amp; Cheers!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34830">RedJohn</a> on 2018-06-28 06:52:25 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p><a href="http://wiki.ros.org/cv_bridge/Tutorials/UsingCvBridgeToConvertBetweenROSImagesAndOpenCVImages">http://wiki.ros.org/cv_bridge/Tutorials/UsingCvBridgeToConvertBetweenROSImagesAndOpenCVImages</a></p>
+
+<p>Try this to change the encoding .</p>
+
+<p>I think , the main think you need to change is the <strong>frame_id</strong> . <em>Not the encoding .</em></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33207">chrissunny94</a> on 2018-06-28 09:14:54 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for your advise! Sorry for responding late, I wasn&#39;t around for a while.
+The cv_bridge did work more or less, but I couldn&#39;t encode from 32FC1 to 16UC1, as this results in a 480*640 array of only 0&#39;s. Vice verca it was ok, but the value ranges differed (~0.5 from simulated vs. ~500 from real)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34830">RedJohn</a> on 2018-07-09 04:04:42 UTC</p></div>
+</div>
+<div class="comment">
+              <p>So I simply normalized both arrays to be between 0 and 255 (I will post my code when it&#39;s working properly). But why do I need to change the frame_id and not the encoding, and how can this be done? Cheers</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34830">RedJohn</a> on 2018-07-09 04:07:13 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I managed it to get it done with cv_bridge, as suggested by chrissunny94. As I mentioned in the comments to my answer, it worked only to change from 16UC1 to 32FC1 encoding, not vice verca. Because the value ranges after the conversion differed greatly (despite being at roughly the same distance in real &amp; in the simulation), I simply normalized both converted image arrays (the simulated &amp; the real one) to be between 0 and 255. If anyone knows a better solution to this (or why they have different value ranges at all) please let me know. Anyway, this is what I&#39;ve implemented in my Python program:</p>
+
+<pre><code>bridge = CvBridge()
+data = None
+cv_image = None
+while(data is None or cv_image is None):
+    try:
+        data = rospy.wait_for_message(&#39;/camera/depth/image_raw&#39;, Image, timeout=5)
+        # encoding of simulated depth image: 32FC1, encoding of real depth image: 16UC1
+        # converting &amp; normalizing image, so that simulated &amp; real depth image have the same encoding &amp; value range
+        # see http://wiki.ros.org/cv_bridge/Tutorials/ConvertingBetweenROSImagesAndOpenCVImagesPython
+        cv_image = bridge.imgmsg_to_cv2(data, desired_encoding=&quot;32FC1&quot;)
+    except rospy.exceptions.ROSException:
+        print(&quot;failed to read depth image from simulated kinect camera&quot;)
+        print(e)
+    except CvBridgeError:
+        print(&quot;failed to convert depth image into another encoding&quot;)
+        print(e) 
+# while
+
+image = np.array(cv_image, dtype=np.float)
+print(type(image)) # &lt;type &#39;numpy.ndarray&#39;&gt;
+print(image.shape) # (480, 640)
+# normalizing image
+cv2.normalize(image, image, 0, 255, cv2.NORM_MINMAX)
+# round to integer values
+image = np.round(image).astype(np.uint8)
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/34830">RedJohn</a> on 2018-07-13 00:34:22 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>The different value ranges is due to the different units used by convention. Floating point depth images are in meters while 16 bit integer depth images are in mm. So a factor of 1000 different.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25185">PeteBlackerThe3rd</a> on 2018-07-13 01:39:44 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>@PeteBlackerThe3rd is right about the units. The package <a href="http://wiki.ros.org/depth_image_proc">depth_image_proc</a> has functions to convert between the two versions. If the rest of your code is expecting the <code>uint16_t</code> version, you can do something like the following:</p>
+
+<pre><code>if (&quot;16UC1&quot; == depth_msg-&gt;encoding)
+{
+    try
+    {
+        cv_depth_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_16UC1);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+        ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+        return false;
+    }
+}
+else if (&quot;32FC1&quot; == depth_msg-&gt;encoding)
+{
+    try
+    {
+        cv_depth_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
+    }
+    catch (cv_bridge::Exception&amp; e)
+    {
+        ROS_ERROR(&quot;cv_bridge exception: %s&quot;, e.what());
+        return false;
+    }
+
+    cv::Mat convertedDepthImg(cv_depth_ptr-&gt;image.size(), CV_16UC1);
+
+    const int V = cv_depth_ptr-&gt;image.size().height;
+    const int U = cv_depth_ptr-&gt;image.size().width;
+
+    #pragma omp parallel for
+    for (int v = 0; v &lt; V; ++v)
+    {
+        for (int u = 0; u &lt; U; ++u)
+        {
+            convertedDepthImg.at&lt;uint16_t&gt;(v, u)
+                = depth_image_proc::DepthTraits&lt;uint16_t&gt;::fromMeters(cv_depth_ptr-&gt;image.at&lt;float&gt;(v, u));
+        }
+    }
+
+    cv_depth_ptr-&gt;encoding = &quot;16UC1&quot;;
+    cv_depth_ptr-&gt;image = convertedDepthImg;
+}
+</code></pre>
+
+<p>with datatypes:</p>
+
+<pre><code>sensor_msgs::ImageConstPtr depth_msg;
+cv_bridge::CvImagePtr cv_depth_ptr;
+</code></pre>
+
+<p>Although, it might make more sense to convert the mm version to float, since you probably actually care about the depth in meters anyway.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3629">Andrew Price</a> on 2019-04-05 08:45:43 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

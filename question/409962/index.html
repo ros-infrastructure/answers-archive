@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Number of threads keep increasing in htop when running my python ROS node with 2 threads - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/409962">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Number of threads keep increasing in htop when running my python ROS node with 2 threads</h2>
+      <div class="question">
+        <p>I am writing a ROS node to read CAN data (linear x speed, and direction of motion i.e. rev or fwd) from my vehicle and my steer-by-wire system (encoder data for angular z). Both CAN interfaces are on separate CAN bus. I am using that data to generate odometry. We will call this node odom node.The odom node has 2 threads : one thread to generate linear velocity and another one to generate angular z velocity. The node also has a publisher for each of those parameters as well.</p>
+
+<p>I also have a planning algorithm that works fine without the odom node, however, when I run my planning algorithm with my odom node, the planning algorithm crashes.</p>
+
+<p>I opened up htop to see if its some sort of memory issue, I noticed that while the odom node is running, the number of threads keep on increasing (please refer to the image attached, 10740 threads).</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16696677775044346.png" alt="image description"></p>
+
+<pre><code>#!/usr/bin/env python3
+
+import cantools
+import can
+from pprint import pprint
+import rospy
+from geometry_msgs.msg import Twist 
+import numpy as np
+import fixedint
+import std_msgs.msg
+from std_msgs.msg import Float64
+from nav_msgs.msg import Odometry 
+import math
+import threading
+import unittest
+
+db = cantools.database.load_file(&#39;dbc_files/kia.dbc&#39;)
+vehicle_can_bus = can.interface.Bus(&#39;can0&#39;, bustype=&#39;socketcan&#39;)
+steer_by_wire_can_bus = can.interface.Bus(&#39;can1&#39;, bustype=&quot;socketcan&quot;)
+
+class Telemetry:
+
+    def __init__(self, linear_x, angular_z, encoder_angle,direction):
+
+        self.linear_x = linear_x 
+        self.angular_z = angular_z
+        self.encoder_angle = encoder_angle
+        self.direction = direction
+
+        try : 
+
+            self.linear_rate = rospy.get_param(&#39;~linear_vel_rate&#39;)
+            self.angular_rate = rospy.get_param(&#39;~angular_vel_rate&#39;)
+
+        except KeyError:
+            print (&quot;Could not set angular and linear thread rate parameters!!!&quot;)
+
+
+        rospy.Timer(rospy.Duration(1.0 / self.linear_rate), self.linear_velocity_loop)
+        rospy.Timer(rospy.Duration(1.0 / self.angular_rate), self.angular_velocity_loop)
+
+
+    def linear_velocity_loop(self,event): 
+
+        while not rospy.is_shutdown() : 
+
+            # reader = can.BufferedReader()
+            # notifier = can.Notifier(vehicle_can_bus, [reader], 10) # bus, listeners, time
+            # message = reader.get_message(10) # timeout
+            # if (message.arbitration_id == 213786525):
+            #     rospy.loginfo_throttle((1/10),message.arbitration_id)
+
+            message = vehicle_can_bus.recv()
+
+
+            if message.arbitration_id == 317284680: # ID of ShtlDisp
+                 # this message will print every 0.05 seconds (1/20)
+                rospy.loginfo_throttle((1/10), &quot;Shuttle msg&quot;)
+                shuttle_data = db.decode_message(&#39;ShtlDisp&#39;, message.data)
+                ShtlSymbol = shuttle_data[&#39;ShtlSymbol&#39;]
+
+                if (ShtlSymbol == 3) :  # if the shuttle is in rev position, ShtlSymbol == 1 is fwd, 2 is neutral, 3 is rev
+                    self.direction  = -1
+                    # rospy.loginfo(&quot;The shuttle status is reverse&quot;)
+
+                elif ShtlSymbol == 1 :
+                    self.direction  = 1
+                    # rospy.loginfo(&quot;The shuttle status is forward&quot;)
+
+                # else:
+                    # self.direction  = 0
+                    # rospy.loginfo(&quot;The shuttle status is neutral&quot;)
+
+
+            if message.arbitration_id == 213786525: # ID converted to HEX. Make sure if CAN ID is 19 or 29 bit. ID of DbmSpeedDisplay 213786525
+
+                rospy.loginfo_throttle((1/10), &quot;Received speed from CAN&quot;)
+
+                readable_data = db.decode_message(&#39;DbmSpeedDisplay&#39;, message.data)
+                SpeedDisplay_H = readable_data[&#39;SpeedDisplay_H&#39;]
+                SpeedDecimalPoint = readable_data[&#39;SpeedDecimalPoint&#39;]
+                SpeedDisplay_L = readable_data[&#39;SpeedDisplay_L&#39;] # to kmph (dib by 100) and then m/sec (div 3.6)
+                PtoRpm_H = readable_data[&#39;PtoRpm_H&#39;]
+                PtoRpm_L = readable_data[&#39;PtoRpm_L&#39;]
+
+
+                if (SpeedDisplay_H == 0): 
+                    if (SpeedDisplay_L &lt; 0):
+                        SpeedDisplay_L =  255 + SpeedDisplay_L
+
+                if (SpeedDisplay_H == 1): 
+                    if (SpeedDisplay_L &gt; 0):
+                        SpeedDisplay_L =  255 + SpeedDisplay_L
+
+                velocity = SpeedDisplay_L*self.direction
+                self.linear_x = velocity/(100*3.6) # 3.6 to kmph &gt;&gt; m/s and div by 100 to chnage from 116 m/h (from CAN) to 1.16 kmph
+
+            # while not reader.buffer.empty(): 
+            #        reader.buffer.get()
+
+
+    def angular_velocity_loop(self,event):
+
+        while not rospy.is_shutdown() : 
+
+            dbw_reader = can.BufferedReader()
+            dbw_notifier = can.Notifier(steer_by_wire_can_bus, [dbw_reader], 0.1) # bus, listeners, time
+            encoder_message = dbw_reader.get_message(0.1) # timeout
+
+            # encoder_message = steer_by_wire_can_bus.recv()
+
+            if encoder_message and encoder_message.arbitration_id == 1:
+
+                #rospy.loginfo_throttle (duration (n), message) # publish the message every n seconds 
+
+                rospy.loginfo_throttle((1/10), &quot;Recieved Encoder Data&quot;) # this message will print every 0.05 seconds (1/20)
+
+                encoder_data = np.uint16(encoder_message.data)
+
+                xx = encoder_data[3] | (encoder_data[4] &lt;&lt; 8)
+
+                xx &amp;= 0x0FFF
+
+                if xx &amp; 0x0800:
+                    xx |= 0xF000
+
+                angle = np.int16(xx) * (-360.0 / 4096.0)
+
+                if angle &gt; 0.0:
+                    angle *= 1.21582733812
+
+                angle =  angle *(3.14/180)
+
+                self.encoder_angle = angle
+
+                # angular speed (z) calculation
+                wheelbase =  rospy.get_param(&#39;~wheelbase&#39;)
+                self.angular_z = self.linear_x * math.tan(self.encoder_angle)/wheelbase
+
+                # rospy.sleep(rospy.Duration(2))
+
+                # clear CAN message buffer to always get the latest message 
+
+                while not dbw_reader.buffer.empty(): 
+                   dbw_reader.buffer.get()
+
+
+
+def telematics_publish(telemetry):
+
+    pub = rospy.Publisher(&#39;/vehicle_telematics/odom&#39;, Odometry, queue_size=10)
+    encoder_pub = rospy.Publisher(&#39;/vehicle_telematics/encoder&#39;, Float64, queue_size=10)
+
+
+    try: 
+        pub_rate = rospy.get_param(&#39;~publishing_rate&#39;)
+        rate = rospy.Rate(pub_rate)
+    except KeyError:
+        rospy.logerr(&quot;Could not set publishing rate !!!&quot;)
+
+    # rate = rospy.Rate(10)
+
+    twist = Twist() 
+    odom = Odometry()
+
+    while not rospy.is_shutdown(): 
+
+        odom.header.stamp = rospy.Time.now()
+        odom.header.frame_id = &#39;base_odom&#39;
+
+        odom.pose.pose.position.x = 0
+        odom.pose.pose.position.y = 0
+        odom.pose.pose.position.z = 0.0
+
+        odom.pose.pose.orientation.x = 0
+        odom.pose.pose.orientation.y = 0
+        odom.pose.pose.orientation.z = 0
+        odom.pose.pose.orientation.w = 0
+
+        odom.child_frame_id = &quot;odom&quot;
+        odom.twist.twist.linear.x = telemetry.linear_x
+        odom.twist.twist.linear.y = 0
+        odom.twist.twist.angular.z = telemetry.angular_z
+
+        # rospy.loginfo(odom)
+        # rospy.loginfo(telemetry.encoder_angle)
+
+        pub.publish(odom)
+        rospy.loginfo_throttle((1/10), &quot;Odom published&quot;)
+
+        encoder_pub.publish(telemetry.encoder_angle)
+        rospy.loginfo_throttle((1/10), &quot;Encoder published&quot;) # if rospy.loginfo seems to slow the node down then change 1/rate to 1/10. 1/20 seems to work great for all rospy.loginfo in this code.
+        rate.sleep()
+
+
+if __name__ == &#39;__main__&#39;:
+    try:
+        rospy.init_node(&#39;vehicle_telematics&#39;)
+
+        tele = Telemetry(0,0,0,1)
+
+        telematics_publish(tele)
+
+    except rospy.ROSInterruptException:
+        pass
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/53518">Hulkthehunter</a> on 2022-11-28 15:37:02 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

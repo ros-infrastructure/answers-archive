@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Mechanism to prevent multiple publishers simultaneously publishing contradictory messages to a topic? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/349288">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Mechanism to prevent multiple publishers simultaneously publishing contradictory messages to a topic?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/95440/mechanism-to-prevent-multiple-publishers-simultaneously-publishing-contradictory">https://robotics.stackexchange.com/questions/95440/mechanism-to-prevent-multiple-publishers-simultaneously-publishing-contradictory</a>.</p>
+        <p>Is there a way to prevent multiple publishers simultaneously publishing messages to the same topic? I <em>think</em> I&#39;m looking for a way for a node to lock access to a topic and release it when it&#39;s done. While a node holds the lock, no other nodes should be able to publish to this topic and their requests to lock the resource should fail. I realize this idea contradicts the principles of pub-sub, so perhaps I&#39;m thinking about this in the wrong way.</p>
+
+<p>The <code>cmd_vel (geometry_msgs/Twist)</code> topic is a pertinent example as interleaving messages from multiple publishers containing drastically different velocities could cause rather undesirable vibrations in the robot.</p>
+
+<p>The obvious solution is to simply <strong>not</strong> run multiple nodes that can publish to the same topic, but I would like to run multiple nodes that <em>could</em> publish this topic at any time depending on user input. E.g. the operator could nudge a joystick while a trajectory planner is running.</p>
+
+<p>I was wondering if anyone else had thought of an elegant solution to this problem or approached the problem differently before I reinvented the wheel. <a href="http://wiki.ros.org/remote_mutex">remote_mutex</a> looks promising, but there is precious little information about it, and no mention of a repository as far as I can tell.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/53506">grouchy</a> on 2020-04-13 06:58:01 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>I realize this idea contradicts the principles of pub-sub, so perhaps I&#39;m thinking about this in the wrong way.</p>
+</blockquote>
+
+<p>yes, what you suggest does indeed seem like it clashes with the idea of anonymous publish-subscribe.</p>
+
+<p>Afaik, in ROS 1, this is not supported natively.</p>
+
+<p>In ROS 2, with <a href="https://ubuntu.com/blog/what-is-sros-2">SROS2</a>, you could probably use <em>access control</em> exposed by the <a href="https://design.ros2.org/articles/ros2_dds_security.html">ROS 2 DDS-Security integration</a> to set up a static form of what you describe (static, as afaik, access control cannot be changed at runtime, perhaps @ruffsl can confirm this).</p>
+
+<p>As to the <code>remote_mutex</code> page you found: from the description this sounds completely voluntary (ie: cannot be enforced with nodes that have not been written to take it into account) and it&#39;s also a package from 2011. A quick search shows <a href="https://github.com/pandora-auth-ros-pkg/pandora_common/tree/indigo-devel/remote_mutex">github.com/pandora-auth-ros-pkg</a> has a copy, but again, I doubt its utility as it has to be integrated into nodes -- which limits its use to nodes under your control.</p>
+
+<blockquote>
+<p>E.g. the operator could nudge a joystick while a trajectory planner is running.</p>
+</blockquote>
+
+<p>While not a perfect solution (as rogue publishers could still publish <code>Twist</code>s to any topic), the typical approach I&#39;ve seen is to <code>remap</code> the default <code>cmd_vel</code> to something else, place a <code>cmd_vel_mux</code> between <code>Twist</code> producers and the consumer and then configure the mux intelligently. The way the Kobuki/Turtlebot2 control stack is configured is an example of this: <a href="http://wiki.ros.org/kobuki/Tutorials/Kobuki%27s%20Control%20System">kobuki/Tutorials/Kobuki&#39;s Control System</a>. The Kobuki uses <a href="http://wiki.ros.org/yocs_cmd_vel_mux">yocs_cmd_vel_mux</a> for this.</p>
+
+<p>By remapping <code>cmd_vel</code> on the consumers side, rogue publishers which assume <code>cmd_vel</code> is being listened to will not achieve anything, and producers which play nice can be muxed appropriately by the muxer.</p>
+
+<p>But as ROS 1 has no access control (by design), it&#39;ll stay security through obscurity at best.</p>
+
+<hr>
+
+<p>Edit: re: <code>remote_mutex</code>: reading the code and assuming a subscriber is under your control, you could potentially use the <code>mutex_guard</code> to make the subscriber ignore messages coming in from sources which have not previously acquired it. The <code>mutex_guard</code> has a field <code>holder</code>, which seems to contain the name of the entity (?) which currently holds the lock.</p>
+
+<p>For messages coming from sources which don&#39;t hold the lock, ignoring them would result in the behaviour you describe.</p>
+
+<p>It would however seem to couple nodes in at least two of the three dimensions described in #q203129. Personally, that seems like a substantial cost.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-04-13 07:31:28 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Just thinking out loud here, but: by changing the ROS Master implementation, you could extend it to return only a specific list of publishers for certain topics. As data exchange is peer-to-peer, subscribers have to actively make connections with publishers. If a publisher does not appear in the list of publishers for a certain topic, subscribers should not create connections to them.</p>
+
+<p>Not very maintainable (as you&#39;re now running a custom version of ROS Master), but it would allow you to do what you describe. It would again be a form of security-through-obscurity, as nothing is really prevented, just hidden. But at the <code>roscpp</code> and <code>rospy</code> level, nodes would not be able to setup connections to nodes they cannot see, so even with nodes not under your control this could work. It&#39;s a poor-mans&#39; version almost of the access control in SROS 2.</p>
+
+<p>This may be something more easily done with <a href="http://wiki.ros.org/vapor_master">vapor_master</a>, but that&#39;s really just an assumption.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-04-13 08:09:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>There’s also a muxing program included in topic_tools. It was recommended for awhile for cmd_vel specifically for multiple clients but its unclear to me how common it was in practice. But that’s an option.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2020-04-13 12:24:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for taking the time to carefully consider my question.</p>
+
+<p>I had considered this issue orthogonal to security. For the sake of simplicity I assume none of the nodes in the system are nefarious, if only for the context of this problem. Assuming all publishing nodes behave themselves and are under my control, a voluntary based system like remote_mutex might be acceptable or even preferable as it would support backwards compatibility with standard tools like rosbag playback (albeit without any arbitration, but at least it&#39;ll work).</p>
+
+<p>Using a muxing proxy node is an interesting idea. It&#39;s good it works without modifying the nodes so it&#39;ll work with stock tools like ros_control and MoveIt. It also allows priorities rather than first come first serve like the mutex. As Steve says it already exists too in topic_tools! The only feature it lacks is the ability for a publishing node to <em>know</em> when it hasn&#39;t got access to the hardware so it can respond accordingly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53506">grouchy</a> on 2020-04-13 15:57:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for turning me onto vapour_master, it&#39;s pretty interesting for plenty of reasons. Otherwise as you say running a custom master could present other challenges, and I&#39;d quite like to make it easier to migrate to ROS2 one day.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/53506">grouchy</a> on 2020-04-13 16:17:11 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>I had considered this issue orthogonal to security</p>
+</blockquote>
+
+<p>well, access control is what you are describing in your OP. That is a part of security and safety. </p>
+
+<blockquote>
+<p>For the sake of simplicity I assume none of the nodes in the system are nefarious</p>
+</blockquote>
+
+<p>they don&#39;t need to be bad actors. I&#39;ve seen what you describe happen many times to users who did not configure their systems correctly. Nothing nefarious there, just simple misconfiguration.</p>
+
+<blockquote>
+<p>As Steve says it already exists too in topic_tools!</p>
+</blockquote>
+
+<p>I would still recommend the <code>yocs</code> versions -- they are not specific to the Turtlebot/Kobuki stacks and I believe are nicer in their implementation and ROS API. Be aware they got renamed, so it&#39;s <a href="http://wiki.ros.org/yocs_cmd_vel_mux">yocs_cmd_vel_mux</a>, not <code>cmd_vel_mux</code>.</p>
+
+<blockquote>
+<p>The only feature it lacks is the ability for a publishing node to know when it hasn&#39;t got access to the hardware so it can respond accordingly.</p>
+</blockquote>
+
+<p>this sounds like a coordination level task, which I would make the responsibility ..</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-04-14 02:34:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>.. not of the nodes you are talking about, but of another node (or set of nodes) which are responsible for coordination of the application (at whichever level). <code>yocs_velocity_smoother</code> publishes the active input (on the private <code>active</code> topic), so whatever is coordinating your application should be able to take that into account and act accordingly (or make other nodes act accordingly).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-04-14 02:36:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Just to confirm, the access control policy enforced in SROS2 with Secure DDS is in fact static, and must be defined at design time. I&#39;d concur with @gvdhoorn suggestion of using a mux. One could perhaps modify the mux to publish a <code>select</code> topic that states the current input selected (based on input priority, or other logic, etc), that the <code>input</code> publishers could subscribe to and discern if they are currently being subsumed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5234">ruffsl</a> on 2020-04-21 20:29:05 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>One could perhaps modify the mux to publish a <code>select</code> topic that states the current input selected</p>
+</blockquote>
+
+<p>The <code>yocs</code> implementation of the mux does this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-04-22 03:28:32 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>It&#39;s been three months so I figured I&#39;d give an update on where I got to with this.</p>
+
+<p>Based on gvdhoorn&#39;s et al suggestions, I ended up creating a mux node which allows switching between various inputs via a service that the user can control. The reason I created my own node for this is because it also allows the user to tune some domain specific settings such as the frame and magnitude of the twist. It works well for my needs. A publishing node has no idea if it is the currently selected input but the mux node knows when a non-selected input starts publishing and can throw up a warning.</p>
+
+<p>I also discovered the <a href="http://wiki.ros.org/bond">bond</a> package which looks like it could be used for resource acquisition, similar to remote_mutex except the bond package looks well supported.</p>
+
+<p>From the docs:</p>
+
+<blockquote>
+<p>Bonds can be used to track resource ownership. The creation of a bond indicates a lease on the resource, and breaking a bond indicates that the lease is broken. </p>
+</blockquote>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/53506">grouchy</a> on 2020-07-11 03:16:48 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

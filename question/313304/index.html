@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Navigation of robot to goal point/Turning until robot faces goal-direction - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/313304">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Navigation of robot to goal point/Turning until robot faces goal-direction</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/90145/navigation-of-robot-to-goal-point-turning-until-robot-faces-goal-direction">https://robotics.stackexchange.com/questions/90145/navigation-of-robot-to-goal-point-turning-until-robot-faces-goal-direction</a>.</p>
+        <p><strong>SOLVED</strong>
+See Solution at the end of post</p>
+
+<p><strong>Problem:</strong>
+Hey there,</p>
+
+<p>I&#39;m currently working on a project about navigating a robot to a goal point. </p>
+
+<p>I already wrote some code to tackle this task. The code uses the gazebo/modelstates topic to get the position and orientation of the robot.
+The angle<em>to</em>goal is calculated by looking at the currentPosition and the goalPosition. </p>
+
+<p>The robot should turn, until the difference between the yaw of the robot and the angle<em>to</em>goal is 0 +/- a threshold of 0.1.
+If this is the case, the robot should drive towards the goal.</p>
+
+<p>This code is working pretty well in some cases where the robot gets into the acceptable range well and drives straight without any correction needed.</p>
+
+<p>In other cases the robot will turn, then drive a very small distance, then correct its course again a little bit and repeat this which leads to a very slow and jittery path. I can imagine that the problem is that the robot gets into the acceptable range of the angle at the very border of it, then starts driving which makes the difference of the angles grow and leads the robot to turn the robot again but not enough so that it drives relatively fluently afterwards.
+Another case is that the robot seems to overshoot the desired angle_range or immediately leave it and doesn&#39;t stop turning.</p>
+
+<p>In both cases the robot does not really find its way but keeps being stuck, misses the right angle and continues in this sub-optimal behavior.
+I already tried different angular-velocities and also other thresholds. </p>
+
+<p>As I am a total beginner I don&#39;t know if my guess of the problem could be right.
+I don&#39;t know how i could do to solve the problem or at least improve the rate of the robot getting the right direction at the first time.
+Thank you in advance for any help!</p>
+
+<p>Here is the code:</p>
+
+<pre><code>#! /usr/bin/env python
+import rospy
+from gazebo_msgs.msg import ModelStates
+from tf.transformations import euler_from_quaternion
+from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point
+from math import atan2
+
+#start is x:0, y:0
+x = 0.0
+y = 0.0
+theta = 0.0     #current angle of robot
+
+#import ipdb; ipdb.set_trace()
+
+def callback(msg):
+    global x
+    global y
+    global theta
+
+    x = msg.pose[1].position.x
+    y = msg.pose[1].position.y
+    rot_q = msg.pose[1].orientation
+    (roll, pitch, theta) = euler_from_quaternion([rot_q.x, rot_q.y, rot_q.z, rot_q.w])
+
+
+rospy.init_node (&#39;subscriber&#39;)
+sub = rospy.Subscriber(&#39;/gazebo/model_states&#39;, ModelStates, callback)
+pub = rospy.Publisher(&#39;/cmd_vel&#39;, Twist, queue_size=1)
+
+speed = Twist()
+
+r = rospy.Rate(4)
+
+goal = Point()
+goal.x = -2
+goal.y = -1
+
+while not rospy.is_shutdown():
+    inc_x = goal.x - x                      #distance robot to goal in x
+    inc_y = goal.y - y                      #distance robot to goal in y
+    angle_to_goal = atan2 (inc_y, inc_x)    #calculate angle through distance from robot to goal in x and y
+    print abs(angle_to_goal - theta)
+    if abs(angle_to_goal - theta) &gt; 0.1:    #0.1 because it too exact for a robot if both angles should be exactly 0
+            speed.linear.x = 0.0
+            speed.angular.z = 0.3
+    else:
+        speed.linear.x = 0.3                #drive towards goal
+        speed.angular.z = 0.0
+
+    pub.publish(speed)
+
+ r.sleep()
+</code></pre>
+
+<hr>
+
+<p>Edit: Hey Delb,</p>
+
+<p>thank you a lot for your answer!</p>
+
+<p>It is not directly intended to just turn left but i thought that it would be easier to get started with only one direction and to add a logic about in which direction to turn later. </p>
+
+<p>I will definitely try to implement your suggestion and see if it works.</p>
+
+<p><strong>SOLUTION:</strong>
+This is the code I ended up with, which seems to work pretty well.</p>
+
+<pre><code>#! /usr/bin/env python
+import rospy
+from gazebo_msgs.msg import ModelStates
+from tf.transformations import euler_from_quaternion
+from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point
+from math import atan2, sin, cos, pow, sqrt
+
+#start is x:0, y:0
+x = 0.0
+y = 0.0
+theta = 0.0     #current angle of robot
+
+move_forward = False
+
+def callback(msg):
+    global x
+    global y
+    global theta
+
+    x = msg.pose[1].position.x
+    y = msg.pose[1].position.y
+    rot_q = msg.pose[1].orientation
+    (roll, pitch, theta) = euler_from_quaternion([rot_q.x, rot_q.y, rot_q.z, rot_q.w])
+
+
+rospy.init_node (&#39;subscriber&#39;)
+sub = rospy.Subscriber(&#39;/gazebo/model_states&#39;, ModelStates, callback)
+pub = rospy.Publisher(&#39;/cmd_vel&#39;, Twist, queue_size=1)
+
+speed = Twist()
+
+r = rospy.Rate(4)
+
+goal = Point()
+goal.x = 2
+goal.y = 2
+
+while not rospy.is_shutdown():
+    inc_x = goal.x - x                      #distance robot to goal in x
+    inc_y = goal.y - y                      #distance robot to goal in y
+    angle_to_goal = atan2 (inc_y, inc_x)    #calculate angle through distance from robot to goal in x and y
+    dist = sqrt(pow(inc_x, 2) + pow(inc_y, 2))      #calculate distance
+
+    #find out which turndirection is better
+    # the bigger the angle, the bigger turn, - when clockwise
+    turn = atan2(sin(angle_to_goal-theta), cos(angle_to_goal-theta))
+
+    if abs(angle_to_goal - theta) &lt; 0.1:    #0.1 because it too exact for a robot if both angles should be exactly 0
+        move_forward = True
+
+    speed.angular.z = 0.2 * turn
+
+    if move_forward == True:
+        #keep speed between 0.3 and 0.7
+        if 0.1 * dist &gt; 0.3 and 0.1 * dist &lt; 0.7:
+            speed.linear.x = 0.05 * dist
+        elif 0.1 * dist &gt; 0.7:
+            speed.linear.x = 0.7
+        else:
+            speed.linear.x = 0.3
+
+
+    pub.publish(speed)
+    r.sleep()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/39589">SpaceTime</a> on 2019-01-21 13:31:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>First note here : is it intended for your robot to be only turning left ? That could be problematic if the robot deviates too much at the left of the goal, it would be turning for almost <code>2*pi</code> instead of a little bit to the right to correct its orientation.</p>
+
+<p>Anyway, you should be able to achieve what you want with some little changes :</p>
+
+<ol>
+<li><p>I would directly set the <code>angular speed</code> equal to the angle difference. That would allow the robot to always correct its orientation when reaching the goal. So your <code>angular speed</code> at any time could be :</p>
+
+<pre><code>speed.angular.z = angle_to_goal - theta
+</code></pre>
+
+<p>That being said you might want to have a function calculating the shortest angle (because your calculation might return <code>3*pi/2</code> instead of <code>-pi/2</code>) not to be always turning too much and also to deal with the case when your robot is aligned to the goal but the calculation returns <code>2*pi</code>. If it&#39;s not what you want I would still recommend to get the sign of the angular difference to allow your robot to turn left or right when needed.</p></li>
+<li><p>I would change the condition. Instead of choosing between moving forward and turning, you could have a flag turning to true the first time your robot gets aligned to the goal and then allow it to move forward :</p>
+
+<pre><code>move_forward = False        #define this outside of the while loop
+...
+if abs(angle_to_goal - theta) &gt; 0.1: 
+        move_forward = True
+
+speed.angular.z = angle_to_goal - theta   #the angular speed is always the angualr difference
+if move_forward is True:
+        speed.linear = 0.3                #the linear speed is only set once the flag is True
+</code></pre></li>
+<li><p>If the robot has almost reached a goal but you are not exactly aligned with it and you are still moving forward at a constant speed, you might miss the goal (eventhough I don&#39;t know which tolerance you have) but to avoid that it is possible to also set the <code>linear speed</code> as the <code>angular speed</code>, but instead of the angular difference it would be the distance. Like that your robot will slow down when getting closer to the goal, letting you the time to adjust your orientation before missing the goal.</p></li>
+</ol>
+
+<hr>
+
+<p><strong>EDIT :</strong></p>
+
+<blockquote>
+<p>So if I understand the values right,
+if the coordinates are on the robots
+right side, I get a value between 0.0
+and -pi returned and if its on the
+left its between 0.0 and pi? How do I
+effectively get
+which angle is smaller? </p>
+</blockquote>
+
+<p>If you get the correct angle then yes but you won&#39;t get it simply with <code>angle_to_goal - theta</code> because <code>angle_to_goal</code> and <code>theta</code> will return a value between <code>[-pi; pi]</code> : If you have <code>x &gt; 0</code> a little angle, if you get <code>angle_to_goal = pi - x</code> and <code>theta = -pi + x</code> then <code>angle_to_goal - theta = 2pi + 2x</code> instead of <code>2x</code>. So you have to modify the result of this angular difference, here&#39;s an exemple of a function (in <code>C++</code>) doing that :</p>
+
+<pre><code>float shortestAngleDifference(float th1, float th2)
+{
+    float anglediff = fmod( (th1 - th2) , 2*M_PI);
+
+    if( anglediff &lt; 0.0 )
+    {
+        if( fabs(anglediff) &gt; (2*M_PI + anglediff) )
+        {
+            anglediff = 2*M_PI + anglediff;
+        }
+    }
+    else
+    {
+        if( anglediff &gt; fabs(anglediff - 2*M_PI) )
+        {
+            anglediff = anglediff - 2*M_PI;
+        }
+    }
+    return anglediff;
+}
+</code></pre>
+
+<p>Where <code>angle_to_goal = th1</code> and <code>theta = th2</code> to direclty have <code>anglediff &gt; 0</code> if the robot has to turn to the left and <code>anglediff &lt; 0</code> to turn to the right.</p>
+
+<p>Note : In your solution you have multiple conditions to keep your speed between <code>[0.3;0.7]</code> but you could simply do :</p>
+
+<pre><code>if move_forward == True:
+    #keep speed between 0.3 and 0.7
+    if dist &gt; 0.7:
+        dist = 0.7
+    elif dist &lt; 0.3:
+        dist = 0.3
+
+    speed.linear.x = dist
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/33811"></a> on 2019-01-22 02:35:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

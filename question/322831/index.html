@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Wait for action using rclpy - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/322831">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Wait for action using rclpy</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91623/ros2-wait-for-action-using-rclpy">https://robotics.stackexchange.com/questions/91623/ros2-wait-for-action-using-rclpy</a>.</p>
+        <p>Hi, I have node written in Python which is a service server. Service&#39;s callback is sending goal to action server (action that commands industrial robot to move). After successful move (robot on desired gola) the service should response with some information about robot (like data from force/torque sensor i.e.). The concept is simple (you can imagine that&#39;s a step method from openai gym).</p>
+
+<p>The node is based on example from <a href="https://github.com/ros2/examples/blob/master/rclpy/actions/minimal_action_client/examples_rclpy_minimal_action_client/client.py">link text</a>. However, the service is responding much quicker then action. I tried using threading.Event() but node freezes at event.wait(). How can I wait for action using async conecpt?</p>
+
+<p>Greg</p>
+
+        <div class="owner"><p>Asked by <a href="/users/41425">souphis</a> on 2019-05-09 09:00:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>If I understand your question, you&#39;d like to have a service call an action and send the response for the service when the action goal is finished.</p>
+
+<p>Ideally, we could wait on the futures related to the action client inside the service callback, but we currently can&#39;t spin from inside a callback so that&#39;s not an option.</p>
+
+<p>The only method I can think of would be to use a flag to signal when the action is done and check it in the service callback. To illustrate, here is a crude example:</p>
+
+<pre><code class="language-python">
+import time
+from threading import Event
+
+from example_interfaces.srv import AddTwoInts
+from example_interfaces.action import Fibonacci
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+
+
+class ActionFromService(Node):
+
+    def __init__(self):
+        super().__init__('action_from_service')
+        self.action_done_event = Event()
+
+        self.callback_group = ReentrantCallbackGroup()
+        self.action_client = ActionClient(
+            self, Fibonacci, 'fibonacci', callback_group=self.callback_group)
+        self.srv = self.create_service(
+            AddTwoInts,
+            'add_two_ints',
+            self.add_two_ints_callback,
+            callback_group=self.callback_group)
+   
+    def feedback_callback(self, feedback):
+        self.get_logger().info('Received feedback: {0}'.format(feedback.feedback.sequence))
+
+    def add_two_ints_callback(self, request, response):
+        self.get_logger().info('Request received: {} + {}'.format(request.a, request.b))
+        if not self.action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('No action server available')
+            return response
+
+        response.sum = request.a + request.b
+
+        goal = Fibonacci.Goal()
+        goal.order = response.sum
+
+        self.action_done_event.clear()
+
+        send_goal_future = self.action_client.send_goal_async(
+            goal, feedback_callback=self.feedback_callback)
+        send_goal_future.add_done_callback(self.goal_response_callback)
+
+        # Wait for action to be done
+        self.action_done_event.wait()
+
+        return response
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        get_result_future = goal_handle.get_result_async()
+        get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        # Signal that action is done
+        self.action_done_event.set()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    action_from_service = ActionFromService()
+
+    executor = MultiThreadedExecutor()
+    rclpy.spin(action_from_service, executor)
+
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+</code></pre>
+
+<p>Note, I&#39;m using a <code>MultiThreadedExecutor</code> and a <code>ReentrantCallbackGroup</code> so that we can process the service request and action callbacks in parallel. I&#39;ve not included any error checking related to the action callbacks. Hopefully this example is close to what you want to do.</p>
+
+<p>Edit: I&#39;ve updated the example to use <code>threading.Event()</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26373"></a> on 2019-06-05 14:45:12 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you very much! That&#39;s exactly what I was looking for. 
+Can you give me some advice how can I learn such advance tricks in ROS2?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/41425">souphis</a> on 2019-06-05 17:44:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>As the original author of Actions in rclpy, I have a more intimate understanding. I think we are severely lacking in tutorials and documentation that we&#39;ll hopefully improve in the near future. Recently, we now have some new tutorials on Actions that are more involved, e.g. <a href="https://index.ros.org/doc/ros2/Tutorials/Actions/Writing-an-Action-Client-Python/">https://index.ros.org/doc/ros2/Tutorials/Actions/Writing-an-Action-Client-Python/</a>. There&#39;s some minimal <a href="http://docs.ros2.org/dashing/api/rclpy/api/execution_and_callbacks.html">API docs</a> on rclpy executors and callback groups, but I believe we plan to have more user-friendly tutorials eventually.</p>
+
+<p>Generally, asking questions on ROS Answers (as you have done!), looking at the <a href="http://github.com/ros2/demos">demos</a> and <a href="http://github.com/ros2/examples">examples</a>, and experimenting are good ways to learn new things :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26373">jacobperron</a> on 2019-06-05 17:56:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Jacob, thanks.  I <a href="https://gist.github.com/driftregion/14f6da05a71a57ef0804b68e17b06de5">adapted this</a> to call one service from the callback of another.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/55029">lpz_njames</a> on 2020-05-19 04:50:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@jacobperron, just wanted to check.... you mentioned that at the time of answering you couldn&#39;t spin from inside a callback... is that still the case? Should I use approximately the same code if I&#39;m calling an action from another action?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64484">galaxee</a> on 2020-12-09 13:46:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@galaxee That is still the case AFAIK.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26373">jacobperron</a> on 2020-12-09 14:33:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@jacobperron Thanks! Sorry if this is a dumb question, but is the wait blocking? Does this mean that ActionFromService can&#39;t process another request? Is there any way to avoid the blocking?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64484">galaxee</a> on 2020-12-09 15:13:32 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, the &quot;wait&quot; the example above is blocking (which is on purpose to answer the original question). But you don&#39;t necessarily have to wait and are free to restructure your code as you want. Note, since the example is using a MultiThreadedExecutor, the code should still process multiple service requests asynchronously (though I haven&#39;t confirmed myself).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26373">jacobperron</a> on 2020-12-09 19:07:18 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

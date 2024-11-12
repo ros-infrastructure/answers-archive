@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Proper use of ros_control's RealtimeBuffer - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/201297">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Proper use of ros_control's RealtimeBuffer</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/65262/proper-use-of-ros-controls-realtimebuffer">https://robotics.stackexchange.com/questions/65262/proper-use-of-ros-controls-realtimebuffer</a>.</p>
+        <p>I am new to real-time programming, and I am trying to learn how to properly use <code>realtime_tools::RealtimeBuffer</code> in my ros<em>control controller by looking at source code from related packages. After looking at the source code of <code>RealtimeBuffer</code>, `effort</em>controllers::JointPositionController<code>, and</code>forward<em>command</em>controller::ForwardJointGroupCommandController`, I am still confused about three things.</p>
+
+<p>First, <code>JointPositionController</code> uses the buffer to share command data between the RT and non-RT threads, but <code>command_struct_</code>, the member variable used to set the buffer, is also accessed by both threads. Is it safe to access <code>command_struct_</code> in this way? If it is safe, why is this the case?</p>
+
+<p>Second, in <code>ForwardJointGroupCommandController</code>, why is <code>RealtimeBuffer</code> not used at all? My controller has several joints and I was thinking on using <code>RealtimeBuffer</code> to protect a vector. In order to pre-allocate the buffer internally, I was thinking on passing a vector with dummy values to <code>RealtimeBuffer::initRT()</code> in the <code>init()</code> method of the controller (I don&#39;t know the size of the vector until this point). Then call <code>initRT()</code> again in <code>starting()</code> with appropriate values.</p>
+
+<p>Third, why doesn&#39;t <code>RealtimeBuffer::initRT()</code> check the lock of the mutex? Under the context of the <code>JointPositionController</code> , I can imagine messages published to the command topic even before the controller is started. Would this be safe?</p>
+
+<p>Source code: <a href="https://github.com/ros-controls/realtime_tools/blob/indigo-devel/include/realtime_tools/realtime_buffer.h">RealtimeBuffer</a>, <a href="https://github.com/ros-controls/ros_controllers/blob/indigo-devel/effort_controllers/src/joint_position_controller.cpp">JointPositionController</a>, <a href="https://github.com/ros-controls/ros_controllers/blob/indigo-devel/forward_command_controller/include/forward_command_controller/forward_joint_group_command_controller.h">ForwardJointGroupCommandController</a>.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/21389">Daniel L</a> on 2015-01-19 15:44:22 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>For your first question, the <code>RealtimeBuffer</code> is intended for synchronization of data shared by one non-rt and one rt thread, where the non-rt thread writes into the shared data, and the rt thread reads it. When writing, the non-rt thread is subject to waiting for the shared resource to become free, while the rt thread never waits for reading. Internally, <code>RealtimeBuffer</code> keeps two versions of the shared resource, one which can always be read, and another one which can be safely written into.</p>
+
+<p>For your second question, the implementation of both <code>ForwardCommandController</code> and <code>ForwardJointGroupCommandController</code> is missing proper synchronization between the non-rt thread that executes the subscriber callback and the rt thread that runs the controller update method. Good catch!, I just opened a <a href="https://github.com/ros-controls/ros_controllers/issues/157">ticket</a> to track this issue. <code>effort_controllers::JointPositionController</code>, on the other hand, handles concurrency correctly.</p>
+
+<p>Finally, for the third question. The <code>RealtimeBuffer::initRT()</code> is likely assuming that it can only be called in circumstances in which there is no active writer to the shared resource. This is of course undocumented, and I&#39;m judging from the implementation. The fact is, <code>RealtimeBuffer</code> is not well suited for usecases in which the rt-thread writes into the shared resource. For such cases, you could try using a regular lock, possibly around a lightweight object like a pointer. <code>realtime_tools::RealtimeBox</code> is a trivial implementation of this (in fact, there is nothing rt-specific in the implementation).</p>
+
+<p>It has been on my mind for <code>ros_control</code> to leverage better synchronization primitives, but so far the resources have not been there to properly take on the task.</p>
+
+<p>i hope to have answered your questions.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2015-01-22 09:55:21 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for taking the time to answer. I think I was not clear with my first question. In JointPositionController, command_struct_, which is not the RealtimeBuffer, is used in both threads: ROS message handling (setCommand) and the control loop (starting and update). Is this ok?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21389">Daniel L</a> on 2015-01-24 17:44:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have added the realtime buffers for the forward controllers: <a href="https://github.com/ros-controls/ros_controllers/pull/161">https://github.com/ros-controls/ros_controllers/pull/161</a>
+It fixes some other problems as well.</p>
+
+<p>You are right, the use of command_struct_ is not thread-safe!
+It must not be used in update. The copy could be replaced by a local reference.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4094">Mathias Lüdtke</a> on 2015-01-28 12:02:15 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

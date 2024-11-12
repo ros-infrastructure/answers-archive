@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Arduino publisher: unable to sync with device - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/374358">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Arduino publisher: unable to sync with device</h2>
+      <div class="question">
+        <p>I&#39;m trying to use an IR reader and an Arduino Uno as the basis for my odometry. I&#39;m using the attached code. The code compiles and uploads successfully to the Arduino. I then run <code>roscore</code> and <code>rosrun rosserial_python serial_node.py _port:=/dev/ttyACM0 _baud:=57600</code> which produces the following errors:</p>
+
+<pre><code>pi@raspberrypi:~/odom_ws $ rosrun rosserial_python serial_node.py _port:=/dev/ttyACM0 _baud:=57600
+[INFO] [1616083210.822040]: ROS Serial Python Node
+[INFO] [1616083210.834459]: Connecting to /dev/ttyACM0 at 57600 baud
+[INFO] [1616083212.945610]: Requesting topics...
+[INFO] [1616083213.425535]: Wrong checksum for msg length, length 8, dropping message.
+[ERROR] [1616083227.953649]: Unable to sync with device; possible link problem or link software version mismatch such as hydro rosserial_python with groovy Arduino
+[INFO] [1616083227.960634]: Requesting topics...
+[ERROR] [1616083242.968012]: Unable to sync with device; possible link problem or link software version mismatch such as hydro rosserial_python with groovy Arduino
+[INFO] [1616083242.977686]: Requesting topics...
+[ERROR] [1616083257.984978]: Unable to sync with device; possible link problem or link software version mismatch such as hydro rosserial_python with groovy Arduino
+</code></pre>
+
+<p>All help and feedback is much appreciated.</p>
+
+<pre><code>// Include ros.h header file and header files for all messages we&#39;ll be using
+#include &lt;ros.h&gt;
+#include &lt;ros/time.h&gt;
+#include &lt;tf/tf.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+
+const double dx = 0.1;   // Distance increment per reading in meters
+                         // Dummy variable used here for support purposes
+
+// Instantiate node handle (allows us to create publishers and subscribers)
+ros::NodeHandle nh;
+nav_msgs::Odometry odom_msg;
+ros::Publisher odom_pub(&quot;/odom&quot;, &amp;odom_msg);
+tf::TransformBroadcaster odom_broadcaster;
+
+// Initial position
+double x = 0.0;
+double y = 0.0;
+double theta = 0.0;
+
+// Set time
+ros::Time current_time = nh.now();
+ros::Time last_time = nh.now();
+
+void setup()
+{
+
+  // Enable interruption pin when going from LOW to HIGH
+  // Calls Pulse_Event()
+  attachInterrupt(digitalPinToInterrupt(IR_Pin), Pulse_Event, RISING);
+
+  // Set time
+  current_time = nh.now();
+  last_time = nh.now();
+
+  // Initialize node and broadcast it
+  nh.initNode();
+  nh.advertise(odom_pub);
+
+}
+
+void loop()
+{
+  // Process the publishing queue
+  nh.spinOnce();
+
+  // Delay in µs
+  delay(1000);
+}
+
+void Pulse_Event()
+{  
+  // Set current time
+  current_time = nh.now();
+
+  // Calculate velocity
+  double dt = (current_time.toSec() - last_time.toSec());
+  double delta_x = cos(theta)*dx;
+  double delta_y = sin(theta)*dx;
+  double delta_th = 0.0;
+
+  double vx = delta_x / dt;
+  double vy = delta_y / dt;
+  double vth = delta_th / dt;
+
+  // Update x,y
+  x += delta_x;
+  y += delta_y;
+  theta += delta_th;
+
+  // Since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+  geometry_msgs::Quaternion odom_quat = tf::createQuaternionFromYaw(theta);
+
+  // Publish transform over tf
+  geometry_msgs::TransformStamped odom_trans;
+  odom_trans.header.stamp = current_time;
+  odom_trans.header.frame_id = &quot;odom&quot;;
+  odom_trans.child_frame_id = &quot;base_link&quot;;
+
+  // Set transform for x,y,z coordinates
+  odom_trans.transform.translation.x = x;
+  odom_trans.transform.translation.y = y;
+  odom_trans.transform.translation.z = 0.0;
+  odom_trans.transform.rotation = odom_quat;
+
+  // Send the transform
+  odom_broadcaster.sendTransform(odom_trans);
+
+  // Set odom header
+  odom_msg.header.stamp = current_time;
+  odom_msg.header.frame_id = &quot;odom&quot;;
+
+  // Set the position
+  odom_msg.pose.pose.position.x = x;
+  odom_msg.pose.pose.position.y = y;
+  odom_msg.pose.pose.position.z = 0.0;
+  odom_msg.pose.pose.orientation = odom_quat;
+
+  // Set the velocity
+  odom_msg.child_frame_id = &quot;base_link&quot;;
+  odom_msg.twist.twist.linear.x = vx;
+  odom_msg.twist.twist.linear.y = vy;
+  odom_msg.twist.twist.angular.z = vth;
+
+  // Publish the message
+  odom_pub.publish(&amp;odom_msg);
+
+  // Set last_time for next cycle
+  last_time = current_time;
+
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/72140">ffbo</a> on 2021-03-19 21:03:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Things to consider. Are you really publishing at 56700Baud from the arduino? 
+Those odometry calculations are a lot for an Arduino and ISRs (Interrupt service routines) schould be as short as possible. Copy a single variable or similar.
+Your update cycle/delay is at 1hz, you comment its 1000micros, but the arduino standard is millis! </p>
+
+<p>I would suggest checking the publish frequency and baudrates are really right.
+Decouple the performance demanding calculations from the Interrupt, you have more then enought time in the &quot;delay&quot; to make the calculations, no need to block. Also maybe even let the &quot;PC&quot; figure out TF and only calculate odom on the arduino itself.
+Aditionally a long time ago I red that Arduino delay can somehow affect timers running in the background. Interrupts were said to mess with them as well, specially long running ISRs. Though this is more about the quality of the data you will get.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2021-03-20 03:31:48 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hello.</p>
+
+<p>It can be read in the documentation <a href="http://wiki.ros.org/rosserial/Overview/Time">here</a> that :</p>
+
+<blockquote>
+<p>In order to get the current ROS time, you must be connected to ROS.</p>
+</blockquote>
+
+<p>So maybe you should perform calls to <code>nh.now()</code> only after the connection to ROS has been initialised with <code>nh.initNode()</code>. (Note that I don&#39;t have an Arduino to double check this now though).</p>
+
+<p><strong>Edit 1</strong></p>
+
+<p>Hi.
+I tried your code on an ESP8266, and managed to get it working after three changes:</p>
+
+<ul>
+<li>Manually call the <code>Pulse_Event()</code> function in the loop function (since I don&#39;t have an encoder to test).</li>
+<li>Increasing the default size of the serial buffer in <code>ros.h</code> to 1024 (instead of the default 512). The odometry message seemed to be too big otherwise. Specifically I used <code>typedef NodeHandle_&lt;ArduinoHardware, 10, 10, 1024, 1024&gt; NodeHandle;</code>. You can get more information about this <a href="http://wiki.ros.org/rosserial_arduino/Tutorials/NodeHandle%20and%20ArduinoHardware">here</a>.</li>
+<li>Add <code>odom_broadcaster.init(nh);</code> just after <code>nh.initNode();</code> (as per <a href="http://wiki.ros.org/rosserial_arduino/Tutorials/Time%20and%20TF">here</a>)</li>
+</ul>
+
+<p>Don&#39;t mind my previous comment. It seems indeed that it makes no difference in practice.</p>
+
+<p>One general advice (if not already done of course): try with a very simple case scenario, publishing only one Float32 message, and see whether you still face the issue. Once you made sure it is working, add complexity bit by bit. It might be easier to isolate problems.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/72240">cch</a> on 2021-03-20 06:38:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>Thanks for your input. I&#39;ve tried running <code>nh.now()</code> only after <code>nh.initNode()</code>, and I&#39;ve added <code>Serial.begin(57600)</code> to <code>setup()</code>.</p>
+
+<p>I get the same set of error messages. I tried running <code>rostopic echo /rosout</code> to see what&#39;s published and it looks like something goes seriously wrong. Are you able to see what causes this?</p>
+
+<pre><code>$ rostopic echo /rosout
+header: 
+  seq: 8
+  stamp: 
+    secs: 1616519114
+    nsecs:  97291946
+  frame_id: &#39;&#39;
+level: 2
+name: &quot;/serial_node&quot;
+msg: &quot;Requesting topics...&quot;
+file: &quot;SerialClient.py&quot;
+function: &quot;SerialClient.requestTopics&quot;
+line: 403
+topics: [/diagnostics, /rosout]
+---
+header: 
+  seq: 9
+  stamp: 
+    secs: 1616519119
+    nsecs: 213711977
+  frame_id: &#39;&#39;
+level: 4
+name: &quot;/serial_node&quot;
+msg: &quot;Last read step: message length&quot;
+file: &quot;SerialClient.py&quot;
+function: &quot;SerialClient.run&quot;
+line: 543
+topics: [/diagnostics, /rosout]
+---
+header: 
+  seq: 10
+  stamp: 
+    secs: 1616519119
+    nsecs: 219691038
+  frame_id: &#39;&#39;
+level: 4
+name: &quot;/serial_node&quot;
+msg: &quot;Run loop error: Serial Port read failure: Returned short (expected 3 bytes, received\
+  \ 2 instead).&quot;
+file: &quot;SerialClient.py&quot;
+function: &quot;SerialClient.run&quot;
+line: 544
+topics: [/diagnostics, /rosout]
+---
+header: 
+  seq: 11
+  stamp: 
+    secs: 1616519119
+    nsecs: 225771903
+  frame_id: &#39;&#39;
+level: 2
+name: &quot;/serial_node&quot;
+msg: &quot;Requesting topics...&quot;
+file: &quot;SerialClient.py&quot;
+function: &quot;SerialClient.requestTopics&quot;
+line: 403
+topics: [/diagnostics, /rosout]
+---
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/72140">ffbo</a> on 2021-03-23 12:10:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Of interest -&gt; <a href="https://answers.ros.org/question/372086/a-type-of-mcu-tis-dsp-tms320-and-rosserial/?comment=374377#post-id-374377">similar question</a></p>
+
+<p>&quot;Run loop error: Serial Port read failure: Returned short (expected 3 bytes, received\
+  \ 2 instead).&quot;</p>
+
+<p>Seems you serialize to another standard then expected. </p>
+
+<p>By the way different Arduinos use different byte size for different types -&gt;<a href="https://www.arduino.cc/reference/en/language/variables/data-types/double/">Arduino Reference</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/38812">Dragonslayer</a> on 2021-03-24 11:32:11 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

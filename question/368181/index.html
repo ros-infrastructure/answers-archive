@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>pid tuning the wheel velocity - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/368181">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>pid tuning the wheel velocity</h2>
+      <div class="question">
+        <p>I am using diff drive controller to control the wheels of my robot. Here i am trying to use the control toolbox pid class for making the input velocity and velocity measured from wheel encoder to be equal. Here i have used the computeCommand() to calculate the pwm output to the motors. Here is my code:</p>
+
+<pre><code>namespace rrbot_control
+{
+
+RRBotHWInterface::RRBotHWInterface(ros::NodeHandle &amp;nh_, urdf::Model *urdf_model)
+  : ros_control_boilerplate::GenericHWInterface(nh_, urdf_model)
+{
+    ROS_INFO_NAMED(&quot;rrbot_hw_interface&quot;, &quot;RRBotHWInterface Ready.&quot;);
+    nhp_ = ros::NodeHandle(&quot;~&quot;);
+    if (!nhp_.hasParam(&quot;my_pid/p&quot;))
+        nhp_.setParam(&quot;my_pid/p&quot;, 100.0);
+    if (!nhp_.hasParam(&quot;my_pid/i&quot;))
+        nhp_.setParam(&quot;my_pid/i&quot;, 10.0);
+    if (!nhp_.hasParam(&quot;my_pid/d&quot;))
+        nhp_.setParam(&quot;my_pid/d&quot;, 0.0);
+    if (!nhp_.hasParam(&quot;my_pid/i_clamp_min&quot;))
+        nhp_.setParam(&quot;my_pid/i_clamp_min&quot;, -10.0);
+    if (!nhp_.hasParam(&quot;my_pid/i_clamp_max&quot;))
+        nhp_.setParam(&quot;my_pid/i_clamp_max&quot;, 10.0);
+    nhp_.setParam(&quot;publish_state&quot;, true);
+
+    my_pid_.init(ros::NodeHandle(nhp_, &quot;my_pid&quot;), false);
+
+    x_to_control_ = 0.0;
+    ROS_INFO_STREAM(&quot;Node ready&quot;);
+
+    min_ang = 0.00119361423;
+    prev_right_wheel_pos = 0;
+    prev_left_wheel_pos = 0;
+    max_pwm_to_max_vel_radio = 80.7501211252;    
+    time = ros::Time::now();
+    Setup();
+}
+
+void RRBotHWInterface::read(ros::Duration &amp;elapsed_time)
+{
+    const char* enc_data = Read();  
+    std::vector&lt;std::string&gt; result;  
+    boost::split(result, enc_data, boost::is_any_of(&quot;,&quot;));
+    if(result.size()==2) {
+        int curr_left_wheel_pos = atof(result[0].c_str());
+        int curr_right_wheel_pos = atof(result[1].c_str());
+        int delta_left_wheel_pos =  prev_left_wheel_pos - curr_left_wheel_pos;
+        int delta_right_wheel_pos = prev_right_wheel_pos - curr_right_wheel_pos;
+        joint_position_[0] += delta_left_wheel_pos * min_ang; 
+        joint_velocity_[0] = (delta_left_wheel_pos * min_ang)/elapsed_time.toSec();
+        joint_position_[1] += delta_right_wheel_pos * min_ang; 
+        joint_velocity_[1] = (delta_right_wheel_pos * min_ang)/elapsed_time.toSec();
+        prev_left_wheel_pos = curr_left_wheel_pos;
+        prev_right_wheel_pos = curr_right_wheel_pos;
+    }
+}
+
+void RRBotHWInterface::write(ros::Duration &amp;elapsed_time)
+{
+  // Safety
+  enforceLimits(elapsed_time);
+  ros::Time tnow = ros::Time::now();
+  // If any problem arises, make sure dt is &gt; 0.0
+  // as if its 0.0 the computedCommand will be 0.0
+  ros::Duration dt = tnow - last_cmd_time_;
+
+  double error1 = joint_velocity_command_[0] - joint_velocity_[0];
+  double error2 = joint_velocity_command_[1] - joint_velocity_[1];
+
+  double joint1_out_pow = my_pid1_.computeCommand(error1, dt);
+  double joint2_out_pow = my_pid2_.computeCommand(error2, dt);
+  std::cout&lt;&lt;&quot;error1=&quot;&lt;&lt;error1&lt;&lt;&quot;\t&quot;&lt;&lt;&quot;joint1_out_pow=&quot;&lt;&lt;joint1_out_pow&lt;&lt;&quot;\t&quot;&lt;&lt;
+      &quot;joint1_velocity_given=&quot;&lt;&lt;joint_velocity_command_[0]&lt;&lt;&quot;\t&quot;&lt;&lt;&quot;joint1_velocity_measured=&quot;&lt;&lt;joint_velocity_[0]&lt;&lt;std::endl;
+
+  last_cmd_time_ = tnow;
+  ros::Duration(0.1).sleep();
+
+  if(joint1_out_pow&gt;255)
+      joint1_out_pow = 255;
+  else if(joint1_out_pow&lt;-255)
+      joint1_out_pow=-255;
+  if(joint2_out_pow&gt;255)
+      joint2_out_pow=255;
+  else if(joint2_out_pow&lt;-255)
+      joint2_out_pow=-255;
+  std::string pwm_datas = std::to_string(joint1_out_pow)+&quot;,&quot;+std::to_string(joint2_out_pow);
+  while(pwm_datas.length()&lt;16) {
+    pwm_datas.push_back(&#39;,&#39;);
+  }
+  const char *res = pwm_datas.c_str(); 
+  if(pwm_datas.length()==16) {
+    Write(res);    
+    usleep(10000);
+  }
+}
+</code></pre>
+
+<p>Here when the input velocity is 20 the pwm is something 10... which is not rotating the wheels due to not having enough power. 
+So the error is equal to 20-0 = 20 itself. My doubt is how do i properly use this pid controller such that the pid controller gives the pwm output which balances the input velocity and output velocity. 
+What is the standard, right way to do it?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/26847">dinesh</a> on 2020-12-21 08:01:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

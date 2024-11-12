@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Socket Programming in ROS - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/57177">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Socket Programming in ROS</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/49012/socket-programming-in-ros">https://robotics.stackexchange.com/questions/49012/socket-programming-in-ros</a>.</p>
+        <p>Hi all, </p>
+
+<p>I wanted to ask a simple question. I was trying to establish TCP/IP server in ROS node. Well my concept was really simple to make ROS node that will work as a server , and then I will use that server to send the values(velocities and joint values) in a string. </p>
+
+<p>my code is fairly simple, </p>
+
+<pre><code>#include &lt;iostream&gt;     
+#include &lt;cstdlib&gt;      
+#include &lt;unistd.h&gt;     
+#include &lt;cerrno&gt;       
+#include &lt;cstring&gt;  
+#include &lt;sys/time.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;netinet/in.h&gt;
+#include &lt;arpa/inet.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;csignal&gt;  
+
+#include &quot;ros/ros.h&quot;
+#include &quot;nav_msgs/Odometry.h&quot;
+
+using namespace std;
+#define PORTNUMBER 8001    // port number of connection
+#define BACKLOG 2     // max number of client
+#define MAXDATASIZE 100 // maximum accepted datasize at a time 
+
+
+
+nav_msgs::Odometry lastReceivedOdometry;
+
+
+//need to handle zombi processes by sigaction()
+void sigchld_handler(int s)
+{
+        while(wait(NULL) &gt; 0);
+}
+
+int main(int argc, char **argv)
+{
+
+  ros::init(argc, argv, &quot;socket&quot;);
+
+  ros::NodeHandle n;
+
+  ros::spin();
+
+  int sockfd, new_fd, mySelect, sockoptset, bindit, listento, actionsig, numbytes,sended;  
+  char buf[MAXDATASIZE];
+  struct sockaddr_in my_addr;           // my address information
+  struct sockaddr_in their_addr;        // address information of connected machine
+  int sin_size;
+  struct sigaction sa;          // need to handle &quot;zombi&quot; processes after ended child processes which are created by fork()
+  int yes=1;                // needed by setsockopt()
+
+  fd_set read_fd;
+  struct timeval timeout;
+  timeout.tv_sec = 15;
+  timeout.tv_usec = 0;
+
+  // create the socket
+  sockfd = socket(AF_INET, SOCK_STREAM, 0); 
+  // error check for socket()
+  if (sockfd == -1) {
+        cout &lt;&lt;&quot;error socket&quot;&lt;&lt; strerror(errno);
+        exit(1);
+  }
+
+  my_addr.sin_family = AF_INET;         // host byte order , AF_INET = IPv4 Internet Protocols for Linux
+  my_addr.sin_port = htons(PORTNUMBER);     // sin_port is in short-network byte order,htons()=converts PORTNUMBER to network byte order
+  my_addr.sin_addr.s_addr = INADDR_ANY; // use my address automatically, use &quot;INADDR_ANY&quot;(0 so no need htons) or &quot;inet_addr(&quot;192.120.13.1&quot;)
+  memset(&amp;(my_addr.sin_zero), &#39;\0&#39;, 8); // make the rest of the structure zero
+
+  //assign the address specified to the socket 
+  bindit = bind(sockfd, (struct sockaddr *)&amp;my_addr, sizeof(struct sockaddr));
+  //error check for bind()
+  if (bindit == -1) {
+        cout &lt;&lt;&quot;error bindit&quot;&lt;&lt; strerror(errno);
+            exit(1);
+  }
+
+  //listen the connection on created socket
+  listento = listen(sockfd, BACKLOG);
+  //error check for listen()
+  if (listento == -1) {
+       cout &lt;&lt;&quot;error listento&quot;&lt;&lt; strerror(errno);
+            exit(1);
+  }
+
+  //examine and change the &quot;zombi&quot; processes signal actions
+  sa.sa_handler = sigchld_handler;  // reap all dead processes
+  sigemptyset(&amp;sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  actionsig = sigaction(SIGCHLD, &amp;sa, NULL);
+  //error check for sigaction()
+  if (actionsig == -1) {
+       cout &lt;&lt;&quot;error actionsig&quot;&lt;&lt; strerror(errno);
+            exit(1);
+  }
+  sin_size = sizeof(struct sockaddr_in);
+
+  // accept a connection on listened socket
+  new_fd = accept(sockfd, (struct sockaddr *)&amp;their_addr, (socklen_t*)&amp;sin_size);
+  //error check for accept()
+  if (new_fd == -1) {           
+         cout &lt;&lt; strerror(errno) &lt;&lt; &quot;accept() has failed!&quot; &lt;&lt; endl ;
+  }
+
+  cout &lt;&lt; &quot;server: got connection from &quot; &lt;&lt; inet_ntoa(their_addr.sin_addr) &lt;&lt; endl; 
+
+
+  FD_ZERO(&amp;read_fd);
+  FD_SET(new_fd,&amp;read_fd);
+  mySelect = select(new_fd+1,&amp;read_fd,NULL,NULL,&amp;timeout);
+  if(mySelect == 1 &amp;&amp; (FD_ISSET(new_fd,&amp;read_fd))){
+            while(new_fd !=-1){
+                numbytes=recv(new_fd, buf, MAXDATASIZE-1, 0);
+                if(numbytes == 0){
+                    cout &lt;&lt; &quot;Connection has terminated by &quot; &lt;&lt; inet_ntoa(their_addr.sin_addr)&lt;&lt;endl;
+                    close(new_fd);
+                    close(sockfd);
+                    return 0;
+                }
+                buf[numbytes] = &#39;\0&#39;;
+                cout &lt;&lt; numbytes &lt;&lt; endl;
+                if(strcmp(buf,&quot;forward&quot;) == 0)
+                    cout &lt;&lt; &quot;Command: FORWARD&quot; &lt;&lt; endl;
+                else if(strcmp(buf,&quot;backward&quot;) == 0)
+                    cout &lt;&lt; &quot;Command: BACKWARD&quot; &lt;&lt; endl;
+                else if(strcmp(buf,&quot;right&quot;) == 0)
+                    cout &lt;&lt; &quot;Command: RIGHT&quot; &lt;&lt; endl;
+                else if(strcmp(buf,&quot;left&quot;) == 0)
+                    cout &lt;&lt; &quot;Command: LEFT&quot; &lt;&lt; endl;
+                else
+                    cout &lt;&lt; &quot;Received: &quot; &lt;&lt; buf &lt;&lt; endl;
+            }
+        }
+        else if(mySelect == 0){
+            cout&lt;&lt;&quot;Select() timed out!!!&quot;&lt;&lt;endl;
+        }
+        else{
+            cerr &lt;&lt; strerror(errno) &lt;&lt; &quot;select() has failed!&quot; &lt;&lt; endl;
+            close(new_fd);
+            close(sockfd);
+            exit(EXIT_FAILURE);
+  }
+
+  close(new_fd);        // shut the main socket
+  close(sockfd);        // shut the child socket
+
+  return 0;
+}
+</code></pre>
+
+<p>but this code doesnt work ... any idea how to do this</p>
+
+        <div class="owner"><p>Asked by <a href="/users/4230">Ali Asad</a> on 2013-03-05 08:29:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Can you describe what happens when you run your code? What do you mean by &quot;doesn&#39;t work&quot;?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1001">SL Remy</a> on 2013-03-05 08:31:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You&#39;re calling ros::spin() first, which blocks, so you code isn&#39;t run.</p>
+
+<p>The rest of your code doesn&#39;t seem ROS related, so if that doesn&#39;t work, you should seek out other sources.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2013-03-05 09:13:30 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>thank I got it after posting the code , its working now thnaks</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/4230">Ali Asad</a> on 2013-03-05 10:44:18 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>What is different, what change did you make that allows your code to now work?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1001">SL Remy</a> on 2013-03-06 03:07:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hey Ali, Could you please share it, how you resolve this problem ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/6412">Max</a> on 2013-09-05 07:10:47 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Check this one.....<a href="http://csharp.net-informations.com/communications/csharp-socket-programming.htm">Socket Programming</a> basics</p>
+
+<p>Chris</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/24418">chriselviss</a> on 2015-10-12 01:08:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

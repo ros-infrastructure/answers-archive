@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[SOLVED] Thread does not terminate - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/327163">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[SOLVED] Thread does not terminate</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/92234/solved-thread-does-not-terminate">https://robotics.stackexchange.com/questions/92234/solved-thread-does-not-terminate</a>.</p>
+        <p>Hello, I&#39;ve a problem with terminating a node and I hope someone can help. Consider some code like below:</p>
+
+<pre><code>unsigned char interestingNumber;
+std::mutex mu;
+std_msgs::UInt16 msgUInt;
+
+// Function prototypes
+void threadCallback(const ros::Publisher* const);
+void subscriberCallback(const std_msgs::Float32MultiArray::ConstPtr&amp;);
+
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;someNode&quot;);
+    ros::NodeHandle n;
+    ros::Publisher pub = n.advertise&lt;std_msgs::UInt16&gt;(&quot;topic&quot;, 1);
+    ros::Subscriber sub = n.subscribe(&quot;interestingtopic&quot;, 10, subscriberCallback);
+    msgUInt.data = 1;
+    std::thread someThread(threadCallback, &amp;pub);
+
+    ros::spin();
+    someThread.join();
+    return 0;
+}
+
+void subscriberCallback(const std_msgs::Float32MultiArray::ConstPtr &amp;msg)
+{
+    mu.lock();
+    interestingNumber = msg-&gt;layout.dim[2].size;
+    mu.unlock();
+}
+
+void threadCallback(const ros::Publisher* const p)
+{
+    ros::Rate loopRateInner(1000);
+    while(ros::ok())
+    {
+        if(interestingNumber == 0)
+            msgUint.data = 1;
+
+        while(interestingNumber == 0)
+        {
+            if(msgUInt.data == 2000)
+                msgUInt.data = 1;
+
+            msgUInt.data++;
+
+            p-&gt;publish(msgUInt);
+            loopRateInner.sleep();
+        }
+    }
+}
+</code></pre>
+
+<p>So what this basically does is, it subscribes to a topic and assigns a variable with a value of the messages on that subscribed topic. Asynchronously to that another thread has to publish to another topic depending on that received value. This also works fine. My problem is, that the thread <code>someThread</code> does not terminate as soon as I shut down all other nodes and the roscore. Also CTRL+C doesn&#39;t help. I always have to kill this node via the system manager. And I wonder why this happens, since the outer loop should stop executing as soon as ros::ok() returns false. </p>
+
+<p>How can I fix this?</p>
+
+<p>Thanks in advance for any help!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40560">Zacryon</a> on 2019-06-27 10:38:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I solved the problem by myself when I checked again if I started the additional thread correctly at all. And it was a simple and stupid mistake.</p>
+
+<p><strong>Solution:</strong></p>
+
+<p>Just delete the line with <code>someThread.join()</code> and use <code>someThread.detach()</code> after intializing the thread and before calling <code>ros::spin()</code>. Detaching the additional thread ensures that the main thread and the additional one don&#39;t block each other. </p>
+
+<p>So the main function looks like the following:</p>
+
+<pre><code>int main(int argc, char **argv)
+{
+    ros::init(argc, argv, &quot;someNode&quot;);
+    ros::NodeHandle n;
+    ros::Publisher pub = n.advertise&lt;std_msgs::UInt16&gt;(&quot;topic&quot;, 1);
+    ros::Subscriber sub = n.subscribe(&quot;interestingtopic&quot;, 10, subscriberCallback);
+    msgUInt.data = 1;
+    std::thread someThread(threadCallback, &amp;pub);
+    someThread.detach();
+
+    ros::spin();
+    return 0;
+}
+</code></pre>
+
+<p>Now the node terminates as expected. </p>
+
+<p>I&#39;m still not completely sure why the problem occurs in the first place. Because as I understand it, <code>ros:spin()</code> will return to the calling method (here the main method) as soon as the node should shutdown. Why does the thread not &#39;join&quot;?</p>
+
+<p><strong>EDIT:</strong>
+I forgot to update my solution. See comments below this answer for details.
+I also replaced the inner while loop  with an if statement, so it looks something like this:</p>
+
+<pre><code>while(ros::ok())
+{
+    mu.lock()
+    if(interestingNumber == 0)
+    {
+        if(msgUInt.data == 2000)
+            msgUint.data = 1;
+
+        msgUInt.data++;
+
+        p-&gt;publish(msgUInt);
+    }
+    mu.unlock();
+    loopRateInner.sleep();
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40560">Zacryon</a> on 2019-06-27 11:05:55 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>You solved it by not caring if the thread terminates correctly.</p>
+
+<p>I&#39;m guessing your thread gets stuck on the inner loop. <code>interestingNumber</code> is only updated by your callback, which isn&#39;t called after <code>spin()</code> returns. Adding a <code>&amp;&amp; ros::ok()</code> to the while loop should make it quit.</p>
+
+<p>Side note: Using the mutex only in the callback does not add any thread safety. You&#39;ll need to use it every time you access <code>interestingNumber</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30604">pcoenen</a> on 2019-07-16 08:10:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for your comment! :)
+This is in some part correct. Though the detachement of the thread solved my original problem in a not so nice way to ensure that the thread can terminate, I did not bother if it terminates correctly.
+However, I got rid of the inner while loop a while ago and replaced it with an if statement. I forgot to update that in my answer. The structure looks now somewhat like this:</p>
+
+<pre><code>while(ros::ok())
+{
+    mu.lock()
+    if(interestingNumber == 0)
+    {
+        if(msgUInt.data == 2000)
+            msgUint.data = 1;
+
+        msgUInt.data++;
+
+        p-&gt;publish(msgUInt);
+    }
+    mu.unlock();
+    loopRateInner.sleep();
+}
+</code></pre>
+
+<p>That increased stability, since the whole loop body now only depends on ros::ok() and no longer on another condition, which may or may be not set by the callback function. </p>
+
+<p>Thanks for your hint about the mutex, which I did not add to the read operation within the loop. I forgot about</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40560">Zacryon</a> on 2019-07-17 03:31:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You don&#39;t need to lock for the whole if-term, if you create a local copy of your interestingNumber. Also have a look at scoped locks like lock_guard in C++11. Locking and unlocking manually can result in leaking mutexes due to early returns or exceptions.</p>
+
+<p>Is your updated thread joinable?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30604">pcoenen</a> on 2019-07-17 04:00:50 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

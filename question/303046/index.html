@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>map update loop missed its desired rate - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/303046">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>map update loop missed its desired rate</h2>
+      <div class="question">
+        <p>HI,</p>
+
+<p>So my problem is that I have a relatively big map 2144 by 2528 pixels and this leads to big latency in the <code>global costmap</code> update it usually misses the desired rate of <code>1.0 HZ</code>. I realize that reducing the resolution might be a solution but I do not want to reduce the accuracy of the map also. What I am thinking about is modifying the <code>map server</code> to ignore the gray area of the map because usually it takes big space in the map image and I do not want to parse it, Therefore later we would have less map cells to update.</p>
+
+<p>I want to ask your opinions about this solution, and your own experiences with such problems.</p>
+
+<p>Thank you.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/27367">starter</a> on 2018-09-11 05:32:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p><code>map_server</code> publishes the static global map only once for each subscribed node. So the <code>static_layer</code> plugin used by <code>global_costmap</code> reads and parses this big map only once. So I don&#39;t see how modifying this would solve your issue.</p>
+
+<p>Have you set <code>always_send_full_costmap</code> parameter of <code>global_costmap</code> to <code>true</code>? If you have set this to true, then the <code>global_costmap</code> generates the full costmap at each update step. If it is set to <code>false</code> (which is the default), it only publishes the updates to the global costmap, which is quite efficient and you shouldn&#39;t be getting this error. (see the code below from the cost-map publisher)</p>
+
+<pre><code>void Costmap2DPublisher::publishCostmap()
+{
+  if (costmap_pub_.getNumSubscribers() == 0)
+  {
+    // No subscribers, so why do any work?
+    return;
+  }
+
+  float resolution = costmap_-&gt;getResolution();
+
+  if (always_send_full_costmap_ || grid_.info.resolution != resolution ||
+      grid_.info.width != costmap_-&gt;getSizeInCellsX() ||
+      grid_.info.height != costmap_-&gt;getSizeInCellsY() ||
+      saved_origin_x_ != costmap_-&gt;getOriginX() ||
+      saved_origin_y_ != costmap_-&gt;getOriginY())
+  {
+    prepareGrid();
+    costmap_pub_.publish(grid_);
+  }
+  else if (x0_ &lt; xn_)
+  {
+    boost::unique_lock&lt;Costmap2D::mutex_t&gt; lock(*(costmap_-&gt;getMutex()));
+    // Publish Just an Update
+    map_msgs::OccupancyGridUpdate update;
+    update.header.stamp = ros::Time::now();
+    update.header.frame_id = global_frame_;
+    update.x = x0_;
+    update.y = y0_;
+    update.width = xn_ - x0_;
+    update.height = yn_ - y0_;
+    update.data.resize(update.width * update.height);
+
+
+    unsigned int i = 0;
+    for (unsigned int y = y0_; y &lt; yn_; y++)
+    {
+      for (unsigned int x = x0_; x &lt; xn_; x++)
+      {
+        unsigned char cost = costmap_-&gt;getCost(x, y);
+        update.data[i++] = cost_translation_table_[ cost ];
+      }
+    }
+    costmap_update_pub_.publish(update);
+  }
+
+
+  xn_ = yn_ = 0;
+  x0_ = costmap_-&gt;getSizeInCellsX();
+  y0_ = costmap_-&gt;getSizeInCellsY();
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3870">Namal Senarathne</a> on 2018-09-13 20:50:49 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you for reply, actually after some profiling I found out that the inflation layer is the source of the problem it takes a very long time to update.
+All my layers combined take nearly 200 ms to update and the inflation layer takes almost 1.5 s.
+Do you have a solution for that ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27367">starter</a> on 2018-09-18 02:49:09 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Well I assumed inflation works only with changes to the incoming map data however I haven&#39;t closely looked at the implementation. It may be that it is computing the inflation for the map every iteration, which could explain the 1.5s update time.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3870">Namal Senarathne</a> on 2018-09-20 20:11:38 UTC</p></div>
+</div>
+<div class="comment">
+          <p>One possible solution is to partition your big map and dynamically load the portion that surrounds the robot during the current step, but this requires changes to some of the navigation as well similar to <a href="http://wiki.ros.org/topological_navigation">http://wiki.ros.org/topological_navigation</a> (this is no longer maintained it seems)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3870">Namal Senarathne</a> on 2018-09-20 20:14:30 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

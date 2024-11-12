@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Problems with Serial port code for Ros - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/190615">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Problems with Serial port code for Ros</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/61954/problems-with-serial-port-code-for-ros">https://robotics.stackexchange.com/questions/61954/problems-with-serial-port-code-for-ros</a>.</p>
+        <p>I wanted the ROS pc to communicate over the UART with a microcontroller on mobile robot, 
+I canot use ros serial as on the controller I canot use C++ code, so I have used a wrapper code for serial port in linux following the example code from this link: <a href="https://code.google.com/p/team-diana/source/browse/ros_workspace/fuerte/Serial/src/r2Serial.cpp?r=b3ad5adc6b1e885620b615c5f56ccf929cfbcdc2">https://code.google.com/p/team-diana/source/browse/ros_workspace/fuerte/Serial/src/r2Serial.cpp?r=b3ad5adc6b1e885620b615c5f56ccf929cfbcdc2</a></p>
+
+<p>My code is as follows:</p>
+
+<pre><code>#define DEFAULT_BAUDRATE 115200
+#define DEFAULT_SERIALPORT &quot;/dev/ttyUSB0&quot;
+
+//Global data
+FILE *fpSerial = NULL;   //serial port file pointer
+ros::Publisher ucResponseMsg;
+ros::Subscriber ucCommandMsg;
+int ucIndex;          //ucontroller index number
+
+int FileDesc;
+
+unsigned char crc_sum=0;
+
+//Initialize serial port, return file descriptor
+FILE *serialInit(char * port, int baud)
+{
+  int BAUD = 0;
+  int fd = -1;
+  struct termios newtio, oldtio;
+  FILE *fp = NULL;
+
+ //Open the serial port as a file descriptor for low level configuration
+ // read/write, not controlling terminal for process,
+  fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY);
+
+  ROS_INFO(&quot;FileDesc : %d&quot;,fd);
+
+ if ( fd&lt;0 )
+  {
+    ROS_ERROR(&quot;serialInit: Could not open serial device %s&quot;,port);
+   return fp;
+  }
+
+  // save current serial port settings
+  tcgetattr(fd,&amp;oldtio);
+
+  // clear the struct for new port settings
+  bzero(&amp;newtio, sizeof(newtio));
+
+  //Look up appropriate baud rate constant
+  switch (baud)
+  {
+     case 38400:
+     default:
+        BAUD = B38400;
+        break;
+     case 19200:
+        BAUD  = B19200;
+        break;
+    case 115200:
+        BAUD  = B115200;
+        break;
+     case 9600:
+       BAUD  = B9600;
+        break;
+     case 4800:
+        BAUD  = B4800;
+        break;
+     case 2400:
+        BAUD  = B2400;
+        break;
+     case 1800:
+        BAUD  = B1800;
+        break;
+     case 1200:
+        BAUD  = B1200;
+        break;
+  }  //end of switch baud_rate
+
+  if (cfsetispeed(&amp;newtio, BAUD) &lt; 0 || cfsetospeed(&amp;newtio, BAUD) &lt; 0)
+  {
+    ROS_ERROR(&quot;serialInit: Failed to set serial baud rate: %d&quot;, baud);
+    close(fd);
+    return NULL;
+  }
+
+  // set baud rate, (8bit,noparity, 1 stopbit), local control, enable receiving characters.
+  newtio.c_cflag  = BAUD | CRTSCTS | CS8 | CLOCAL | CREAD;
+
+  // ignore bytes with parity errors
+  newtio.c_iflag =  IGNPAR;
+
+  // raw output
+  newtio.c_oflag = 0;
+
+  // set input mode to non - canonical
+  newtio.c_lflag = 0;
+
+  // inter-charcter timer 
+  newtio.c_cc[VTIME] = 0;
+
+  // blocking read (blocks the read until the no.of charcters are read
+  newtio.c_cc[VMIN] = 0;
+
+  // clean the line and activate the settings for the port
+  tcflush(fd, TCIFLUSH);
+  tcsetattr (fd, TCSANOW,&amp;newtio);
+
+  //Open file as a standard I/O stream
+  fp = fdopen(fd, &quot;r+&quot;);
+
+ if (!fp) {
+    ROS_ERROR(&quot;serialInit: Failed to open serial stream %s&quot;, port);
+    fp = NULL;
+  }
+
+ROS_INFO(&quot;FileStandard I/O stream: %d&quot;,fp);
+
+  return fp;
+} //serialInit
+
+
+//Process ROS command message, send to uController
+void ucCommandCallback(const geometry_msgs::TwistConstPtr&amp; cmd_vel)
+{
+  unsigned char msg[14];
+  float test1,test2;
+  unsigned long i;
+
+ // build the message packet to be sent
+ msg = packet to be sent;
+ msg[13] = crc_sum;
+
+   for (i=0;i&lt;14;i++)
+   {
+     fprintf(fpSerial, &quot;%c&quot;, msg[i]);
+   }
+
+tcflush(FileDesc, TCOFLUSH); 
+
+} //ucCommandCallback
+
+
+//Receive command responses from robot uController
+//and publish as a ROS message
+void *rcvThread(void *arg)
+{
+  int rcvBufSize = 200;
+  char ucResponse[10];//[rcvBufSize];   //response string from uController
+  char *bufPos;
+  std_msgs::String msg;
+  std::stringstream ss;
+  int BufPos,i;
+  unsigned char crc_rx_sum =0;
+
+  while (ros::ok()) {
+
+     BufPos = fread((void*)ucResponse,1,10,fpSerial);
+
+for (i=0;i&lt;10;i++)
+{
+ ROS_INFO(&quot;T: %x &quot;,(unsigned char)ucResponse[i]);
+ ROS_INFO(&quot;NT: %x &quot;,ucResponse[i]);
+}
+
+          msg.data = ucResponse;
+          ucResponseMsg.publish(msg);
+}
+
+  return NULL;
+} //rcvThread
+
+
+int main(int argc, char **argv)
+{
+  char port[20];    //port name
+  int baud;     //baud rate 
+
+  char topicSubscribe[20];
+  char topicPublish[20];
+
+  pthread_t rcvThrID;   //receive thread ID
+  int err;
+
+  //Initialize ROS
+  ros::init(argc, argv, &quot;r2SerialDriver&quot;);
+  ros::NodeHandle rosNode;
+  ROS_INFO(&quot;r2Serial starting&quot;);
+
+  //Open and initialize the serial port to the uController
+  if (argc &gt; 1) {
+    if(sscanf(argv[1],&quot;%d&quot;, &amp;ucIndex)==1) {
+      sprintf(topicSubscribe, &quot;uc%dCommand&quot;,ucIndex);
+      sprintf(topicPublish, &quot;uc%dResponse&quot;,ucIndex);
+    }
+    else {
+      ROS_ERROR(&quot;ucontroller index parameter invalid&quot;);
+      return 1;
+    }
+  }
+  else {
+    strcpy(topicSubscribe, &quot;uc0Command&quot;);
+    strcpy(topicPublish, &quot;uc0Response&quot;);
+  }
+
+  strcpy(port, DEFAULT_SERIALPORT);
+  if (argc &gt; 2)
+     strcpy(port, argv[2]);
+
+  baud = DEFAULT_BAUDRATE;
+  if (argc &gt; 3) {
+    if(sscanf(argv[3],&quot;%d&quot;, &amp;baud)!=1) {
+      ROS_ERROR(&quot;ucontroller baud rate parameter invalid&quot;);
+      return 1;
+    }
+  }
+
+  ROS_INFO(&quot;connection initializing (%s) at %d baud&quot;, port, baud);
+
+   fpSerial = serialInit(port, baud);
+
+ if (!fpSerial )
+  {
+    ROS_ERROR(&quot;unable to create a new serial port&quot;);
+    return 1;
+  }
+  ROS_INFO(&quot;serial connection successful&quot;);
+
+  //Subscribe to ROS messages
+  ucCommandMsg = rosNode.subscribe(&quot;cmd_vel&quot; /*topicSubscribe*/, 100, ucCommandCallback);
+
+  //Setup to publish ROS messages
+  ucResponseMsg = rosNode.advertise&lt;std_msgs::String&gt;(topicPublish, 100);
+
+  //Create receive thread
+  err = pthread_create(&amp;rcvThrID, NULL, rcvThread, NULL);
+
+  if (err != 0) {
+    ROS_ERROR(&quot;unable to create receive thread&quot;);
+    return 1;
+  }
+
+  //Process ROS messages and send serial commands to uController
+  ros::spin();
+
+  fclose(fpSerial);
+  ROS_INFO(&quot;r2Serial stopping&quot;);
+  return 0;
+}
+</code></pre>
+
+<p>The problems are:</p>
+
+<p>communication is not reliable, I get many broken packets in between (the communication is asynchronous), what might be the problem..?</p>
+
+<p>and while receiving the data from the micro controller, I will keep on continuously receiving the same last received data even the controller stops sending the data, what might be the problem for this behavior any internal buffer&#39;s need to be cleared..?</p>
+
+<p>or Is there any serial port library I can readily use (with example)</p>
+
+<p>many thanks in advance.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/18196">sumanth</a> on 2014-08-19 14:46:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Not sure that this has anything to do with the ROS component of this program. It seems like it is just an issue with your serial implementation. I don&#39;t have time to dig into your code, but my serial library is available in ROS and is known to work in many existing robots, so you might try that:</p>
+
+<p><a href="http://wjwwood.io/serial/doc/1.1.0/index.html">http://wjwwood.io/serial/doc/1.1.0/index.html</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/10"></a> on 2014-08-19 15:08:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Oh that&#39;s great, How can I use this library in ROS.
+Do I need to create a package with some dependencies and copy the library into that or how is it done exactly.?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18196">sumanth</a> on 2014-08-20 01:30:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have used the library as it is with out changing anything, then I tried to run the serial_example.cc it is running fine. I have modified the code of the example (added some ROS publisher&#39;s subscribers), but it gives &quot;Invoking &quot;make failed&quot;. Do I need to change CMakeLists.txt</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18196">sumanth</a> on 2014-08-20 02:42:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It is a ROS package itself, you can just install it with <code>sudo apt-get install ros-indigo-serial</code>. Then you can write a new ROS package with a new ROS node which uses it (see the example for how to use it).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/10">William</a> on 2014-08-20 13:28:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks a lot william .
+I have tried to use the library and the communication is working fine, there is some problem in transmitting the data from ROS to micro controller (The data gets drifted), this I guess is a problem on uC side. I will check this part.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/18196">sumanth</a> on 2014-08-20 14:30:27 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Not sure, but I had lots of problem with USB Serial and Ubuntu/Debian (the problem is to configure the serial port to work correctly in C/C++). Could you try with a simple python script that reads from the serial port the same datas from the micro and see it the same problem happens?</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/19675">Andromeda</a> on 2014-08-19 16:57:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>I think the problem is very simple: you don&#39;t need to set CTSRTS handshake
+here</p>
+
+<pre><code>// set baud rate, (8bit,noparity, 1 stopbit), local control, enable receiving characters.
+  newtio.c_cflag  = BAUD | CRTSCTS | CS8 | CLOCAL | CREAD;
+</code></pre>
+
+<p>Use CLOCAL instead CTSRTS</p>
+
+<p>With Best regards,
+Wagan Sarukhanov</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22367">Wagan Sarukhanov</a> on 2015-05-06 16:33:35 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

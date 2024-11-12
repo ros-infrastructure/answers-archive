@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Unsyncronization on image classification of an image topic - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/377296">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Unsyncronization on image classification of an image topic</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98951/unsyncronization-on-image-classification-of-an-image-topic">https://robotics.stackexchange.com/questions/98951/unsyncronization-on-image-classification-of-an-image-topic</a>.</p>
+        <p>Hello.</p>
+
+<p>I am trying to use Tensorflow lite to implement image classification. To do this I subscribe to the RGB image topic of a Realsense D435. Here I declared my subscription and publications:</p>
+
+<pre><code>def main(self):
+    rospy.init_node(&#39;tensorflow_ros&#39;)
+    rospy.loginfo(&quot;Iniciado nodo tensorflow_ros&quot;)
+
+    print(&quot;[INFO] Loading model...&quot;)
+    self.labels = detector.load_labels(&quot;/home/pi/catkin_ws/src/tensorflow_ros/src/coco_labels.txt&quot;)
+    self.interpreter = Interpreter(&quot;/home/pi/catkin_ws/src/tensorflow_ros/src/ssd_mobilenet_v3_small_coco.tflite&quot;)
+    self.interpreter.allocate_tensors()
+    _, input_height, input_width, _ = self.interpreter.get_input_details()[0][&#39;shape&#39;]
+    self.image_width = input_width
+    self.image_height = input_height
+    print(&quot;[INFO] Model loaded.&quot;)
+    self.bridge = CvBridge()
+
+    # Publications
+    self.classification_pub = rospy.Publisher(&quot;image_classified&quot;, Image, queue_size=100)
+    # Subscriber
+    rospy.Subscriber(&quot;/camera/color/image_raw&quot;, Image, self.callback_image)
+
+    rospy.spin()
+</code></pre>
+
+<p>Here I process the image and publish the image:</p>
+
+<pre><code>def callback_image(self, msg):
+
+        start = time.time()
+
+        rgb_image = self.bridge.imgmsg_to_cv2(msg, &quot;rgb8&quot;)
+
+        rgb_image = cv2.resize(rgb_image, (self.image_width, self.image_height))
+        results = detector.detect_objects(self.interpreter, rgb_image, self.threshold)
+        detector.annotate_objects(rgb_image, results, self.labels)
+
+        fps = round(1 / (time.time() - start), 2)
+        image = cv2.resize(rgb_image, (640, 480))
+        cv2.rectangle(rgb_image, (0, 0), (170, 30), (int(0), int(0), int(0)), -1)
+        cv2.putText(rgb_image, &quot;FPS:&quot; + str(fps), (5, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (int(255), int(0), int(0)))
+
+        # Publish topic/home/sara/catkin_ws/src/tensorflow_ros/script
+        self.classification_pub.publish(self.bridge.cv2_to_imgmsg(rgb_image, &quot;rgb8&quot;))
+</code></pre>
+
+<p>The problem is that the classified image have a delay of 4-5 seconds, but it doesnt takes that tame to classify (aproximatelly 100 ms) so I think is a problem of unsyncronization. The framerate is 7-8 fps more or less. What do you think and how can I solve it?</p>
+
+<p>I have tried other way to do this without using the realsense_ros package, by the following way:</p>
+
+<pre><code>def main(self):
+    rospy.init_node(&#39;tensorflow_ros&#39;)
+    rospy.loginfo(&quot;Iniciado nodo tensorflow_ros&quot;)
+
+    # Publications
+    self.rgb_pub = rospy.Publisher(&quot;/camera/color/image&quot;, Image, queue_size=100)
+    self.rgb_camerainfo_pub = rospy.Publisher(&quot;/camera/color/camera_info&quot;, CameraInfo, queue_size=100)
+    self.depth_pub = rospy.Publisher(&quot;/camera/depth/image&quot;, Image, queue_size=100)
+    self.depth_camerainfo_pub = rospy.Publisher(&quot;/camera/depth/camera_info&quot;, CameraInfo, queue_size=100)
+    self.pointcloud_pub = rospy.Publisher(&quot;pointcloud&quot;, PointCloud2, queue_size=100)
+    classification_pub = rospy.Publisher(&quot;image_classified&quot;, Image, queue_size=100)
+
+    print(&quot;[INFO] Starting streaming...&quot;)
+
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color, self.width, self.height, rs.format.rgb8, 30)
+    config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, 30)
+    pipeline.start(config)
+
+    print(&quot;[INFO] Camera ready.&quot;)
+
+    print(&quot;[INFO] Loading model...&quot;)
+
+    labels = detector.load_labels(&quot;/home/pi/catkin_ws/src/tensorflow_ros/src/coco_labels.txt&quot;)
+    interpreter = Interpreter(&quot;/home/pi/catkin_ws/src/tensorflow_ros/src/ssd_mobilenet_v3_small_coco.tflite&quot;)
+    interpreter.allocate_tensors()
+    _, input_height, input_width, _ = interpreter.get_input_details()[0][&#39;shape&#39;]
+    self.image_width = input_width
+    self.image_height = input_height
+
+    print(&quot;[INFO] Model loaded.&quot;)
+
+    self.bridge = CvBridge()
+
+    try:
+        while not rospy.is_shutdown():
+            start = time.time()
+            self.pc = rs.pointcloud()
+            frames = pipeline.wait_for_frames()
+            depth_frame = frames.get_depth_frame()
+            color_frame = frames.get_color_frame()
+
+            if not depth_frame or not color_frame:
+                continue
+
+            rgb_image = detector.get_color_image(color_frame)
+            detector.get_depth_image(depth_frame)
+
+            detector.get_pointcloud(depth_frame)
+
+            #Classification
+            image = cv2.resize(rgb_image, (self.image_width, self.image_height))
+            results = detector.detect_objects(interpreter, image, self.threshold)
+            detector.annotate_objects(image, results, labels)
+            fps = round(1 / (time.time() - start), 2)
+            image = cv2.resize(image,(640,480))
+            cv2.rectangle(image, (0, 0), (170, 30), (int(0),int(0), int(0)), -1)
+            cv2.putText(image, &quot;FPS:&quot; + str(fps), (5, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (int(255), int(0), int(0)))
+            classification_pub.publish(self.bridge.cv2_to_imgmsg(image, &quot;rgb8&quot;))
+
+
+    finally:
+        # Stop streaming
+        pipeline.stop()
+</code></pre>
+
+<p>But by this way the framerate is very poor because of the processing of the pointcloud.</p>
+
+<p>Thanks in advance.</p>
+
+<p>Best regards.
+Alessandro</p>
+
+        <div class="owner"><p>Asked by <a href="/users/52370">Alessandro Melino</a> on 2021-04-29 06:50:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The unsyncronization is due to the low processing power of the computer. With other computers or a GPU/TPU the framerate and the syncronization improve.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/52370">Alessandro Melino</a> on 2021-10-14 03:33:19 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for sharing the answer once you figured it out.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2021-10-14 06:33:08 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Trouble with subscribing to a topic from a custom costmap layer plugin - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/392190">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Trouble with subscribing to a topic from a custom costmap layer plugin</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I have created a new costmap layer by following the tutorial: <a href="http://wiki.ros.org/costmap_2d/Tutorials/Creating%20a%20New%20Layer">http://wiki.ros.org/costmap_2d/Tutorials/Creating%20a%20New%20Layer</a>, where I have added a subscriber and callback function.</p>
+
+<p>The purpose of this layer is to subscribe to a topic containing geometry_msg/Points, and add them to the costmap.</p>
+
+<p>The following code shows simple_layers.cpp: </p>
+
+<pre><code>#include &lt;simple_layer.h&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+#include &lt;geometry_msgs/Point.h&gt;
+#include&lt;vector&gt;
+
+
+using namespace std;
+
+PLUGINLIB_EXPORT_CLASS(simple_layer_namespace::SimpleLayer, costmap_2d::Layer)
+
+using costmap_2d::LETHAL_OBSTACLE;
+
+namespace simple_layer_namespace
+{
+
+SimpleLayer::SimpleLayer() {}
+
+vector&lt;geometry_msgs::Point&gt; costmapPoints;
+
+//MY CALLBACK FUNCTION!
+void SimpleLayer::formationCallback(const spot_pkg::formationPoints::ConstPtr&amp; msg){
+  ROS_INFO(&quot;Receiving points from callback&quot;);
+  int size = msg-&gt;points.size();
+  //Loop all points
+  for(int i = 0; i &lt; size; i++){
+
+    geometry_msgs::Point newPoint = geometry_msgs::Point();
+    newPoint.x = msg-&gt;points[i].x;
+    newPoint.y = msg-&gt;points[i].y;
+
+    costmapPoints.push_back(newPoint);
+  }
+}
+
+void SimpleLayer::onInitialize()
+{
+  ros::NodeHandle nh(&quot;~/&quot; + name_);
+  current_ = true;
+  //SUBSCRIBE TO
+  sub = nh.subscribe(&quot;/topic&quot;, 1000, &amp;SimpleLayer::formationCallback, this);
+
+
+  dsrv_ = new dynamic_reconfigure::Server&lt;costmap_2d::GenericPluginConfig&gt;(nh);
+  dynamic_reconfigure::Server&lt;costmap_2d::GenericPluginConfig&gt;::CallbackType cb = boost::bind(
+      &amp;SimpleLayer::reconfigureCB, this, _1, _2);
+  dsrv_-&gt;setCallback(cb);
+
+}
+
+void SimpleLayer::reconfigureCB(costmap_2d::GenericPluginConfig &amp;config, uint32_t level)
+{
+  enabled_ = config.enabled;
+}
+
+void SimpleLayer::updateBounds(double robot_x, double robot_y, double robot_yaw, double* min_x,
+                                           double* min_y, double* max_x, double* max_y)
+{
+  if (!enabled_)
+    return;
+
+  ROS_INFO(&quot;Updating bounds&quot;);
+
+  mark_x_ = robot_x + 2 *cos(robot_yaw);
+  mark_y_ = robot_y + 2* sin(robot_yaw);
+
+  *min_x = std::min(*min_x, mark_x_);
+  *min_y = std::min(*min_y, mark_y_);
+  *max_x = std::max(*max_x, mark_x_);
+  *max_y = std::max(*max_y, mark_y_);
+}
+
+void SimpleLayer::updateCosts(costmap_2d::Costmap2D&amp; master_grid, int min_i, int min_j, int max_i,
+                                          int max_j)
+{
+  if (!enabled_)
+    return;
+
+  ROS_INFO(&quot;Updating costs&quot;);
+
+  unsigned int mx;
+  unsigned int my;
+
+
+  for(int i = 0; i &lt; costmapPoints.size(); i++){
+    if(master_grid.worldToMap(costmapPoints[i].x, costmapPoints[i].y, mx, my)){
+      master_grid.setCost(mx, my, LETHAL_OBSTACLE);
+    }
+  }
+}
+
+
+} // end namespace
+</code></pre>
+
+<p>The following shows costmap<em>common</em>params.yaml that starts my plugin.</p>
+
+<pre><code>obstacle_range: 10 #2.5
+raytrace_range: 10.5 #3
+
+footprint: [[-0.4, -0.2], [-0.4, 0.2], [0.4, 0.2], [0.4, -0.2]]
+
+transform_tolerance: 1.0
+
+inflation:
+  inflation_radius: 0.075 #0.1
+  cost_scaling_factor: 15  # exponential rate at which the obstacle cost drops off (default 10)
+
+obstacle_2d_layer:
+    observation_sources: scan
+    scan: {data_type: LaserScan, sensor_frame: sensor_frame, topic: /scan, marking: true, clearing: true, min_obstacle_height: 0, max_obstacle_height: 2.0}
+
+plugins: 
+    - {name: static_map, type: &quot;costmap_2d::StaticLayer&quot;}
+    - {name: obstacle_2d_layer, type: &quot;costmap_2d::ObstacleLayer&quot;}
+    - {name: inflation, type: &quot;costmap_2d::InflationLayer&quot;}
+    - {name: simple_layer, type: &quot;simple_layer_namespace::SimpleLayer&quot;}
+</code></pre>
+
+<p>The layer loads correctly when launching move base, but the callback function is not called when information is published to the topic. </p>
+
+        <div class="owner"><p>Asked by <a href="/users/90861">vini</a> on 2021-12-03 09:26:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I fixed it by declaring the nodehandle inside the header file, instead of declaring it in onInitialize().</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/90861">vini</a> on 2021-12-07 14:39:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Hi @vini, glad you found an answer. For future documentation, would it be possible to add more details - show the changes in code so others may benefit. Thank you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84086">osilva</a> on 2021-12-07 15:23:44 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;ll provide some code to show what changes I&#39;ve done.</p>
+
+<p>My simple_layer.cpp onInitialize function is nearly identical but the nodehandle is not declared anymore:</p>
+
+<pre><code>void SimpleLayer::onInitialize()
+{
+  current_ = true;
+  //SUBSCRIBE TO
+  sub = nh.subscribe(&quot;/topic&quot;, 1000, &amp;SimpleLayer::formationCallback, this);
+
+  dsrv_ = new dynamic_reconfigure::Server&lt;costmap_2d::GenericPluginConfig&gt;(nh);
+  dynamic_reconfigure::Server&lt;costmap_2d::GenericPluginConfig&gt;::CallbackType cb = boost::bind(
+      &amp;SimpleLayer::reconfigureCB, this, _1, _2);
+  dsrv_-&gt;setCallback(cb);
+
+}
+</code></pre>
+
+<p>The simple_layer.cpp now has a private variable that declares the node handle:</p>
+
+<pre><code>private:
+ros::NodeHandle nh;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/90861">vini</a> on 2021-12-08 08:54:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Hey, I am trying to do something similar, but in my case I want the plugin to be running continuously and continuously getting points from callback and keep updating costmap. But the update functions don&#39;t keep running, they only run at start. How can I solve this?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108152">aryaman</a> on 2022-07-08 09:18:31 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

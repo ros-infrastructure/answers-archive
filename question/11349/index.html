@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Using laser_filter node. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/11349">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Using laser_filter node.</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/34545/using-laser-filter-node">https://robotics.stackexchange.com/questions/34545/using-laser-filter-node</a>.</p>
+        <p>Hello, I&#39;m trying to get the &quot;scan<em>to</em>cloud<em>filter</em>chain&quot;, located in the laser_filter node, to execute but it keeps giving me the error :</p>
+
+<p><strong>[ WARN] [1317231063.120226126]: Use of default &#39;~target<em>frame&#39; parameter in scan</em>to<em>cloud</em>filter<em>chain has been deprecated.  Default currently set to &#39;base</em>link&#39; please set explicitly as appropriate.</strong></p>
+
+<p>When I get this error nothing appears in Rviz. </p>
+
+<p>I am using the laser scan data provided by ROS. This data is located on the same page as the Laser Filtering tutorial. </p>
+
+<p>This is the tutorial I am following <a href="http://www.ros.org/wiki/laser_filters/Tutorials/Laser%20filtering%20using%20the%20filter%20nodes">Laser filtering using the filtering nodes</a></p>
+
+<p>Here is the source code take directly from the laser_filter node : </p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;sensor_msgs/PointCloud.h&gt;
+#include &lt;sensor_msgs/LaserScan.h&gt;
+
+#include &lt;float.h&gt;
+
+// Laser projection
+#include &lt;laser_geometry/laser_geometry.h&gt;
+
+// TF
+#include &lt;tf/transform_listener.h&gt;
+#include &quot;tf/message_filter.h&quot;
+#include &quot;message_filters/subscriber.h&quot;
+
+//Filters
+#include &quot;filters/filter_chain.h&quot;
+
+class ScanToCloudFilterChain
+{
+public:
+
+  // ROS related
+  laser_geometry::LaserProjection projector_; // Used to project laser scans
+
+  double laser_max_range_;           // Used in laser scan projection
+  int window_;
+
+  bool high_fidelity_;                    // High fidelity (interpolating time across scan)
+  std::string target_frame_;                   // Target frame for high fidelity result
+  std::string scan_topic_, cloud_topic_;
+
+  ros::NodeHandle nh;
+  ros::NodeHandle private_nh;
+
+  // TF
+  tf::TransformListener tf_;
+
+  message_filters::Subscriber&lt;sensor_msgs::LaserScan&gt; sub_;
+  tf::MessageFilter&lt;sensor_msgs::LaserScan&gt; filter_;
+
+  double tf_tolerance_;
+  filters::FilterChain&lt;sensor_msgs::PointCloud&gt; cloud_filter_chain_;
+  filters::FilterChain&lt;sensor_msgs::LaserScan&gt; scan_filter_chain_;
+  ros::Publisher cloud_pub_;
+
+  // Timer for displaying deprecation warnings
+  ros::Timer deprecation_timer_;
+  bool  using_scan_topic_deprecated_;
+  bool  using_cloud_topic_deprecated_;
+  bool  using_default_target_frame_deprecated_;
+  bool  using_laser_max_range_deprecated_;
+  bool  using_filter_window_deprecated_;
+  bool  using_scan_filters_deprecated_;
+  bool  using_cloud_filters_deprecated_;
+  bool  using_scan_filters_wrong_deprecated_;
+  bool  using_cloud_filters_wrong_deprecated_;
+
+  ////////////////////////////////////////////////////////////////////////////////
+  ScanToCloudFilterChain () : laser_max_range_ (DBL_MAX), private_nh(&quot;~&quot;), filter_(tf_, &quot;&quot;, 50),
+                   cloud_filter_chain_(&quot;sensor_msgs::PointCloud&quot;), scan_filter_chain_(&quot;sensor_msgs::LaserScan&quot;)
+  {
+    private_nh.param(&quot;high_fidelity&quot;, high_fidelity_, false);
+    private_nh.param(&quot;notifier_tolerance&quot;, tf_tolerance_, 0.03);
+    private_nh.param(&quot;target_frame&quot;, target_frame_, std::string (&quot;base_link&quot;));
+
+// DEPRECATED with default value
+    using_default_target_frame_deprecated_ = !private_nh.hasParam(&quot;target_frame&quot;);
+
+// DEPRECATED
+    using_scan_topic_deprecated_ = private_nh.hasParam(&quot;scan_topic&quot;);
+    using_cloud_topic_deprecated_ = private_nh.hasParam(&quot;cloud_topic&quot;);
+    using_laser_max_range_deprecated_ = private_nh.hasParam(&quot;laser_max_range&quot;);
+    using_filter_window_deprecated_ = private_nh.hasParam(&quot;filter_window&quot;);
+    using_cloud_filters_deprecated_ = private_nh.hasParam(&quot;cloud_filters/filter_chain&quot;);
+    using_scan_filters_deprecated_ = private_nh.hasParam(&quot;scan_filters/filter_chain&quot;);
+    using_cloud_filters_wrong_deprecated_ = private_nh.hasParam(&quot;cloud_filters/cloud_filter_chain&quot;);
+    using_scan_filters_wrong_deprecated_ = private_nh.hasParam(&quot;scan_filters/scan_filter_chain&quot;);
+
+
+    private_nh.param(&quot;filter_window&quot;, window_, 2);
+    private_nh.param(&quot;laser_max_range&quot;, laser_max_range_, DBL_MAX);
+    private_nh.param(&quot;scan_topic&quot;, scan_topic_, std::string(&quot;tilt_scan&quot;));
+    private_nh.param(&quot;cloud_topic&quot;, cloud_topic_, std::string(&quot;tilt_laser_cloud_filtered&quot;));
+
+
+    filter_.setTargetFrame(target_frame_);
+    filter_.registerCallback(boost::bind(&amp;ScanToCloudFilterChain::scanCallback, this, _1));
+    filter_.setTolerance(ros::Duration(tf_tolerance_));
+
+    if (using_scan_topic_deprecated_)
+      sub_.subscribe(nh, scan_topic_, 50);
+    else
+      sub_.subscribe(nh, &quot;scan&quot;, 50);
+
+    filter_.connectInput(sub_);
+
+    if (using_cloud_topic_deprecated_)
+     cloud_pub_ = nh.advertise&lt;sensor_msgs::PointCloud&gt; (cloud_topic_, 10);
+    else
+      cloud_pub_ = nh.advertise&lt;sensor_msgs::PointCloud&gt; (&quot;cloud_filtered&quot;, 10);
+
+    std::string cloud_filter_xml;
+
+    if (using_cloud_filters_deprecated_)
+      cloud_filter_chain_.configure(&quot;cloud_filters/filter_chain&quot;, private_nh);
+    else if (using_cloud_filters_wrong_deprecated_)
+      cloud_filter_chain_.configure(&quot;cloud_filters/cloud_filter_chain&quot;, private_nh);
+    else
+      cloud_filter_chain_.configure(&quot;cloud_filter_chain&quot;, private_nh);
+
+    if (using_scan_filters_deprecated_)
+      scan_filter_chain_.configure(&quot;scan_filter/filter_chain&quot;, private_nh);
+    else if (using_scan_filters_wrong_deprecated_)
+      scan_filter_chain_.configure(&quot;scan_filters/scan_filter_chain&quot;, private_nh);
+    else
+      scan_filter_chain_.configure(&quot;scan_filter_chain&quot;, private_nh);
+
+    deprecation_timer_ = nh.createTimer(ros::Duration(5.0), boost::bind(&amp;ScanToCloudFilterChain::deprecation_warn, this, _1));
+  }
+
+  // We use a deprecation warning on a timer to avoid warnings getting lost in the noise
+  void deprecation_warn(const ros::TimerEvent&amp; e)
+  {
+    if (using_scan_topic_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~scan_topic&#39; parameter in scan_to_cloud_filter_chain has been deprecated.&quot;);
+
+    if (using_cloud_topic_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~cloud_topic&#39; parameter in scan_to_cloud_filter_chain has been deprecated.&quot;);
+
+    if (using_laser_max_range_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~laser_max_range&#39; parameter in scan_to_cloud_filter_chain has been deprecated.&quot;);
+
+    if (using_filter_window_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~filter_window&#39; parameter in scan_to_cloud_filter_chain has been deprecated.&quot;);
+
+    if (using_default_target_frame_deprecated_)
+      ROS_WARN(&quot;Use of default &#39;~target_frame&#39; parameter in scan_to_cloud_filter_chain has been deprecated.  Default currently set to &#39;base_link&#39; please set explicitly as appropriate.&quot;);
+
+    if (using_cloud_filters_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~cloud_filters/filter_chain&#39; parameter in scan_to_cloud_filter_chain has been deprecated.  Replace with &#39;~cloud_filter_chain&#39;&quot;);
+
+    if (using_scan_filters_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~scan_filters/filter_chain&#39; parameter in scan_to_cloud_filter_chain has been deprecated.  Replace with &#39;~scan_filter_chain&#39;&quot;);
+
+    if (using_cloud_filters_wrong_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~cloud_filters/cloud_filter_chain&#39; parameter in scan_to_cloud_filter_chain is incorrect.  Please Replace with &#39;~cloud_filter_chain&#39;&quot;);
+
+    if (using_scan_filters_wrong_deprecated_)
+      ROS_WARN(&quot;Use of &#39;~scan_filters/scan_filter_chain&#39; parameter in scan_to_scan_filter_chain is incorrect.  Please Replace with &#39;~scan_filter_chain&#39;&quot;);
+
+  }
+
+
+  ////////////////////////////////////////////////////////////////////////////////
+  void
+  scanCallback (const sensor_msgs::LaserScan::ConstPtr&amp; scan_msg)
+  {
+    //    sensor_msgs::LaserScan scan_msg = *scan_in;
+
+    sensor_msgs::LaserScan filtered_scan;
+    scan_filter_chain_.update (*scan_msg, filtered_scan);
+
+    // Project laser into point cloud
+    sensor_msgs::PointCloud tmp_cloud;
+    sensor_msgs::PointCloud scan_cloud;
+
+    //\TODO CLEAN UP HACK 
+    // This is a trial at correcting for incident angles.  It makes many assumptions that do not generalise
+    for (unsigned int i = 0; i &lt; filtered_scan.ranges.size(); i++)
+    {
+      double angle = filtered_scan.angle_min + i * filtered_scan.angle_increment;
+      filtered_scan.ranges[i] = filtered_scan.ranges[i] + 0.03 * exp(-fabs(sin(angle)));
+
+    };
+
+    // Transform into a PointCloud message
+      int mask = laser_geometry::channel_option::Intensity |
+      laser_geometry::channel_option::Distance |
+      laser_geometry::channel_option::Index |
+      laser_geometry::channel_option::Timestamp;
+
+    if (high_fidelity_)
+    {
+      try
+      {
+        projector_.transformLaserScanToPointCloud (target_frame_, filtered_scan, scan_cloud, tf_, mask);
+      }
+      catch (tf::TransformException &amp;ex)
+      {
+        ROS_WARN(&quot;High fidelity enabled, but TF returned a transform exception to frame %s: %s&quot;, target_frame_.c_str (), ex.what ());
+        return;
+        //projector_.projectLaser (filtered_scan, scan_cloud, laser_max_range_, preservative_, mask);
+      }
+    }
+    else
+    {
+       projector_.projectLaser (filtered_scan, tmp_cloud, laser_max_range_, mask);
+       tf_.transformPointCloud(target_frame_,  tmp_cloud, scan_cloud);
+    }
+
+    sensor_msgs::PointCloud filtered_cloud;
+    cloud_filter_chain_.update (scan_cloud, filtered_cloud);
+
+    cloud_pub_.publish(filtered_cloud);
+  }
+
+} ;
+
+
+
+int
+main (int argc, char** argv)
+{
+  ros::init (argc, argv, &quot;scan_to_cloud_filter_chain&quot;);
+  ros::NodeHandle nh;
+  ScanToCloudFilterChain f;
+
+  ros::spin();
+
+  return (0);
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/1092">tyler258</a> on 2011-09-28 05:56:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>What this warning says is that you have not explicitly set the target frame of the filter. While it&#39;s currently defaulting to &quot;base_link&quot;, you want to explicitly declare that as the default. Try adding this to the launch file under the scan_to_cloud_filter_chain node:</p>
+
+<pre><code>&lt;param name=&quot;target_frame&quot; value=&quot;base_link&quot; /&gt; 
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/635">DimitriProsser</a> on 2011-09-28 06:54:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

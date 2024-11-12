@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Humble: Shutdown causes RCLError: publisher's context is invalid - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/408908">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Humble: Shutdown causes RCLError: publisher's context is invalid</h2>
+      <div class="question">
+        <p>I built some ROS2 Python nodes modeled after the ROS2 Humble <a href="https://github.com/ros2/demos/blob/humble/demo_nodes_py/demo_nodes_py/topics/talker.py">demo<em>nodes</em>py/talker.py</a></p>
+
+<p>When I run and kill a single node in my package, I get:</p>
+
+<pre><code>rclpy._rclpy_pybind11.RCLError: Failed to publish: publisher&#39;s context is invalid, at ./src/rcl/publisher.c:389
+</code></pre>
+
+<p>I did not have this issue running the code in ROS 2 Foxy.</p>
+
+<p>The full traceback:</p>
+
+<pre><code>Traceback (most recent call last):
+  File &quot;/home/ubuntu/ros2ws/install/ros2_gopigo3_node/lib/ros2_gopigo3_node/distance_sensor&quot;, line 33, in &lt;module&gt;
+sys.exit(load_entry_point(&#39;ros2-gopigo3-node==0.0.0&#39;, &#39;console_scripts&#39;, &#39;distance_sensor&#39;)())
+File &quot;/home/ubuntu/ros2ws/install/ros2_gopigo3_node/lib/python3.10/site-packages/ros2_gopigo3_node/distance_sensor.py&quot;, line 53, in main
+    rclpy.spin(ds_node)
+File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py&quot;, line 222, in spin
+executor.spin_once()
+  File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py&quot;, line 712, in spin_once
+raise handler.exception()
+  File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/task.py&quot;, line 239, in __call__
+self._handler.send(None)
+File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py&quot;, line 418, in handler
+await call_coroutine(entity, arg)
+File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py&quot;, line 332, in _execute_timer
+await await_or_execute(tmr.callback)
+File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py&quot;, line 107, in await_or_execute
+return callback(*args)
+File &quot;/home/ubuntu/ros2ws/install/ros2_gopigo3_node/lib/python3.10/site-packages/ros2_gopigo3_node/distance_sensor.py&quot;, line 45, in timer_callback
+self.pub.publish(self.msg_range)
+File &quot;/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py&quot;, line 70, in publish
+self.__publisher.publish(msg)
+rclpy._rclpy_pybind11.RCLError: Failed to publish: publisher&#39;s context is invalid, at ./src/rcl/publisher.c:389
+[ros2run]: Process exited with failure 1
+</code></pre>
+
+<p>```</p>
+
+<p>It seems the only way to get rid of the error is to put a <code>try/except pass</code> around the publisher statement, but the demo app exits cleanly without this.  Why is this happening?</p>
+
+<p>Here is the code for my node:</p>
+
+<pre><code>#!/usr/bin/env python3
+
+# File: distance_sensor.py
+
+# Basic ROS2 Node to publish distance sensor readings
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+
+# from angles import from_degrees
+from sensor_msgs.msg import Range
+from di_sensors.easy_distance_sensor import EasyDistanceSensor
+import math
+
+
+class DistanceSensorNode(Node):
+
+    def __init__(self):
+        super().__init__(&#39;distance_sensor&#39;)
+        self.ds = EasyDistanceSensor(use_mutex=True)
+        self.msg_range = Range()
+        self.msg_range.header.frame_id = &quot;distance_sensor&quot;
+        self.msg_range.radiation_type = Range.INFRARED   # LASER is closer to INFRARED than ULTRASOUND
+        self.msg_range.min_range = 0.0200   #         2 cm /   20 mm
+        self.msg_range.max_range = 3.000    # 3 m / 300 cm / 3000 mm
+        self.msg_range.field_of_view = math.radians(25.0)     # +/- 12.5 degree FOV (~60cm at max range)
+        self.pub = self.create_publisher(Range, &#39;~/distance&#39;, qos_profile=10)
+        timer_period = 0.1  # 0.1 second = 10 Hz
+        self.timer = self.create_timer(timer_period, self.timer_callback)
+        self.get_logger().info(&#39;Created distance_sensor node at {:.0f} hz&#39;.format(1.0/timer_period))
+
+    def timer_callback(self):
+        self.reading_mm = self.ds.read_mm()
+        self.msg_range.range = self.reading_mm/1000.0
+        self.msg_range.header.stamp = self.get_clock().now().to_msg()
+        try:                                                    
+            self.pub.publish(self.msg_range)
+        except Exception:             # &lt;&lt;&lt;&lt;&lt;----- Have to catch RCLError on shutdown -- WHY?
+            pass
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    ds_node = DistanceSensorNode()
+
+    try:
+        rclpy.spin(ds_node)
+    except KeyboardInterrupt:
+        pass
+    except ExternalShutdownException:
+        sys.exit(1)
+    finally:
+      ds_node.destroy_node()
+      rclpy.try_shutdown()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>```</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40559">RobotDreams</a> on 2022-11-02 22:47:08 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The tutorials and Humble have been updated, so the SIGINT handling in C++ is no longer an issue.</p>
+
+<p><a href="http://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Writing-A-Simple-Cpp-Publisher-And-Subscriber.html">http://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Writing-A-Simple-Cpp-Publisher-And-Subscriber.html</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/40559">RobotDreams</a> on 2022-12-24 18:47:01 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It would be helpful to many if you explain what was added/changed to avoid the stack trace.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-12-26 09:44:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@mike-scheutzow The question included what I did to avoid the stack trace, and it appears that is still needed in Python.  The C++ tutorial code and the ROS2 Humble did change and thus no longer causes the error in C++ code.  I have no idea about what changed in the C++, only that people that are teaching ROS2 Humble using the older C++ talker/listener tutorial code, still result in the node shutdown attempted to be called after a SIGINT caused the node context to be invalid.   </p>
+
+<p>I could find no where on the Internet anyone was seeing this issue in Python or C++.  In almost two months no one upvoted my question, and no one answered either affirming or rejecting my issue with the Humble tutorial code.</p>
+
+<p>I have overestimated how many folks are beginners at the same point in my ROS2 Humble adventure.  Perhaps beginners should stick with Foxy or Galactic.  I have run into several other &quot;gotcha&quot;s with Humble that make me question the Humble regression testing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40559">RobotDreams</a> on 2022-12-26 12:48:00 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

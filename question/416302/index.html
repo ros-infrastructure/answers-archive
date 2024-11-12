@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Compilation issues with PCL and message_filters: ;  cannot bind non-const lvalue - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/416302">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Compilation issues with PCL and message_filters: ;  cannot bind non-const lvalue</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/103339/compilation-issues-with-pcl-and-message-filters-cannot-bind-non-const-lvalue">https://robotics.stackexchange.com/questions/103339/compilation-issues-with-pcl-and-message-filters-cannot-bind-non-const-lvalue</a>.</p>
+        <p>Compiler: gcc9.4.0
+Arch: Ubuntu20.04/AMD64
+PCL: 1.10
+ROS Galactic</p>
+
+<p>I&#39;ve got two errors which I believe are hindering me from compiling my code here successfully. 
+The first is affecting my attempt to calculate the 3D centroid using PCL:</p>
+
+<pre><code>cannot bind non-const lvalue reference of type ‘Eigen::Matrix&lt;int, 4, 1&gt;&amp;’ to an rvalue of type ‘Eigen::Matrix&lt;int, 4, 1&gt;’
+</code></pre>
+
+<p>I&#39;ve tried a few different type, including pointers/non-pointers, but I&#39;m a bit stumped with this. </p>
+
+<p>The second is an issue with using message_filters effectively. I&#39;ve tried to copy the approach used by <a href="https://github.com/ros-perception/image_pipeline/blob/galactic/stereo_image_proc/src/stereo_image_proc/point_cloud_node.cpp">image_pipeline</a> for stereography, but it&#39;s throwing a number of errors: </p>
+
+<pre><code>error: no matching function for call to ‘message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;::MessageEvent(const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, bool)’
+error: no matching function for call to ‘message_filters::Signal9&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;::addCallback&lt;const M0ConstPtr&amp;, const M1ConstPtr&amp;, const M2ConstPtr&amp;, const M3ConstPtr&amp;, const M4ConstPtr&amp;, const M5ConstPtr&amp;, const M6ConstPtr&amp;, const M7ConstPtr&amp;, const M8ConstPtr&amp;&gt;(std::_Bind_helper&lt;false, const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type)’
+[5.100s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+</code></pre>
+
+<p>The latter error might be causing the former, but I&#39;m not 100% on that. 
+Full error log is not attached, so please find it at the bottom here. </p>
+
+<p>The relevant code is follows:</p>
+
+<pre><code>PoseEval::PoseEval(rclcpp::NodeOptions options) : Node(&quot;pose_eval_cpp&quot;, options) {
+    rclcpp::QoS qos = rclcpp::SystemDefaultsQoS();
+    std::string ns = std::string(this-&gt;get_namespace());
+    this-&gt;detect_loc_pub_ = this-&gt;create_publisher&lt;PointStamped&gt;(ns + std::string(&quot;/detect_pos&quot;), qos);
+
+    message_filters::Subscriber&lt;PointCloud2&gt; pc2_sub_(this, ns + &quot;&quot;, qos.get_rmw_qos_profile());
+    message_filters::Subscriber&lt;Detection2D&gt; best_detect_sub_(this, ns + &quot;&quot;, qos.get_rmw_qos_profile());
+
+    this-&gt;synch_subs_.reset(new ApproximateSync(ApproximatePolicy(20), pc2_sub_, best_detect_sub_));
+    this-&gt;synch_subs_-&gt;registerCallback(std::bind(&amp;PoseEval::points_callback, this, std::placeholders::_1, std::placeholders::_2));
+}
+
+void PoseEval::points_callback(PointCloud2&amp; points, Detection2D&amp; best_match) {
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Synching detection and cloud&quot;);
+
+    // Find best result
+    auto byScore = [&amp;](const ObjectHypothesisWithPose&amp; a, const ObjectHypothesisWithPose&amp; b) {
+        return a.hypothesis.score &lt; b.hypothesis.score;
+    };
+    auto best = std::max_element(best_match.results.begin(), best_match.results.end(), byScore);
+
+    auto best_class = best-&gt;hypothesis.class_id;
+    auto best_score = best-&gt;hypothesis.score;
+
+    // Get ROI points
+    auto box = best_match.bbox;
+    auto box_c = box.center;
+    auto top = box_c.y - box.size_y / 2, bottom = box_c.y + box.size_y / 2, left = box_c.x - box.size_x / 2, right = box_c.x + box.size_x / 2;
+
+    pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr cloud = boost::make_shared&lt;pcl::PointCloud&lt;pcl::PointXYZRGB&gt;&gt;();
+    pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr cloud_subset = boost::make_shared&lt;pcl::PointCloud&lt;pcl::PointXYZRGB&gt;&gt;();
+
+    pcl::fromROSMsg(points, *cloud);
+
+    // Extract ROI
+    pcl::ExtractIndices&lt;pcl::PointXYZRGB&gt; filter(true);
+    filter.setInputCloud(cloud);
+    filter.setIndices(top, left, bottom - top, right - left);
+    filter.filter(*cloud_subset);
+
+    // Find Centroid
+    auto centroid = Eigen::Vector4f(0, 0, 0, 0);
+    auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Centroid found at %lf,%lf,%lf&quot;, centroid.x(), centroid.y(), centroid.z());
+
+    // Construct message
+    auto pt = Point();
+    pt.x = centroid.x();
+    pt.y = centroid.y();
+    pt.z = centroid.z();
+    auto pt_s = PointStamped();
+    pt_s.point = pt;
+    pt_s.header = Header(points.header);
+    this-&gt;detect_loc_pub_-&gt;publish(pt_s);
+}
+</code></pre>
+
+<p>And error messages:</p>
+
+<pre><code>[0.254s] Invoking command in &#39;/home/USERNAME/repos/thesis/ros2_ws/build/ros2_yolo_cpp&#39;: CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/USERNAME/repos/thesis/ros2_ws/install/auv_tracking:/home/USERNAME/repos/thesis/ros2_ws/install/global_validation:/home/USERNAME/repos/thesis/ros2_ws/install/sensor_msgs_py:/home/USERNAME/repos/thesis/ros2_ws/install/rqt_reconfigure:/home/USERNAME/repos/thesis/ros2_ws/install/ros2_yolo:/home/USERNAME/repos/thesis/ros2_ws/install/opencv_tests:/home/USERNAME/repos/thesis/ros2_ws/install/onnx_yolov5_ros:/home/USERNAME/repos/thesis/ros2_ws/install/camera_calibration:/home/USERNAME/repos/thesis/ros2_ws/install/detection_visualizer:/opt/ros/galactic /usr/bin/cmake --build /home/USERNAME/repos/thesis/ros2_ws/build/ros2_yolo_cpp -- -j16 -l16
+[0.285s] Scanning dependencies of target pose_eval
+[0.302s] [ 50%] Built target yolo_onnx_cpp
+[0.313s] [ 75%] Building CXX object CMakeFiles/pose_eval.dir/src/pose_eval.cpp.o
+[4.770s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp: In member function ‘void pose_eval::PoseEval::points_callback(sensor_msgs::msg::PointCloud2&amp;, vision_msgs::msg::Detection2D&amp;)’:
+[4.770s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: no matching function for call to ‘compute3DCentroid&lt;pcl::PointXYZRGB, int32_t&gt;(pcl::PointCloud&lt;pcl::PointXYZRGB&gt;&amp;, Eigen::Matrix&lt;float, 4, 1&gt;&amp;)’
+[4.771s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.771s]       |                                                                                                         ^
+[4.771s] In file included from /usr/include/pcl-1.10/pcl/common/centroid.h:1098,
+[4.771s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.771s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:50:1: note: candidate: ‘unsigned int pcl::compute3DCentroid(pcl::ConstCloudIterator&lt;PointT&gt;&amp;, Eigen::Matrix&lt;Scalar, 4, 1&gt;&amp;) [with PointT = pcl::PointXYZRGB; Scalar = int]’
+[4.771s]    50 | pcl::compute3DCentroid (ConstCloudIterator&lt;PointT&gt; &amp;cloud_iterator,
+[4.771s]       | ^~~
+[4.771s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:50:53: note:   no known conversion for argument 1 from ‘pcl::PointCloud&lt;pcl::PointXYZRGB&gt;’ to ‘pcl::ConstCloudIterator&lt;pcl::PointXYZRGB&gt;&amp;’
+[4.771s]    50 | pcl::compute3DCentroid (ConstCloudIterator&lt;PointT&gt; &amp;cloud_iterator,
+[4.771s]       |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~
+[4.771s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.771s] /usr/include/pcl-1.10/pcl/common/centroid.h:69:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(pcl::ConstCloudIterator&lt;PointT&gt;&amp;, Eigen::Vector4f&amp;)’
+[4.771s]    69 |   compute3DCentroid (ConstCloudIterator&lt;PointT&gt; &amp;cloud_iterator,
+[4.771s]       |   ^~~~~~~~~~~~~~~~~
+[4.771s] /usr/include/pcl-1.10/pcl/common/centroid.h:69:3: note:   template argument deduction/substitution failed:
+[4.771s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.771s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.771s]       |                                                                                                         ^
+[4.771s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.771s] /usr/include/pcl-1.10/pcl/common/centroid.h:76:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(pcl::ConstCloudIterator&lt;PointT&gt;&amp;, Eigen::Vector4d&amp;)’
+[4.771s]    76 |   compute3DCentroid (ConstCloudIterator&lt;PointT&gt; &amp;cloud_iterator,
+[4.771s]       |   ^~~~~~~~~~~~~~~~~
+[4.771s] /usr/include/pcl-1.10/pcl/common/centroid.h:76:3: note:   template argument deduction/substitution failed:
+[4.771s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.771s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.771s]       |                                                                                                         ^
+[4.771s] In file included from /usr/include/pcl-1.10/pcl/common/centroid.h:1098,
+[4.771s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.771s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:79:1: note: candidate: ‘unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, Eigen::Matrix&lt;Scalar, 4, 1&gt;&amp;) [with PointT = pcl::PointXYZRGB; Scalar = int]’ &lt;near match&gt;
+[4.772s]    79 | pcl::compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.772s]       | ^~~
+[4.772s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:79:1: note:   conversion of argument 2 would be ill-formed:
+[4.772s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:97: error: cannot bind non-const lvalue reference of type ‘Eigen::Matrix&lt;int, 4, 1&gt;&amp;’ to an rvalue of type ‘Eigen::Matrix&lt;int, 4, 1&gt;’
+[4.772s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.772s]       |                                                                                                 ^~~~~~~~
+[4.772s] In file included from /usr/include/eigen3/Eigen/Core:458,
+[4.772s]                  from /usr/include/pcl-1.10/pcl/pcl_macros.h:75,
+[4.772s]                  from /usr/include/pcl-1.10/pcl/PCLHeader.h:10,
+[4.772s]                  from /usr/include/pcl-1.10/pcl/PCLPointCloud2.h:13,
+[4.772s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:4:
+[4.772s] /usr/include/eigen3/Eigen/src/Core/Matrix.h:376:25: note:   after user-defined conversion: ‘Eigen::Matrix&lt;_Scalar, _Rows, _Cols, _Options, _MaxRows, _MaxCols&gt;::Matrix(const Eigen::EigenBase&lt;OtherDerived&gt;&amp;) [with OtherDerived = Eigen::Matrix&lt;float, 4, 1&gt;; _Scalar = int; int _Rows = 4; int _Cols = 1; int _Options = 0; int _MaxRows = 4; int _MaxCols = 1]’
+[4.772s]   376 |     EIGEN_STRONG_INLINE Matrix(const EigenBase&lt;OtherDerived&gt; &amp;other)
+[4.772s]       |                         ^~~~~~
+[4.772s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.772s] /usr/include/pcl-1.10/pcl/common/centroid.h:95:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, Eigen::Vector4f&amp;)’
+[4.772s]    95 |   compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.772s]       |   ^~~~~~~~~~~~~~~~~
+[4.772s] /usr/include/pcl-1.10/pcl/common/centroid.h:95:3: note:   template argument deduction/substitution failed:
+[4.772s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.772s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.772s]       |                                                                                                         ^
+[4.772s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.772s] /usr/include/pcl-1.10/pcl/common/centroid.h:102:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, Eigen::Vector4d&amp;)’
+[4.772s]   102 |   compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.772s]       |   ^~~~~~~~~~~~~~~~~
+[4.772s] /usr/include/pcl-1.10/pcl/common/centroid.h:102:3: note:   template argument deduction/substitution failed:
+[4.772s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.772s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.772s]       |                                                                                                         ^
+[4.772s] In file included from /usr/include/pcl-1.10/pcl/common/centroid.h:1098,
+[4.773s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.773s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:123:1: note: candidate: ‘unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, const std::vector&lt;int&gt;&amp;, Eigen::Matrix&lt;Scalar, 4, 1&gt;&amp;) [with PointT = pcl::PointXYZRGB; Scalar = int]’
+[4.773s]   123 | pcl::compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.773s]       | ^~~
+[4.773s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:123:1: note:   candidate expects 3 arguments, 2 provided
+[4.773s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.773s] /usr/include/pcl-1.10/pcl/common/centroid.h:124:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, const std::vector&lt;int&gt;&amp;, Eigen::Vector4f&amp;)’
+[4.773s]   124 |   compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.773s]       |   ^~~~~~~~~~~~~~~~~
+[4.773s] /usr/include/pcl-1.10/pcl/common/centroid.h:124:3: note:   template argument deduction/substitution failed:
+[4.773s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.773s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.773s]       |                                                                                                         ^
+[4.773s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.773s] /usr/include/pcl-1.10/pcl/common/centroid.h:132:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, const std::vector&lt;int&gt;&amp;, Eigen::Vector4d&amp;)’
+[4.773s]   132 |   compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.773s]       |   ^~~~~~~~~~~~~~~~~
+[4.773s] /usr/include/pcl-1.10/pcl/common/centroid.h:132:3: note:   template argument deduction/substitution failed:
+[4.773s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.773s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.773s]       |                                                                                                         ^
+[4.773s] In file included from /usr/include/pcl-1.10/pcl/common/centroid.h:1098,
+[4.773s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.773s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:165:1: note: candidate: ‘unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, const pcl::PointIndices&amp;, Eigen::Matrix&lt;Scalar, 4, 1&gt;&amp;) [with PointT = pcl::PointXYZRGB; Scalar = int]’
+[4.773s]   165 | pcl::compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.773s]       | ^~~
+[4.773s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:165:1: note:   candidate expects 3 arguments, 2 provided
+[4.773s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.773s] /usr/include/pcl-1.10/pcl/common/centroid.h:155:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, const pcl::PointIndices&amp;, Eigen::Vector4f&amp;)’
+[4.773s]   155 |   compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.773s]       |   ^~~~~~~~~~~~~~~~~
+[4.774s] /usr/include/pcl-1.10/pcl/common/centroid.h:155:3: note:   template argument deduction/substitution failed:
+[4.774s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.774s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.774s]       |                                                                                                         ^
+[4.774s] In file included from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:5:
+[4.774s] /usr/include/pcl-1.10/pcl/common/centroid.h:163:3: note: candidate: ‘template&lt;class PointT&gt; unsigned int pcl::compute3DCentroid(const pcl::PointCloud&lt;PointT&gt;&amp;, const pcl::PointIndices&amp;, Eigen::Vector4d&amp;)’
+[4.774s]   163 |   compute3DCentroid (const pcl::PointCloud&lt;PointT&gt; &amp;cloud,
+[4.774s]       |   ^~~~~~~~~~~~~~~~~
+[4.774s] /usr/include/pcl-1.10/pcl/common/centroid.h:163:3: note:   template argument deduction/substitution failed:
+[4.774s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: wrong number of template arguments (2, should be 1)
+[4.774s]    55 |         auto n_pts_used = pcl::compute3DCentroid&lt;pcl::PointXYZRGB, std::int32_t&gt;(*cloud_subset, centroid);
+[4.774s]       |                                                                                                         ^
+[4.776s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:38:14: warning: unused variable ‘best_score’ [-Wunused-variable]
+[4.776s]    38 |         auto best_score = best-&gt;hypothesis.score;
+[4.776s]       |              ^~~~~~~~~~
+[5.099s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.099s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.100s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.100s] /opt/ros/galactic/include/message_filters/signal9.h: In instantiation of ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’:
+[5.100s] /opt/ros/galactic/include/message_filters/synchronizer.h:298:40:   required from ‘message_filters::Connection message_filters::Synchronizer&lt;Policy&gt;::registerCallback(const C&amp;) [with C = std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;; Policy = message_filters::sync_policies::ApproximateTime&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;]’
+[5.100s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:23:134:   required from here
+[5.100s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: no matching function for call to ‘message_filters::Signal9&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;::addCallback&lt;const M0ConstPtr&amp;, const M1ConstPtr&amp;, const M2ConstPtr&amp;, const M3ConstPtr&amp;, const M4ConstPtr&amp;, const M5ConstPtr&amp;, const M6ConstPtr&amp;, const M7ConstPtr&amp;, const M8ConstPtr&amp;&gt;(std::_Bind_helper&lt;false, const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type)’
+[5.100s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.100s]       |                                                                                                                                                ^
+[5.100s] 
+[5.100s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.100s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.100s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.100s] /opt/ros/galactic/include/message_filters/signal9.h:170:14: note: candidate: ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(const std::function&lt;void(P0, P1, P2, P3, P4, P5, P6, P7, P8)&gt;&amp;) [with P0 = const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P1 = const std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P2 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P3 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P4 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P5 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P6 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P7 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P8 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.100s]   170 |   Connection addCallback(const std::function&lt;void(P0, P1, P2, P3, P4, P5, P6, P7, P8)&gt;&amp; callback)
+[5.100s]       |              ^~~~~~~~~~~
+[5.100s] /opt/ros/galactic/include/message_filters/signal9.h:170:89: note:   no known conversion for argument 1 from ‘std::_Bind_helper&lt;false, const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type’ {aka ‘std::_Bind&lt;std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;(std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;, std::_Placeholder&lt;3&gt;, std::_Placeholder&lt;4&gt;, std::_Placeholder&lt;5&gt;, std::_Placeholder&lt;6&gt;, std::_Placeholder&lt;7&gt;, std::_Placeholder&lt;8&gt;, std::_Placeholder&lt;9&gt;)&gt;’} to ‘const std::function&lt;void(const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;)&gt;&amp;’
+[5.101s]   170 |   Connection addCallback(const std::function&lt;void(P0, P1, P2, P3, P4, P5, P6, P7, P8)&gt;&amp; callback)
+[5.101s]       |                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~
+[5.101s] /opt/ros/galactic/include/message_filters/signal9.h:180:14: note: candidate: ‘template&lt;class P0, class P1&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1)) [with P0 = P0; P1 = P1; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.101s]   180 |   Connection addCallback(void(*callback)(P0, P1))
+[5.101s]       |              ^~~~~~~~~~~
+[5.101s] /opt/ros/galactic/include/message_filters/signal9.h:180:14: note:   template argument deduction/substitution failed:
+[5.101s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.101s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.101s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.101s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 2)
+[5.101s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.101s]       |                                                                                                                                                ^
+[5.101s] 
+[5.101s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.101s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.101s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.101s] /opt/ros/galactic/include/message_filters/signal9.h:186:14: note: candidate: ‘template&lt;class P0, class P1, class P2&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2)) [with P0 = P0; P1 = P1; P2 = P2; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.101s]   186 |   Connection addCallback(void(*callback)(P0, P1, P2))
+[5.101s]       |              ^~~~~~~~~~~
+[5.101s] /opt/ros/galactic/include/message_filters/signal9.h:186:14: note:   template argument deduction/substitution failed:
+[5.102s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.102s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.102s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.102s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 3)
+[5.102s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.102s]       |                                                                                                                                                ^
+[5.102s] 
+[5.102s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.102s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.102s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.102s] /opt/ros/galactic/include/message_filters/signal9.h:192:14: note: candidate: ‘template&lt;class P0, class P1, class P2, class P3&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.102s]   192 |   Connection addCallback(void(*callback)(P0, P1, P2, P3))
+[5.102s]       |              ^~~~~~~~~~~
+[5.102s] /opt/ros/galactic/include/message_filters/signal9.h:192:14: note:   template argument deduction/substitution failed:
+[5.102s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.102s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.102s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.102s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 4)
+[5.102s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.102s]       |                                                                                                                                                ^
+[5.102s] 
+[5.102s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.103s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.103s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.103s] /opt/ros/galactic/include/message_filters/signal9.h:198:14: note: candidate: ‘template&lt;class P0, class P1, class P2, class P3, class P4&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.103s]   198 |   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4))
+[5.103s]       |              ^~~~~~~~~~~
+[5.103s] /opt/ros/galactic/include/message_filters/signal9.h:198:14: note:   template argument deduction/substitution failed:
+[5.103s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.103s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.103s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.103s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 5)
+[5.103s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.103s]       |                                                                                                                                                ^
+[5.103s] 
+[5.103s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.103s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.103s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.103s] /opt/ros/galactic/include/message_filters/signal9.h:204:14: note: candidate: ‘template&lt;class P0, class P1, class P2, class P3, class P4, class P5&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.103s]   204 |   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5))
+[5.103s]       |              ^~~~~~~~~~~
+[5.103s] /opt/ros/galactic/include/message_filters/signal9.h:204:14: note:   template argument deduction/substitution failed:
+[5.104s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.104s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.104s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.104s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 6)
+[5.104s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.104s]       |                                                                                                                                                ^
+[5.104s] 
+[5.104s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.104s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.104s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.104s] /opt/ros/galactic/include/message_filters/signal9.h:210:14: note: candidate: ‘template&lt;class P0, class P1, class P2, class P3, class P4, class P5, class P6&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5, P6)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.104s]   210 |   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6))
+[5.104s]       |              ^~~~~~~~~~~
+[5.104s] /opt/ros/galactic/include/message_filters/signal9.h:210:14: note:   template argument deduction/substitution failed:
+[5.104s] In file included from /opt/ros/galactic/include/message_filters/sync_policies/approximate_time.h:52,
+[5.104s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:6,
+[5.104s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[5.104s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 7)
+[5.104s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.104s]       |                                                                                                                                                ^
+[5.105s] 
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:216:14: note: candidate: ‘template&lt;class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5, P6, P7)) [with P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; P7 = P7; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.105s]   216 |   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6, P7))
+[5.105s]       |              ^~~~~~~~~~~
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:216:14: note:   template argument deduction/substitution failed:
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 8)
+[5.105s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.105s]       |                                                                                                                                                ^
+[5.105s] 
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:222:14: note: candidate: ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (*)(P0, P1, P2, P3, P4, P5, P6, P7, P8)) [with P0 = const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P1 = const std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P2 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P3 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P4 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P5 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P6 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P7 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P8 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.105s]   222 |   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6, P7, P8))
+[5.105s]       |              ^~~~~~~~~~~
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:222:32: note:   no known conversion for argument 1 from ‘std::_Bind_helper&lt;false, const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;&amp;, const std::_Placeholder&lt;1&gt;&amp;, const std::_Placeholder&lt;2&gt;&amp;, const std::_Placeholder&lt;3&gt;&amp;, const std::_Placeholder&lt;4&gt;&amp;, const std::_Placeholder&lt;5&gt;&amp;, const std::_Placeholder&lt;6&gt;&amp;, const std::_Placeholder&lt;7&gt;&amp;, const std::_Placeholder&lt;8&gt;&amp;, const std::_Placeholder&lt;9&gt;&amp;&gt;::type’ {aka ‘std::_Bind&lt;std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;(std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;, std::_Placeholder&lt;3&gt;, std::_Placeholder&lt;4&gt;, std::_Placeholder&lt;5&gt;, std::_Placeholder&lt;6&gt;, std::_Placeholder&lt;7&gt;, std::_Placeholder&lt;8&gt;, std::_Placeholder&lt;9&gt;)&gt;’} to ‘void (*)(const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;, const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;)’
+[5.105s]   222 |   Connection addCallback(void(*callback)(P0, P1, P2, P3, P4, P5, P6, P7, P8))
+[5.105s]       |                          ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:228:14: note: candidate: ‘template&lt;class T, class P0, class P1&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1), T*) [with T = T; P0 = P0; P1 = P1; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.105s]   228 |   Connection addCallback(void(T::*callback)(P0, P1), T* t)
+[5.105s]       |              ^~~~~~~~~~~
+[5.105s] /opt/ros/galactic/include/message_filters/signal9.h:228:14: note:   template argument deduction/substitution failed:
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 3)
+[5.106s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.106s]       |                                                                                                                                                ^
+[5.106s] 
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:234:14: note: candidate: ‘template&lt;class T, class P0, class P1, class P2&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.106s]   234 |   Connection addCallback(void(T::*callback)(P0, P1, P2), T* t)
+[5.106s]       |              ^~~~~~~~~~~
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:234:14: note:   template argument deduction/substitution failed:
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 4)
+[5.106s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.106s]       |                                                                                                                                                ^
+[5.106s] 
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:240:14: note: candidate: ‘template&lt;class T, class P0, class P1, class P2, class P3&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.106s]   240 |   Connection addCallback(void(T::*callback)(P0, P1, P2, P3), T* t)
+[5.106s]       |              ^~~~~~~~~~~
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:240:14: note:   template argument deduction/substitution failed:
+[5.106s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 5)
+[5.106s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.106s]       |                                                                                                                                                ^
+[5.107s] 
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:246:14: note: candidate: ‘template&lt;class T, class P0, class P1, class P2, class P3, class P4&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.107s]   246 |   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4), T* t)
+[5.107s]       |              ^~~~~~~~~~~
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:246:14: note:   template argument deduction/substitution failed:
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 6)
+[5.107s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.107s]       |                                                                                                                                                ^
+[5.107s] 
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:252:14: note: candidate: ‘template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4, P5), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.107s]   252 |   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4, P5), T* t)
+[5.107s]       |              ^~~~~~~~~~~
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:252:14: note:   template argument deduction/substitution failed:
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 7)
+[5.107s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.107s]       |                                                                                                                                                ^
+[5.107s] 
+[5.107s] /opt/ros/galactic/include/message_filters/signal9.h:258:14: note: candidate: ‘template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5, class P6&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4, P5, P6), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.107s]   258 |   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4, P5, P6), T* t)
+[5.108s]       |              ^~~~~~~~~~~
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h:258:14: note:   template argument deduction/substitution failed:
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 8)
+[5.108s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.108s]       |                                                                                                                                                ^
+[5.108s] 
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h:264:14: note: candidate: ‘template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(void (T::*)(P0, P1, P2, P3, P4, P5, P6, P7), T*) [with T = T; P0 = P0; P1 = P1; P2 = P2; P3 = P3; P4 = P4; P5 = P5; P6 = P6; P7 = P7; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.108s]   264 |   Connection addCallback(void(T::*callback)(P0, P1, P2, P3, P4, P5, P6, P7), T* t)
+[5.108s]       |              ^~~~~~~~~~~
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h:264:14: note:   template argument deduction/substitution failed:
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h: In substitution of ‘template&lt;class T, class P0, class P1, class P2, class P3, class P4, class P5, class P6, class P7&gt; message_filters::Connection message_filters::Signal9&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType, message_filters::NullType&gt;::addCallback&lt;T, P0, P1, P2, P3, P4, P5, P6, P7&gt;(void (T::*)(P0, P1, P2, P3, P4, P5, P6, P7), T*) [with T = const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P0 = const std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; P1 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P2 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P3 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P4 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P5 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P6 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;; P7 = const std::shared_ptr&lt;const message_filters::NullType&gt;&amp;]’:
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h:280:267:   required from ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.108s] /opt/ros/galactic/include/message_filters/synchronizer.h:298:40:   required from ‘message_filters::Connection message_filters::Synchronizer&lt;Policy&gt;::registerCallback(const C&amp;) [with C = std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;; Policy = message_filters::sync_policies::ApproximateTime&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;]’
+[5.108s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:23:134:   required from here
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h:264:14: error: forming pointer to reference type ‘const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’
+[5.108s] /opt/ros/galactic/include/message_filters/signal9.h: In instantiation of ‘message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = const std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’:
+[5.108s] /opt/ros/galactic/include/message_filters/synchronizer.h:298:40:   required from ‘message_filters::Connection message_filters::Synchronizer&lt;Policy&gt;::registerCallback(const C&amp;) [with C = std::_Bind&lt;void (pose_eval::PoseEval::*(pose_eval::PoseEval*, std::_Placeholder&lt;1&gt;, std::_Placeholder&lt;2&gt;))(sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;&amp;, vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;&amp;)&gt;; Policy = message_filters::sync_policies::ApproximateTime&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;, sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;]’
+[5.108s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:23:134:   required from here
+[5.109s] /opt/ros/galactic/include/message_filters/signal9.h:270:14: note: candidate: ‘template&lt;class C&gt; message_filters::Connection message_filters::Signal9&lt;M0, M1, M2, M3, M4, M5, M6, M7, M8&gt;::addCallback(C&amp;) [with C = C; M0 = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; M1 = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; M2 = message_filters::NullType; M3 = message_filters::NullType; M4 = message_filters::NullType; M5 = message_filters::NullType; M6 = message_filters::NullType; M7 = message_filters::NullType; M8 = message_filters::NullType]’
+[5.109s]   270 |   Connection addCallback( C&amp; callback)
+[5.109s]       |              ^~~~~~~~~~~
+[5.109s] /opt/ros/galactic/include/message_filters/signal9.h:270:14: note:   template argument deduction/substitution failed:
+[5.109s] /opt/ros/galactic/include/message_filters/signal9.h:280:267: error: wrong number of template arguments (9, should be 1)
+[5.109s]   280 | ::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6, std::placeholders::_7, std::placeholders::_8, std::placeholders::_9));
+[5.109s]       |                                                                                                                                                ^
+[5.109s] 
+[5.339s] In file included from /usr/include/eigen3/Eigen/Core:366,
+[5.339s]                  from /usr/include/pcl-1.10/pcl/pcl_macros.h:75,
+[5.339s]                  from /usr/include/pcl-1.10/pcl/PCLHeader.h:10,
+[5.339s]                  from /usr/include/pcl-1.10/pcl/PCLPointCloud2.h:13,
+[5.339s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:4:
+[5.339s] /usr/include/eigen3/Eigen/src/Core/AssignEvaluator.h: In instantiation of ‘void Eigen::internal::call_assignment_no_alias(Dst&amp;, const Src&amp;, const Func&amp;) [with Dst = Eigen::Matrix&lt;int, 4, 1&gt;; Src = Eigen::Matrix&lt;float, 4, 1&gt;; Func = Eigen::internal::assign_op&lt;int, float&gt;]’:
+[5.339s] /usr/include/eigen3/Eigen/src/Core/PlainObjectBase.h:732:41:   required from ‘Derived&amp; Eigen::PlainObjectBase&lt;Derived&gt;::_set_noalias(const Eigen::DenseBase&lt;OtherDerived&gt;&amp;) [with OtherDerived = Eigen::Matrix&lt;float, 4, 1&gt;; Derived = Eigen::Matrix&lt;int, 4, 1&gt;]’
+[5.339s] /usr/include/eigen3/Eigen/src/Core/PlainObjectBase.h:537:7:   required from ‘Eigen::PlainObjectBase&lt;Derived&gt;::PlainObjectBase(const Eigen::DenseBase&lt;OtherDerived&gt;&amp;) [with OtherDerived = Eigen::Matrix&lt;float, 4, 1&gt;; Derived = Eigen::Matrix&lt;int, 4, 1&gt;]’
+[5.339s] /usr/include/eigen3/Eigen/src/Core/Matrix.h:377:29:   required from ‘Eigen::Matrix&lt;_Scalar, _Rows, _Cols, _Options, _MaxRows, _MaxCols&gt;::Matrix(const Eigen::EigenBase&lt;OtherDerived&gt;&amp;) [with OtherDerived = Eigen::Matrix&lt;float, 4, 1&gt;; _Scalar = int; int _Rows = 4; int _Cols = 1; int _Options = 0; int _MaxRows = 4; int _MaxCols = 1]’
+[5.339s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105:   required from here
+[5.339s] /usr/include/eigen3/Eigen/src/Core/util/XprHelper.h:819:96: error: static assertion failed: YOU_MIXED_DIFFERENT_NUMERIC_TYPES__YOU_NEED_TO_USE_THE_CAST_METHOD_OF_MATRIXBASE_TO_CAST_NUMERIC_TYPES_EXPLICITLY
+[5.339s]   819 |   EIGEN_STATIC_ASSERT((Eigen::internal::has_ReturnType&lt;ScalarBinaryOpTraits&lt;LHS, RHS,BINOP&gt; &gt;::value), \
+[5.339s]       |                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~
+[5.339s] /usr/include/eigen3/Eigen/src/Core/util/StaticAssert.h:33:54: note: in definition of macro ‘EIGEN_STATIC_ASSERT’
+[5.339s]    33 |     #define EIGEN_STATIC_ASSERT(X,MSG) static_assert(X,#MSG);
+[5.339s]       |                                                      ^
+[5.339s] /usr/include/eigen3/Eigen/src/Core/AssignEvaluator.h:834:3: note: in expansion of macro ‘EIGEN_CHECK_BINARY_COMPATIBILIY’
+[5.340s]   834 |   EIGEN_CHECK_BINARY_COMPATIBILIY(Func,typename ActualDstTypeCleaned::Scalar,typename Src::Scalar);
+[5.340s]       |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[6.990s] In file included from /opt/ros/galactic/include/message_filters/simple_filter.h:43,
+[6.990s]                  from /opt/ros/galactic/include/message_filters/subscriber.h:41,
+[6.990s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:5,
+[6.991s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[6.991s] /opt/ros/galactic/include/message_filters/signal1.h: In instantiation of ‘void message_filters::CallbackHelper1T&lt;P, M&gt;::call(const message_filters::MessageEvent&lt;const M&gt;&amp;, bool) [with P = const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; M = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’:
+[6.991s] /opt/ros/galactic/include/message_filters/signal1.h:71:16:   required from here
+[6.991s] /opt/ros/galactic/include/message_filters/signal1.h:73:11: error: no matching function for call to ‘message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;::MessageEvent(const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, bool)’
+[6.991s]    73 |     Event my_event(event, nonconst_force_copy || event.nonConstWillCopy());
+[6.991s]       |           ^~~~~~~~
+[6.991s] In file included from /opt/ros/galactic/include/message_filters/signal1.h:42,
+[6.991s]                  from /opt/ros/galactic/include/message_filters/simple_filter.h:43,
+[6.991s]                  from /opt/ros/galactic/include/message_filters/subscriber.h:41,
+[6.991s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:5,
+[6.991s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:128:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const ConstMessagePtr&amp;, rclcpp::Time, bool, const CreateFunction&amp;) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::ConstMessagePtr = std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;; typename std::add_const&lt;M&gt;::type = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::CreateFunction = std::function&lt;std::shared_ptr&lt;sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;()&gt;; typename std::remove_const&lt;_Tp&gt;::type = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.991s]   128 |   MessageEvent(const ConstMessagePtr&amp; message, rclcpp::Time receipt_time, bool nonconst_need_copy, const CreateFunction&amp; create)
+[6.991s]       |   ^~~~~~~~~~~~
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:128:3: note:   candidate expects 4 arguments, 2 provided
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:123:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const ConstMessagePtr&amp;, rclcpp::Time) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::ConstMessagePtr = std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;; typename std::add_const&lt;M&gt;::type = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.991s]   123 |   MessageEvent(const ConstMessagePtr&amp; message, rclcpp::Time receipt_time)
+[6.991s]       |   ^~~~~~~~~~~~
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:123:39: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const ConstMessagePtr&amp;’ {aka ‘const std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’}
+[6.991s]   123 |   MessageEvent(const ConstMessagePtr&amp; message, rclcpp::Time receipt_time)
+[6.991s]       |                ~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:118:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const ConstMessagePtr&amp;) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::ConstMessagePtr = std::shared_ptr&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;; typename std::add_const&lt;M&gt;::type = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.991s]   118 |   MessageEvent(const ConstMessagePtr&amp; message)
+[6.991s]       |   ^~~~~~~~~~~~
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:118:3: note:   candidate expects 1 argument, 2 provided
+[6.991s] /opt/ros/galactic/include/message_filters/message_event.h:110:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;const void&gt;&amp;, const CreateFunction&amp;) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::CreateFunction = std::function&lt;std::shared_ptr&lt;sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;()&gt;; typename std::remove_const&lt;_Tp&gt;::type = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.991s]   110 |   MessageEvent(const MessageEvent&lt;void const&gt;&amp; rhs, const CreateFunction&amp; create)
+[6.991s]       |   ^~~~~~~~~~~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:110:48: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const message_filters::MessageEvent&lt;const void&gt;&amp;’
+[6.992s]   110 |   MessageEvent(const MessageEvent&lt;void const&gt;&amp; rhs, const CreateFunction&amp; create)
+[6.992s]       |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:104:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::add_const&lt;M&gt;::type&gt;&amp;, bool) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; typename std::add_const&lt;M&gt;::type = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.992s]   104 |   MessageEvent(const MessageEvent&lt;ConstMessage&gt;&amp; rhs, bool nonconst_need_copy)
+[6.992s]       |   ^~~~~~~~~~~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:104:50: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’
+[6.992s]   104 |   MessageEvent(const MessageEvent&lt;ConstMessage&gt;&amp; rhs, bool nonconst_need_copy)
+[6.992s]       |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:98:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::remove_const&lt;_Tp&gt;::type&gt;&amp;, bool) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; typename std::remove_const&lt;_Tp&gt;::type = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.992s]    98 |   MessageEvent(const MessageEvent&lt;Message&gt;&amp; rhs, bool nonconst_need_copy)
+[6.992s]       |   ^~~~~~~~~~~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:98:45: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const message_filters::MessageEvent&lt;sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’
+[6.992s]    98 |   MessageEvent(const MessageEvent&lt;Message&gt;&amp; rhs, bool nonconst_need_copy)
+[6.992s]       |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:93:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::add_const&lt;M&gt;::type&gt;&amp;) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; typename std::add_const&lt;M&gt;::type = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.992s]    93 |   MessageEvent(const MessageEvent&lt;ConstMessage&gt;&amp; rhs)
+[6.992s]       |   ^~~~~~~~~~~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:93:3: note:   candidate expects 1 argument, 2 provided
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:88:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::remove_const&lt;_Tp&gt;::type&gt;&amp;) [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;; typename std::remove_const&lt;_Tp&gt;::type = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.992s]    88 |   MessageEvent(const MessageEvent&lt;Message&gt;&amp; rhs)
+[6.992s]       |   ^~~~~~~~~~~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:88:3: note:   candidate expects 1 argument, 2 provided
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:84:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent() [with M = const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.992s]    84 |   MessageEvent()
+[6.992s]       |   ^~~~~~~~~~~~
+[6.992s] /opt/ros/galactic/include/message_filters/message_event.h:84:3: note:   candidate expects 0 arguments, 2 provided
+[6.992s] In file included from /opt/ros/galactic/include/message_filters/simple_filter.h:43,
+[6.993s]                  from /opt/ros/galactic/include/message_filters/subscriber.h:41,
+[6.993s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:5,
+[6.993s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[6.993s] /opt/ros/galactic/include/message_filters/signal1.h: In instantiation of ‘void message_filters::CallbackHelper1T&lt;P, M&gt;::call(const message_filters::MessageEvent&lt;const M&gt;&amp;, bool) [with P = const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;; M = sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt;]’:
+[6.993s] /opt/ros/galactic/include/message_filters/signal1.h:71:16:   required from here
+[6.993s] /opt/ros/galactic/include/message_filters/signal1.h:73:11: error: no matching function for call to ‘message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;::MessageEvent(const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;, bool)’
+[6.993s]    73 |     Event my_event(event, nonconst_force_copy || event.nonConstWillCopy());
+[6.993s]       |           ^~~~~~~~
+[6.993s] In file included from /opt/ros/galactic/include/message_filters/signal1.h:42,
+[6.993s]                  from /opt/ros/galactic/include/message_filters/simple_filter.h:43,
+[6.993s]                  from /opt/ros/galactic/include/message_filters/subscriber.h:41,
+[6.993s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/include/ros2_yolo_cpp/pose_eval.hpp:5,
+[6.993s]                  from /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:2:
+[6.993s] /opt/ros/galactic/include/message_filters/message_event.h:128:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const ConstMessagePtr&amp;, rclcpp::Time, bool, const CreateFunction&amp;) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::ConstMessagePtr = std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;; typename std::add_const&lt;M&gt;::type = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::CreateFunction = std::function&lt;std::shared_ptr&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;()&gt;; typename std::remove_const&lt;_Tp&gt;::type = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.993s]   128 |   MessageEvent(const ConstMessagePtr&amp; message, rclcpp::Time receipt_time, bool nonconst_need_copy, const CreateFunction&amp; create)
+[6.993s]       |   ^~~~~~~~~~~~
+[6.993s] /opt/ros/galactic/include/message_filters/message_event.h:128:3: note:   candidate expects 4 arguments, 2 provided
+[6.993s] /opt/ros/galactic/include/message_filters/message_event.h:123:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const ConstMessagePtr&amp;, rclcpp::Time) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::ConstMessagePtr = std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;; typename std::add_const&lt;M&gt;::type = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.993s]   123 |   MessageEvent(const ConstMessagePtr&amp; message, rclcpp::Time receipt_time)
+[6.993s]       |   ^~~~~~~~~~~~
+[6.993s] /opt/ros/galactic/include/message_filters/message_event.h:123:39: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const ConstMessagePtr&amp;’ {aka ‘const std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’}
+[6.993s]   123 |   MessageEvent(const ConstMessagePtr&amp; message, rclcpp::Time receipt_time)
+[6.993s]       |                ~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~
+[6.993s] /opt/ros/galactic/include/message_filters/message_event.h:118:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const ConstMessagePtr&amp;) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::ConstMessagePtr = std::shared_ptr&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;; typename std::add_const&lt;M&gt;::type = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.993s]   118 |   MessageEvent(const ConstMessagePtr&amp; message)
+[6.993s]       |   ^~~~~~~~~~~~
+[6.993s] /opt/ros/galactic/include/message_filters/message_event.h:118:3: note:   candidate expects 1 argument, 2 provided
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:110:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;const void&gt;&amp;, const CreateFunction&amp;) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; message_filters::MessageEvent&lt;M&gt;::CreateFunction = std::function&lt;std::shared_ptr&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;()&gt;; typename std::remove_const&lt;_Tp&gt;::type = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.994s]   110 |   MessageEvent(const MessageEvent&lt;void const&gt;&amp; rhs, const CreateFunction&amp; create)
+[6.994s]       |   ^~~~~~~~~~~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:110:48: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const message_filters::MessageEvent&lt;const void&gt;&amp;’
+[6.994s]   110 |   MessageEvent(const MessageEvent&lt;void const&gt;&amp; rhs, const CreateFunction&amp; create)
+[6.994s]       |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:104:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::add_const&lt;M&gt;::type&gt;&amp;, bool) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; typename std::add_const&lt;M&gt;::type = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.994s]   104 |   MessageEvent(const MessageEvent&lt;ConstMessage&gt;&amp; rhs, bool nonconst_need_copy)
+[6.994s]       |   ^~~~~~~~~~~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:104:50: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const message_filters::MessageEvent&lt;const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’
+[6.994s]   104 |   MessageEvent(const MessageEvent&lt;ConstMessage&gt;&amp; rhs, bool nonconst_need_copy)
+[6.994s]       |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:98:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::remove_const&lt;_Tp&gt;::type&gt;&amp;, bool) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; typename std::remove_const&lt;_Tp&gt;::type = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.994s]    98 |   MessageEvent(const MessageEvent&lt;Message&gt;&amp; rhs, bool nonconst_need_copy)
+[6.994s]       |   ^~~~~~~~~~~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:98:45: note:   no known conversion for argument 1 from ‘const message_filters::MessageEvent&lt;const sensor_msgs::msg::PointCloud2_&lt;std::allocator&lt;void&gt; &gt; &gt;’ to ‘const message_filters::MessageEvent&lt;vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt; &gt;&amp;’
+[6.994s]    98 |   MessageEvent(const MessageEvent&lt;Message&gt;&amp; rhs, bool nonconst_need_copy)
+[6.994s]       |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:93:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::add_const&lt;M&gt;::type&gt;&amp;) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; typename std::add_const&lt;M&gt;::type = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.994s]    93 |   MessageEvent(const MessageEvent&lt;ConstMessage&gt;&amp; rhs)
+[6.994s]       |   ^~~~~~~~~~~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:93:3: note:   candidate expects 1 argument, 2 provided
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:88:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent(const message_filters::MessageEvent&lt;typename std::remove_const&lt;_Tp&gt;::type&gt;&amp;) [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;; typename std::remove_const&lt;_Tp&gt;::type = vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.994s]    88 |   MessageEvent(const MessageEvent&lt;Message&gt;&amp; rhs)
+[6.994s]       |   ^~~~~~~~~~~~
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:88:3: note:   candidate expects 1 argument, 2 provided
+[6.994s] /opt/ros/galactic/include/message_filters/message_event.h:84:3: note: candidate: ‘message_filters::MessageEvent&lt;M&gt;::MessageEvent() [with M = const vision_msgs::msg::Detection2D_&lt;std::allocator&lt;void&gt; &gt;]’
+[6.994s]    84 |   MessageEvent()
+[6.994s]       |   ^~~~~~~~~~~~
+[6.995s] /opt/ros/galactic/include/message_filters/message_event.h:84:3: note:   candidate expects 0 arguments, 2 provided
+[7.631s] make[2]: *** [CMakeFiles/pose_eval.dir/build.make:63: CMakeFiles/pose_eval.dir/src/pose_eval.cpp.o] Error 1
+[7.631s] make[1]: *** [CMakeFiles/Makefile2:80: CMakeFiles/pose_eval.dir/all] Error 2
+[7.631s] make: *** [Makefile:141: all] Error 2
+[7.633s] Invoked command in &#39;/home/USERNAME/repos/thesis/ros2_ws/build/ros2_yolo_cpp&#39; returned &#39;2&#39;: CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/USERNAME/repos/thesis/ros2_ws/install/auv_tracking:/home/USERNAME/repos/thesis/ros2_ws/install/global_validation:/home/USERNAME/repos/thesis/ros2_ws/install/sensor_msgs_py:/home/USERNAME/repos/thesis/ros2_ws/install/rqt_reconfigure:/home/USERNAME/repos/thesis/ros2_ws/install/ros2_yolo:/home/USERNAME/repos/thesis/ros2_ws/install/opencv_tests:/home/USERNAME/repos/thesis/ros2_ws/install/onnx_yolov5_ros:/home/USERNAME/repos/thesis/ros2_ws/install/camera_calibration:/home/USERNAME/repos/thesis/ros2_ws/install/detection_visualizer:/opt/ros/galactic /usr/bin/cmake --build /home/USERNAME/repos/thesis/ros2_ws/build/ros2_yolo_cpp -- -j16 -l16
+</code></pre>
+
+<p>(Apologies for the verbosity, I cannot attach this log to the post). 
+Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/141877">Nilaos</a> on 2023-06-09 01:21:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>With c++, it is usually best to look at only the first error and ignore the enormous spew that follows. All the info you need is shown near the start:</p>
+
+<pre><code>[4.770s] /home/USERNAME/repos/thesis/ros2_ws/src/ros2_yolo_cpp/src/pose_eval.cpp:55:105: error: no matching function for call to ‘compute3DCentroid&lt;pcl::PointXYZRGB, int32_t&gt;(pcl::PointCloud&lt;pcl::PointXYZRGB&gt;&amp;, Eigen::Matrix&lt;float, 4, 1&gt;&amp;)’
+...
+[4.771s] /usr/include/pcl-1.10/pcl/common/impl/centroid.hpp:50:1: note: candidate: ‘unsigned int pcl::compute3DCentroid(pcl::ConstCloudIterator&lt;PointT&gt;&amp;, Eigen::Matrix&lt;Scalar, 4, 1&gt;&amp;) [with PointT = pcl::PointXYZRGB; Scalar = int]’
+</code></pre>
+
+<p>The compiler is telling you that you need to pass a pointcloud iterator, not the the pointcloud itself.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-06-11 06:50:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the help - it turns out that while that was what the compiler wasn&#39;t a fan of, due to template matching it was actually the mismatch of passing in a float matrix while setting the second template type in that function call to be an int_32t that the compiler didn&#39;t like. </p>
+
+<p>While I would normally agree re error spew, the second error here that&#39;s followed is still proving a thorn in my side. I&#39;ve tried changing the callback function inputs to be a <code>const MsgTypeXYZ::ConstSharedPtr &amp;msg</code> but that hasn&#39;t really changed the error message at all. Do you have any ideas for that?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/141877">Nilaos</a> on 2023-06-15 23:05:14 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

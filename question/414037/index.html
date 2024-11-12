@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Managed node: How to make a service call in 'on_configure'? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/414037">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Managed node: How to make a service call in 'on_configure'?</h2>
+      <div class="question">
+        <p>Hi all, </p>
+
+<p>I have a Python node that queries information on startup via a service call. Recently, I tried to convert the node to a lifecycle node where the queries are performed in <code>on_configure()</code> (I also tried <code>on_activate()</code>) but execution gets stuck when trying to receive the service response. Probably this is due to the node not being in an active event loop in that state. </p>
+
+<p>Here&#39;s a minimal example showing the problem (you need the <code>lifecycle-py</code> package to be installed):</p>
+
+<pre><code>from typing import Optional
+
+import rclpy
+
+from rclpy.lifecycle import Node
+from rclpy.lifecycle import Publisher
+from rclpy.lifecycle import State
+from rclpy.lifecycle import TransitionCallbackReturn
+from rclpy.timer import Timer
+
+import std_msgs.msg
+
+from example_interfaces.srv import AddTwoInts
+
+
+class ManagedNode(Node):
+
+    def __init__(self, node_name, **kwargs):
+        self._count: int = 0
+        self._pub: Optional[Publisher] = None
+        self._timer: Optional[Timer] = None
+        self._cli = None
+        super().__init__(node_name, **kwargs)
+
+    def publish(self):
+        msg = std_msgs.msg.String()
+        msg.data = &quot;Lifecycle HelloWorld #&quot; + str(self._count);
+        self._count += 1
+
+        if self._pub is None or not self._pub.is_activated:
+            self.get_logger().info(&#39;Lifecycle publisher is currently inactive. Messages are not published.&#39;);
+        else:
+            self.get_logger().info(f&#39;Lifecycle publisher is active. Publishing: [{msg.data}]&#39;);
+
+        if self._pub is not None:
+            self._pub.publish(msg)
+
+    def send_request(self, a, b):
+        req = AddTwoInts.Request()
+        req.a = a
+        req.b = b
+        future = self._cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        print(f&#39;result: {future}&#39;)
+
+    def on_configure(self, state: State) -&gt; TransitionCallbackReturn:
+        self._pub = self.create_lifecycle_publisher(std_msgs.msg.String, &quot;lifecycle_chatter&quot;, 10);
+        self._timer = self.create_timer(1.0, self.publish)
+
+        self._cli = self.create_client(AddTwoInts, &#39;add_two_ints&#39;)
+        while not self._cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(&#39;service not available, waiting again...&#39;)
+        self.send_request(2, 3)
+
+        self.get_logger().info(&quot;on_configure() is called.&quot;)
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_cleanup(self, state: State) -&gt; TransitionCallbackReturn:
+        self.destroy_timer(self._timer)
+        self.destroy_publisher(self._pub)
+
+        self.get_logger().info(&#39;on_cleanup() is called.&#39;)
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_shutdown(self, state: State) -&gt; TransitionCallbackReturn:
+        self.destroy_timer(self._timer)
+        self.destroy_publisher(self._pub)
+
+        self.get_logger().info(&#39;on_shutdown() is called.&#39;)
+        return TransitionCallbackReturn.SUCCESS
+
+
+def main():
+    rclpy.init()
+
+    executor = rclpy.executors.SingleThreadedExecutor()
+    node = ManagedNode(&#39;managed_node&#39;)
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+        node.destroy_node()
+
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>Steps to reproduce:</p>
+
+<ol>
+<li>Start the node: <code>python3 managed_node.py</code></li>
+<li>Start the service: <code>ros2 run examples_rclcpp_minimal_service service_main</code></li>
+<li>Perform transition on node: <code>ros2 lifecycle set /managed_node configure</code></li>
+<li>The node is stuck. If <code>send_request()</code> is commented out everything is working fine</li>
+</ol>
+
+<p>Does anyone know if/how it&#39;s possible to make service calls in the early stages of a managed node?</p>
+
+<p>Thanks!
+Thomas</p>
+
+        <div class="owner"><p>Asked by <a href="/users/36739">yurumi</a> on 2023-04-04 06:49:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As far as I understand the problem, is that the executor is spinning your node, and when the node wants to process a service, it halts spinning to let the node complete the service. The service then calls another service, which requires some other node to spin, which it is being hindered from since the executor is explicitly waiting for your service to finish before spinning. This is a deadlock, and is the primary reason why async calls to services are preferred in ROS 2.</p>
+
+<p>Have a look at this answer, I think you can get around it using different callback groups.
+<a href="https://answers.ros.org/question/413482/ros2-asyncio-await-with-timeout-a-service-call-in-a-callback/">https://answers.ros.org/question/413482/ros2-asyncio-await-with-timeout-a-service-call-in-a-callback/</a></p>
+
+<p>But whenever I encounter this situation, I think it calls for a redesign.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/79869">Per Edwardsson</a> on 2023-04-04 08:06:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

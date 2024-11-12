@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to run robot from web UI - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/409108">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to run robot from web UI</h2>
+      <div class="question">
+        <p>I have my robot working with hardcoded instruction of pickup and drop and when I run the node it works properly but now I want to pass the same instruction through web so I have used pub-sub method where the webpage publishes the instruction and subscriber node gets the instruction and runs the robot. </p>
+
+<p>The problem here is robot is running on callback functions and subscriber callback looses the control after running the first request and it does not know if the robot is running or stopped and when second request comes in, so it starts executing the another request parallelly.</p>
+
+<p>I am not the right way to do this</p>
+
+<p>Here&#39;s my subscriber code which runs for single request but fails if multiple request comes because subscriber callback function does not know if robot is running or stopped</p>
+
+<pre><code>    import math
+
+import actionlib
+import rospy
+import tf
+from geometry_msgs.msg import Pose, Point, Quaternion, Twist
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from std_msgs.msg import Bool, String
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
+
+
+class MoveBase:
+    def __init__(self):
+        self.goal_cnt = 0
+
+        self.pickup_load = Bool()
+        self.int_status = Bool()
+        self.quat_seq = list()
+        self.pose_seq = list()
+        self.rad_seq = list()
+
+        self.disable_interrupt_flag = False
+        self.pause_flag = False
+        self.lf_flag = True
+
+        self.orient_correct_pub = rospy.Publisher(&#39;cmd_vel&#39;, Twist, queue_size=1)
+        self.pickup_status_pub = rospy.Publisher(&#39;pickup_load_status&#39;, Bool, queue_size=1)
+        self.int_status_pub = rospy.Publisher(&#39;interrupt_status&#39;, Bool, queue_size=1)
+        self.finish_status = rospy.Publisher(&#39;finish_status&#39;, Bool, queue_size=1)
+
+        self.client = actionlib.SimpleActionClient(&#39;move_base&#39;, MoveBaseAction)
+
+    def reverse(self, interval):
+        cmd = Twist()
+        rate = rospy.Rate(10)
+        current_millis = rospy.get_time()
+        previous_millis = rospy.get_time()
+        while not (current_millis - previous_millis &gt; interval):
+            cmd.linear.x = -0.2
+            cmd.angular.z = 0
+            self.orient_correct_pub.publish(cmd)
+            current_millis = rospy.get_time()
+            rospy.loginfo(&quot;%f %f&quot;, current_millis, previous_millis)
+
+    def pause_routine_cb(self, data):
+        if data.data:
+            self.pause_flag = True
+        else:
+            self.pause_flag = False
+
+    def lf_status_cb(self, data):
+        if data.data:
+            self.lf_flag = True
+        else:
+            self.lf_flag = False
+
+    def servo_control(self, goal_count):
+        rates = rospy.Rate(10)
+        if goal_count == len(self.pose_seq) - 1:
+            self.pickup_load.data = False
+        elif goal_count % 2 == 0:
+            self.pickup_load.data = True
+        elif goal_count % 2 != 0:
+            self.pickup_load.data = False
+        for z in range(10):
+            self.pickup_status_pub.publish(self.pickup_load)
+            rates.sleep()
+
+    def send_goal_routine(self, pose_seq, goal_count, result=True):
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = &quot;odom&quot;
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose = pose_seq[goal_count]
+        rospy.loginfo(&quot;Sending goal pose &quot; + str(goal_count + 1) + &quot; to Action Server&quot;)
+        rospy.loginfo(str(pose_seq[goal_count]))
+        if result:
+            self.client.send_goal(goal, self.done_cb, self.active_cb)
+        else:
+            self.client.send_goal(goal)
+            wait = self.client.wait_for_result()
+            if not wait:
+                rospy.logerr(&quot;Action server not available!&quot;)
+                rospy.signal_shutdown(&quot;Action server not available!&quot;)
+            else:
+                return self.client.get_result()
+
+    def orientation_correction(self, pose_seq, target_angle, goal_count):
+        cmd = Twist()
+        listener = tf.TransformListener()
+        rate = rospy.Rate(10)
+        rate2 = rospy.Rate(100)
+        while not rospy.is_shutdown():
+            # rospy.loginfo(line_follower.pause_flag)
+            while self.pause_flag:
+                self.disable_interrupt_flag = True
+                rospy.loginfo(&quot;inside pauseflag while loop&quot;)
+                rate2.sleep()
+            if not self.lf_flag:
+                self.lf_flag = True
+                rospy.loginfo(&quot;break of orientation correction&#39;s while loop&quot;)
+                break
+            try:
+                (trans, rot) = listener.lookupTransform(&#39;/map&#39;, &#39;/base_link&#39;, rospy.Time(0))
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                continue
+            (roll, pitch, yaw) = euler_from_quaternion(rot)
+            act_angle_deg = yaw * (180 / math.pi)
+            tar_angle_deg = (target_angle * 180 / math.pi)
+            error = tar_angle_deg - act_angle_deg
+            rospy.loginfo(error)
+            if error &gt;= 0:
+                # anti_clockwise()
+                cmd.linear.x = 0
+                cmd.angular.z = 0.6
+                self.orient_correct_pub.publish(cmd)
+            elif error &lt; 0:
+                # clockwise()
+                cmd.linear.x = 0
+                cmd.angular.z = -0.6
+                self.orient_correct_pub.publish(cmd)
+            if -0.6 &lt; error &lt; 0.6:
+                if goal_count == len(pose_seq) - 1:
+                    rospy.loginfo(&quot;in break1&quot;)
+                    cmd.linear.x = 0
+                    cmd.angular.z = 0
+                    for z in range(10):
+                        self.orient_correct_pub.publish(cmd)
+                        rate.sleep()
+                    break
+                if (goal_count % 2 == 0) and trans[1] &gt; (pose_seq[goal_count].position.y - 0.30):
+                    for temp in range(10):
+                        cmd.linear.x = 0.2
+                        cmd.angular.z = 0
+                        self.orient_correct_pub.publish(cmd)
+                        rate.sleep()
+                elif (goal_count % 2 != 0) and trans[1] &lt; (pose_seq[goal_count].position.y + 0.25):
+                    for temp in range(10):
+                        cmd.linear.x = 0.2
+                        cmd.angular.z = 0
+                        self.orient_correct_pub.publish(cmd)
+                        rate.sleep()
+                else:
+                    rospy.loginfo(&quot;in break2&quot;)
+                    cmd.linear.x = 0
+                    cmd.angular.z = 0
+                    for z in range(10):
+                        self.orient_correct_pub.publish(cmd)
+                        rate.sleep()
+                    break
+            rate.sleep()
+
+    def done_cb(self, status, result):
+        rate = rospy.Rate(0.1)
+        rospy.loginfo(&quot;IN DONE CB&quot;)
+        disable_interrupt_flag = False
+        self.goal_cnt += 1
+        if status == 3:
+            if self.goal_cnt &lt; len(self.pose_seq):
+                # enable_interrupt()
+                self.int_status.data = True
+                self.int_status_pub.publish(self.int_status)
+            self.orientation_correction(self.pose_seq, self.rad_seq[self.goal_cnt - 1], self.goal_cnt - 1)
+            if (not self.disable_interrupt_flag) and (self.goal_cnt &lt; len(self.pose_seq)):
+                self.int_status.data = False
+                self.int_status_pub.publish(self.int_status)
+            self.servo_control(self.goal_cnt - 1)
+            rospy.loginfo(&quot;Goal pose &quot; + str(self.goal_cnt) + &quot; reached&quot;)
+            if self.goal_cnt &lt; len(self.pose_seq):
+                self.reverse(1)
+                self.send_goal_routine(self.pose_seq, self.goal_cnt)
+            else:
+                self.finish_status.publish(True)
+                rospy.loginfo(&quot;Final goal pose reached!&quot;)
+                rospy.signal_shutdown(&quot;Final goal pose reached!&quot;)
+                return True
+
+    def active_cb(self):
+        rospy.loginfo(&quot;IN ACTIVE CB&quot;)
+
+    def feedback_cb(self, feedback):
+        rospy.loginfo(&quot;IN FEEDBACK CB&quot;)
+
+    def move_base(self, points_seq):
+        self.finish_status.publish(False)
+        rospy.Subscriber(&quot;pause_status&quot;, Bool, self.pause_routine_cb)
+        rospy.Subscriber(&quot;lf_status&quot;, Bool, self.lf_status_cb)
+
+        for i, temp in enumerate(points_seq):
+            if (i + 1) % 3 == 0:
+                self.quat_seq.append(Quaternion(*(quaternion_from_euler(0, 0, points_seq[i], axes=&#39;sxyz&#39;))))
+                self.rad_seq.append(points_seq[i])
+        n = 3
+        points = [points_seq[i:i + n] for i in range(0, len(points_seq), n)]
+        for point in points:
+            self.pose_seq.append(Pose(Point(*point), self.quat_seq[n - 3]))
+            n += 1
+
+        try:
+            rospy.loginfo(&quot;Waiting for move_base action server...&quot;)
+            wait = self.client.wait_for_server(rospy.Duration(5.0))
+            if not wait:
+                rospy.logerr(&quot;Action server not available!&quot;)
+                rospy.signal_shutdown(&quot;Action server not available!&quot;)
+
+            self.send_goal_routine(self.pose_seq, self.goal_cnt)
+            rospy.spin()
+        except rospy.ROSInterruptException:
+            rospy.loginfo(&quot;Navigation finished.&quot;)
+
+
+def callback(data):
+    rospy.loginfo(rospy.get_caller_id() + &quot;message %s&quot;, data.data)
+    points_seq = eval(data.data)
+    obj = MoveBase()
+    obj.move_base(points_seq)
+
+
+def listener():
+    rospy.init_node(&#39;move_base_sequence&#39;, anonymous=True)
+    rospy.Subscriber(&#39;aiv_ui&#39;, String, callback)
+    rospy.spin()
+
+
+if __name__ == &#39;__main__&#39;:
+    listener()
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/123132">abhishekj</a> on 2022-11-08 02:22:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

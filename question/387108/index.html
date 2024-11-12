@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Launching multiple instances of node, not showing up in ros2 node list - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387108">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Launching multiple instances of node, not showing up in ros2 node list</h2>
+      <div class="question">
+        <p>I am trying to replicate the <code>ros1</code> nodelets for <code>pcl</code> passthrough filters. I have written my own <code>passthrough_filter</code> class utilizing similar parameters for clarity.</p>
+
+<p>In my context I would like to run a passthrough filter on the <code>x</code> and <code>z</code> channels of a pointcloud in sequence: original -&gt; x filter -&gt; z filter -&gt; result. Which I do with the Launch file at the end. In the <code>passthrough_filter.cpp</code> I introduce the inputs and outputs as <code>/filters_input</code> and <code>/filters_output</code> such that I can dynamically remap it in the launch file.</p>
+
+<p>The problem is, that running <code>ros2 node list</code> only shows the <code>passthrough_filter_x</code> and not the <code>z</code>, the same is true of <code>ros2 topic list</code> where I only see <code>/velodyne_points/output_x</code> and not <code>output_z</code>. That being said, I can open <code>/velodyne_points</code> <code>output_x</code> and <code>output_z</code> in <code>rviz</code> and see both. If I view <code>output_z</code> then it shows up as a topic, though missing a publisher.</p>
+
+<p>I&#39;ve included both the launch file and cpp file below. Note, this is in ros2 <code>foxy</code></p>
+
+<p><strong>EDIT</strong> I think this is happening because <code>output_z</code> depends on <code>output_x</code> existing. And launch files don&#39;t guarantee execution order. Everything works as expected if <code>passthrough_x</code> is started from the above mentioned launch file and <code>passthrough_z</code> is started from a different launch file. How could I combine these?</p>
+
+<p><strong>LAUNCH FILE:</strong></p>
+
+<pre><code>from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+# pointcloud filters
+passthrough_x = Node(
+    package=&quot;pointcloud_filters&quot;,
+    executable=&quot;passthrough_filter_node&quot;,
+    name=&quot;passthrough_filter_x&quot;,
+    parameters=[
+        {&quot;passthrough_filter/field_name&quot;: &quot;x&quot;},
+        {&quot;passthrough_filter/limit_min&quot;: 5.0},
+        {&quot;passthrough_filter/limit_max&quot;: 30.0},
+        {&quot;passthrough_filter/limit_negative&quot;: False},
+    ],
+    remappings=[
+        (&quot;/filters_input&quot;, &quot;/velodyne_points/transformed&quot;),
+        (&quot;/filters_output&quot;, &quot;/velodyne_points/output_x&quot;),
+    ],
+    output=&quot;screen&quot;,
+)
+
+passthrough_z = Node(
+    package=&quot;pointcloud_filters&quot;,
+    executable=&quot;passthrough_filter_node&quot;,
+    name=&quot;passthrough_filter_z&quot;,
+    parameters=[
+        {&quot;passthrough_filter/field_name&quot;: &quot;z&quot;},
+        {&quot;passthrough_filter/limit_min&quot;: 0.5},
+        {&quot;passthrough_filter/limit_max&quot;: 3.5},
+        {&quot;passthrough_filter/limit_negative&quot;: False},
+    ],
+    remappings=[
+        (&quot;/filters_input&quot;, &quot;/velodyne_points/output_x&quot;),
+        (&quot;/filters_output&quot;, &quot;/velodyne_points/output_z&quot;),
+    ],
+    output=&quot;screen&quot;,
+)
+# defining other nodes
+
+ld = LaunchDescription()
+
+ld.add_action(passthrough_x)
+ld.add_action(passthrough_z)
+
+# launching other nodes
+
+return ld
+</code></pre>
+
+<p><strong>CPP FILE</strong></p>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+
+#include &quot;pcl_conversions/pcl_conversions.h&quot;
+#include &quot;sensor_msgs/msg/point_cloud2.hpp&quot;
+
+#include &quot;pcl/filters/passthrough.h&quot;
+#include &quot;pcl/point_types.h&quot;
+
+class PassthroughFilter : public rclcpp::Node {
+public:
+  PassthroughFilter() : Node(&quot;passthrough_filter&quot;) {
+    pub_ = this-&gt;create_publisher&lt;sensor_msgs::msg::PointCloud2&gt;(
+        &quot;/filters_output&quot;, 1);
+    sub_ = this-&gt;create_subscription&lt;sensor_msgs::msg::PointCloud2&gt;(
+        &quot;/filters_input&quot;, 1,
+        std::bind(&amp;PassthroughFilter::cloud_callback, this,
+                  std::placeholders::_1));
+
+    this-&gt;declare_parameter(&quot;passthrough_filter/field_name&quot;, &quot;x&quot;);
+    this-&gt;declare_parameter(&quot;passthrough_filter/limit_min&quot;, 0.0);
+    this-&gt;declare_parameter(&quot;passthrough_filter/limit_max&quot;, 10.0);
+    this-&gt;declare_parameter(&quot;passthrough_filter/limit_negative&quot;, false);
+
+    std::string name =
+        this-&gt;get_parameter(&quot;passthrough_filter/field_name&quot;).as_string();
+    double limit_min =
+        this-&gt;get_parameter(&quot;passthrough_filter/limit_min&quot;).as_double();
+    double limit_max =
+        this-&gt;get_parameter(&quot;passthrough_filter/limit_max&quot;).as_double();
+    bool limit =
+        this-&gt;get_parameter(&quot;passthrough_filter/limit_negative&quot;).as_bool();
+
+    RCLCPP_INFO(this-&gt;get_logger(),
+                &quot;Filter &quot;
+                &quot;pararms:\n\t field:\t%s\n\t min:\t%.1f\n\t max:\t%&quot;
+                &quot;.1f\n\t negative:\t%s&quot;,
+                name.c_str(), limit_min, limit_max, limit ? &quot;true&quot; : &quot;false&quot;);
+
+    pass_.setFilterFieldName(name);
+    pass_.setFilterLimits(limit_min, limit_max);
+    pass_.setFilterLimitsNegative(limit);
+  }
+
+private:
+  void cloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud_filtered(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+    pcl::fromROSMsg(*msg, *cloud);
+
+    pass_.setInputCloud(cloud);
+    pass_.filter(*cloud_filtered);
+
+    sensor_msgs::msg::PointCloud2 output;
+    pcl::toROSMsg(*cloud_filtered, output);
+
+    pub_-&gt;publish(output);
+  }
+
+  pcl::PassThrough&lt;pcl::PointXYZI&gt; pass_;
+
+  rclcpp::Publisher&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr pub_;
+  rclcpp::Subscription&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr sub_;
+};
+
+int main(int argc, char *argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;PassthroughFilter&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-22 08:06:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

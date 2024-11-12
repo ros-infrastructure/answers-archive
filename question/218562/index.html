@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>IMU_sensor_controller publishes incomplete covariances - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/218562">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>IMU_sensor_controller publishes incomplete covariances</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/69839/imu-sensor-controller-publishes-incomplete-covariances">https://robotics.stackexchange.com/questions/69839/imu-sensor-controller-publishes-incomplete-covariances</a>.</p>
+        <p>I am trying to use ros<em>control to publish IMU data, with the eventual goal of combining this with odometry from the robot&#39;s encoders in robot</em>localization. Currently my hardware<em>interface is largely based on the extremely handy ros</em>control_boilerplate package. I am using ROS Indigo on Ubuntu 14.04. </p>
+
+<p>The orientation, velocity, and acceleration fields all seem to be published correctly. However, while the hardware<em>interface is supplying a imu</em>sensor<em>interface with full covariances (i.e. each of orientation</em>, angular<em>velocity</em>, and linear<em>acceleraion</em>covariance is a 9 element array representing a 3x3 matrix with values along the diagonal), an imu<em>sensor</em>controller only publishes the first element of each covariance:</p>
+
+<pre><code>covariance_stored    = [1e-6, 0, 0,  0, 1e-6, 0,  0, 0, 1e-6]
+covariance_published = [1e-6, 0, 0,  0, 0,    0,  0, 0, 0   ]
+</code></pre>
+
+<p>I am setting the covariance fields once, on initializing the hardware_interface, but have confirmed that reading values from the interface <a href="https://github.com/ros-controls/ros_controllers/blob/indigo-devel/imu_sensor_controller/src/imu_sensor_controller.cpp#L99" title="link to github">in the same way as the imu<em>sensor</em>controller </a> shows the complete values:</p>
+
+<p>my<em>hardware</em>interface.h defines:</p>
+
+<pre><code> class MyHardwareInterface: public hardware_interface::RobotHW
+ {
+ protected:
+     ros::NodeHandle                               nh_;
+
+     hardware_interface::ImuSensorInterface       imu_sensor_interface_;
+
+     std::vector&lt;double&gt;                          imu_orientation_cov_;
+     std::vector&lt;double&gt;                          imu_angular_vel_cov_;
+     std::vector&lt;double&gt;                          imu_linear_acc_cov_;
+
+     //...
+ }
+</code></pre>
+
+<p>my<em>hardware</em>interface.cpp initalizes each vector from a parameter:</p>
+
+<pre><code>nh_.getParam(&quot;hardware_interface/imu_orientation_covariance&quot;,  imu_orientation_cov_);
+nh_.getParam(&quot;hardware_interface/imu_angular_velocity_covariance&quot;, imu_angular_vel_cov_);
+nh_.getParam(&quot;hardware_interface/imu_linear_acceleration_covariance&quot;, imu_linear_acc_cov_);
+</code></pre>
+
+<p>The following (mimicking <code>imu_sensor_controller::update()</code>) can be run from my<em>hardware</em>interface at any point after initialization to print the complete covariances (in the form <code>[a,0,0,0,b,0,0,0,c]</code>):</p>
+
+<pre><code>// converts a pointer to a comma-delimited string
+template &lt;typename T&gt; std::string pstr(const T* ptr, int size)
+{
+    std::stringstream ss;
+    if (ptr)
+    {
+        for (unsigned i=0; i &lt; size; ++i)
+        {
+            if (i != 0)
+            {
+                ss &lt;&lt; &quot;,&quot;;
+            }
+            ss &lt;&lt; ptr[i];
+        }
+    }
+    return ss.str();
+}
+
+hardware_interface::ImuSensorHandle imu_sensor = imu_sensor_interface_.getHandle(&quot;imu&quot;);
+
+ROS_INFO_NAMED(&quot;hardware_interface&quot;, &quot;orientation covariance: [%s]&quot;,
+               pstr&lt;double&gt;(imu_sensor.getOrientationCovariance(), 9).c_str());
+
+ROS_INFO_NAMED(&quot;babbage_hardware_interface&quot;, &quot;angular velocity covariance: [%s]&quot;,
+               pstr&lt;double&gt;(imu_sensor.getAngularVelocityCovariance(), 9).c_str());
+
+ROS_INFO_NAMED(&quot;babbage_hardware_interface&quot;, &quot;linear acceleration covariance: [%s]&quot;,
+               pstr&lt;double&gt;(imu_sensor.getLinearAccelerationCovariance(), 9).c_str());
+</code></pre>
+
+<p>Does anyone have any insight, or an example project that uses an imu<em>sensor</em>interface that I could take a look at? Thanks for your time.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/22710">etappan</a> on 2015-10-02 10:34:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Looking closer at imu_sensor_controller, the covariance loops (over <code>j</code>, the index of the covariance matrix) all use the index <code>i</code> (the IMU sensor to publish). (Comments are mine.)</p>
+
+<pre><code>// outerloop over the realtime publishers (one per sensor)
+for (unsigned i=0; i&lt;realtime_pubs_.size(); i++){
+      if (publish_rate_ &gt; 0.0 &amp;&amp; last_publish_times_[i] + ros::Duration(1.0/publish_rate_) &lt; time){
+        // try to publish
+        if (realtime_pubs_[i]-&gt;trylock()){
+          //...
+          // Orientation covariance
+          if (sensors_[i].getOrientationCovariance())
+          {
+            // inner loop over the indices of the covariance
+            for (unsigned j=0; j&lt;realtime_pubs_[i]-&gt;msg_.orientation_covariance.size(); ++j){
+              // all of these are being access by &#39;i&#39;, none are being access by &#39;j&#39;
+              realtime_pubs_[i]-&gt;msg_.orientation_covariance[i] = sensors_[i].getOrientationCovariance()[i];
+            }
+          }
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22710">etappan</a> on 2015-10-02 15:04:23 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Good assessment. Could you please make a pull request with the fix against the <code>indigo-devel</code> branch of <a href="https://github.com/ros-controls/ros_controllers">ros_controllers</a>?.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2015-10-05 03:00:00 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

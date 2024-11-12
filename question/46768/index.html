@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Is it possible to call a ros service from another service's callback function in the same node? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/46768">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Is it possible to call a ros service from another service's callback function in the same node?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/45241/is-it-possible-to-call-a-ros-service-from-another-services-callback-function-in">https://robotics.stackexchange.com/questions/45241/is-it-possible-to-call-a-ros-service-from-another-services-callback-function-in</a>.</p>
+        <p>I have a node advertising several services (A, B, C), and I want the service callback function for service A, to call services B and C. Is this allowed?</p>
+
+<p>From my first tests it seems that this blocks something in the underlying service mechanism. Maybe the different services in a node are served sequentially using a single thread?</p>
+
+<p>I know doing this may sound strange, and not the right way to do it, but this node is a quite complex etherCAT realtime node, and the C++ object that serves A doesn&#39;t have (easily) access to the objects that serve B and C.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1236">toniOliver</a> on 2012-10-25 04:21:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You might need more than one spin threads. When you call spin, roscpp starts a loop that serves service and topic requests, i.e. it calls the callback. When calling a service inside a service, you might need a second spin loop. Have a look at roscpp&#39;s AsyncSpinner and <a href="http://www.ros.org/wiki/roscpp/Overview/Callbacks%20and%20Spinning">this page</a>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21">Lorenz</a> on 2012-10-25 04:35:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for pointing me to the right information. It looks like AsyncSpinner is what I&#39;d need. Although I will try to do it by taking the second service call out of the callback function, as the code I&#39;m working in is a plugin and the ros::spin() declaration is not in my package (not my code).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1236">toniOliver</a> on 2012-10-26 00:37:21 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>The problem is, that you can&#39;t use the spin_node_until_future_complete() command inside the outer callback. 
+The solution is to use an MultiThreadedExecutor and different callback groups.
+Then you can call the inner service by giving it a callback function (instead of waiting for the return code with spin_node_until_future_complete).</p>
+
+<p>If you want to wait for the result from the inner service call before the outer service callback finishes you need to block the thread with a while(return_from_inner_service == false) loop.
+This is important if your outer callback is from a service, because then you want to receive the inner service result and use it to compute the result of the outer service.
+But this is bad design, because you block the spin() call from the outer service. 
+Luckily we can still handle other callbacks with the MultiThreadedExecutor as long as we assign them to a different callback group.
+If the outer callback is from a topic you don&#39;t want to block the callback, just handle the inner service call inside the assigned callback function. It will execute asynchronous.</p>
+
+<p>Here is some code example in C++
+(assuming all necessary headers included and ROS services created)</p>
+
+<p>Create the MultiThreadedExecuter and an instance of the Node in main:</p>
+
+<pre><code>int main(int argc, char *argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor executor;
+    auto node = std::make_shared&lt;Communication&gt;();
+    executor.add_node(node);
+    executor.spin();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Create seperate Callback group and assign it to the inner service client (inside the Node/class constructor):</p>
+
+<pre><code>callback_group_input_ = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::MutuallyExclusive);
+get_input_client_ = this-&gt;create_client&lt;petra_core::srv::GetInput&gt;(&quot;GetInput&quot;, rmw_qos_profile_services_default, callback_group_input_);
+</code></pre>
+
+<p>Inside the outer callback from a topic or service, send the inner_request and define a callback for it:</p>
+
+<pre><code>int choice = -1;
+    auto inner_client_callback = [&amp;,this](rclcpp::Client&lt;petra_core::srv::GetInput&gt;::SharedFuture inner_future)
+        { 
+            auto result = inner_future.get();
+            choice = stoi(result-&gt;input);
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;[inner service] callback executed&quot;);
+        };
+    auto inner_future_result = get_input_client_-&gt;async_send_request(inner_request, inner_client_callback);
+</code></pre>
+
+<p>If it is necessary to wait inside the outer callback for the result block the thread:</p>
+
+<pre><code>// Wait for the result.
+    while (choice &lt; 0 &amp;&amp; rclcpp::ok())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+</code></pre>
+
+<p>I hope it helps you, or whoever has the same problem. I was stuck with this for weeks...</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/53868">Andreas Z</a> on 2020-05-18 05:54:08 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>+1 for the effort of posting this, but please note that your answer is ROS 2 specific, while the OP was/is using ROS 1.</p>
+
+<p>That makes your answer essentially irrelevant here in this case.</p>
+
+<p>This is also a Q&amp;A from <em>2012</em>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-18 07:03:45 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

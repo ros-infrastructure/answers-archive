@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Republishing custom message to type /PoseArray - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/344735">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Republishing custom message to type /PoseArray</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/94816/republishing-custom-message-to-type-posearray">https://robotics.stackexchange.com/questions/94816/republishing-custom-message-to-type-posearray</a>.</p>
+        <p>I have a node which publishes a custom message (BoundingBox3d.msg) displaying the coordinates of a detected human, </p>
+
+<pre><code>string Class
+float64 probability
+float64 x
+float64 y
+float64 z
+</code></pre>
+
+<p>and another custom message (BoundingBoxes3d.msg) with that array</p>
+
+<pre><code>std_msgs/Header header
+BoundingBox3d[] bounding_boxes
+</code></pre>
+
+<p>However i would require it to be published as a posearray message type, because another node requires the input to be of type geometry_msgs/PoseArray. The node (Darknet3D.cpp) produces the output values x, y and z and I have been trying unsuccessfully to publish the values into a different message type. All the comments with //M Test are the additional code written by me.</p>
+
+<p>When I rostopic /posearray, the values of the posearray are all blank.</p>
+
+<pre><code>header: 
+  seq: 682
+  stamp: 
+    secs: 0
+    nsecs:         0
+  frame_id: &#39;&#39;
+poses: []
+</code></pre>
+
+<p>Could anyone point out why I am not able to get values for my posearray? I am pretty new to coding so all my attempts have been comparing different open source codes and improvising for my needs. I tried using <code>ROS_INFO(&quot;poseArray size: %i&quot;, posearray.poses.size())</code> to see if the size of the posearray, but it remains as 0. The other pose.x etc values all returns correct values.
+Below is the cpp file which outputs the values</p>
+
+<pre><code>#include &quot;darknet_ros_3d/Darknet3D.h&quot;
+
+#include &lt;ros/ros.h&gt;
+
+#include &lt;visualization_msgs/MarkerArray.h&gt;
+
+#include &lt;pcl_ros/transforms.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+
+#include &lt;limits&gt;
+#include &lt;algorithm&gt;
+
+#include &quot;geometry_msgs/Pose.h&quot;
+#include &lt;geometry_msgs/PoseStamped.h&gt; /*M test*/
+#include &lt;geometry_msgs/PoseArray.h&gt; /*M test*/
+
+#include &quot;ros/time.h&quot;
+
+
+namespace darknet_ros_3d
+{
+
+Darknet3D::Darknet3D():
+  nh_(&quot;~&quot;)
+{
+  initParams();
+
+  darknet3d_pub_ = nh_.advertise&lt;darknet_ros_3d_msgs::BoundingBoxes3d&gt;(output_bbx3d_topic_, 100);
+  markers_pub_ = nh_.advertise&lt;visualization_msgs::MarkerArray&gt;(&quot;/darknet_ros_3d/markers&quot;, 100);
+
+  posearray_pub_ = nh_.advertise&lt;geometry_msgs::PoseArray&gt;(&quot;/posearray&quot;, 100); //M Test
+
+  yolo_sub_ = nh_.subscribe(input_bbx_topic_, 1, &amp;Darknet3D::darknetCb, this);
+  pointCloud_sub_ = nh_.subscribe(pointcloud_topic_, 1, &amp;Darknet3D::pointCloudCb, this);
+
+  last_detection_ts_ = ros::Time::now() - ros::Duration(60.0);
+}
+
+
+void
+Darknet3D::initParams()
+{
+  input_bbx_topic_ = &quot;/darknet_ros/bounding_boxes&quot;;
+  output_bbx3d_topic_ = &quot;/darknet_ros_3d/bounding_boxes&quot;;
+  pointcloud_topic_ = &quot;/r200/camera/depth_registered/points&quot;;
+  working_frame_ = &quot;odom&quot;;/*rs200_camera*/
+  mininum_detection_thereshold_ = 0.5f;
+  minimum_probability_ = 0.3f;
+
+  nh_.param(&quot;darknet_ros_topic&quot;, input_bbx_topic_, input_bbx_topic_);
+  nh_.param(&quot;output_bbx3d_topic&quot;, output_bbx3d_topic_, output_bbx3d_topic_);
+  nh_.param(&quot;point_cloud_topic&quot;, pointcloud_topic_, pointcloud_topic_);
+  nh_.param(&quot;working_frame&quot;, working_frame_, working_frame_);
+  nh_.param(&quot;mininum_detection_thereshold&quot;, mininum_detection_thereshold_, mininum_detection_thereshold_);
+  nh_.param(&quot;minimum_probability&quot;, minimum_probability_, minimum_probability_);
+  nh_.param(&quot;interested_classes&quot;, interested_classes_, interested_classes_);
+
+
+}
+
+void
+Darknet3D::pointCloudCb(const sensor_msgs::PointCloud2::ConstPtr&amp; msg)
+{
+  point_cloud_ = *msg;
+}
+
+void
+Darknet3D::darknetCb(const darknet_ros_msgs::BoundingBoxes::ConstPtr&amp; msg)
+{
+  last_detection_ts_ = ros::Time::now();
+  original_bboxes_ = msg-&gt;bounding_boxes;
+}
+
+void
+Darknet3D::calculate_boxes(const sensor_msgs::PointCloud2&amp; cloud_pc2,
+    const pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::ConstPtr cloud_pcl,
+    darknet_ros_3d_msgs::BoundingBoxes3d* boxes)
+{
+  boxes-&gt;header.stamp = cloud_pc2.header.stamp;
+  boxes-&gt;header.frame_id = working_frame_;
+
+  for (auto bbx : original_bboxes_)
+  {
+    if ((bbx.probability &lt; minimum_probability_) ||
+        (std::find(interested_classes_.begin(), interested_classes_.end(), bbx.Class) == interested_classes_.end()))
+    {
+      continue;
+    }
+
+    int center_x, center_y;
+
+    center_x = (bbx.xmax + bbx.xmin) / 2;
+    center_y = (bbx.ymax + bbx.ymin) / 2;
+
+    int pcl_index = (center_y* cloud_pc2.width) + center_x;
+    pcl::PointXYZRGB center_point =  cloud_pcl-&gt;at(pcl_index);
+
+    if (std::isnan(center_point.x))
+      continue;
+
+    float maxx, minx, maxy, miny, maxz, minz;
+
+    maxx = maxy = maxz =  -std::numeric_limits&lt;float&gt;::max();
+    minx = miny = minz =  std::numeric_limits&lt;float&gt;::max();
+
+    for (int i = bbx.xmin; i &lt; bbx.xmax; i++)
+      for (int j = bbx.ymin; j &lt; bbx.ymax; j++)
+      {
+        pcl_index = (j* cloud_pc2.width) + i;
+        pcl::PointXYZRGB point =  cloud_pcl-&gt;at(pcl_index);
+
+        if (std::isnan(point.x))
+          continue;
+
+        if (fabs(point.x - center_point.x) &gt; mininum_detection_thereshold_)
+          continue;
+
+        maxx = std::max(point.x, maxx);
+        maxy = std::max(point.y, maxy);
+        maxz = std::max(point.z, maxz);
+        minx = std::min(point.x, minx);
+        miny = std::min(point.y, miny);
+        minz = std::min(point.z, minz);
+      }
+
+    darknet_ros_3d_msgs::BoundingBox3d bbx_msg;
+    bbx_msg.Class = bbx.Class;
+    bbx_msg.probability = bbx.probability;
+    bbx_msg.xmin = minx;
+    bbx_msg.xmax = maxx;
+    bbx_msg.ymin = miny;
+    bbx_msg.ymax = maxy;
+    bbx_msg.zmin = minz;
+    bbx_msg.zmax = maxz;
+    bbx_msg.x = (bbx_msg.xmax + bbx_msg.xmin) / 2.0;
+    bbx_msg.y = (bbx_msg.ymax + bbx_msg.ymin) / 2.0;
+    bbx_msg.z = (bbx_msg.zmax + bbx_msg.zmin) / 2.0;
+
+    boxes-&gt;bounding_boxes.push_back(bbx_msg);
+
+/*M test*/
+    geometry_msgs::PoseArray posearray; 
+    posearray.header.stamp = ros::Time::now();
+    posearray.header.frame_id = &quot;odom&quot; ;
+
+    geometry_msgs::PoseStamped pose; 
+
+    pose.pose.position.x = (bbx_msg.xmax + bbx_msg.xmin) / 2.0;
+    pose.pose.position.y = (bbx_msg.ymax + bbx_msg.ymin) / 2.0;
+    pose.pose.position.z = (bbx_msg.zmax + bbx_msg.zmin) / 2.0;
+    pose.pose.orientation.w = 1.0;
+    ROS_INFO(&quot;pose.w value: %.2f&quot;, pose.pose.orientation.w); //M Test
+    ROS_INFO(&quot;pose.x value: %.2f&quot;, pose.pose.position.x); //M Test
+    ROS_INFO(&quot;pose.y value: %.2f&quot;, pose.pose.position.y); //M Test
+    ROS_INFO(&quot;pose.z value: %.2f&quot;, pose.pose.position.z); //M Test
+    ROS_INFO(&quot;poseArray size: %i&quot;, posearray.poses.size()); //M Test
+    posearray.poses.push_back(pose.pose);
+
+
+    // PoseArray message for boundingbox centres /*M test*/
+//    geometry_msgs::Pose pose; /*M test*/
+//    pose.position.x = (bbx_msg.xmax + bbx_msg.xmin) / 2.0; /*M test*/
+//    pose.position.y = (bbx_msg.ymax + bbx_msg.ymin) / 2.0; /*M test*/
+//    pose.position.z = (bbx_msg.zmax + bbx_msg.zmin) / 2.0; /*M test*/
+//   pose.orientation.w = 1.0; //No rotation atm. /*M test*/
+//    bb_centres.poses.push_back(pose); /*M test*/
+  }
+
+}
+
+void
+Darknet3D::update()
+{
+  if ((ros::Time::now() - last_detection_ts_).toSec() &gt; 2.0)
+    return;
+
+  if ((darknet3d_pub_.getNumSubscribers() == 0) &amp;&amp;
+      (markers_pub_.getNumSubscribers() == 0))
+    return;
+
+  sensor_msgs::PointCloud2 local_pointcloud;
+
+  try
+  {
+    pcl_ros::transformPointCloud(working_frame_, point_cloud_, local_pointcloud, tfListener_);
+  }
+  catch(tf::TransformException&amp; ex)
+  {
+    ROS_ERROR_STREAM(&quot;Transform error of sensor data: &quot; &lt;&lt; ex.what() &lt;&lt; &quot;, quitting callback&quot;);
+    return;
+  }
+
+  pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr pcrgb(new pcl::PointCloud&lt;pcl::PointXYZRGB&gt;);
+  pcl::fromROSMsg(local_pointcloud, *pcrgb);
+
+  darknet_ros_3d_msgs::BoundingBoxes3d msg;
+
+  geometry_msgs::PoseArray posearray; //M Test
+
+  calculate_boxes(local_pointcloud, pcrgb, &amp;msg);
+
+  darknet3d_pub_.publish(msg);
+
+  posearray_pub_.publish(posearray); //M Test
+
+
+  publish_markers(msg);
+}
+
+void
+Darknet3D::publish_markers(const darknet_ros_3d_msgs::BoundingBoxes3d&amp; boxes)
+{
+  visualization_msgs::MarkerArray msg;
+
+  int counter_id = 0;
+  for (auto bb : boxes.bounding_boxes)
+  {
+    visualization_msgs::Marker bbx_marker;
+
+    bbx_marker.header.frame_id = boxes.header.frame_id;
+    bbx_marker.header.stamp = boxes.header.stamp;
+    bbx_marker.ns = &quot;darknet3d&quot;;
+    bbx_marker.id = counter_id++;
+    bbx_marker.type = visualization_msgs::Marker::CUBE;
+    bbx_marker.action = visualization_msgs::Marker::ADD;
+    bbx_marker.pose.position.x = (bb.xmax + bb.xmin) / 2.0;
+    bbx_marker.pose.position.y = (bb.ymax + bb.ymin) / 2.0;
+    bbx_marker.pose.position.z = (bb.zmax + bb.zmin) / 2.0;
+    bbx_marker.pose.orientation.x = 0.0;
+    bbx_marker.pose.orientation.y = 0.0;
+    bbx_marker.pose.orientation.z = 0.0;
+    bbx_marker.pose.orientation.w = 1.0;
+    bbx_marker.scale.x = (bb.xmax - bb.xmin);
+    bbx_marker.scale.y = (bb.ymax - bb.ymin);
+    bbx_marker.scale.z = (bb.zmax - bb.zmin);
+    bbx_marker.color.b = 0;
+    bbx_marker.color.g = bb.probability * 255.0;
+    bbx_marker.color.r = (1.0 - bb.probability) * 255.0;
+    bbx_marker.color.a = 0.4;
+    bbx_marker.lifetime = ros::Duration(0.5);
+
+    msg.markers.push_back(bbx_marker);
+  }
+
+  markers_pub_.publish(msg);
+}
+
+};  // namespace darknet_ros_3d
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/49229">marcs</a> on 2020-02-20 11:39:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The <code>posearray</code> message structure in your <code>update()</code> method isn&#39;t the same as the local <code>posearray</code> message structure you declare and populate in <code>calculate_boxes()</code>. Instead of declaring a local <code>geometry_msgs::PoseArray</code> in <code>calculate_boxes()</code>, just add a pointer argument like you are already doing with your custom message. Then from <code>update()</code>, pass the pointer to the <code>PoseArray</code> you are actually publishing.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26169">robustify</a> on 2020-02-20 13:26:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

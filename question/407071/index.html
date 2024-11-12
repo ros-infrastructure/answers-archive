@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>double free or corruption (out) error with PCL - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407071">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>double free or corruption (out) error with PCL</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102453/double-free-or-corruption-out-error-with-pcl">https://robotics.stackexchange.com/questions/102453/double-free-or-corruption-out-error-with-pcl</a>.</p>
+        <p>System used: ROS2 foxy on Ubuntu 20.04 with PCL 1.10 installed on amd64 architecture.</p>
+
+<p>I have created a C++ subscriber for ROS2 topic <code>velodyne_points</code> of the message type <code>sensor_msgs::msg::PointCloud2</code>. Since, this is ROS2 message and PCL can&#39;t handle it. So, I first convert it to something (<code>pcl::PCLPointCloud2 cloud;</code>) which PCL can understand using <code>pcl_conversions::toPCL(*msg, cloud);</code> where <code>msg</code> is the pointer to ROS message and cloud contains the converted PCL data. Then, I want to apply PCL&#39;s <code>voxelGrid</code> functionality. Since <code>voxelGrid.setInputCloud(cloudPtr);</code> takes the argument as a pointer(<strong>the const boost shared pointer to a PointCloud message</strong>), I create one which points to PCL &quot;cloud&quot; using <code>pcl::PCLPointCloud2::Ptr cloudPtr (&amp;cloud);</code>, process it further and save the result in a memory location pointed by <code>cloud_filtered</code>. But as soon as program reaches the end of this subscriber callback function, it gives an error <code>double free or corruption (out)</code> on the terminal and execution stops (No error in compilation, only in execution).</p>
+
+<p>I tried to understand this error but I am not trying to free some pointer explicitly which is already free. This issue happens because of the line <code>pcl::PCLPointCloud2::Ptr cloudPtr (&amp;cloud);</code> because when I tried commenting this line and the voxelization steps, execution worked well. But I need to do voxelization and some more steps after it is done (ground plane segmentation, clustering etc.).</p>
+
+<p>I am trying to build ROS2 package and run the executable using this command : <code>clear &amp;&amp; colcon build --packages-select custom_nav_stack_pkg --symlink-install &amp;&amp; source install/local_setup.bash &amp;&amp; ros2 run custom_nav_stack_pkg cpp_executable</code> which looks fine to me.</p>
+
+<p>Here is the code.</p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;iostream&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+#include &quot;sensor_msgs/msg/point_cloud2.hpp&quot;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl/PCLPointCloud2.h&gt;
+#include &lt;pcl/conversions.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/visualization/cloud_viewer.h&gt;
+#include &lt;boost/foreach.hpp&gt;
+#include &lt;pcl/filters/voxel_grid.h&gt;
+
+class MinimalSubscriber : public rclcpp::Node
+{
+  public:
+    MinimalSubscriber()    //Constructor which has the same name as that of class followed by a parentheses. A constructor in C++ is a special method that is automatically called when an object of a class is created. 
+    : Node(&quot;minimal_subscriber&quot;)
+    {
+      subscription_ = this-&gt;create_subscription&lt;sensor_msgs::msg::PointCloud2&gt;
+      (&quot;velodyne_points&quot;, 10, std::bind(&amp;MinimalSubscriber::topic_callback, this, std::placeholders::_1));
+    }
+
+  private:
+    void topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) const
+    {
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;I received the message , height is: &#39;%d&#39;&quot;, msg-&gt;height); //
+      pcl::PCLPointCloud2 cloud;
+      pcl_conversions::toPCL(*msg, cloud);
+
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;I received the PCL message , height is: &#39;%d&#39;&quot;, cloud.height);
+
+      std::cerr &lt;&lt; &quot;PointCloud before filtering: &quot; &lt;&lt; cloud.width * cloud.height 
+             &lt;&lt; &quot; data points (&quot; &lt;&lt; pcl::getFieldsList (cloud) &lt;&lt; &quot;).&quot; &lt;&lt; std::endl;
+
+
+      // Declaring pointer for the PCL &quot;cloud&quot; 
+      pcl::PCLPointCloud2::Ptr cloudPtr (&amp;cloud);
+
+      // define a new container for the data
+      pcl::PCLPointCloud2::Ptr cloud_filtered (new pcl::PCLPointCloud2 ());
+
+      // define a voxelgrid
+      pcl::VoxelGrid&lt;pcl::PCLPointCloud2&gt; voxelGrid;
+      // set input to cloud
+      voxelGrid.setInputCloud(cloudPtr);
+      // set the leaf size (x, y, z)
+      voxelGrid.setLeafSize(0.1, 0.1, 0.1);
+      // apply the filter to dereferenced cloudVoxel
+      voxelGrid.filter(*cloud_filtered);   
+
+      std::cerr &lt;&lt; &quot;PointCloud after filtering: &quot; &lt;&lt; cloud_filtered-&gt;width * cloud_filtered-&gt;height 
+       &lt;&lt; &quot; data points (&quot; &lt;&lt; pcl::getFieldsList (*cloud_filtered) &lt;&lt; &quot;).&quot; &lt;&lt; std::endl;
+
+      std::cin.ignore();
+    }
+    rclcpp::Subscription&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr subscription_;
+
+};
+
+int main(int argc, char * argv[])
+{
+  std::cout &lt;&lt; &quot;Inside main function now&quot; &lt;&lt; std::endl;
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;MinimalSubscriber&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>Running it gives me below output.</p>
+
+<pre><code>Starting &gt;&gt;&gt; custom_nav_stack_pkg
+Finished &lt;&lt;&lt; custom_nav_stack_pkg [16.4s]                       
+
+Summary: 1 package finished [16.7s]
+Inside main function now
+[INFO] [1664396894.528685765] [minimal_subscriber]: I received the message , height is: &#39;1&#39;
+[INFO] [1664396894.528876950] [minimal_subscriber]: I received the PCL message , height is: &#39;1&#39;
+PointCloud before filtering: 15000 data points (x y z intensity ring time).
+PointCloud after filtering: 5937 data points (x y z intensity ring time).
+
+double free or corruption (out)
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/107873">dvy</a> on 2022-09-28 16:19:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>There are a few changes needed to fix the error. The following should work:</p>
+
+<pre><code>void topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg_ptr) const
+{
+  pcl::PCLPointCloud2::Ptr cloud_in_ptr(new pcl::PCLPointCloud2);
+  pcl_conversions::toPCL(*msg_ptr, *cloud_in_ptr);
+
+  RCLCPP_INFO_STREAM(get_logger(), &quot;[Input PointCloud] width &quot; &lt;&lt; cloud_in_ptr-&gt;width &lt;&lt; &quot; height &quot; &lt;&lt; cloud_in_ptr-&gt;height);
+
+  pcl::PCLPointCloud2::Ptr cloud_out_ptr(new pcl::PCLPointCloud2);
+  pcl::voxelGrid&lt;pcl::PCLPointCloud2&gt; voxel_grid;
+  voxel_grid.setInputCloud(cloud_in_ptr);
+  voxel_grid.setLeafSize(0.1, 0.1, 0.1);
+  voxel_grid.filter(*cloud_out_ptr);
+
+  RCLCPP_INFO_STREAM(get_logger(), &quot;[Output PointCloud] width &quot; &lt;&lt; cloud_out_ptr-&gt;width &lt;&lt; &quot; height &quot; &lt;&lt; cloud_out_ptr-&gt;height);
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25207"></a> on 2022-09-29 06:01:39 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>@rajivjoshi : Thanks a lot! It worked like a charm. By the way, can you please also explain the reason for the failure and the fix?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/107873">dvy</a> on 2022-09-29 12:34:30 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I am glad it worked. Notice that you are calling the class directly. Pay attention to the <code>()</code> after <code>PCLPointCloud2</code> . The <code>pcl::PCLPointCloud2::Ptr</code> is a smart pointer, so you just need to provide the class name only, i.e., without <code>()</code>. Next, the <code>voxelGrid</code> filter requires smart pointer as input, so I created it at the beginning and used it inside <code>pcl_conversions::toPCL</code>. Notice the dereferencing of pointer here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-09-29 23:54:48 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

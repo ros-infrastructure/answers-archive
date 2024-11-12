@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How can I subscribe to 2 different topics in a synchronised manner in ROS2 ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/291876">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How can I subscribe to 2 different topics in a synchronised manner in ROS2 ?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87064/how-can-i-subscribe-to-2-different-topics-in-a-synchronised-manner-in-ros2">https://robotics.stackexchange.com/questions/87064/how-can-i-subscribe-to-2-different-topics-in-a-synchronised-manner-in-ros2</a>.</p>
+        <p>I have 3 different nodes : Node2 subscribes to two different topics of same types published by node 1 and node3. Then it does some calculations on these subscribed topics and the publishes to a new topic which is then subscribed by node 3. So basically I want to test looping calculations.</p>
+
+<p>Here is my class definition for node2 which is subscribing to 1 topic and publishing to 1 : </p>
+
+<pre><code>    class HeatConduction1 : public rclcpp::Node
+{
+public:
+  explicit HeatConduction1(const std::string &amp; topic_subscriber1,const std::string &amp; topic_publisher)
+  : Node(&quot;heatConduction1&quot;)
+  {
+
+
+    auto callback =
+      [this](const std_msgs::msg::Float32::SharedPtr msg_) -&gt; void
+      {
+
+    heatflow = calculateHeatFlow(heatflow,tempPM1,msg_-&gt;data);
+    tempPM1 = calculateTempPM1(tempPM1, msg_-&gt;data,heatflow);
+
+
+
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;I heard from source node the source heatflow: [%f]&quot;, msg_-&gt;data)
+    //RCLCPP_INFO(this-&gt;get_logger(), &quot;I heard from heatconduction2 node as the tempPM2: [%f]&quot;, msg_2-&gt;data)
+
+
+    pub_msg = std::make_shared&lt;std_msgs::msg::Float32&gt;();
+
+    pub_msg-&gt;data = tempPM1;
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Publishing: &#39;%f&#39;&quot;, pub_msg-&gt;data)
+    pub_-&gt;publish(pub_msg);
+      };
+
+
+    sub_ = create_subscription&lt;std_msgs::msg::Float32&gt;(topic_subscriber1, callback);
+   // sub_1 = create_subscription&lt;std_msgs::msg::Float32&gt;(topic_subscriber2, callback);
+
+    pub_ = this-&gt;create_publisher&lt;std_msgs::msg::Float32&gt;(topic_publisher, rmw_qos_profile_default);
+
+   }
+</code></pre>
+
+<p>Now, how can i modify this code to add another subscriber. Can I pass another argument in the constructor naming <code>const std::string &amp; topic_subscriber2</code> and then create another shared pointer as <code>sub_1</code> and use a callback command as <code>sub_1 = create_subscription&lt;std_msgs::msg::Float32&gt;(topic_subscriber2, callback);</code> But this is not working as it gives a compilation error.</p>
+
+<p>Or should i have another callback function in the constructor and call it seperately ? but in this case how would the callbacks be synchronised ?</p>
+
+<p>Any helps would be appreciated.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/34222">aks</a> on 2018-05-22 05:15:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>You can subscribe another topic by add this command:</p>
+
+<p>sub_1 = this-&gt;create_subscription<std_msgs::msg::Float32>(topic_subscriber2, callback);</p>
+
+<p>Thank you.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/44245">jalil</a> on 2019-07-24 21:37:17 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>You have to use the <code>message_filter</code> package.</p>
+
+<p>Among the other things, this allows you to create synchronized callbacks.
+You can use it to define callbacks which takes more than 1 message as argument.
+Note that all messages must have an <code>header</code> field with the timestamp.</p>
+
+<pre><code>void sync_callback(const StampedStringMsg::SharedPtr string_msg, const StampedBooleanMsg::SharedPtr bool_msg)
+{
+  std::cout&lt;&lt;&quot;Received msg: &quot;&lt;&lt; string_msg-&gt;data&lt;&lt; &quot; and msg &quot; &lt;&lt; bool_msg-&gt;data&lt;&lt;std::endl;
+}
+</code></pre>
+
+<p>You need to choose a synchronization strategy: exact or approximate. The first one will require that both messages have the exact same timestamp in order for the callback to be triggered. The other will use heuristics to try to match messages with slightly different timestamps.</p>
+
+<pre><code>  // create subscribers to the topics of interest
+  message_filters::Subscriber&lt;StampedStringMsg&gt; string_sub(node, &quot;stamped_string_topic&quot;, qos_profile);
+  message_filters::Subscriber&lt;StampedBooleanMsg&gt; bool_sub(node, &quot;stamped_boolean_topic&quot;, qos_profile);
+
+  // exact time policy
+  typedef message_filters::sync_policies::ExactTime&lt;StampedStringMsg, StampedBooleanMsg&gt; exact_policy;
+  message_filters::Synchronizer&lt;exact_policy&gt;syncExact(exact_policy(10), string_sub, bool_sub);
+
+  // register the exact time callback
+  syncExact.registerCallback(sync_callback);
+</code></pre>
+
+<p>You can find a full working example here <a href="https://github.com/alsora/ros2-code-examples#time-synchronization-message-filters">https://github.com/alsora/ros2-code-examples#time-synchronization-message-filters</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30341">alsora</a> on 2019-07-25 05:22:50 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

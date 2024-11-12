@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Avoiding boilerplate when calling services, using an abstract class - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/405170">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Avoiding boilerplate when calling services, using an abstract class</h2>
+      <div class="question">
+        <p>Dear,</p>
+
+<p>To avoid boilerplate I imagined an abstract interface that can be inherited from to create service callers with standard code. I just wrote it yet the result sound very esoteric to me. I wanted to have your point of view before going further...</p>
+
+<pre><code>class ServiceCaller(ABC):
+    &quot;&quot;&quot;Call a service and wait for the answer
+
+    This class has to be inherited from to create each service caller with specific methods.
+
+    @param node: the node that is manipulated (this class instance shall be inside so pass the &#39;self&#39;).
+    @param interface_class: the class used for the ROS2 service interface.
+    @param interface_name: the name of the ROS2 service interface.
+    @param logger: optionally, another logger than the node&#39;s one.
+    @param sleep_initial: in the while loop that waits for the service, we start by a small wait time
+    @param sleep_initial: then we raise it incrementally
+    @param sleep_alert: if we waited more than this time, we start to print alerts for debug
+    &quot;&quot;&quot;
+
+    def __init__(
+        self,
+        node: Node,
+        name: str,
+        logger = None,
+        sleep_initial: float = 0.01,
+        sleep_increment: float = 0.1,
+        sleep_alert: float = 0.5,
+    ):
+
+        # Parameters
+        self.sleep_initial: float = sleep_initial
+        self.sleep_increment: float = sleep_increment
+        self.sleep_alert: float = sleep_alert
+
+        # We get the &quot;self&quot; of the node.
+        self.node: Node = node
+
+        # Get the provided logger or default to the node logger
+        self.logger = logger if logger is not None else self.node.get_logger()
+
+        # Name of the custom interface
+        self.name: str = name
+
+        # Initialize the status
+        self.status: Status = Status.INACTIVE
+
+        # We just create a client and connect to the service at startup
+        self.initialize_client()
+
+    ############################
+    ###   Concrete methods   ###
+    ############################
+
+    def initialize_client(self):
+        &quot;&quot;&quot;Launch the client&quot;&quot;&quot;
+        self.logger.info(f&quot;Initializing the {self.name} service client&quot;)
+        self.client: Client = self.node.create_client(self.ServiceInterface, self.name)
+        while not self.client.wait_for_service(timeout_sec=1.0):
+            self.logger.warn(f&#39;{self.name} service not available, waiting again...&#39;)
+        # We can only get out of this loop if the service is available
+        self.logger.info(f&quot;{self.name} service found&quot;)
+        self.status: Status = Status.INACTIVE
+
+    def run(self):
+        &quot;&quot;&quot;Call the service and wait for the answer&quot;&quot;&quot;
+        self.logger.info(f&quot;Running service {self.name}&quot;)
+        future: Future = self.call_service()
+        sleep_time = self.sleep_initial
+        while not future.done():
+            time.sleep(sleep_time)
+            if sleep_time &gt; self.sleep_alert:
+                self.logger.info(f&quot;Waiting for the {self.name} service to complete...&quot;)
+            sleep_time += self.sleep_increment
+        if self.status == Status.SUCCESS:
+            return True
+        else:
+            self.logger.error(f&quot;The status of the service {self.name} is: {self.status}&quot;)
+            return False  
+
+    def call_service(
+        self,
+        messages: any,
+    ) -&gt; Future:
+        &quot;&quot;&quot;Call the service and return the future&quot;&quot;&quot;
+
+        # Update the status
+        self.status: Status = Status.RUNNING
+        self.logger.debug(f&quot;Calling {self.name} service with messages: {messages}&quot;)
+
+        # Create a request and feed it with the messages data
+        request = self.feed_request(self.ServiceInterface.Request(), messages)
+
+        # Call the service and get the response as a future
+        future: Future = self.client.call_async(request)
+
+        # Launch the callback once the future is completed
+        # Use a partial since all_done_callback only accept one argument
+        future.add_done_callback(
+            partial(
+                self.callback,
+                messages=messages,
+                )
+            )
+
+        return future
+
+    def callback(
+        self,
+        future: Future,
+        messages = None
+    ) -&gt; None:
+        &quot;&quot;&quot;Function launched once the future is completed
+        It updates the self.scene object with the refined scene
+
+        @param future: Future object
+        @param messages: messages are transmitted to the callback to be able to use them for information
+
+        @return: None
+        &quot;&quot;&quot;
+        try:
+            # Get the result from the server
+            response: self.ServiceInterface.Response = future.result()
+            # Log the answer for debugging
+            self.logger.info(f&#39;Service {self.name} response: {response}&#39;)
+            # Update the scene with the new data
+            if response is not None:
+                self.process_response(response, messages)
+                self.status: Status = Status.SUCCESS
+            else:
+                self.status: Status = Status.ERROR
+                self.logger.error(f&quot;The service {self.name} ran but returned None as a response.&quot;)
+        except Exception as e:
+            # Log the error for the example
+            self.status : Status = Status.ERROR
+            self.logger.error(f&quot;Calling the {self.name} service raised error: {e}&quot;)
+
+###########################################
+###   Abstract properties and methods   ###
+###########################################
+
+@abstractproperty
+def ServiceInterface(self) -&gt; ServiceInterfaceType:
+    &quot;&quot;&quot;Return the service interface class that is used in the service caller
+
+    This property has to be implemented in the child class
+    &quot;&quot;&quot;
+    ServiceInterface: ServiceInterfaceType = None
+    return ServiceInterface
+
+@abstractmethod
+def feed_request(self, request, messages):
+    &quot;&quot;&quot;Feed the data into the request
+
+    Abstract method that need to be reimplemented in the child class.
+
+    Something like:
+    request.part_0 = messages[0]
+    request.part_1 = messages[1]
+    return request
+    &quot;&quot;&quot;
+    return request
+
+@abstractmethod
+def process_response(self, response, messages):
+    &quot;&quot;&quot;Process the response
+
+    Abstract method that need to be reimplemented in the child class.
+
+    Something like:
+    self.node.part_0 = response.part_0
+    self.node.part_1 = response.part_1
+    &quot;&quot;&quot;
+    pass
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/109521">thibd</a> on 2022-08-17 10:50:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

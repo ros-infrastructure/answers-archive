@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ship a ROS package with Docker - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/259667">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ship a ROS package with Docker</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/80306/ship-a-ros-package-with-docker">https://robotics.stackexchange.com/questions/80306/ship-a-ros-package-with-docker</a>.</p>
+        <p>Hi everyone,</p>
+
+<p>I have a ROS package which has been well-tested with Caffe and Tensorflow + Cuda. 
+It is quite a burden explaining to users how to use this package and I feel it is best to ship it to users as a docker image. Now, on the docker hub, I see osrf/ros images for example, indigo as well as gazebo (which btw are dependencies for this project).</p>
+
+<p>I have created the <a href="https://github.com/lakehanne/gps/blob/master/Dockerfile">dockerfile</a> as well as built the <a href="https://cloud.docker.com/swarm/lakehanne/repository/docker/lakehanne/gps/general">docker image</a> but I find that the ros environment within the docker build is not active. I cannot <code>catkin_init_workspace</code>, <code>catkin build</code> nor <code>catkin make</code>. For the record, I pulled the <a href="https://github.com/osrf/docker_images/blob/d9efe4367b9d376fd97a154bdaba896ca0382645/ros/indigo/indigo-ros-base/Dockerfile">OSRF/ros_indigo</a> image in building my ros environment.  There is no ros installation path in <code>/opt/ros/...</code> either. </p>
+
+<p>The instructions are scarce and I wonder what I may be doing wrong.</p>
+
+<p>Would appreciate your help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-04-19 17:21:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I think you are making a mistake in your Dockerfile. You cannot layer docker images the way you have tried.</p>
+
+<p>I believe that when you have:</p>
+
+<pre><code>FROM ros:indigo-ros-core
+LABEL maintainer &quot;patlekano@gmail.com&quot;
+
+# install ros packages
+RUN apt-get update &amp;&amp; apt-get install -y \
+    ros-indigo-ros-base=1.1.4-0* \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# Install gazebo
+FROM gazebo:gzserver6
+
+FROM ubuntu:trusty
+</code></pre>
+
+<p>The image will actually only use <code>ubuntu:trusy</code> and &#39;forget&#39; about the things you did before. You are probably best of starting from the image that has most of what you want, and then install the rest on top of it (using apt) it&#39;s a bit of a hassle, but I recently created a CUDA enabled trusty-ros-indigo-moveit image this way and it worked fine. I have removed a couple of things so not entirely certain but I think it should work like this. The entrypoint is the same as the one from <a href="https://github.com/osrf/docker_images/tree/d9efe4367b9d376fd97a154bdaba896ca0382645/ros/indigo/indigo-ros-core">indigo-ros-core</a>.</p>
+
+<pre><code>FROM nvidia/cuda:8.0-devel-ubuntu14.04
+# setup environment
+RUN locale-gen en_US.UTF-8
+ENV LANG en_US.UTF-8
+
+# setup sources.list
+RUN echo &quot;deb http://packages.ros.org/ros/ubuntu trusty main&quot; &gt; /etc/apt/sources.list.d/ros-latest.list
+
+# install bootstrap tools
+RUN apt-get update &amp;&amp; apt-get install --no-install-recommends -y \
+    python-rosdep \
+    python-rosinstall \
+    python-vcstools \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# bootstrap rosdep
+RUN rosdep init \
+    &amp;&amp; rosdep update
+
+# install ros packages
+ENV ROS_DISTRO indigo
+RUN apt-get update &amp;&amp; apt-get install -y \
+    ros-indigo-desktop-full=1.1.4-0* \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# setup entrypoint
+COPY ./ros_entrypoint.sh /
+
+ENTRYPOINT [&quot;/ros_entrypoint.sh&quot;]
+CMD [&quot;bash&quot;]
+
+# ros-indigo-ros-base
+RUN apt-get update &amp;&amp; apt-get install -y \
+    ros-indigo-ros-base=1.1.4-0* \
+&amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# moveit-indigo-ci
+ENV TERM xterm
+
+# Setup catkin workspace
+ENV CATKIN_WS=/root/ws_moveit
+RUN mkdir -p $CATKIN_WS/src
+WORKDIR $CATKIN_WS/src
+
+# Commands are combined in single RUN statement with &quot;apt/lists&quot; folder removal to reduce image size
+RUN wstool init . &amp;&amp; \
+    # Download moveit source so that we can get necessary dependencies
+    wstool merge https://raw.githubusercontent.com/ros-planning/moveit/${ROS_DISTRO}-devel/moveit.rosinstall &amp;&amp; \
+    wstool update &amp;&amp; \
+    # Update apt-get because previous images clear this cache
+    apt-get -qq update &amp;&amp; \
+    # Install some base dependencies
+    apt-get -qq install -y \
+        # Required for rosdep command
+        sudo \
+        # Required for installing dependencies
+        python-rosdep \
+        # Preferred build tool
+        python-catkin-tools \
+        # Not sure if necessary:
+        ros-$ROS_DISTRO-rosbash \
+        ros-$ROS_DISTRO-rospack &amp;&amp; \
+    # Download all dependencies of MoveIt!
+    rosdep update &amp;&amp; \
+    rosdep install -y --from-paths . --ignore-src --rosdistro ${ROS_DISTRO} --as-root=apt:false &amp;&amp; \
+    # Remove the source code from this container. TODO: in the future we may want to keep this here for further optimization of later containers
+    cd .. &amp;&amp; \
+    rm -rf src/ &amp;&amp; \
+    # Clear apt-cache to reduce image size
+    rm -rf /var/lib/apt/lists/*
+
+# Continous Integration Setting
+ENV IN_DOCKER 1
+
+# moveit-indigo-release
+RUN apt-get update &amp;&amp; \
+    apt-get install -y \
+        ros-${ROS_DISTRO}-moveit-* &amp;&amp; \
+rm -rf /var/lib/apt/lists/*
+</code></pre>
+
+<p>Hope this helps.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26757">rbbg</a> on 2017-04-20 02:34:12 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks. I will try this. Where is this Dockerfile domiciled? I need to find the file <code>ros_entrypoint.sh</code>. Thanks</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-04-23 16:00:40 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It&#39;s an extract of a bigger Dockerfile so I haven&#39;t tested this exact file and it&#39;s online. The entrypoint can be found <a href="https://github.com/osrf/docker_images/tree/d9efe4367b9d376fd97a154bdaba896ca0382645/ros/indigo/indigo-ros-core">here.</a> good luck.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26757">rbbg</a> on 2017-04-24 02:38:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks. May I ask why you installed ros-indigo from source and also pulled <code>ros-indigo-ros-base=1.1.4-0*</code> in the same dockerfile? I just finished building my  <code>caffe</code> image with your <code>nvidia/cuda:8.0-devel-ubuntu14.04</code>, <code>ros-indigo-full</code> and <code>ros-indigo-base</code> and I found that my build is about 3GB.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-04-25 10:32:28 UTC</p></div>
+</div>
+<div class="comment">
+          <p>He, looks like I have some duplicate parts in there :) Pretty sure that&#39;s an error. I copied most from Dockerfiles from osrf and MoveIt! and didn&#39;t carefully inspect everything, so that&#39;s probably how it got in there. The image does get quite large but at least in my case it couldn&#39;t be helped.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26757">rbbg</a> on 2017-04-28 00:43:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Okay. Thanks for the clarification. I have cleaned it up and my dockerfile is <a href="https://github.com/lakehanne/gps/blob/master/Dockerfile">here</a>. Thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-04-28 18:10:49 UTC</p></div>
+</div>
+<div class="comment">
+          <p>BTW, how did you compile your <code>cuda-8.0</code>? From <code>.deb</code> or via the <code>.run</code> file? I couldn&#39;t get my image to populate a <code>matplotlib</code> window as I wanted when I run the docker image with <code>DISPLAY</code> support.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-04-28 18:14:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have removed the second <code>ros-indigo-base</code> install file and it&#39;s lesser in bytes. Thanks for your help though.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/22838">lakehanne</a> on 2017-04-29 23:02:14 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

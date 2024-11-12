@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Publish message on destructor works only on rclpy - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/364045">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Publish message on destructor works only on rclpy</h2>
+      <div class="question">
+        <p>Hi everyone,</p>
+
+<p>In a test node I just have one publisher that publishes the node state once on the constructor and once on the destructor of my node class. I figured out that this works on Python3 (rclpy) and not on C++ (rclcpp).</p>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+import time
+
+from std_msgs.msg import String
+
+
+class Test(Node):
+
+    def __init__(self):
+        super().__init__(&#39;test&#39;)
+
+        self.publisher = self.create_publisher(String, &#39;state_test&#39;, 10)
+        msg = String()
+        msg.data = &quot;Node started&quot;
+        self.publisher.publish(msg)
+
+    def __del__(self):
+        msg = String()
+        msg.data = &quot;Node crashed&quot;
+        self.publisher.publish(msg)
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node_test = Test()
+    rclpy.spin(node_test)
+
+    node_test.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &#39;__main__&#39;:
+    main()
+</code></pre>
+
+<p>C++ code:</p>
+
+<pre><code>#include &lt;chrono&gt;
+#include &lt;functional&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+
+using namespace std::chrono_literals;
+
+class Test : public rclcpp::Node
+{
+  public:
+    Test()
+    : Node(&quot;test&quot;), count_(0)
+    {
+      pub_state = this-&gt;create_publisher&lt;std_msgs::msg::String&gt;(&quot;state_test&quot;, 10);
+      auto message = std_msgs::msg::String();
+      message.data = &quot;Node started&quot;;
+      pub_state-&gt;publish(message);
+    }
+
+    ~Test()
+    {
+      auto message = std_msgs::msg::String();
+      message.data = &quot;Node crashed&quot;;
+      pub_state-&gt;publish(message);
+    }
+
+  private:
+    rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr pub_state;
+    size_t count_;
+};
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;Test&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>Why is the result different on those two examples ?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/61511">Erysme</a> on 2020-10-23 08:43:29 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Isn&#39;t that obvious? In python you are explicitly calling the destruction before calling shutdown. In C++ you don&#39;t do that, so the destructor will only be called when the variable goes out of scope, i.e., after the shutdown when it can&#39;t publish anymore.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25700">chfritz</a> on 2020-10-23 12:44:59 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>As pointed out in the comment, in your C++ code the object is only destroyed at the end of the program when the scope for the shared pointed ends. At that time ros has already shut down and you can no longer publish. However, you can force the destruction of the shared pointer before shutdown, but limiting its scope a bit more. I haven&#39;t tested this, but the following should do the trick:</p>
+
+<pre><code>int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  {
+    auto node = std::make_shared&lt;Test&gt;();
+    rclcpp::spin(node);
+  }
+  rclcpp::spin_some(); // need to let ros spin a bit more to process the publish queued by the destructor
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25700"></a> on 2020-10-23 13:07:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your answer, I agree that in python the destructor is &quot;manually&quot; called.
+Your script does not work for me. I am still searching a way to publish a message when the node is destroyed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61511">Erysme</a> on 2020-10-26 09:52:57 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Can you say more about why it doesn&#39;t work? Does it not compile/run, or does it still fail to call the destructor?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25700">chfritz</a> on 2020-10-26 09:54:41 UTC</p></div>
+</div>
+<div class="comment">
+          <p>It enters the ~Test() destructor and goes out (I can print something in), but the message is not published</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61511">Erysme</a> on 2020-10-26 10:11:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>ah, right, there was something missing from my answer. You need to call spin_some (or some other spin method) once more after the destructor in order for the queued up publication to go out. I&#39;ve updated the answer. Could you try this?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25700">chfritz</a> on 2020-10-26 10:18:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yeah thats a nice idea.
+I tested it. I got compilation error : spin_some require an argument. I tryed rclcpp::spin_some(node); but there were an arror because node have been destroyed.</p>
+
+<p>Edit : rclcpp::on_shutdown(linked_function); seems to be the way to do what I want. I test different implementation and will post a code</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61511">Erysme</a> on 2020-10-26 10:27:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I tryed rclcpp::on_shutdown() to link a fonction that is called on shutdown. Unfortunately rclcpp::ok() return False in this function.</p>
+
+<p>Ros communications seems to be closed just after the exit of the spin function.</p>
+
+<p>Does somebody have an idea ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/61511">Erysme</a> on 2020-10-28 12:27:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I think you&#39;ve tried this approach long enough. I would just create a manual <code>destroy</code> method in the class and call that manually after the spin.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25700">chfritz</a> on 2020-10-29 15:19:47 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

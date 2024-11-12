@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Is it possible to shut down a service from its client? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/293791">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Is it possible to shut down a service from its client?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87329/is-it-possible-to-shut-down-a-service-from-its-client">https://robotics.stackexchange.com/questions/87329/is-it-possible-to-shut-down-a-service-from-its-client</a>.</p>
+        <p>I have a ROS service written in Python as shown below-</p>
+
+<pre><code>from beginner_tutorials.srv import *
+import rospy
+
+def handle_add_two_ints(req):
+    print &quot;Returning [%s + %s = %s]&quot;%(req.a, req.b, (req.a + req.b))
+    return AddTwoIntsResponse(req.a + req.b)
+
+def add_two_ints_server():
+    rospy.init_node(&#39;add_two_ints_server&#39;)
+    s = rospy.Service(&#39;add_two_ints&#39;, AddTwoInts, handle_add_two_ints)
+    print &quot;Ready to add two ints.&quot;
+    rospy.spin()
+
+if __name__ == &quot;__main__&quot;:
+    add_two_ints_server()
+</code></pre>
+
+<p>The service client is written in C++ as shown below-</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;beginner_tutorials/AddTwoInts.h&quot;
+
+int main(int argc, char **argv){
+  ros::init(argc, argv, &quot;add_two_ints_client&quot;);
+
+  ros::NodeHandle n;
+  ros::ServiceClient client = n.serviceClient&lt;beginner_tutorials::AddTwoInts&gt;(&quot;add_two_ints&quot;);
+  beginner_tutorials::AddTwoInts srv;
+  srv.request.a = 10;
+  srv.request.b = 20;
+  if (client.call(srv)){
+    long int sum = srv.response.sum;
+    ROS_INFO(&quot;Sum: %ld&quot;, sum);
+    if (sum &gt; 100){
+      // calling &#39;ros::shutdown()&#39; stops only this node as expected
+      ros::shutdown();
+    }
+  } else {
+    ROS_ERROR(&quot;Failed to call service add_two_ints&quot;);
+    return -1;
+  }
+
+  return 0;
+}
+</code></pre>
+
+<p><strong>Depending on the response from the service, I want to stop both the client and server (i.e., service written in Python above) node.</strong> Any suggestions, please?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/25207"></a> on 2018-06-11 08:26:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Hi,</p>
+
+<p>It&#39;s indeed possible, but I wouldn&#39;t recommend it to you, as other node can still be using this service, or the service can probably be restarted in other way (for example, wait a parameter to be on, or wait for an other service to be called).</p>
+
+<p>To make the server kill himself : 
+What you can do is to set a flag to shutdown the service : (<strong>Warning</strong> : not safe, the script can terminate before the response is sent, use at your own risk)</p>
+
+<pre><code>from beginner_tutorials.srv import *
+import rospy
+
+manual_shutdown = False
+
+def handle_add_two_ints(req):
+    global manual_shutdown
+    print &quot;Returning [%s + %s = %s]&quot;%(req.a, req.b, (req.a + req.b))
+    response = AddTwoIntsResponse(req.a + req.b)
+    manual_shutdown = True
+    return response 
+
+def add_two_ints_server():
+    rospy.init_node(&#39;add_two_ints_server&#39;)
+    s = rospy.Service(&#39;add_two_ints&#39;, AddTwoInts, handle_add_two_ints)
+    print &quot;Ready to add two ints.&quot;
+    r = rospy.Rate(10)
+    while not rospy.is_shutdown() and not manual_shutdown:
+        r.sleep()
+    rospy.sleep(1)
+    s.shutdown()
+
+if __name__ == &quot;__main__&quot;:
+    add_two_ints_server()
+</code></pre>
+
+<p>Also, you can replace the signal_shutdown by what you want or even put the &quot;<code>manual_shutdown</code>&quot; in the while-loop and do thing after the loop.</p>
+
+<p>I used a while loop instead of <code>rospy.spin()</code>, you can check why here : <a href="https://answers.ros.org/question/110336/python-spin-once-equivalent/">https://answers.ros.org/question/110336/python-spin-once-equivalent/</a></p>
+
+<p>For completion, you can check these questions : <a href="https://answers.ros.org/question/198134/is-it-bad-practice-to-create-and-shutdown-services-during-runtime/">https://answers.ros.org/question/198134/is-it-bad-practice-to-create-and-shutdown-services-during-runtime/</a> or <a href="https://answers.ros.org/question/109951/check-to-see-if-a-service-is-running/">https://answers.ros.org/question/109951/check-to-see-if-a-service-is-running/</a></p>
+
+<p>Edit 2 : To make the client kill the server (make a node kill another node):</p>
+
+<p>You can apply the method 1 above to create a &quot;kill me&quot; service and call it from the client.</p>
+
+<p>Or even simpler, you just have to use the rosnode command :</p>
+
+<p>node1:</p>
+
+<pre><code>import rospy
+def node1():
+    rospy.init_node(&#39;node1&#39;)
+    r = rospy.Rate(10)
+    while not rospy.is_shutdown():
+        r.sleep()
+
+if __name__ == &quot;__main__&quot;:
+    node1()
+</code></pre>
+
+<p>node 2:</p>
+
+<pre><code>import rospy
+from subprocess import call
+def node2():
+    rospy.init_node(&#39;node2&#39;)
+    rospy.sleep(10) # Wait 10 second to kill node1
+    call([&quot;rosnode&quot;, &quot;kill&quot;, &quot;node1&quot;], shell=True) # be careful here https://stackoverflow.com/questions/3172470/actual-meaning-of-shell-true-in-subprocess
+
+if __name__ == &quot;__main__&quot;:
+    node2()
+</code></pre>
+
+<p>Edit 1 : Some more answers : </p>
+
+<p>(1) My code is not good at all so I edited it, if you don&#39;t return immediately after setting <code>manual_shutdown = True</code>, the client will have an error since the connection is broken (in rospy, all callback are in a thread).
+The error :</p>
+
+<blockquote>
+<p>ERROR: transport error completing
+service call: unable to receive data
+from sender, check sender&#39;s logs for
+details</p>
+</blockquote>
+
+<p>You can try it by adding a <code>rospy.sleep(1)</code> after the <code>manual_shutdown=True</code> to see the error</p>
+
+<p>You can try to minimize the effect by putting the flag to True just before the return and putting a rospy.sleep() after the loop, but it&#39;s quite a ugly method. I&#39;m still searching a correct way to do this</p>
+
+<p>(2) you can add and you SHOULD add a rospy.sleep() or a rospy.rate() in the loop in Python, otherwise you CPU will work for nothing. You can check with the command <code>top</code> the CPU usage :</p>
+
+<p>top without rospy.rate(10) : CPU : 100%   </p>
+
+<p>top with rospy.rate(10) :  CPU : 0.5%</p>
+
+<p>(3) You don&#39;t have to set <code>disable_signals=True</code>. You should use this command when you want to register your own shutdown hook, where you will call service and set parameters (but don&#39;t send message) <strong>or</strong> when you want to <strong>not</strong> quit node by &quot;ctrl+c&quot; (but you will have to catch the KeyboardInterrupt Exception) : <a href="http://wiki.ros.org/rospy/Overview/Initialization%20and%20Shutdown#Shutting_down">http://wiki.ros.org/rospy/Overview/Initialization%20and%20Shutdown#Shutting_down</a></p>
+
+<p>(4) <code>service.shutdown()</code> will only quit the service, It should be called before the end of the node to &quot;properly&quot; exit the service (You should also use the same shutdown for Publisher and Subscriber, even if I never had problem without shutting down).
+ You can just end the script normally, signal_shutdown should be used only in very specific use-case (so I remove it from my answer).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/30984">lmathieu</a> on 2018-06-11 09:38:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks a lot. I have four queries (1) The flag <code>manual_shutdown</code> is set inside <code>def handle_add_two_ints(req)</code>. On the other hand <code>while not rospy.is_shutdown()</code> is running and checking the flag. What would happen if <code>rospy.signal_shutdown</code> is called before <code>def handle_add_two_ints(req)</code> return?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2018-06-11 10:50:50 UTC</p></div>
+</div>
+<div class="comment">
+          <p>(2) I believe it would be nicer to add <code>rate.sleep()</code> inside <code>while not rospy.is_shutdown()</code> where <code>rate = rospy.Rate(10)</code>. I am not sure about it. What do you say?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2018-06-11 10:52:34 UTC</p></div>
+</div>
+<div class="comment">
+          <p>(3) As per <a href="https://answers.ros.org/question/218240/python-shutdown-node/?answer=267819#post-id-267819">this</a> post, <code>rospy.init_node</code> should be called along with <code>disable_signals=True</code>. So it should be <code>rospy.init_node(&#39;add_two_ints_server&#39;, disable_signals=True)</code></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2018-06-11 10:57:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p>(4) Instead of <code>rospy.signal_shutdown(&quot;Because&quot;)</code>, we also have <code>service.shutdown()</code>. In this scenario, which one do you prefer and why?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2018-06-11 10:59:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That  a lot of interesting question, I will try to answers them :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2018-06-11 11:23:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Pedantic perhaps, but: this is not an actual answer: the question was whether a service <em>server</em> can be shutdown by <em>a client</em>. The code shown here makes the server shutdown itself.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-11 14:45:47 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You are actually right @gvdhoorn, It&#39;s even a duplicate of : <a href="https://answers.ros.org/question/174714/could-a-node-can-be-stoped-by-another-node/">https://answers.ros.org/question/174714/could-a-node-can-be-stoped-by-another-node/</a> , I was so busy trying to see if I could that I didn&#39;t think if I should. But hey, I&#39;m gonna edit my answer one last time for the sake of completion :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30984">lmathieu</a> on 2018-06-11 15:44:16 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Very informatic answer! Thank you very much.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2018-06-11 20:01:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I&#39;m happy that @Ravi Joshi is content with the answer he received, but your latest answer is also not an answer :) You&#39;re killing the complete node, which may be hosting more service servers and/or publishers.</p>
+
+<p>I believe the only answer would be: no, this is not possible (directly).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-12 02:03:45 UTC</p></div>
+</div>
+<div class="comment">
+          <p>And I&#39;m happy it isn&#39;t, as that would make denial-of-service attacks all too easy.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-06-12 02:04:07 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

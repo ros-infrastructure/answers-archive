@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Suppress TF_REPEATED_DATA warnings? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/381529">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Suppress TF_REPEATED_DATA warnings?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99446/suppress-tf-repeated-data-warnings">https://robotics.stackexchange.com/questions/99446/suppress-tf-repeated-data-warnings</a>.</p>
+        <p>I&#39;ve read <a href="https://github.com/ros/geometry2/issues/467">the discussions on why this warning is being printed</a> but that&#39;s not really relevant to me. I&#39;m trying to play back an old rosbag which published a TF repeatedly with the same timestamp. I only need the TF once so I don&#39;t care that the rest of the messages are ignored but I keep getting the message</p>
+
+<p><code>Warning: TF_REPEATED_DATA ignoring data with redundant timestamp for frame...</code></p>
+
+<p>spamming my terminal making debugging other parts of my code impossible. So my question is how can I stop this message? I&#39;ve tried changing the logging levels but loading a custom rosconsole file but there was no change. Here is the file I make:</p>
+
+<pre><code>#
+#   rosconsole will find this file by default at $ROS_ROOT/config/rosconsole.config
+#
+#   You can define your own by e.g. copying this file and setting
+#   ROSCONSOLE_CONFIG_FILE (in your environment) to point to the new file
+# log4j.logger.ros=ERROR log4j.logger.ros.roscpp.superdebug=ERROR
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/76964">raabuchanan</a> on 2021-07-01 03:20:40 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You can run a version of geometry2 that reduces the warning by cloning this repo and branch in your catkin_ws/src:</p>
+
+<pre><code>git clone --branch throttle-tf-repeated-data-error git@github.com:BadgerTechnologies/geometry2.git
+</code></pre>
+
+<p>Then rebuild, source setup.bash, run and then it should be reduced down to once every 10 seconds.  If 10 seconds is still too much log output then change the <code>ros::Duration(10.0)</code> to 10000 seconds or whatever you like.</p>
+
+<p><a href="https://github.com/ros/geometry2/pull/516/files">https://github.com/ros/geometry2/pull/516/files</a></p>
+
+<p>I haven&#39;t actually run that branch but it looks reasonable that it will work as claimed.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2021-09-26 09:25:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I can confirm that this works.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/103641">labude</a> on 2022-05-31 12:21:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you! This worked like a charm. Ideally there would be a way to set the time delay without having to re-compile but for now this is great.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/76964">raabuchanan</a> on 2023-02-08 09:57:54 UTC</p></div>
+</div>
+<div class="comment">
+          <p>this works</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/163111">Muhammad_Usman</a> on 2023-07-17 05:13:57 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>For anyone interested in a horribly over-engineered solution for suppressing TF_REPEATED_DATA warnings on the receiving end, I wrote the below Python code:</p>
+
+<pre><code>import multiprocessing
+import os
+import pipes
+import threading
+import sys
+
+import rospy
+
+class suppress_TF_REPEATED_DATA(object):
+    r&#39;&#39;&#39;Standard error filter used to suppress TF_REPEATED_DATA warning messages.
+    &#39;&#39;&#39;
+    def __init__(self):
+        r&#39;&#39;&#39;Create a new warning suppressor object.
+        &#39;&#39;&#39;
+        self.__registered = False
+
+    def __call__(self):
+        r&#39;&#39;&#39;Replace the normal STDERR with a filter that suppresses
+            `Warning: TF_REPEATED_DATA` messages.
+        &#39;&#39;&#39;
+        if self.__registered:
+            return
+
+        # Because the filter works by redirecting STDERR to a pipe, it&#39;s not possible to
+        # then print error messages that are not meant to be suppressed. The solution is
+        # to create a child process to print those messages in place of this process.
+        queue = multiprocessing.Queue()
+        def printer(queue):
+            while True:
+                line = queue.get()
+                if line is None:
+                    return
+
+                sys.stderr.write(line)
+
+        # Start the output process.
+        self.__printer = multiprocessing.Process(target=printer, args=(queue,))
+        self.__printer.start()
+
+        # Preserve the normal STDERR.
+        stderr_fileno = os.dup(2)
+        stderr = sys.stderr
+
+        # Create a pipe object and replace STDERR with it.
+        piper = pipes.Template()
+        pipe_name = rospy.get_name().replace(&#39;/&#39;, &#39;_&#39;)
+        pipe_out = piper.open(pipe_name, &#39;w&#39;)
+        os.dup2(pipe_out.fileno(), 2)
+        sys.stderr = pipe_out
+
+        def read_pipe():
+            skip = False
+
+            # Open the pipe in read mode and read messages from it.
+            with open(pipe_name) as pipe_in:
+                while not rospy.is_shutdown():
+                    line = pipe_in.readline()
+                    if line.strip() == &#39;&#39;:
+                        continue
+
+                    # The warning message is two lines long, so we need to also skip the line
+                    # following the one starting with &quot;Warning: TF_REPEATED_DATA&quot;.
+                    if skip:
+                        skip = False
+                        continue
+
+                    if line.startswith(&#39;Warning: TF_REPEATED_DATA&#39;):
+                        skip = True
+                        continue
+
+                    # If the line is not to be suppressed,
+                    # send it to the child process for printing.
+                    queue.put(line)
+
+            # Stop the output process.
+            queue.put(None)
+            self.__printer.join()
+
+            # Restore the normal STDERR.
+            pipe_out.close()
+            os.dup2(stderr_fileno, 2)
+            sys.stderr = stderr
+
+            self.__registered = False
+
+        self.__reader = threading.Thread(target=read_pipe)
+        self.__reader.start()
+
+        self.__registered = True
+
+
+# Turn the class into a singleton.
+suppress_TF_REPEATED_DATA = suppress_TF_REPEATED_DATA()
+</code></pre>
+
+<p>Add this code to a module in your system, then import and call <code>suppress_TF_REPEATED_DATA()</code> right after the call to <code>rospy.init_node()</code>.</p>
+
+<p>The implementation of a C++ solution is left as an exercise to the reader. ;)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/26539">xperroni</a> on 2022-08-10 14:09:44 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer">
+              <p>setting logger level works. you just need to set it on the right node. or if you don&#39;t know the node you can set it for all nodes using </p>
+
+<pre><code>for n in `rosnode list`; do rosservice call $n/set_logger_level ros &quot;error&quot;; done
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/31861">thesane</a> on 2023-07-28 23:29:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

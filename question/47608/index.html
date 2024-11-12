@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Spawning Objects in RVIZ - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/47608">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Spawning Objects in RVIZ</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/45546/spawning-objects-in-rviz">https://robotics.stackexchange.com/questions/45546/spawning-objects-in-rviz</a>.</p>
+        <p>Is there a simple way to place objects in RVIZ?  I am just trying to use the position of a detected object in a point cloud and spawn an object in that pose.  But so far I haven&#39;t found a way to even spawn simple objects... Sphere, Cylinder, Box.  Do I have to create a URDF file/launch file for this?</p>
+
+<p>I have seen <a href="http://www.ros.org/wiki/motion_planning_environment/Tutorials/Adding%20known%20objects%20to%20the%20collision%20environment#Adding_a_known_object_to_the_environment">this</a> Tutorial.  But I get no such file or directory... </p>
+
+        <div class="owner"><p>Asked by <a href="/users/2800">ncr7</a> on 2012-11-06 10:45:38 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>the tutorial you mentioned almost works except some minor changes.</p>
+
+<p>try the following code:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;planning_environment/models/collision_models.h&gt;
+#include &lt;arm_navigation_msgs/PlanningScene.h&gt;
+#include &lt;arm_navigation_msgs/GetPlanningScene.h&gt;
+#include &lt;geometric_shapes/shape_operations.h&gt;
+#include &lt;planning_environment/util/construct_object.h&gt;
+
+static const std::string SET_PLANNING_SCENE_DIFF_NAME = &quot;/environment_server/set_planning_scene_diff&quot;;
+
+class PlanningSceneTest
+{
+public:
+    PlanningSceneTest()
+    {
+        collision_object_pub_  = nh_.advertise&lt;arm_navigation_msgs::CollisionObject&gt;(&quot;collision_object&quot;, 10);
+        cm_ = new planning_environment::CollisionModels(&quot;robot_description&quot;);
+        kinematic_state_ = new planning_models::KinematicState(cm_-&gt;getKinematicModel());
+        kinematic_state_-&gt;setKinematicStateToDefault();
+        while(!ros::service::waitForService(SET_PLANNING_SCENE_DIFF_NAME, ros::Duration(1.0)))
+        {
+          ROS_INFO_STREAM(&quot;Waiting for set_planning_scene_diff service &quot; &lt;&lt; SET_PLANNING_SCENE_DIFF_NAME);
+        }
+        get_planning_scene_client_ = nh_.serviceClient&lt;arm_navigation_msgs::GetPlanningScene&gt; (SET_PLANNING_SCENE_DIFF_NAME);
+    }
+    ~PlanningSceneTest()
+    {
+
+    }
+
+    bool getPlanningScene()
+    {
+        arm_navigation_msgs::CollisionObject collision_objects;
+        collision_objects.operation.operation = arm_navigation_msgs::CollisionObjectOperation::ADD;
+        collision_objects.header.stamp = ros::Time::now();
+        collision_objects.header.frame_id = &quot;/&quot; + cm_-&gt;getWorldFrameId();
+        collision_objects.id = &quot;testObj&quot;;
+
+        geometry_msgs::Pose cylinderPose;
+        cylinderPose.position.x = 0.4;
+        cylinderPose.position.y = 0.4;
+        cylinderPose.position.z = 0.95;//0.93
+        cylinderPose.orientation.x = 0;
+        cylinderPose.orientation.y = 0;
+        cylinderPose.orientation.z = 0;
+        cylinderPose.orientation.w = 1;
+        arm_navigation_msgs::Shape cylinder_shape;
+        cylinder_shape.type = arm_navigation_msgs::Shape::CYLINDER;
+        cylinder_shape.dimensions.resize(2);
+        cylinder_shape.dimensions[0] = 0.028;//radius
+        cylinder_shape.dimensions[1] = 0.12;//height
+        collision_objects.shapes.push_back(cylinder_shape);
+        collision_objects.poses.push_back(cylinderPose);
+
+        collision_object_pub_.publish(collision_objects);
+
+        //must call the set_planning_scene_diff service to notify other nodes
+        if(kinematic_state_ != NULL)
+        {
+          ROS_INFO(&quot;Reverting planning scene to default.&quot;);
+          cm_-&gt;revertPlanningScene(kinematic_state_);
+          kinematic_state_ = NULL;
+        }
+        arm_navigation_msgs::GetPlanningScene::Request planning_scene_req;
+        arm_navigation_msgs::GetPlanningScene::Response planning_scene_res;
+        if(!get_planning_scene_client_.call(planning_scene_req, planning_scene_res)) {
+            ROS_ERROR(&quot;Can&#39;t get planning scene&quot;);
+            return false;
+        }
+        kinematic_state_ = cm_-&gt;setPlanningScene(planning_scene_res.planning_scene);
+        if(kinematic_state_ == NULL)
+        {
+          ROS_ERROR(&quot;Something wrong with planning scene&quot;);
+          return false;
+        }
+
+        return true;
+    }
+
+    ros::NodeHandle nh_;
+    ros::ServiceClient get_planning_scene_client_;
+    ros::Publisher collision_object_pub_;
+
+    planning_environment::CollisionModels* cm_;
+    planning_models::KinematicState* kinematic_state_;
+
+};
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;CollisionObjectPub&quot;, ros::init_options::NoSigintHandler);
+
+    PlanningSceneTest* pTest = new PlanningSceneTest();
+    ros::Duration(5.0).sleep();//must sleep, otherwise the published info may get lost
+
+    pTest-&gt;getPlanningScene();
+    ros::waitForShutdown();
+    return 0;
+}
+</code></pre>
+
+<p>in rviz, you need to add display type &quot;Marker&quot;, and subscribe to the topic &quot;/planning_scene_markers&quot;</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3011">yangyangcv</a> on 2012-11-06 20:02:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>The simplest way to visualize objects in rviz are markers. Have a look at <a href="http://ros.org/wiki/rviz/Tutorials/Markers%3A%20Basic%20Shapes">this </a> and <a href="http://ros.org/wiki/rviz/Tutorials/Markers%3A%20Points%20and%20Lines">this</a> tutorial. <a href="http://ros.org/wiki/rviz/DisplayTypes/Marker">This page</a> will give you an overview of the currently supported marker types.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21">Lorenz</a> on 2012-11-06 23:19:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

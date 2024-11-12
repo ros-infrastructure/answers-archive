@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How does the ROS2 DDS Shared Library get loaded in rclpy? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/352528">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How does the ROS2 DDS Shared Library get loaded in rclpy?</h2>
+      <div class="question">
+        <p>I&#39;m trying to understand how the DDS shared library is loaded by rclpy-&gt;rcl-&gt;rmw, and have hit a stumbling point:</p>
+
+<p>It appears that <a href="https://github.com/ros2/rclpy/blob/master/rclpy/src/rclpy/_rclpy.c#L587">rclpy_init()</a> calls <a href="https://github.com/ros2/rcl/blob/master/rcl/src/rcl/init.c#L213">rcl_init()</a> which calles <a href="https://github.com/ros2/rmw_implementation/blob/master/rmw_implementation/src/functions.cpp#L658">rmw_init()</a> and that function will load the shared library.</p>
+
+<p>My confusion is that <a href="https://github.com/ros2/rclpy/blob/master/rclpy/src/rclpy/_rclpy.c#L585">two lines above</a> the call to rcl_init();   It appears that <a href="https://github.com/ros2/rcl/blob/master/rcl/src/rcl/init_options.c#L52">rcl<em>init</em>options_init()</a>  calls <a href="https://github.com/ros2/rmw/blob/master/rmw/include/rmw/init_options.h#L104">rmw<em>init</em>options_init()</a> which is located in the shared library, <em>that shouldn&#39;t be loaded yet...</em></p>
+
+<p>What am I missing here?</p>
+
+<p>I think I confirmed that the shared library is loaded before reaching rmw<em>init by placing some log</em>info() statements in rmw<em>fastrtps</em>shared<em>cpp / rmw</em>init<em>options</em>init(). </p>
+
+<pre><code>$ ros2 topic info -v /str1 --no-daemon
+[INFO] [1589753151.364450457] []: &gt;&gt;&gt; rcl_init_options_init
+[INFO] [1589753151.364512790] []: &gt;&gt;&gt; rmw_init_options_init
+[INFO] [1589753151.364525402] []: &gt;&gt;&gt; rcl_init_options_init
+[INFO] [1589753151.364531202] []: &gt;&gt;&gt; rmw_init_options_init
+[INFO] [1589753151.364552913] []: &gt;&gt;&gt; rclpy_init pre rmw_init
+[INFO] [1589753151.364607009] []: &gt;&gt;&gt; rmw_init
+</code></pre>
+
+<p>How is rmw<em>init</em>options<em>init() loaded from the rmw implementation shared library before the shared library is loaded in rmw</em>init()???</p>
+
+<p>I added a trace to <a href="https://github.com/ros2/rmw_implementation/blob/master/rmw_implementation/src/functions.cpp#L77">rmw_implementation/ function.cpp</a>, and was pleasantly surprised to see that something is loading the function just before it is called: <a href="https://pastebin.com/Uf7Nr7Xf">pastebin output</a></p>
+
+<p>So, what&#39;s causing get_symbol() to be called? </p>
+
+<p>The <a href="https://github.com/ros2/rmw_implementation/blob/master/rmw_implementation/src/functions.cpp#L130">CALL_SYMBOL</a> macro seems to indicate that it&#39;s responsible, but I&#39;m not yet sure how...</p>
+
+        <div class="owner"><p>Asked by <a href="/users/52574">dawonn_haval</a> on 2020-05-17 13:23:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>I finally get it...</p>
+
+<p>The <a href="https://github.com/ros2/rmw_implementation/blob/master/rmw_implementation/src/functions.cpp#L144">RMW_INTERFACE_FN</a> macro creates a function that implements each of the rmw functions and a pointer to the shared library function symbol_{function_name}, based on the list of functions directly below it. Each function expands the CALL_SYMBOL macro inside of it.</p>
+
+<p>The the CALL_SYMBOL macro will get the pointer to the function in the shared library with get_symbol() and assign the address to the pointer. If no matching symbol is found, an error is returned. If the symbol is found, it will call the shared library function. </p>
+
+<p>get_symbol() will get a reference to the shared library, via get_library() which loads the .so file based on the RMW_IMPLEMENTATION environment variable. </p>
+
+<p>rmw_init() was hijacked to &#39;prefetch&#39; all of the other functions in the library before calling the real rmw_init() function. There&#39;s a comment that this was done to avoid a race condition due to allocating an std::string. This is what made me mistakenly think that rmw_init() was responsible for loading all the symbols. </p>
+
+<p>Case Closed. :)</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/52574">dawonn_haval</a> on 2020-05-17 20:46:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Arduino Publisher publish() is sometimes very slow. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/282485">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Arduino Publisher publish() is sometimes very slow.</h2>
+      <div class="question">
+        <p>Hi!</p>
+
+<p>I&#39;m currently trying to use a NodeMCU ESP8266-12E and a GY-521 breakout board (MPU6050 IMU) to send data to my computer via WiFi.
+I&#39;ve set up the connection via </p>
+
+<pre><code>rosrun rosserial_python serial_node tcp
+</code></pre>
+
+<p>It connects just fine and sends data at around 400Hz, which is fine. But sometimes the the publish() method in my code (see below) takes upwards of 2 seconds to complete. I&#39;ve made sure that there&#39;s always data to transmit and all that.</p>
+
+<p>Is this due to it never timing out and requiring that someone is actually receiving the message? (tcp) or am I doing something weird. Any help is appreciated.</p>
+
+<p>I&#39;m using the ros_lib library aswell as the ESP8266 library for Arduino.</p>
+
+<pre><code>#include &lt;ESP8266WiFi.h&gt;
+#include &lt;ros.h&gt;
+#include &lt;geometry_msgs/Vector3Stamped.h&gt;
+#include &lt;Wire.h&gt;
+
+#define LED D0
+#define BRIGHT    250     //max led intensity (1-500)
+#define INHALE    750    //Inhalation time in milliseconds.
+#define PULSE     INHALE*1000/BRIGHT
+
+// Select SDA and SCL pins for I2C communication
+const uint8_t scl = D1;
+const uint8_t sda = D2;
+
+
+// Sensitivity scaling according to documentation
+const uint16_t AccelScaleFactor = 16384;
+const uint16_t GyroScaleFactor = 131;
+
+//Calibration ting
+float offsetAccelX = 0;
+float offsetAccelY = 0;
+float offsetGyroZ = 0;
+
+// MPU6050 Slave Device Address
+const uint8_t MPU6050SlaveAddress = 0x68;
+
+// MPU6050 few configuration register addresses
+const uint8_t MPU6050_REGISTER_SMPLRT_DIV   =  0x19;
+const uint8_t MPU6050_REGISTER_USER_CTRL    =  0x6A;
+const uint8_t MPU6050_REGISTER_PWR_MGMT_1   =  0x6B;
+const uint8_t MPU6050_REGISTER_PWR_MGMT_2   =  0x6C;
+const uint8_t MPU6050_REGISTER_CONFIG       =  0x1A;
+const uint8_t MPU6050_REGISTER_GYRO_CONFIG  =  0x1B;
+const uint8_t MPU6050_REGISTER_ACCEL_CONFIG =  0x1C;
+const uint8_t MPU6050_REGISTER_FIFO_EN      =  0x23;
+const uint8_t MPU6050_REGISTER_INT_ENABLE   =  0x38;
+const uint8_t MPU6050_REGISTER_ACCEL_XOUT_H =  0x3B;
+const uint8_t MPU6050_REGISTER_SIGNAL_PATH_RESET  = 0x68;
+
+int16_t AccelX, AccelY, AccelZ, Temperature, GyroX, GyroY, GyroZ;
+
+
+
+const char* ssid     = &quot;RobustRC&quot;;
+const char* password = &quot;superspeedveryfastwow&quot;;
+
+bool runOnce = true;
+
+// Set the rosserial socket server IP address (Simply the IP of the host computer running roscore)
+IPAddress server(192, 168, 1, 11);
+
+// Set the rosserial socket server port (Standard communication port for rosserial)
+const uint16_t serverPort = 11411;
+
+ros::NodeHandle nh;
+geometry_msgs::Vector3Stamped vec3_msg;
+ros::Publisher imuPublisher(&quot;imuData0&quot;, &amp;vec3_msg);
+
+
+void setup()
+{
+  pinMode(LED, OUTPUT);   // LED pin as output.
+  //Serial.begin(115200);
+  Wire.begin();
+
+  MPU6050_Init();
+  calibrateMPU6050();
+  // Connect the ESP8266 the the wifi AP using the information provided above.
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    for (int i = 1; i &lt; BRIGHT; i++) {
+      digitalWrite(LED, LOW);          // turn the LED on.
+      delayMicroseconds(i * 10);       // wait
+      digitalWrite(LED, HIGH);         // turn the LED off.
+      delayMicroseconds(PULSE - i * 10); // wait
+      delay(0);                        //to prevent watchdog firing.
+    }
+    //ramp decreasing intensity, Exhalation (half time):
+    for (int i = BRIGHT - 1; i &gt; 0; i--) {
+      digitalWrite(LED, LOW);          // turn the LED on.
+      delayMicroseconds(i * 10);        // wait
+      digitalWrite(LED, HIGH);         // turn the LED off.
+      delayMicroseconds(PULSE - i * 10); // wait
+      i--;
+      delay(0);                        //to prevent watchdog firing.
+    }
+  }
+  // Set the connection to rosserial socket server and start the node.
+  nh.getHardware()-&gt;setConnection(server, serverPort);
+  nh.initNode();
+
+  // Start publisher
+  nh.advertise(imuPublisher);
+}
+
+void loop()
+{
+
+  if (!nh.connected())
+  {
+    digitalWrite(LED, LOW);
+  }
+
+  Read_RawValue(MPU6050SlaveAddress, MPU6050_REGISTER_ACCEL_XOUT_H);
+
+  vec3_msg.vector.x = (float)AccelX / AccelScaleFactor  - offsetAccelX;     // Accelerometer x
+  vec3_msg.vector.y = (float)AccelY / AccelScaleFactor - offsetAccelY; // Accelerometer y
+  vec3_msg.vector.z = (float)GyroZ / GyroScaleFactor - offsetGyroZ;  // Yaw rate
+  vec3_msg.header.stamp = nh.now();
+  vec3_msg.header.frame_id = &quot;0&quot;;
+
+  if (nh.connected())
+  {
+    // Send the content
+    // This part sometimes freezes the whole thing over for anywhere from 50 to 1800 ms.
+    imuPublisher.publish(&amp;vec3_msg);
+    digitalWrite(LED, HIGH);
+  }
+
+  nh.spinOnce();
+  // No delay just run as fast as possible. Adding one does not solve the issue of freezing.
+}
+
+
+// read all 14 register
+void Read_RawValue(uint8_t deviceAddress, uint8_t regAddress)
+{
+  Wire.beginTransmission(deviceAddress);
+  Wire.write(regAddress);
+  Wire.endTransmission();
+  Wire.requestFrom(deviceAddress, (uint8_t)14);
+  AccelX = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+  AccelY = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+  AccelZ = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+  Temperature = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+  GyroX = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+  GyroY = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+  GyroZ = (((int16_t)Wire.read() &lt;&lt; 8) | Wire.read());
+}
+
+void I2C_Write(uint8_t deviceAddress, uint8_t regAddress, uint8_t data)
+{
+  Wire.beginTransmission(deviceAddress);
+  Wire.write(regAddress);
+  Wire.write(data);
+  Wire.endTransmission();
+}
+
+//configure MPU6050
+void MPU6050_Init()
+{
+  delay(200);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_SMPLRT_DIV, 0x07);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_PWR_MGMT_1, 0x01);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_PWR_MGMT_2, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_CONFIG, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_GYRO_CONFIG, 0x00);//set +/-250 degree/second full scale
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_ACCEL_CONFIG, 0x00);// set +/- 2g full scale
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_FIFO_EN, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_INT_ENABLE, 0x01);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_SIGNAL_PATH_RESET, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_USER_CTRL, 0x00);
+  delay(200);
+}
+
+//Calibrate MPU6050 (Remove small offsets)
+void calibrateMPU6050()
+{
+  for (size_t i = 0; i &lt; 500; i++)
+  {
+    Read_RawValue(MPU6050SlaveAddress, MPU6050_REGISTER_ACCEL_XOUT_H);
+    offsetAccelX += (float)AccelX / AccelScaleFactor; // Accelerometer x
+    offsetAccelY += (float)AccelY / AccelScaleFactor; // Accelerometer y
+    offsetGyroZ += (float)GyroZ / GyroScaleFactor;
+  }
+  offsetAccelX = offsetAccelX / 500;
+  offsetAccelY = offsetAccelY / 500;
+  offsetGyroZ = offsetGyroZ / 500;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/26767">TRyKKs</a> on 2018-02-12 16:56:41 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>How are you measuring the time in the publish() call? It looks like you&#39;re using the LED as an output during the loop, but both the MPU6050 I2C transaction and the publish() are in that section.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2018-02-12 17:23:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I don&#39;t measure time in the method itself, I simply use something like</p>
+
+<pre><code>timeThen = millis();
+publish();
+print( millis() - timeThen);
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26767">TRyKKs</a> on 2018-02-12 17:37:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Using TCP over wireless for datastreams with high rates of small msgs is typically not the best idea.</p>
+
+<p>A stall of 2 sec could point to your wireless connection being renegotiated (ie: after a drop of signal), causing TCP to buffer everything, which probably leads to your <code>publish(..)</code> call blocking.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-02-13 03:39:35 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Whenever I use wireless with <code>rosserial</code>, I switch to UDP. You&#39;ll probably lose a few messages, but it&#39;s much better suited for use over lossy links.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-02-13 03:40:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ah, figured as much. Thank you!
+Are there any tutorials on that to point me in the right direction? Still kind of new to this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/26767">TRyKKs</a> on 2018-02-13 10:50:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Note: my comment was not meant as an authoritative answer, it was just a hypothesis.</p>
+
+<p>Look at using the <code>rosserial_udp_socket_node</code> on the server side. Not sure any more about the client side though. I don&#39;t use Arduinos.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2018-02-13 10:57:51 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

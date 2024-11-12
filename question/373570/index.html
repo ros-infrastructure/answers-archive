@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to send waypoints to move_base using rospy? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/373570">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to send waypoints to move_base using rospy?</h2>
+      <div class="question">
+        <p>I&#39;m having trouble creating a node to send waypoints to <code>move_base</code> one by one as each are achieved. These waypoints are provided by another node. The code I have so far is pasted below. It seems to send the goal but the robot does not move towards any of the goals.</p>
+
+<p>Any ideas what might be wrong? I don&#39;t think I can be sure that the action server is always up and running, although there have been a few occasions where the 1st waypoint has been sent as a goal and achieved. I&#39;m not sure why this worked and why it did not move on to the next waypoints extracted from the <code>PoseArray</code>.</p>
+
+<pre><code>import rospy
+from geometry_msgs.msg import PoseArray
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+import actionlib
+
+
+class WaypointFollower(object):
+
+    def __init__(self):
+
+        self.waypoint_poses_sub = rospy.Subscriber(&quot;/waypoint_poses&quot;, PoseArray,
+                                                   self.waypoint_poses_callback, queue_size=1)
+        self.waypoint_goal = MoveBaseGoal()
+        self.move_base_client = actionlib.SimpleActionClient(&#39;move_base&#39;, MoveBaseAction)
+        self.move_base_client.wait_for_server()
+
+    def waypoint_poses_callback(self, waypoint_pose_array_msg):
+
+        for waypoint in range(0, len(waypoint_pose_array_msg.poses)):
+
+            print(&#39;Waypoint: &#39; + str(waypoint + 1))
+
+            self.waypoint_goal.target_pose.pose = waypoint_pose_array_msg.poses[waypoint]
+            self.waypoint_goal.target_pose.header.stamp = rospy.Time.now()
+            self.waypoint_goal.target_pose.header.frame_id = &#39;map&#39;
+            self.move_base_client.send_goal(self.waypoint_goal)
+
+            wait = self.move_base_client.wait_for_result()
+            if not wait:
+                rospy.logerr(&quot;Action server not available!&quot;)
+                rospy.signal_shutdown(&quot;Action server not available!&quot;)
+            else:
+                return self.move_base_client.get_result()
+
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;waypoint_follower&#39;, anonymous=True)
+    Result = WaypointFollower()
+    if Result == 1:
+        print(&#39;Waypoint_follower node successfully executed&#39;)
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/48264">Py</a> on 2021-03-08 12:15:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;m not sure and might be wrong but shouldn&#39;t the return statement be outside of the <code>for</code> loop otherwise it will just end the callback after the first waypoint is reached.</p>
+
+<p>Also you should try separating the <code>move_base_client</code> which handles a single goal and your callback which handles the PoseArray. Your callback can have a <code>for</code> loop where it calls the <code>move_base_client</code> for each pose in the PoseArray.</p>
+
+<pre><code>def go_to_waypoint(Pose):
+    # call move_base_client here i.e send goal
+
+def waypoint_poses_callback(PoseArray):
+   for (Pose in PoseArray):
+        # call go_to_waypoint(Pose) here
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/55159">shlock</a> on 2021-03-08 23:57:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks - moving the <code>return</code> was the right way to do it! I&#39;ve created a separate <code>go_to_waypoint</code> function as suggested and explored a bit further. I&#39;ve found, using the code snippet below, that when the first goal is sent, the server goes down and the loop moves to the next goal straight away. I can see that <code>self.move_base_client.wait_for_result()</code> is not actually waiting for the robot to arrive at the goal waypoint so the for loop continues and fails to send further goals as it finds the server to be down. Any ideas?</p>
+
+<pre><code>def go_to_waypoint(self, goal):
+    server_up = self.move_base_client.wait_for_server()
+    if server_up:
+        self.move_base_client.send_goal(goal)
+        self.move_base_client.wait_for_result()
+        server_check = self.move_base_client.wait_for_server(timeout=rospy.Duration(10.0))
+        print(&#39;Server up after goal send?: &#39; + str(server_check))
+    else:
+        print(&quot;Cannot send goal to move_base. Server down&quot;)
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48264">Py</a> on 2021-03-09 04:44:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Does you node directly print <code>&#39;Waypoint_follower node successfully executed&#39;</code> after executing? If so you might have to add <a href="https://answers.ros.org/question/332192/difference-between-rospyspin-and-rospysleep/">rospy.spin()</a> in <code>if __name__ == &quot;__main__&quot;:</code> to prevent you node from stopping after execution if it doesn&#39;t receive the subscriber request. </p>
+
+<p>Also <code>Result = WaypointFollower()</code> may not be doing what you think it is doing. Here the value of <code>Result</code> will be an object of type <code>WaypointFollower</code> and not the result of <code>self.waypoint_poses_callback()</code>. </p>
+
+<p>try changing</p>
+
+<pre><code>if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;waypoint_follower&#39;, anonymous=True)
+    Result = WaypointFollower()
+</code></pre>
+
+<p>to </p>
+
+<pre><code>if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;waypoint_follower&#39;, anonymous=True)
+    Result = WaypointFollower()
+    rospy.spin()
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/55159">shlock</a> on 2021-03-09 05:11:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>No, <code>&#39;Waypoint_follower node successfully executed&#39;</code> is not printed after executing. Actually, I&#39;d previously removed <code>rospy.spin()</code> because I only really want to subscribe to the latest <code>PoseArray</code> after they&#39;ve been picked manually in RVIZ, i.e. I don&#39;t want to be trying to process every one &quot;live&quot; whilst a user is picking them graphically. I&#39;d found that without <code>rospy.spin()</code> I was able to do this and work through each individual pose in the array to create valid <code>move_base_client</code> goals. The current problem seems to be that my code just doesn&#39;t wait for goals to be achieved before moving on despite using <code>self.move_base_client.wait_for_result()</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/48264">Py</a> on 2021-03-09 05:53:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Based on your problem description and code snippet, it seems like the main issue is that your <strong>move_base_client</strong> is not correctly waiting for the robot to <em>reach the goal before sending the next one</em>. <strong>SimpleActionClient</strong> offers various methods to manage goal execution.</p>
+
+<ul>
+<li>I have produced a video about it as well -&gt; <a href="https://youtu.be/Qw9RR1jShYQ">link</a></li>
+</ul>
+
+<p>The <strong>wait_for_result()</strong> function waits until the server finishes executing the action. You could try using the <strong>wait_for_result()</strong> function with a timeout parameter, like so:</p>
+
+<blockquote>
+<pre><code>def go_to_waypoint(self, goal):
+    server_up = self.move_base_client.wait_for_server()
+    if server_up:
+        self.move_base_client.send_goal(goal)
+        finished_within_time = self.move_base_client.wait_for_result(rospy.Duration(10))
+        if not finished_within_time:
+            self.move_base_client.cancel_goal()
+            rospy.loginfo(&quot;Timed out achieving goal&quot;)
+        else:
+            rospy.loginfo(self.move_base_client.get_result())
+        server_check = self.move_base_client.wait_for_server(timeout=rospy.Duration(10.0))
+        print(&#39;Server up after goal send?: &#39; + str(server_check))
+    else:
+        print(&quot;Cannot send goal to move_base. Server down&quot;)
+</code></pre>
+</blockquote>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50994">noshluk2</a> on 2023-05-23 21:45:53 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

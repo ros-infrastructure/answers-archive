@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Is there a way to load urdf from parameter in ros2? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/408470">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Is there a way to load urdf from parameter in ros2?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102610/is-there-a-way-to-load-urdf-from-parameter-in-ros2">https://robotics.stackexchange.com/questions/102610/is-there-a-way-to-load-urdf-from-parameter-in-ros2</a>.</p>
+        <p>Hi. Sorry for all mistakes, English is not my native language. In ROS 1 we can use this lines: </p>
+
+<pre><code>urdf::Model urdfModel;
+urdfModel.initParam(&quot;robot_description&quot;)
+</code></pre>
+
+<p>Is there a way to load robot URDF description from parameter in ROS 2 Foxy? I found <code>initXml()</code>, <code>initFile()</code> and <code>initString()</code> methods and that&#39;s all. Maybe I&#39;m looking in the wrong place. Appreciate any help.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/119522">Edvard</a> on 2022-10-25 01:26:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It seems a bit complicated but I managed to instantiate <code>urdf::Model</code> by following the below steps:</p>
+
+<ol>
+<li><strong>Get the value of <code>robot_description</code> as string:</strong> This requires extra effort. Remember, ROS 2 does not have a centralized parameter server. So, getting a parameter from another node is tricky. You can read more about the procedure at <a href="https://answers.ros.org/question/340600/how-to-get-ros2-parameter-hosted-by-another-node/?answer=342528#post-id-342528">this link</a>.</li>
+<li><strong>Use the string as input to build URDF model:</strong> We can use <code>initString()</code> method.</li>
+</ol>
+
+<h2>Code</h2>
+
+<pre><code>// license removed for brevity
+
+#include &lt;urdf/model.h&gt;
+
+#include &lt;chrono&gt;
+#include &lt;memory&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+
+using namespace std::chrono_literals;
+
+class MinimalPublisher : public rclcpp::Node
+{
+public:
+  MinimalPublisher() : Node(&quot;minimal_publisher&quot;)
+  {
+    parameters_client_ = std::make_shared&lt;rclcpp::SyncParametersClient&gt;(this, &quot;/robot_state_publisher&quot;);
+    while (!parameters_client_-&gt;wait_for_service(1s))
+    {
+      if (!rclcpp::ok())
+      {
+        RCLCPP_ERROR(this-&gt;get_logger(), &quot;Interrupted while waiting for the service. Exiting.&quot;);
+        rclcpp::shutdown();
+      }
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;Service not available, waiting again...&quot;);
+    }
+
+    std::string urdf_string;
+    auto parameters = parameters_client_-&gt;get_parameters({ &quot;robot_description&quot; });
+    for (auto&amp; parameter : parameters)
+    {
+      if (parameter.get_name() == &quot;robot_description&quot;)
+      {
+        urdf_string = parameter.value_to_string();
+        break;
+      }
+    }
+
+    urdf::Model urdfModel;
+    urdfModel.initString(urdf_string);
+    RCLCPP_INFO_STREAM(this-&gt;get_logger(), &quot;Name:&quot; &lt;&lt; urdfModel.getName());
+  }
+
+private:
+  std::shared_ptr&lt;rclcpp::SyncParametersClient&gt; parameters_client_;
+};
+
+int main(int argc, char* argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;MinimalPublisher&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<h2>Run</h2>
+
+<ol>
+<li><p>First, I published a URDF using <a href="https://docs.ros.org/en/foxy/Tutorials/Intermediate/URDF/Building-a-Visual-Robot-Model-with-URDF-from-Scratch.html">urdf_tutorial</a>. Please see the command below:</p>
+
+<pre><code>ravi@dell:~$ ros2 launch urdf_tutorial display.launch.py model:=/opt/ros/foxy/share/urdf_tutorial/urdf/06-flexible.urdf
+</code></pre></li>
+<li><p>Next, I confirmed that the <code>robot_description</code> is available as shown below:</p>
+
+<pre><code>ravi@dell:~$ ros2 param list
+/joint_state_publisher:
+  delta
+  publish_default_efforts
+  publish_default_positions
+  publish_default_velocities
+  rate
+  source_list
+  use_mimic_tags
+  use_sim_time
+  use_smallest_joint_limits
+/robot_state_publisher:
+  frame_prefix
+  ignore_timestamp
+  publish_frequency
+  robot_description
+  use_sim_time
+  use_tf_static
+/rviz2:
+  use_sim_time
+</code></pre></li>
+<li><p>Finally, I executed my node which prints URDF model name</p>
+
+<pre><code>ravi@dell:~/ros2_ws$ ros2 run  examples_rclcpp_minimal_publisher publisher_member_function 
+Parsing robot urdf xml string.
+[INFO] [1666688084.856405837] [minimal_publisher]: Name:visual
+</code></pre></li>
+<li><p>Just for sake of completeness, below is the robot name queried from the terminal:</p>
+
+<pre><code>ravi@dell:~$ ros2 param get /robot_state_publisher robot_description | grep robot
+&lt;robot name=&quot;visual&quot;&gt;
+&lt;/robot&gt;
+</code></pre></li>
+</ol>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/25207"></a> on 2022-10-25 04:11:07 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you so much for you time and help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/119522">Edvard</a> on 2022-10-25 07:34:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Is your example code on GitHub somewhere?  I want to launch robot state and joint publishers on my robot (not on the Remote Desktop), passing path to the URDF file as a param to the launcher.  It seems like your answer is needed for my situation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40559">RobotDreams</a> on 2022-10-27 07:57:10 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@RobotDreams: I am out of work now! Give me a day or two, I will upload the complete package to GitHub.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-10-27 16:45:43 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@RobotDreams : Here you go: <a href="https://github.com/ravijo/minimal_publisher">ravijo/minimal_publisher</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25207">ravijoshi</a> on 2022-10-28 08:15:56 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Group '' was not found, yet part of srdf - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/350975">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Group '' was not found, yet part of srdf</h2>
+      <div class="question">
+        <p>Hello, I&#39;m trying to use the <a href="http://wiki.ros.org/move_base_to_manip">move<em>base</em>to_manip</a> package on my mobile manipulator.
+I am using ROS Melodic and installed the package via <a href="https://github.com/UTNuclearRoboticsPublic/move_base_to_manip">git</a> clone. I changed the move group name to the relevant group name <code>ur_arm</code> (which is declared in the srdf) in the <code>move_base_to_manip.cpp</code>.</p>
+
+<p>When I, as mentioned on the website, do <code>rosrun move_base_to_manip provide_target</code> and <code>roslaunch move_base_to_manip move_base_to_manip.launch</code> the client and service find each other but the following error occurs in the terminal of the <code>roslaunch move_base_to_manip move_base_to_manip.launch</code>: </p>
+
+<pre><code>[FATAL] [1588166074.398821886, 707.054000000]: Group &#39;&#39; was not found. terminate called after throwing an instance of &#39;std::runtime_error&#39; what():  Group &#39;&#39; was not found.
+</code></pre>
+
+<p>move<em>base</em>to_manip.cpp:</p>
+
+<pre><code># include &quot;move_base_to_manip.h&quot;
+
+/////////////////
+// The algorithm:
+/////////////////
+
+// Put the end-effector at the height &amp; orientation of the desired pose.
+
+// Calculate the X,Y vector from the ee&#39;s current pose to the desired pose.
+
+// Plan a Cartesian move to the grasp pose. What % completes? If 100%, we&#39;re done!
+
+// Based on the completed Cartesian %, how far along the (X,Y) vector must the base move?
+// Move the base to that position.
+
+// Should be able to reach it now. Run the program again to complete the motion or make minor
+// corrections as needed.
+
+///////////////////////////////////////////////////
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, &quot;move_base_to_manip&quot;);
+
+  // Start an action server
+  base_planner commander;
+
+  // Wait for an action goal to trigger the CB
+  ros::spin();
+
+  return 0;
+}
+
+
+//////////////
+// Constructor
+//////////////
+base_planner::base_planner():
+    as_(nh_, &quot;move_base_to_manip&quot;, boost::bind(&amp;base_planner::do_motion_CB, this, _1), false)
+{
+  // Set node parameters, if they aren&#39;t defined in a launch file
+  set_node_params();
+
+  // Action server
+  as_.start();
+
+}
+
+
+/////////////////////////////////////////////////////  
+// Once a goal is received, start planning and moving
+/////////////////////////////////////////////////////
+void base_planner::do_motion_CB( const move_base_to_manip::desired_poseGoalConstPtr&amp; goal )
+{
+  ROS_INFO(&quot;[move_base_to_manip] Received a new goal. Moving.&quot;);
+
+  // Initialize MoveGroup for the arm
+  std::string move_group_name;
+  nh_.getParam(&quot;ur_arm&quot;, move_group_name);
+  moveit::planning_interface::MoveGroupInterface move_group( move_group_name );
+
+  // get the current EE pose
+  geometry_msgs::PoseStamped start_pose = move_group.getCurrentPose();
+
+  // make sure the goal is in the right frame
+  std::string base_frame_name;
+  nh_.getParam(&quot;base_link&quot;, base_frame_name);
+  move_base_to_manip::desired_poseResult result;
+  if (goal-&gt;desired_pose.header.frame_id != base_frame_name)
+  {
+    result.success = false;
+    as_.setSucceeded( result );
+    ROS_WARN_STREAM(&quot;The target pose should be given in &quot; &lt;&lt; base_frame_name);
+    return;
+  }
+
+  // We don&#39;t want to move in (X,Y), initially
+  geometry_msgs::PoseStamped desired_height_orient = goal-&gt;desired_pose;
+  desired_height_orient.pose.position.x = start_pose.pose.position.x;
+  desired_height_orient.pose.position.y = start_pose.pose.position.y;
+
+  ///////////////////////////////////////////////////
+  // Put the EE at the height &amp; orientation we desire
+  ///////////////////////////////////////////////////
+  ROS_INFO_STREAM(&quot;[move_base_to_manip] Moving to the desired height and orientation.&quot;);
+  move_group.setPoseTarget( desired_height_orient );
+
+  // Get the orientation as RPY so we can manipulate it
+  tf::Quaternion gripper_quat;
+  tf::quaternionMsgToTF( desired_height_orient.pose.orientation, gripper_quat );
+  double object_roll, object_pitch, object_yaw;
+  tf::Matrix3x3(gripper_quat).getRPY(object_roll, object_pitch, object_yaw);
+
+  moveit::planning_interface::MoveGroupInterface::Plan move_plan;
+
+PLAN_AGAIN:
+  bool ok_to_flip;
+  nh_.getParam(&quot;ok_to_flip&quot;, ok_to_flip); 
+  if ( !move_group.plan(move_plan) &amp;&amp; ok_to_flip )  // If it fails, try spinning the gripper 180deg
+  {
+    geometry_msgs::Quaternion gripper_quat_msg = tf::createQuaternionMsgFromRollPitchYaw( 0., 0., object_yaw +3.14159);
+    desired_height_orient.pose.orientation = gripper_quat_msg;
+    move_group.setPoseTarget( desired_height_orient );
+    if ( !move_group.plan(move_plan) ) // If it fails again, try spinning the gripper -180deg from the original attempt
+    {  
+      gripper_quat_msg = tf::createQuaternionMsgFromRollPitchYaw( 0., 0., object_yaw -3.14159);
+      desired_height_orient.pose.orientation = gripper_quat_msg;
+      move_group.setPoseTarget( desired_height_orient );
+      if( !move_group.plan(move_plan) ) // One last attempt
+      {
+        ROS_ERROR(&quot;Failed to reach the desired height and orientation.&quot;);
+        ROS_ERROR(&quot;Try starting from an arm position with better manipulability.&quot;);
+        ros::shutdown();
+        return;
+      }
+    }
+  }
+
+  bool prompt_before_motion;
+  nh_.getParam(&quot;prompt_before_motion&quot;, prompt_before_motion);
+  if ( prompt_before_motion )
+  {
+    char character;
+    ROS_INFO_STREAM(&quot;Enter &#39;c&#39; to continue, otherwise re-plan.&quot;);
+    std::cin.clear();
+    std::cin.get(character);
+    if ( character != &#39;c&#39; )
+      goto PLAN_AGAIN;
+  }
+
+  move_group.execute(move_plan);
+
+
+  //////////////////////////////////////////////////////////////////////////
+  // Calculate the X,Y vector from the EE&#39;s current pose to the desired pose
+  //////////////////////////////////////////////////////////////////////////
+  geometry_msgs::Vector3 vec_from_cur_pose_to_goal;
+  vec_from_cur_pose_to_goal.x = goal-&gt;desired_pose.pose.position.x - start_pose.pose.position.x;
+  vec_from_cur_pose_to_goal.y = goal-&gt;desired_pose.pose.position.y - start_pose.pose.position.y;
+  vec_from_cur_pose_to_goal.z = 0.;
+
+  /////////////////////////////////////////////////////////////
+  // Plan a Cartesian move to the grasp pose. What % completes?
+  // If 100% complete, we&#39;re done!
+  /////////////////////////////////////////////////////////////
+  ROS_INFO_STREAM(&quot;Planning a Cartesian motion to the desired pose.&quot;);
+
+  std::vector&lt;geometry_msgs::Pose&gt; waypoints;
+  geometry_msgs::Pose cartesian_target_pose; // Cartesian motion requires a Pose (not PoseStamped)
+  cartesian_target_pose.position = goal-&gt;desired_pose.pose.position;
+  cartesian_target_pose.orientation = goal-&gt;desired_pose.pose.orientation;
+  waypoints.push_back(cartesian_target_pose);
+
+  moveit_msgs::RobotTrajectory trajectory;
+
+PLAN_CARTESIAN_AGAIN:
+  double fraction = cartesian_motion(waypoints, trajectory, move_group);
+  ROS_INFO(&quot;Cartesian path: %.2f%% achieved&quot;, fraction * 100.);
+
+  if ( prompt_before_motion )
+  { 
+    char character;
+    ROS_INFO_STREAM(&quot;Enter &#39;c&#39; to continue, otherwise re-plan.&quot;);
+    std::cin.ignore (INT_MAX, &#39;\n&#39;); // Make sure the buffer is empty. 
+    std::cin.get(character);
+    if ( character != &#39;c&#39; )
+      goto PLAN_CARTESIAN_AGAIN;
+  }
+
+
+  if ( ( 0.999 &lt; fraction) &amp;&amp; (fraction &lt; 1.001) ) // We&#39;re there! Move then quit.
+  {
+    ROS_INFO_STREAM(&quot;Making the final move.&quot;);
+
+    bool move_cartesian;
+    nh_.getParam(&quot;move_cartesian&quot;, move_cartesian);
+    if ( move_cartesian ) // Use a Cartesian motion, i.e. keep the end-effector orientation constant as it moves
+      move_group.move();
+    else // Execute a regular motion
+    {
+      move_group.setPoseTarget( goal-&gt;desired_pose );
+      move_group.plan(move_plan);
+      move_group.execute(move_plan);
+    }
+
+    // Return &quot;success&quot; to the action server
+    result.success = true;
+    as_.setSucceeded( result );
+    return;
+  }
+
+  /////////////////////////////////////////////////////////////////////////////////////////
+  // Based on the completed Cartesian %, how far along the (X,Y) vector must the base move?
+  // Move the base to that position
+  /////////////////////////////////////////////////////////////////////////////////////////
+
+  // Tell the action client that we want to spin a thread by default
+  MoveBaseClient ac(&quot;move_base&quot;, true);
+
+  while(!ac.waitForServer(ros::Duration(5.0))){
+    ROS_INFO(&quot;Waiting for the move_base action server to come up&quot;);
+  }
+
+  move_base_msgs::MoveBaseGoal goal;
+  goal.target_pose.header.frame_id = base_frame_name;
+  goal.target_pose.header.stamp = ros::Time::now();
+
+  // Goal position = current base position + calculated change
+  // The current base position is (0,0) in /base_link by default, so we don&#39;t need to add anything
+  geometry_msgs::PoseStamped currentPose = move_group.getCurrentPose();
+  // motion_buffer: make the base move just a bit farther than the minimum req&#39;d distance
+  // fraction: fraction of the motion that the arm alone could complete
+  double motion_buffer;
+  nh_.getParam(&quot;motion_buffer&quot;, motion_buffer);
+  goal.target_pose.pose.position.x = (1-motion_buffer*fraction)*vec_from_cur_pose_to_goal.x;
+  goal.target_pose.pose.position.y = (1-motion_buffer*fraction)*vec_from_cur_pose_to_goal.y;
+  goal.target_pose.pose.position.z = 0.; // Stay in the plane
+  // Maintain the base&#39;s current orientation
+  goal.target_pose.pose.orientation.x = 0.;
+  goal.target_pose.pose.orientation.y = 0.;
+  goal.target_pose.pose.orientation.z = 0.;
+  goal.target_pose.pose.orientation.w = 1.;
+
+  // May want to disable collision checking or the manipulator will not approach an object.
+  bool clear_costmaps;
+  if ( nh_.getParam(&quot;clear_costmaps&quot;, clear_costmaps) )
+    base_planner::clear_costmaps_client_.call( empty_srv_ );
+
+  ac.sendGoal(goal);
+
+  ///////////////////////////////////////////
+  // Tell the action client that we succeeded
+  ///////////////////////////////////////////
+  result.success = true;
+  as_.setSucceeded( result );
+
+  return;
+}
+
+
+/////////////////////////////////////////////
+// Helper function to plan a Cartesian motion
+/////////////////////////////////////////////
+const double base_planner::cartesian_motion(const std::vector&lt;geometry_msgs::Pose&gt;&amp; waypoints, moveit_msgs::RobotTrajectory&amp; trajectory, moveit::planning_interface::MoveGroupInterface&amp; move_group)
+{
+  // May want to disable collision checking or the manipulator will not approach an object.
+  bool clear_octomap;
+  if ( nh_.getParam(&quot;clear_octomap&quot;, clear_octomap) )
+  {
+    clear_octomap_client_.call(empty_srv_);
+  }
+  double cartesian_path_resolution;
+  nh_.getParam(&quot;cartesian_plan_res&quot;, cartesian_path_resolution);
+  double fraction = move_group.computeCartesianPath( waypoints, cartesian_path_resolution, 0.0, trajectory);
+
+  return fraction;
+}
+
+
+///////////////////////////////////////////////////////////////
+// Set node parameters, if they aren&#39;t defined in a launch file
+///////////////////////////////////////////////////////////////
+void base_planner::set_node_params()
+{
+  // Make the base move just a bit farther than the minimum req&#39;d distance.
+  // This should be a fraction between 0-1
+  // Smaller ==&gt; Will move closer to the goal pose 
+  if (!nh_.hasParam(&quot;motion_buffer&quot;))
+    nh_.setParam(&quot;motion_buffer&quot;, 0.15);
+
+  // Use a Cartesian motion plan or a regular motion plan?
+  if (!nh_.hasParam(&quot;move_cartesian&quot;))
+  {
+    nh_.setParam(&quot;move_cartesian&quot;, false);
+  }
+
+  // Clear the Octomap collision scene before planning the final arm motion?
+  if (!nh_.hasParam(&quot;clear_octomap&quot;))
+  { 
+    nh_.setParam(&quot;clear_octomap&quot;, false);
+  }
+
+  // Clear the move_base costmaps before moving the base?
+  if (!nh_.hasParam(&quot;clear_costmaps&quot;))
+  { 
+    nh_.setParam(&quot;clear_costmaps&quot;, false);
+  }
+
+  // Prompt the user to approve each arm motion before it executes?
+  if (!nh_.hasParam(&quot;prompt_before_motion&quot;))
+  {
+    nh_.setParam(&quot;prompt_before_motion&quot;, true);
+  }
+
+  // Cartesian planning resolution, in meters
+  if (!nh_.hasParam(&quot;cartesian_plan_res&quot;))
+    nh_.setParam(&quot;cartesian_plan_res&quot;, 0.005);
+
+  if (!nh_.hasParam(&quot;move_group_name&quot;))
+    nh_.setParam(&quot;move_group_name&quot;, &quot;right_ur5&quot;);
+
+  if (!nh_.hasParam(&quot;move_group_planner&quot;))
+    nh_.setParam(&quot;move_group_planner&quot;, &quot;RRTConnectkConfigDefault&quot;);
+
+  if (!nh_.hasParam(&quot;velocity_scale&quot;))
+    nh_.setParam(&quot;velocity_scale&quot;, 0.1);
+
+  if (!nh_.hasParam(&quot;base_frame_name&quot;))
+    nh_.setParam(&quot;base_frame_name&quot;, &quot;base_link&quot;);
+
+ if (!nh_.hasParam(&quot;position_tolerance&quot;))
+    nh_.setParam(&quot;position_tolerance&quot;, 0.01);
+
+ if (!nh_.hasParam(&quot;orientation_tolerance&quot;))
+    nh_.setParam(&quot;orientation_tolerance&quot;, 0.01);
+
+ // If true, the planner will try to flip the gripper +/-180 deg about Z when it cannot reach a pose
+ if (!nh_.hasParam(&quot;ok_to_flip&quot;))
+ {
+   nh_.setParam(&quot;ok_to_flip&quot;, true);
+  }
+
+  return;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/52741">student_Ros_melodic_mobile_manipulator</a> on 2020-04-29 08:42:32 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The line  <code>nh_.getParam(&quot;ur_arm&quot;, move_group_name);</code> looks up the parameter <code>ur_arm</code> on the rosparam server. Is that parameter defined? It sounds like what you wanted to do is <code>move_group_name = &quot;ur_arm&quot;;</code> instead.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/8631">fvd</a> on 2020-05-21 02:53:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

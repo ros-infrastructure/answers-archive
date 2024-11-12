@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Computing Odometry from two velocities - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/231942">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Computing Odometry from two velocities</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/73356/computing-odometry-from-two-velocities">https://robotics.stackexchange.com/questions/73356/computing-odometry-from-two-velocities</a>.</p>
+        <p>I am looking to determine how to compute odometry for my robot. It is a skid-steer platform with one motor on each side (left/right) and each side reports an RPM which is then turned into a velocity. </p>
+
+<p>I have not been able to find any examples of how to use these two velocities to computer the linear and angular components of the <code>twist</code> portion of my odometry message. I have found a way to compute the change in x &amp; y given an angle theta as shown in the RobotSetup/Odom tutorial but I don&#39;t know how to get to the theta value. </p>
+
+<p>Any help would be appreciated!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/25254">badrobit</a> on 2016-04-14 13:39:04 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The kinematic equations can be found for example by searching for differential drive robots.
+E.g. one of the first results: <a href="https://chess.eecs.berkeley.edu/eecs149/documentation/differentialDrive.pdf">diff-drive kinematics</a>.</p>
+
+<p>Your velocities at the left and right wheel are denoted as v_l and v_r respectively.</p>
+
+<p><strong>Velocities in the robot frame</strong> (which are located in the center of rotation, e.g. <code>base_link</code> frame)</p>
+
+<pre><code>v_rx = ( v_right + v_left ) /2;
+v_ry = 0; // we have a non-holonomic constraint (for a holonomic robot, this is non-zero)
+omega_r = ( v_right - v_left ) / d; // d denotes the distance between both wheels (track)
+</code></pre>
+
+<p>Subscript r indicates the robot frame.</p>
+
+<p>Note, after converting your encoder values to rotational velocities at each wheel (<code>omega_left</code>, <code>omega_right</code>),
+you can transform them to the translational velocity at each wheel using the radius of the wheel: <code>v_left = omega_left * radius</code>.</p>
+
+<p><strong>Velocities in the odom frame</strong></p>
+
+<p>The velocities expressed in the robot base frame can be transformed into another coordinate system (e.g. odom).
+For transforming velocities (in this simple setting with scalar values), we only need to rotate them according
+to the current robot orientation. Here we apply the <a href="https://en.wikipedia.org/wiki/Rotation_matrix">2D rotation matrix</a> (we are operating in the x-y plane).
+We assume that we already know the current orientation (theta).</p>
+
+<pre><code>v_wx = v_rx * cos(theta) - v_ry * sin(theta);
+v_wy = v_rx * sin(theta) + v_ry * cos(theta);
+thetadot = omega_r;
+</code></pre>
+
+<p>For your robot kinematics it is <code>v_ry=0</code>. Subscript w indicates the world/odom frame.</p>
+
+<p><strong>Computing the current robot pose</strong></p>
+
+<p>In order to obtain the current robot position, numerical integration can be applied.
+The velocities are integrated in order to achieve the current pose (x, y, theta).
+We define the pose in the <code>odom</code> frame, and start with <code>x=y=theta=0</code> (origin of the <code>odom</code> frame).</p>
+
+<p>Applying <a href="https://en.wikipedia.org/wiki/Euler_method">Explicit/Forward Euler Integration</a>
+leads to</p>
+
+<pre><code>x_kp1 = x_k + v_wx * dt; // kp1 := k+1
+y_kp1 = y_k + v_wy * dt; // by the way, the last term is delta_y from the equations in your comment
+theta_kp1 = theta_k + thetadot * dt;
+</code></pre>
+
+<p>In your implementation, you can simply share the same variables for <code>x_kp1</code> and <code>x_k</code> etc.
+<code>dt</code> denotes the step width and should be choosen according to the time elapsed since the last integration step (here you might see, that your <em>rate</em> significantly influences your integration accuracy. But the integration rate is limited by the rate of your sensors (wheel encoders).</p>
+
+<p><strong>Composing your odometry message</strong></p>
+
+<p>The <a href="http://docs.ros.org/jade/api/nav_msgs/html/msg/Odometry.html">odometry message</a> contains the pose and the twist information.
+Now you should have everything to compute the values.
+The pose represents your current robot pose w.r.t the odom frame (x_k, y_k, theta_k). You must convert theta_k to a Quaternion, e.g. by calling the related functions of the tf package.
+The twist part usually contains the velocities expressed in your robot frame (there is an extra parameter where you can insert the frame name (<code>child_frame_id</code>), but not all drivers are filling it with a value.
+Here you just need the linear velocity (<code>linear.x = v_rx</code> and the angular velocity (around the z-axis, <code>angular.z = omega_r</code>). 
+All other values are zero.</p>
+
+<p>You can find much information on those things!</p>
+
+<ul>
+<li>kinematics: just search with google for <em>differential drive kinematics</em>. Or have a look in one of the great robotic books.</li>
+<li>ROS Implementation: Check code of other ros drivers/simulators for differential drive robots (e.g. p2os, rosaria, stage_ros, ...). Or the important things mentioned here are also part of the <a href="http://wiki.ros.org/navigation/Tutorials/RobotSetup/Odom">Odom-Tutorial</a> you already refered to.</li>
+</ul>
+
+<p>Hope that helps.</p>
+
+<p><strong>Update:</strong> I added many details to the answer after receiving the first comment.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/12166">croesmann</a> on 2016-04-14 16:41:36 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks that helped a lot! Do you know how I could break those values out to use in these lines from the Odometry example: </p>
+
+<pre><code>double dt = (current_time - last_time).toSec();
+double delta_x = (vx * cos(th) - vy * sin(th)) * dt;
+double delta_y = (vx * sin(th) + vy * cos(th)) * dt;
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25254">badrobit</a> on 2016-04-14 22:22:14 UTC</p></div>
+</div>
+<div class="comment">
+          <p>check the updated answer. I added much more details.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/12166">croesmann</a> on 2016-04-15 02:28:26 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you so much with this very helpful walkthrough my robot is now producing usable wheel odometry!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25254">badrobit</a> on 2016-04-15 11:58:39 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have been working with the new code and while the forsward and backward tracking seem spot on it doesn&#39;t pick up rotation at all</p>
+
+<p><strong>Update:</strong> I got it to work by multiply my rotation in z by 100 but I cannot figure out why I needed to do this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25254">badrobit</a> on 2016-04-15 15:32:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I just have to say this is by far the best answer I&#39;ve found on this topic. Very complete, yet extremely succinct, with references. Thank you!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33374">sheaffej</a> on 2018-02-01 21:59:49 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

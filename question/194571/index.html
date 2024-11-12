@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>triclops/flycapture for bumblebee stereo - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/194571">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>triclops/flycapture for bumblebee stereo</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I tried a little piece of code to make flycapture, triclos and ROS working together.
+In old versions of ros like fuerte or hydro we are not allow to make this libraries working with ROS because a bad performance of boost library (not compatible versions)
+Now I am working in Ubuntu 14.04 machine with Indigo and looks very promissing.
+I downloaded the third party libraries from pointGrey site (triclops-3.4.0.5-amd64, flycapture2-2.6.3.4-amd64)</p>
+
+<p>This is my CMakeLists.txt:</p>
+
+<pre><code>cmake_minimum_required(VERSION 2.8.3)
+project(xb3)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  sensor_msgs
+  std_msgs
+  cv_bridge
+  image_transport
+)
+find_package(OpenCV REQUIRED)
+
+catkin_package()
+
+include_directories(
+  ${catkin_INCLUDE_DIRS}
+  ${OpenCV_LIBRARIES}
+  /usr/include/triclops
+  /usr/include/flycapture
+)
+
+add_executable(xb3_client src/xb3_client.cpp)
+add_executable(triXB3 src/triXB3.cpp)
+
+## Specify libraries to link a library or executable target against
+target_link_libraries(xb3_client
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+target_link_libraries(triXB3
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  triclops
+  pnmutils
+  flycapture
+  flycapture2bridge
+  pthread
+)
+</code></pre>
+
+<p>And this is my source code (due to the fact that is private and PG has the copyright I have to hide some parts). This is the main example of grabstereo with addition of some lines of code to publish image from camera to ROS.</p>
+
+<pre><code>//=============================================================================
+// grabstereo
+//
+// Gets input from the Bumblebee, and performs stereo processing
+// to create a disparity image. A rectified image from the reference camera
+// and the disparity image are both written out.
+//
+//=============================================================================
+
+//=============================================================================
+// System Includes
+//=============================================================================
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+//=============================================================================
+// PGR Includes
+//=============================================================================
+#include &quot;triclops.h&quot;
+#include &quot;fc2triclops.h&quot;
+
+#include &quot;ros/ros.h&quot;
+#include &quot;image_transport/image_transport.h&quot;
+#include &quot;sensor_msgs/Image.h&quot;
+#include &quot;sensor_msgs/image_encodings.h&quot;
+
+#include &quot;opencv2/opencv.hpp&quot;
+#include &quot;cv_bridge/cv_bridge.h&quot;
+
+.... Some hidden and unmodified code ....
+
+image_transport::CameraPublisher pub_right;
+
+int
+main( int argc, char** argv)
+{
+    ros::init(argc, argv, &quot;xb3_devel&quot;);
+    ros::NodeHandle nh;
+    image_transport::ImageTransport it(nh);
+    pub_right = it.advertiseCamera(&quot;stereo_camera/right/image_rect&quot;, 1);
+
+    TriclopsContext   triclops;
+    TriclopsInput     triclopsInput;
+
+    // camera to be used to grab color image
+    FC2::Camera camera;
+    // grabbed unprocessed image
+    FC2::Image grabbedImage;
+
+    // connect camera
+    camera.Connect();
+
+... same unmodified code until the end ...
+
+    return EXIT_SUCCESS;
+}
+
+.... rest of the functions unmodified  ....
+
+int doStereo( TriclopsContext const &amp; triclops, 
+                TriclopsInput const &amp; triclopsInput )
+{
+    TriclopsImage disparityImage, edgeImage, rectifiedImage;
+    TriclopsError te;
+
+    // Rectify the images
+    te = triclopsRectify( triclops, const_cast&lt;TriclopsInput *&gt;(&amp;triclopsInput) );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsRectify()&quot;, te );
+
+    // Do stereo processing
+    te = triclopsStereo( triclops );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsStereo()&quot;, te );
+
+    // Retrieve the disparity image from the triclops context
+    te = triclopsGetImage( triclops, 
+                          TriImg_DISPARITY, 
+                          TriCam_REFERENCE, 
+                          &amp;disparityImage );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsGetImage()&quot;, te );
+
+    // Retrieve the rectified image from the triclops context
+    te = triclopsGetImage( triclops, 
+                          TriImg_RECTIFIED, 
+                          TriCam_REFERENCE, 
+                          &amp;rectifiedImage );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsGetImage()&quot;, te );
+
+    //__ my code __________________________________________
+
+    cv_bridge::CvImage cv_r_img;
+    sensor_msgs::CameraInfo r_ci;
+    sensor_msgs::Image img;
+
+    cv::Mat rec_img(rectifiedImage.nrows, rectifiedImage.ncols, CV_8UC1, rectifiedImage.data);
+//    cv::namedWindow(&quot;Disp&quot;, cv::WINDOW_AUTOSIZE );
+//    cv::imshow(&quot;Disp&quot;, rec_img);
+//    cv::waitKey(0);
+    cv_r_img.image = rec_img;
+    cv_r_img.encoding = sensor_msgs::image_encodings::MONO8;
+    r_ci.width = rectifiedImage.ncols;
+    r_ci.height = rectifiedImage.nrows;
+
+    cv_r_img.toImageMsg(img);
+
+    pub_right.publish(img, r_ci);
+
+    //____end of my code________________________________________
+
+
+    // Retrieve the edge image from the triclops context
+    te = triclopsGetImage( triclops, 
+                          TriImg_EDGE, 
+                          TriCam_REFERENCE, 
+                          &amp;edgeImage );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsGetImage()&quot;, te );
+
+    // Save the disparity, reference and edge images
+
+    const char * pDisparityFilename = &quot;disparity.pgm&quot;;
+    te = triclopsSaveImage( &amp;disparityImage, const_cast&lt;char *&gt;(pDisparityFilename) );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsSaveImage()&quot;, te );
+
+    const char * pEdgeFilename = &quot;edge.pgm&quot;;
+    te = triclopsSaveImage( &amp;edgeImage, const_cast&lt;char *&gt;(pEdgeFilename) );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsSaveImage()&quot;, te );
+
+    const char * pRectifiedFilename = &quot;rectified.pgm&quot;;
+    te = triclopsSaveImage( &amp;rectifiedImage, const_cast&lt;char *&gt;(pRectifiedFilename) );
+    _HANDLE_TRICLOPS_ERROR( &quot;triclopsSaveImage()&quot;, te );
+
+    return 0;
+}
+</code></pre>
+
+<p>From here is just a matter of time you work with the API and change the specific params to change the resolution, images, etc.</p>
+
+<p>Hope someone need it and don&#39;t waste more time working with unrectified images. Or close good camera calibration.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1959">pmarinplaza</a> on 2014-10-09 03:41:45 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>You&#39;ve got an already available driver for bumblebee2 <a href="http://wiki.ros.org/camera1394stereo">here</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2515">Miquel Massot</a> on 2014-10-13 04:09:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>But the calibration is really bad with the standar package camera calibration.Due to the calibration and rectification step, PointGrey cameras are so expensve. They give you the calibration before left the production building but you have to use their software :(</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1959">pmarinplaza</a> on 2014-11-07 06:13:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I haven&#39;t checked, but can you use their soft to retrieve the calibration data inside?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2515">Miquel Massot</a> on 2014-11-10 02:47:19 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You can do a lookup table to generate the points position and then aply to your image</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1959">pmarinplaza</a> on 2015-04-08 05:46:36 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

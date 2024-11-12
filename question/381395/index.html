@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>TransformListener x10 higher CPU load in rclpy than rclpp - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/381395">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>TransformListener x10 higher CPU load in rclpy than rclpp</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/99416/transformlistener-x10-higher-cpu-load-in-rclpy-than-rclpp">https://robotics.stackexchange.com/questions/99416/transformlistener-x10-higher-cpu-load-in-rclpy-than-rclpp</a>.</p>
+        <h2>System info</h2>
+
+<ul>
+<li>Operating System:
+
+<ul>
+<li>Docker + Ubuntu 20.04, 10th gen i7</li>
+<li>Docker + Ubuntu 20.04, jetson AGX Xavier</li>
+</ul></li>
+<li>ROS2 Version:
+
+<ul>
+<li>Foxy binaries</li>
+</ul></li>
+</ul>
+
+<h2>Steps to reproduce issue</h2>
+
+<p>Make sure the system is publishing transforms to <code>/tf</code> at 30Hz. Run a simple node with a <code>TransformListener</code> in python and in C++.  </p>
+
+<h3>Python</h3>
+
+<pre><code>import rclpy
+from rclpy.node import Node
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+
+class MyNode(Node):
+    def __init__(
+        self,
+    ) -&gt; None:
+        super().__init__(&quot;navigation_god_node&quot;)
+        self.buffer = Buffer()
+        self.listener = TransformListener(
+            buffer=self.buffer, node=self, spin_thread=False
+        )
+        self.listener.buffer = self.buffer
+        self.tm_main = self.create_timer(
+            timer_period_sec=0.5,
+            callback=self.timer_callback,
+        )
+
+    def timer_callback(self):
+        if  self.buffer.can_transform(
+            &quot;camera_color_optical_frame&quot;,
+            &quot;map&quot;,
+            rclpy.time.Time(seconds=0, nanoseconds=0).to_msg(),
+        ):
+            self.get_logger().info(&quot;Can transform&quot;)
+
+def main(args=None) -&gt; None:
+    rclpy.init(args=args)
+    node = MyNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+
+<h3>C++</h3>
+
+<pre><code>#include &lt;string&gt;
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;rclcpp/time.hpp&quot;
+#include &lt;tf2_ros/buffer.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &quot;tf2_geometry_msgs/tf2_geometry_msgs.h&quot;
+
+using namespace std::chrono_literals;
+using namespace std;
+
+class MyNode : public rclcpp::Node
+{
+  public:
+    MyNode(const string&amp; node_name, const string&amp; nm)
+    : Node(node_name, nm)
+    {
+      _buffer_tf2 = std::make_unique&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+      _listener_tf2 = std::make_shared&lt;tf2_ros::TransformListener&gt;(*_buffer_tf2);
+      timer_ = this-&gt;create_wall_timer(
+      500ms, std::bind(&amp;TFListenerNode::timer_callback, this));
+    }
+
+  private:
+    void timer_callback()
+    {
+      if (_buffer_tf2-&gt;canTransform(&quot;camera_color_optical_frame&quot;, &quot;map&quot;, tf2::TimePointZero))
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;Can transform&quot;);
+    }
+    rclcpp::TimerBase::SharedPtr timer_;
+    std::unique_ptr&lt;tf2_ros::Buffer&gt; _buffer_tf2;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; _listener_tf2;
+};
+int main(int argc, char* argv[])
+{
+    rclcpp::init(argc, argv);
+    auto tf_transforms_node = make_shared&lt;MyNode&gt;(&quot;listener_transforms_node&quot;, &quot;tf_transforms&quot;);
+    rclcpp::spin(tf_transforms_node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<h2>Expected behavior</h2>
+
+<p>Roughly the CPU load should be the same, at least not that big difference.</p>
+
+<h2>Actual behavior</h2>
+
+<p>The python implementation loads the CPU almost 10x. Tested in my beefy laptop and in a Jetson.</p>
+
+<h3>My laptop</h3>
+
+<p>Python node: ~8% CPU one core
+C++ node: ~1% CPU one core</p>
+
+<h3>Jetson</h3>
+
+<p>Python node: ~20% CPU one core
+C++ node: ~2% CPU one core</p>
+
+<p>In this case, it makes the python API unusable in a constraint environment like a Jetson.</p>
+
+<p>Does anyone know any known issue with tf2_ros in python? Does this implementation look bad?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/64524">charlie92</a> on 2021-06-29 11:57:54 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I have not benchmarked this with rclpy but we saw the same behavior with rospy and roscpp where actually just subscribing to the <code>/tf</code> topic in python takes that order of magnitude CPU to receive the firehose of high frequency data. </p>
+
+<p>To that end we created the tf2 buffer_server.  It providea an action based API for querying transforms from another node. You can find some pointers in the tf2 MIgration notes:  <a href="http://wiki.ros.org/tf2/Migration">http://wiki.ros.org/tf2/Migration</a></p>
+
+<p>The c++ implementation of the Listener be default provides this API. And you can just create the buffer_client and point it at an existing buffer_server running on a neighboring c++ node. </p>
+
+<p>The ROS 2 implementation parallels the ROS 1 implementation.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2021-06-29 13:59:15 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank your for the information, I didn&#39;t know about this server and actually I was thinking on implementing a kind of buffer_server. I suppose we can just use this client in python <a href="https://github.com/ros2/geometry2/blob/ros2/tf2_ros_py/tf2_ros/buffer_client.py">https://github.com/ros2/geometry2/blob/ros2/tf2_ros_py/tf2_ros/buffer_client.py</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64524">charlie92</a> on 2021-06-29 14:25:42 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

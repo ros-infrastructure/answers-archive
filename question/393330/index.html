@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to create  waypoints for pure pursuit controller - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/393330">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to create  waypoints for pure pursuit controller</h2>
+      <div class="question">
+        <p>I am tring to create a pure pursuit algorithm to control a tricycle vehicle on the gazebo based on the waypoints i created. I set the vehicle move as i start the simulation but i need a path to follow , for this reason i write a global path planner as plugin so i created  two header files and one main file. i just copied the codes on  this tutorial navigationTutorialsWriting A Global Path Planner As Plugin in ROS and pasted it, now i don&#39;t know how to do rest of it.</p>
+
+<pre><code>#include &quot;pure_pursuit/pure_pursuit.h&quot;
+#include &lt;pluginlib/class_list_macros.h&gt;
+#include &quot;pure_pursuit/global_planner.h&quot;
+
+
+vec_control::PurePursuit::PurePursuit() {
+  ros::NodeHandle nh_;
+  ros::NodeHandle nh_private(&quot;~&quot;);
+  // Node parameters
+  nh_private.param&lt;double&gt;(&quot;ld_gain&quot;, ld_gain_, 1.0);
+  nh_private.param&lt;double&gt;(&quot;min_ld&quot;, min_ld_, 0.5);
+  nh_private.param&lt;double&gt;(&quot;car_wheel_base&quot;, car_wheel_base_, 0.44);
+  nh_private.param&lt;int&gt;(&quot;controller_freq&quot;, controller_freq_, 10);
+  nh_private.param&lt;std::string&gt;(&quot;map_frame&quot;, map_frame_, &quot;map&quot;);
+  nh_private.param&lt;std::string&gt;(&quot;base_frame&quot;, base_frame_, &quot;base_link&quot;);
+  ld_ = min_ld_;
+  ros_rate_ = new ros::Rate(controller_freq_);
+  // Publishers and subscribers
+  control_pub_ = nh_.advertise&lt;geometry_msgs::Twist&gt;(
+      &quot;/tricycle_controller/cmd_vel&quot;, 1);
+
+  ros::Subscriber odom_sub_ =
+      nh_.subscribe(&quot;/tricycle_controller/odom&quot;, 1,
+       &amp;PurePursuit::odom_clk_, this);
+
+  ros::Subscriber path_sub_ =
+      nh_.subscribe(&quot;/move_base/DWAPlannerROS/local_plan&quot;, 1, 
+      &amp;PurePursuit::path_clk_, this);
+
+  tfListener_ = new tf2_ros::TransformListener(tfBuffer_);
+  l_point_pub_ = nh_.advertise&lt;geometry_msgs::PointStamped&gt;(
+      &quot;/pure_pursuit/lookahead_point&quot;, 1);
+
+  // main loop
+  control_loop_();
+}
+
+void vec_control::PurePursuit::odom_clk_(
+    const nav_msgs::Odometry::ConstPtr &amp;msg) {
+  car_speed_ = msg-&gt;twist.twist.linear.x;
+  ld_ = std::max(ld_gain_ * car_speed_, min_ld_);
+}
+//target path to follow , topic_name = /pure_pursuit/path
+//type nav_msgs/Path
+void vec_control::PurePursuit::path_clk_(const nav_msgs::Path::ConstPtr &amp;msg) {
+  ROS_INFO(&quot;New path is received.&quot;);
+  path_ = msg-&gt;poses;
+  // path_.push_back(msg-&gt;poses[0]);
+  got_path_ = true;
+  path_done_ = false;
+  point_idx_ = 0;
+  double start_end_dist =
+  distance(path_[0].pose.position, path_.back().pose.position);
+  ROS_INFO(&quot;Start to End Distance: %f&quot;, start_end_dist);
+  ROS_INFO(&quot;Min lookup distance: %f&quot;, min_ld_);
+  if (start_end_dist &lt;= min_ld_) {
+    loop_ = true;
+    ROS_INFO(&quot;Is Loop: True&quot;);
+  }
+}
+//The main loop that will run and control the vehicle on the map.
+void vec_control::PurePursuit::control_loop_() {
+  double y_t = 0, ld_2 = 0, delta = 0;
+  double distance_ = 0;
+  while (ros::ok()) {
+    if (got_path_) {//if you got the path
+      // get the current robot location by tf base_link -&gt; map
+      // iterate over the path points
+      // if the distance between a point and robot &gt;  lookahead then break and take
+      // this point transform this point to the robot base_link the y component
+      // of this point is y_t delta can be computed as atan2(2 * yt * L_, ld_2)
+      try {
+        base_location_ = tfBuffer_.lookupTransform(
+            map_frame_, base_frame_, ros::Time(0), ros::Duration(0.1));
+
+        for (; point_idx_ &lt; path_.size(); point_idx_++) {
+          distance_ = distance(path_[point_idx_].pose.position,
+                               base_location_.transform.translation);
+          ROS_INFO(&quot;Point ID: %d, Distance %f&quot;, point_idx_, distance_);
+          if (distance_ &gt;= ld_) {
+            path_[point_idx_].header.stamp =
+                ros::Time::now(); // Set the timestamp to now for the transform
+                                  // to work, because it tries to transform the
+                                  // point at the time stamp of the input point
+            tfBuffer_.transform(path_[point_idx_], target_point_, base_frame_,
+                                ros::Duration(0.1));
+            break;
+          }
+        }
+
+        ld_2 = ld_ * ld_;
+        y_t = target_point_.pose.position.y;
+        delta = atan2(2 * car_wheel_base_ * y_t, ld_2);
+
+        /* control_msg_.drive.steering_angle = delta;
+        control_msg_.drive.speed = 2;
+        control_msg_.header.stamp = ros::Time::now(); */
+        control_msg_.linear.x = 1.0;
+        control_msg_.angular.z = delta;
+        control_pub_.publish(control_msg_);
+
+
+        last_p_idx_ = point_idx_;
+        last_dist_ = distance_;
+
+        if (point_idx_ == path_.size() &amp;&amp; loop_) {
+          point_idx_ = 0;
+        } 
+        else if (point_idx_ == path_.size()) {
+          ROS_INFO(&quot;Reached final point&quot;);
+
+          /* control_msg_.drive.steering_angle = 0;
+          control_msg_.drive.speed = 0;
+          control_msg_.header.stamp = ros::Time::now(); */
+          control_msg_.linear.x = 0.0;
+          control_msg_.angular.z = 0.0;
+          control_pub_.publish(control_msg_);
+
+          got_path_ = false;
+          point_idx_ = 0;
+        }
+        lookahead_p.point = path_[point_idx_].pose.position;
+        lookahead_p.header = path_[point_idx_].header;
+        l_point_pub_.publish(lookahead_p); // Publish the lookahead point
+      } catch (tf2::TransformException &amp;ex) {
+        ROS_WARN(&quot;%s&quot;, ex.what());
+      }
+    }
+
+    //to run the vehicle as we run the code
+    control_msg_.linear.x = 0.1;
+    control_msg_.angular.z = 0.0;
+    control_pub_.publish(control_msg_);
+
+    ros::spinOnce();
+    ros_rate_-&gt;sleep();
+  }
+}
+
+vec_control::PurePursuit::~PurePursuit() {
+  delete tfListener_;
+  delete ros_rate_;
+}
+
+ //register this planner as a BaseGlobalPlanner plugin
+ PLUGINLIB_EXPORT_CLASS(global_planner::GlobalPlanner, nav_core::BaseGlobalPlanner)
+
+ using namespace std;
+
+ //Default Constructor
+ namespace global_planner {
+
+ GlobalPlanner::GlobalPlanner (){
+
+ }
+
+ GlobalPlanner::GlobalPlanner(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
+   initialize(name, costmap_ros);
+ }
+
+
+ void GlobalPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
+
+ }
+
+ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped&amp; start, const geometry_msgs::PoseStamped&amp; goal, 
+                              std::vector&lt;geometry_msgs::PoseStamped&gt;&amp; plan ){
+
+    plan.push_back(start);
+   for (int i=0; i&lt;20; i++){
+     geometry_msgs::PoseStamped new_goal = goal;
+     tf::Quaternion goal_quat = tf::createQuaternionFromYaw(1.54);
+
+      new_goal.pose.position.x = -2.5+(0.05*i);
+      new_goal.pose.position.y = -3.5+(0.05*i);
+
+      new_goal.pose.orientation.x = goal_quat.x();
+      new_goal.pose.orientation.y = goal_quat.y();
+      new_goal.pose.orientation.z = goal_quat.z();
+      new_goal.pose.orientation.w = goal_quat.w();
+
+   plan.push_back(new_goal);
+   }
+   plan.push_back(goal);
+  return true;
+ }
+ };
+
+int main(int argc, char **argv) {
+  ros::init(argc, argv, &quot;pure_pursuit&quot;);
+  vec_control::PurePursuit pp_node;
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/92145">crhis</a> on 2021-12-25 08:49:19 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

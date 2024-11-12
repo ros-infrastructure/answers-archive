@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Tracking a message from publisher to subscriber - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/320079">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Tracking a message from publisher to subscriber</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91221/tracking-a-message-from-publisher-to-subscriber">https://robotics.stackexchange.com/questions/91221/tracking-a-message-from-publisher-to-subscriber</a>.</p>
+        <p>I&#39;m trying to track messages accross nodes to eventually build a graph (well, many graphs) using LTTng and the tracetools package.</p>
+
+<p>One of the things I need is to be able to connect the message that a publisher sends and the (same) message that a subscriber receives. For example, looking at this representation of pub/sub queues below, I&#39;d like to link <code>0x561f5f3d1064</code> and <code>0x7f8120003230</code>.</p>
+
+<p><img src="https://i.imgur.com/4aRfYhy.png" alt="image description"></p>
+
+<p>Unfortunately, looking at <code>roscomm</code> and <a href="http://wiki.ros.org/ROS/Connection%20Header">how a message is serialized</a>, the message isn&#39;t unique since the content does not always have a timestamp/<code>std_msgs/Header</code>. For example, a <code>std_msgs/String</code> message with the same content will always be the same. Otherwise this would be too easy!</p>
+
+<p>This is the solution I&#39;m considering right now:</p>
+
+<ul>
+<li>Right before the publisher sends the message over the network, we use <code>message_start</code> (from the buffer). This identifies the message on the publisher&#39;s side.</li>
+<li>We take the very next <code>net_dev_queue</code> event that matches the pub/sub connection (hosts/ports of the TCP connection), and &quot;link&quot; the TCP sequence number (or <code>skbaddr</code> if we&#39;re on the same host) to the <code>message_start</code> above.</li>
+<li>Similarly, for the subscriber, we use the <code>message_start</code> of the very next message that the subscriber receives after the corresponding <code>netif_receive_skb</code> event (with the same sequence number).</li>
+<li>Thus the two <code>message_start</code> values are linked.</li>
+</ul>
+
+<p>I&#39;m not sure how reliable this method is.</p>
+
+<p>Therefore I&#39;d like to hear other ideas. Or maybe a confirmation that this might actually work and be reliable!</p>
+
+<p><strong>Update</strong>: here is what I ended up doing <a href="https://christophebedard.com/ros-tracing-message-flow/">https://christophebedard.com/ros-tracing-message-flow/</a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/29634"></a> on 2019-04-01 10:36:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Submitting an answer to my own question since I didn&#39;t get any answers.</p>
+
+<p>I ended up doing pretty much what I described in my question. Full post here: <a href="https://christophebedard.com/ros-tracing-message-flow/">https://christophebedard.com/ros-tracing-message-flow/</a></p>
+
+<p>Here&#39;s a summary/excerpt:</p>
+
+<p>In order to do what I&#39;ve described above, similar to what I mentioned, some information is needed on:</p>
+
+<ul>
+<li>connections between publishers and subscribers</li>
+<li>subscriber/publisher queue states</li>
+<li>network packet exchanges</li>
+</ul>
+
+<p>We first need to know about connections between nodes. The ROS instrumentation includes a tracepoint for new connections (<code>new_connection</code>). It includes the address and port of the host and the destination, with an address:port pair corresponding to a specific publisher or subscription.</p>
+
+<p>We also need to build a model of the publisher and subscriber queues. To achieve this, we can leverage the relevant tracepoints. These include a tracepoint for when a message is added to the queue (<code>publisher_message_queued</code>, <code>subscription_message_queued</code>), when it’s dropped from the queue (<code>subscriber_link_message_dropped</code>, <code>subscription_message_dropped</code>), and when it leaves the queue (either sent over the network to the subscriber (<code>subscriber_link_message_write</code>), or handed over to a callback (<code>subscriber_callback_start</code>)). We can therefore visualize the state of a queue over time!</p>
+
+<p>Finally, we need information on network packet exchanges. Although this isn’t really necessary for this kind of analysis, it allows us to reliably link a message that gets published to a message that gets received by the subscriber. This is good when building a robust analysis, and it paves the way for a future critical path analysis based on this message flow analysis.</p>
+
+<p>This requires us to trace both userspace (ROS) and kernel. Fortunately, we only have to enable 2 kernel events for this (<code>net_dev_queue</code> for packet queuing and <code>netif_receive_skb</code> for packet reception). It saves us a lot of disk space, since enabling many events can generate multiple gigabytes of trace data, even when tracing for only a few seconds! Also, as the rate of generated events increases, the overhead also increases. More resources have to be allocated to the buffers to properly process those events, otherwise they can get discarded or overwritten.</p>
+
+<p>Result:</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1584044789156602.png" alt="C:\fakepath\result_analysis_initial_zoom.png"></p>
+
+<p>Some links for actual code/further information:</p>
+
+<ul>
+<li>Trace Compass code for this analysis: <a href="https://git.eclipse.org/c/tracecompass.incubator/org.eclipse.tracecompass.incubator.git/tree/tracetypes/org.eclipse.tracecompass.incubator.ros.core">https://git.eclipse.org/c/tracecompass.incubator/org.eclipse.tracecompass.incubator.git/tree/tracetypes/org.eclipse.tracecompass.incubator.ros.core</a> and <a href="https://git.eclipse.org/c/tracecompass.incubator/org.eclipse.tracecompass.incubator.git/tree/tracetypes/org.eclipse.tracecompass.incubator.ros.ui">https://git.eclipse.org/c/tracecompass.incubator/org.eclipse.tracecompass.incubator.git/tree/tracetypes/org.eclipse.tracecompass.incubator.ros.ui</a></li>
+<li>My fork of the original instrumentation fork. I improved and fixed some small things, including adding information about latched messages. <a href="https://github.com/christophebedard/ros_comm/tree/tc4ros">https://github.com/christophebedard/ros_comm/tree/tc4ros</a></li>
+<li>My fork of the original tracetools package. <a href="https://github.com/christophebedard/tracetools/tree/tc4ros">https://github.com/christophebedard/tracetools/tree/tc4ros</a></li>
+<li>Repo with a few test traces and a .repos file to easily setup a workspace to trace ROS. <a href="https://github.com/christophebedard/tracecompass_ros_testcases">https://github.com/christophebedard/tracecompass_ros_testcases</a></li>
+</ul>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29634"></a> on 2020-03-11 11:18:14 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>As there is a good chance your website will go off-line in the future (all sites do at some point). It would be great if you could summarise what you did here in your answer. That would make this somewhat less of a link-only answer, and allow it to maintain its value even without your site being operational.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-11 12:17:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Good point! I&#39;ve added a summary/excerpt.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29634">christophebedard</a> on 2020-03-12 15:30:12 UTC</p></div>
+</div>
+<div class="comment">
+          <p>n1. Thanks.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-03-13 02:29:33 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

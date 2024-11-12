@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to know when each point in the trajectory was executed? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/416753">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to know when each point in the trajectory was executed?</h2>
+      <div class="question">
+        <p>I&#39;m new to ROS. I wrote the code below to execute a trajectory using <code>SimpleActionClient</code>. I need to know when each point in the trajectory was executed while the trajectory is being executed. I thought to use the feedback callback from action client&#39;s <code>send_goal</code> method, but it&#39;s never called. The <code>done_cb</code> and <code>active_cb</code> are called, but not <code>feedback_cb</code>. Then, I thought since each point has <code>time_from_start</code> field I could listen to <code>/feedback_states</code> topic (see list of topics below) and check the the <code>time_from_start</code> field (see the <code>feedback_state</code> output below). But, it&#39;s always 0.</p>
+
+<p>What am I doing wrong? Or, even better, is this how to get what I need or is there another better way?</p>
+
+<p><strong>UPDATE1</strong></p>
+
+<p>Just to clarify, I want to control the Yaskawa hc10 robot from ROS AND be able to know what trajectory point it&#39;s currently executing. After the research I saw that I should use motoman driver. I found some python example and continued from there. So, the first part seems to work. But, now I need to make the second part to work. To do that I decided to check the <code>time_from_start</code> field from the message from <code>/feedback_states</code> topic since I assign <code>time_from_start</code> to each point when I build the trajectory object. But, when I do <code>rostopic echo /joint_states</code> I can see that <code>time_from_start</code>  is always 0 and doesn&#39;t have the values I assigned.</p>
+
+<p>Therefore, I decided a different approach - listen to <code>joint_states</code> topic and do the following:</p>
+
+<ul>
+<li>I consider 6-joint values as a vector.</li>
+<li>Now, I have the target point (6-joint values) that I want the robot to reach and current positions that I receive from <code>joint_states</code> topic. Therefore,</li>
+</ul>
+
+<p>For each received point:</p>
+
+<ul>
+<li> Calculate distance between current point and target point (<code>numpy.norm(current_point - target_point)</code>)</li>
+<li>As the arm approaches the target point, the distance (<code>norm</code>) value should decrease. If current distance is greater than previous distance, I consider that it has reached the target point.</li>
+</ul>
+
+<p>Does this make sense? I&#39;ll post the issues I have with this approach if needed, unless you already know what can be the issues.</p>
+
+<p><strong>Code</strong></p>
+
+<pre><code>client = actionlib.SimpleActionClient(&#39;/joint_trajectory_action&#39;, FollowJointTrajectoryAction)
+        if not client.wait_for_server(rospy.Duration(5.0)):
+            raise RuntimeError(&quot;Action server not available!&quot;)
+
+def _create_trajpoint(self, joint_positions, time_from_start, velocities) -&gt; JointTrajectoryPoint:
+        point = JointTrajectoryPoint()
+        point.positions = joint_positions
+        point.time_from_start = rospy.Duration(time_from_start)
+        point.velocities = velocities
+
+        return point
+
+def _execute_trajectory(self, traj):
+        self._send_trajectory_to_controller(traj)
+        self._wait_for_traj_to_complete()
+
+    def _send_trajectory_to_controller(self, traj):
+        print(&quot;Sending trajectory&quot;)
+
+        goal = FollowJointTrajectoryGoal()
+        goal.trajectory = traj
+
+        self._action_client.send_goal(goal, feedback_cb=my_feedback_cb, done_cb=my_done_cb, active_cb=my_active_cb)
+        self._action_client.wait_for_result(rospy.Duration(2.0))
+
+        print(&quot;Trajectory sent&quot;)
+
+    def _wait_for_traj_to_complete(self):
+        print(&#39;Waiting for trajectory to complete&#39;)
+
+        wait_time = 0.1
+        no_motion_total = 0
+        no_motion_timeout = 1
+        traj_state = self._action_client.get_state()
+        while traj_state == actionlib.GoalStatus.ACTIVE:
+            rospy.sleep(wait_time)
+
+            traj_state = self._action_client.get_state()
+            robot_status = self.get_robot_status()
+            if robot_status.in_motion.val == 0: 
+                no_motion_total += wait_time
+                if no_motion_total &gt; no_motion_timeout:
+                    raise RuntimeError(f&#39;Robot hasn\&#39;t moved for {no_motion_timeout} sec. TrajState={traj_state}&#39;)
+            else:
+                no_motion_total = 0
+
+        if traj_state == actionlib.GoalStatus.PREEMPTED:
+            raise OperationCanceledExepction(&#39;Trajectory goal was canceled&#39;)
+        if traj_state != actionlib.GoalStatus.SUCCEEDED:
+            raise RuntimeError(f&quot;Failed to complete trajectory. TrajState={traj_state}&quot;)
+</code></pre>
+
+<p><strong>feedback_states</strong> </p>
+
+<pre><code>rostopic echo /feedback_states
+
+header: 
+  seq: 265925
+  stamp: 
+    secs: 1687457226
+    nsecs:  28453125
+  frame_id: &#39;&#39;
+joint_names: 
+  - joint_1_s
+  - joint_2_l
+  - joint_3_u
+  - joint_4_r
+  - joint_5_b
+  - joint_6_t
+desired: 
+  positions: []
+  velocities: []
+  accelerations: []
+  effort: []
+  time_from_start: 
+    secs: 0
+    nsecs:         0
+actual: 
+  positions: [-0.5130592584609985, 0.45683741569519043, 0.9317458271980286, -1.008545994758606, -1.255672812461853, -1.8192806243896484]
+  velocities: []
+  accelerations: []
+  effort: []
+</code></pre>
+
+<p><strong>Topics</strong></p>
+
+<pre><code>/feedback_states
+/joint_path_command
+/joint_states
+/joint_trajectory_action/cancel
+/joint_trajectory_action/feedback
+/joint_trajectory_action/goal
+/joint_trajectory_action/result
+/joint_trajectory_action/status
+/robot_status
+/rosout
+/rosout_agg
+/tf
+/tf_static
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-22 13:24:59 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Quick note: I don&#39;t believe you can. From the messages you show, this looks like <code>motoman_driver</code>. Due to how caching works on the MotoROS1 side (it has an internal queue, and the underlying Yaskawa controller code has yet another internal queue), you can&#39;t rely on what the driver tells you -- at least not about the state of the action server. What you <em>could</em> do is look at the <code>joint_states</code> topic and derive progress from that. That&#39;s non-trivial though, as &quot;loops&quot; in a trajectory would make comparisons difficult.</p>
+
+<p>I&#39;m sorry there isn&#39;t something nicer to write, but I believe it&#39;s a fundamental limitation of how the system is implemented (and technically, <em>any</em> driver / robot controller with (an) internal queue(s) would make <em>really</em> knowing how much of a trajectory has been executed impossible, not just in the case of Yaskawa. I only know of Staubli which has functionality to track this sort of thing).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-22 14:30:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Btw, if you&#39;re specifically interested in detecting whether the robot has moved or not, the <code>robot_status</code> topic carries that information.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-22 14:33:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>What about <code>/feedback_states</code> or <code>/joint_trajectory_action/feedback</code> topics? Why only the <code>positions</code> in <code>actual</code> section is filled but all other is empty? What&#39;s the point of these topics then if they don&#39;t report data?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-22 14:45:00 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You&#39;d have to ask the original developers I&#39;m afraid. I can&#39;t answer that.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-22 14:45:49 UTC</p></div>
+</div>
+<div class="comment">
+              <p>sorry, do you know where would I ask? I thought ROS community is the place to ask.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-22 14:53:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>That would be a post on <a href="https://github.com/ros-industrial/motoman/discussions">ros-industrial/motoman/discussions</a>. Note though: <code>motoman_driver</code> is really old, almost 12 years now. Only one of the original developers would <em>maybe</em> respond, and I don&#39;t know whether he&#39;d still remember.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-22 14:55:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Can I ask what&#39;s your recommendation to control the Yaskawa from ROS? Yaskawa have a dedicated driver, but it&#39;s not free. If I use ROS, what&#39;s my alternative to <code>motoman_driver</code>?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-22 15:01:46 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Yaskawa have a dedicated driver, but it&#39;s not free</p>
+</blockquote>
+
+<p>I&#39;m not sure I understand what you mean by this. Which product are you referring to?</p>
+
+<blockquote>
+<p>If I use ROS, what&#39;s my alternative to <code>motoman_driver</code>?</p>
+</blockquote>
+
+<p>I would not know of an alternative.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-22 15:05:13 UTC</p></div>
+</div>
+<div class="comment">
+              <p>sorry, I meant SDK.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-23 03:29:21 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You mean MotoPlus? <code>motoman_driver</code> uses MotoPlus (well, the part running on the robot controller does).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-23 03:32:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Note btw: even the &quot;most popular&quot; implementation of a <code>follow_joint_trajectory</code> controller -- the one in <code>ros(2)_control</code> -- does not really make &quot;which trajectory point is being executed&quot; available.</p>
+
+<p>See <a href="https://github.com/ros-controls/control_msgs#65">ros-controls/control_msgs#65</a> and <a href="https://github.com/ros-controls/control_msgs/pull/67">ros-controls/control_msgs#67</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-24 10:42:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Do you know how anyone deals with it in the industry? I&#39;m new to ROS. So, what do you mean by &quot;follow_joint_trajectory controller&quot;? What are other implementations except &quot;&quot;follow_joint_trajectory controller&quot;?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-26 10:29:33 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Do you know how anyone deals with it in the industry?</p>
+</blockquote>
+
+<p>I don&#39;t know what you mean by &quot;it&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-26 10:39:22 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I meant do you know how anyone deals with detecting &quot;which trajectory point is being executed&quot; in the industry? Or no one does such thing?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-26 10:45:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I can obviously not answer how others &quot;in industry&quot; do things. I&#39;m only one person.</p>
+
+<p>Perhaps if you could describe what you&#39;re trying to achieve, we could discuss a way that doesn&#39;t look at the data you report as missing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-26 12:57:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>since the formatting didn&#39;t work for me when I tried to leave a comment, I added the clarification and what I&#39;ve tried in the post under UPDATE1 section. Can you take a look please?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-26 14:25:44 UTC</p></div>
+</div>
+<div class="comment">
+              <p>This will sound pedantic, but when I wrote &quot;I don&#39;t know what you&#39;re trying to do&quot;, I was wondering <em>why</em> you need to track trajectory execution in the manner you describe. It&#39;s unlikely you&#39;re doing this &quot;just because&quot;.</p>
+
+<p>It was already clear you want to do it, but without knowing why, it&#39;s hard to suggest alternative approaches.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-27 02:58:50 UTC</p></div>
+</div>
+<div class="comment">
+              <p>We have UI application through which we send sequence of trajectory points to the robot. A user needs to visually see what trajectory point is currently being executed. We cannot just wait till the robot stops and then compare if the current position equals to the last trajectory point just to know if the whole trajectory succeeded. We want to show the user in &quot;real time&quot; the feedback.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/126224">arisigor</a> on 2023-06-27 11:01:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Ok, thanks for that description.</p>
+
+<p>For that purpose the approach you describe (&quot;calculate joint distance based on <code>joint_states</code> and determine progress using that&quot;) seems sufficient. It&#39;s basically what I wrote in my first comment.</p>
+
+<p>As I wrote, it&#39;s non-trivial to have the driver publish which specific trajectory segment is being executed, as there are various buffers which feed each other. Changes would be needed at the lowest level of MotoROS (and then brought up through all the involved layers) to accurately track what the status of the motion is.</p>
+
+<p>That&#39;s not trying to gold-plate things, just giving a possible explanation for why it isn&#39;t supported.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2023-06-27 12:26:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

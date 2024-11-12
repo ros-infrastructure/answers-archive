@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Convert CameraInfo K &amp; D to OpenCV format convenience functions? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/408439">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Convert CameraInfo K &amp; D to OpenCV format convenience functions?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102604/convert-camerainfo-k-d-to-opencv-format-convenience-functions">https://robotics.stackexchange.com/questions/102604/convert-camerainfo-k-d-to-opencv-format-convenience-functions</a>.</p>
+        <p>Are there existing functions to convert from camera info arrays of K and D to intrinsic and distortion cv::Mats that can be passed into opencv functions like <code>projectPoints()</code>?</p>
+
+<p>I&#39;m interested in C++ mainly but python would also be useful.</p>
+
+<p>I have my own implementations including <a href="https://github.com/lucasw/image_manip/blob/d61a01452ac4d46da132494f2c1516703ea83899/image_manip/src/distort.cpp#L41-L72https://github.com/lucasw/image_manip/blob/master/image_manip/src/distort.cpp#L72-L103">https://github.com/lucasw/image_manip/blob/d61a01452ac4d46da132494f2c1516703ea83899/image_manip/src/distort.cpp#L41-L72https://github.com/lucasw/image_manip/blob/master/image_manip/src/distort.cpp#L72-L103</a> but ideally it would do the right thing with binning and roi.</p>
+
+<p><a href="https://github.com/ros-perception/vision_opencv/blob/noetic/image_geometry/src/pinhole_camera_model.cpp#L97-L223">https://github.com/ros-perception/vision_opencv/blob/noetic/image_geometry/src/pinhole_camera_model.cpp#L97-L223</a> looks like what I want but the class interface is in the way and it can&#39;t be used directly (and I&#39;m not interested in subclassing it)- there&#39;s even a usage of projectPoints: <a href="https://github.com/ros-perception/vision_opencv/blob/noetic/image_geometry/src/pinhole_camera_model.cpp#L360-L382">https://github.com/ros-perception/vision_opencv/blob/noetic/image_geometry/src/pinhole_camera_model.cpp#L360-L382</a> - but I want to do something different with projecting points than that.  I can rip that code out and make it functional and will leave it in image_manip so other packages could use it- unless that exists somewhere already.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/120"></a> on 2022-10-24 08:24:57 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This is a first pass at adapting the image_geometry code: <a href="https://github.com/lucasw/image_manip/blob/master/image_manip/src/utility.cpp#L39-L105">https://github.com/lucasw/image_manip/blob/master/image_manip/src/utility.cpp#L39-L105</a> - very little testing so far though:</p>
+
+<pre><code>std::vector image_points;
+cv::Matx33d intrinsic;
+cv::Mat distortion;
+image_manip::cameraInfoToCV(msg, intrinsic, distortion);
+cv::Mat rvec, tvec = cv::Mat_&lt;double&gt;::zeros(3, 1);
+cv::Rodrigues(R_.t(), r_vec);
+cv::projectPoints(vector_of_3d_points_in_camera_frame,
+    rvec, tvec, intrinsic, distortion, image_points);
+</code></pre>
+
+<p>Copy of the function code: </p>
+
+<pre><code>// adapted from https://github.com/ros-perception/vision_opencv/blob/noetic/image_geometry/src/pinhole_camera_model.cpp fromCameraInfo
+void cameraInfoToCV(const sensor_msgs::CameraInfo::ConstPtr&amp; msg,
+    cv::Matx33d&amp; K_,  // Describe current image (includes binning, ROI)
+    cv::Mat_&lt;double&gt;&amp; D_)  // Unaffected by binning, ROI - they are in ideal camera coordinates
+{
+  // TODO(lucasw) this can&#39;t be const
+  auto cam_info = *msg;
+
+  cv::Matx34d P_;  // Describe current image (includes binning, ROI)
+
+  int d_size = cam_info.D.size();
+  D_ = (d_size == 0) ? cv::Mat_&lt;double&gt;() : cv::Mat_&lt;double&gt;(1, d_size, cam_info.D.data());
+  auto K_full_ = cv::Matx33d(&amp;cam_info.K[0]);
+  // TODO(lucasw) not actually using P_full_
+  auto P_full_ = cv::Matx34d(&amp;cam_info.P[0]);
+
+  // Binning = 0 is considered the same as binning = 1 (no binning).
+  const uint32_t binning_x = cam_info.binning_x ? cam_info.binning_x : 1;
+  const uint32_t binning_y = cam_info.binning_y ? cam_info.binning_y : 1;
+
+  // ROI all zeros is considered the same as full resolution.
+  sensor_msgs::RegionOfInterest roi = cam_info.roi;
+  if (roi.x_offset == 0 &amp;&amp; roi.y_offset == 0 &amp;&amp; roi.width == 0 &amp;&amp; roi.height == 0) {
+    roi.width  = cam_info.width;
+    roi.height = cam_info.height;
+  }
+
+  // If necessary, create new K_ and P_ adjusted for binning and ROI
+  /// @todo Calculate and use rectified ROI
+  const bool adjust_binning = (binning_x &gt; 1) || (binning_y &gt; 1);
+  const bool adjust_roi = (roi.x_offset != 0) || (roi.y_offset != 0);
+
+  if (!adjust_binning &amp;&amp; !adjust_roi) {
+    K_ = K_full_;
+    P_ = P_full_;
+  } else {
+    K_ = K_full_;
+    P_ = P_full_;
+
+    // ROI is in full image coordinates, so change it first
+    if (adjust_roi) {
+      // Move principal point by the offset
+      /// @todo Adjust P by rectified ROI instead
+      K_(0,2) -= roi.x_offset;
+      K_(1,2) -= roi.y_offset;
+      P_(0,2) -= roi.x_offset;
+      P_(1,2) -= roi.y_offset;
+    }
+
+    if (binning_x &gt; 1) {
+      const double scale_x = 1.0 / binning_x;
+      K_(0,0) *= scale_x;
+      K_(0,2) *= scale_x;
+      P_(0,0) *= scale_x;
+      P_(0,2) *= scale_x;
+      P_(0,3) *= scale_x;
+    }
+    if (binning_y &gt; 1) {
+      const double scale_y = 1.0 / binning_y;
+      K_(1,1) *= scale_y;
+      K_(1,2) *= scale_y;
+      P_(1,1) *= scale_y;
+      P_(1,2) *= scale_y;
+      P_(1,3) *= scale_y;
+    }
+  }
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120"></a> on 2022-10-24 11:08:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

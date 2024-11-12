@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to access the response of async request from a client? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402688">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to access the response of async request from a client?</h2>
+      <div class="question">
+        <p>I am calling service from service in ROS2. As I have the spin function already being executed in the outer service, I can&#39;t use rclcpp::spin<em>until</em>future_complete for calling the inner service. To find a hack I stumbled upon the function of async send request where I can pass a callback that will get executed once the response as shown below.</p>
+
+<p>// We give the async<em>send</em>request() method a callback that will get executed once the response
+    // is received.
+    // This way we can return immediately from this method and allow other work to be done by the
+    // executor in <code>spin</code> while waiting for the response.
+    using ServiceResponseFuture =
+      rclcpp::Client<example_interfaces::srv::AddTwoInts>::SharedFuture;</p>
+
+<pre><code>auto response_received_callback = [this](ServiceResponseFuture future) {
+    auto result = future.get();
+    RCLCPP_INFO(this-&gt;get_logger(), &quot;Result of add_two_ints: %&quot; PRId64, result-&gt;sum)
+    rclcpp::shutdown();
+  };
+
+auto future_result = client_-&gt;async_send_request(request, response_received_callback);
+</code></pre>
+
+<p>My question is that if I want to access the result out of the scope for further process. How could I do that?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108827">YashShah</a> on 2022-06-22 04:22:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hello,</p>
+
+<p>The way you do this is by declaring a shared pointer to the service response outside of the scope, and saving the service response to that variable.
+Here is a example using the service from your question :</p>
+
+<pre><code>class MyNode : public rclcpp::Node {
+public:
+    MyNode() : rclcpp::Node(&quot;my_node&quot;) {
+        this-&gt;service_client_ = this-&gt;create_client&lt;example_interfaces::srv::AddTwoInts&gt;(&quot;add_two_ints&quot;);
+
+        this-&gt;service_client_-&gt;wait_for_service();
+        auto request = std::make_shared&lt;example_interfaces::srv::AddTwoInts::Request&gt;();
+        request-&gt;a = 1;
+        request-&gt;b = 1;
+        const auto future = this-&gt;service_client_-&gt;async_send_request(request,
+                                                                      std::bind(&amp;MyNode::service_response_callback,
+                                                                                this, std::placeholders::_1));
+        rclcpp::spin_until_future_complete(this-&gt;get_node_base_interface(), future);  // Wait for service response
+    }
+
+    /// Service response callback
+    void service_response_callback(rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedFuture future) {
+        this-&gt;service_response_ = future.get();  // Save service response to the pointer declared outside the scope for further process
+        std::cout &lt;&lt; this-&gt;service_response_-&gt;sum &lt;&lt; std::endl;
+    }
+
+private:
+    rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedPtr service_client_;
+
+    example_interfaces::srv::AddTwoInts::Response::SharedPtr service_response_;  // &lt;-- Declare the pointer to the response like this
+
+};
+</code></pre>
+
+<p>I hope this helps !</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/108956"></a> on 2022-06-23 07:17:57 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Sorry for not responding earlier. After not finding the solution, I stopped scratching my head around it and shifted to other things. For ease, I am still turning into this solution. I have tried the following things. I am still getting the error</p>
+
+<pre><code>example_interfaces::srv::addtwoints::Response::SharedPtr result;
+auto response_received_callback =[this](ServiceResponseFuture future) 
+{
+      result = future.get();
+}
+auto future_result = client_-&gt;async_send_request(request, response_received_callback);
+</code></pre>
+
+<p>Error-:</p>
+
+<p>In lambda function:</p>
+
+<pre><code> error: ‘result’ is not captured
+   36 |       result = future.get();
+</code></pre>
+
+<p>Am I doing something wrong?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108827">YashShah</a> on 2022-07-11 03:39:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I have tested with this lambda function and the service response is saved in the result member:</p>
+
+<pre><code>[this] (rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedFuture future) -&gt; void {
+                                                          this-&gt;result = future.get();}
+</code></pre>
+
+<p>Alternatively, you can create a method :</p>
+
+<pre><code>void service_response_callback(rclcpp::Client&lt;example_interfaces::srv::AddTwoInts&gt;::SharedFuture future) { this-&gt;result = future.get();
+}
+</code></pre>
+
+<p>and then call the service with :</p>
+
+<pre><code>client_-&gt;async_send_request(request, std::bind(&amp;NodeName::service_response_callback, this, std::placeholders::_1));
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108956">Sam_Prt</a> on 2022-07-11 05:21:36 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks for the solution. It works. I still would like to know one thing. This is a callback function that we have defined. The code goes ahead and doesn&#39;t wait for the service to respond. If I would like to wait until the service responds before moving forward in the code, what will be the efficient way to do it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108827">YashShah</a> on 2022-07-11 07:58:15 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You can wait for the service response with <a href="https://docs.ros2.org/foxy/api/rclcpp/namespacerclcpp.html#a702eef83e9bdbaabbc89e426668d808c">rclcpp::spin_until_future_complete</a>. I will edit my answer to include everything I have said and with a working example.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108956">Sam_Prt</a> on 2022-07-12 09:15:19 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you so much for posting the answer. Actually, I cannot implement this because I am calling the service inside a callback function. So I cannot use spin two times(one is the primary spin and the other spin_until_future). I am doing something similar to <a href="https://github.com/ros2/rclcpp/issues/773">this</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108827">YashShah</a> on 2022-07-12 10:52:09 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

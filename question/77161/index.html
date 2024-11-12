@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Reasons for slow response to actions, services, messages? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/77161">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Reasons for slow response to actions, services, messages?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/53933/reasons-for-slow-response-to-actions-services-messages">https://robotics.stackexchange.com/questions/53933/reasons-for-slow-response-to-actions-services-messages</a>.</p>
+        <p>Hi guys!</p>
+
+<p>I&#39;m trying to debug a tool, which responds to service calls and action goals with a lag of 10 to 20 seconds depending on the load of the machine (50% - 90%). I determined this time lag using the debug output, which shows when the action server receives the action goal.</p>
+
+<p>What could be the reasons for this significant time lag?</p>
+
+<p>In my use case - pick &amp; place using MoveIt - the node running the action servers and service providers is causing most of the load. So my first guess is, that something is blocking the respective callbacks.</p>
+
+<p>Is this just a matter of not enough horse power? Which parts of the code could cause this blocking/slowing down?</p>
+
+<p>Interesting is that actions, services, messages of nodes running in parallel are processed fine, i.e. there is only a small time difference between sending and receiving action goals, responding to services, receiving messages.</p>
+
+<p>Thanks for your help!</p>
+
+<p><strong>/edit:</strong></p>
+
+<p>Additional info using the tools recommended in @Adolfo Rodriguez T &#39;s answer:</p>
+
+<ul>
+<li>top
+
+<ul>
+<li>with point cloud processing: ~40% idle, load average: ~2.5 (quad-core CPU: i5-2500 CPU @ 3.30GHz), move_group process at ~130%</li>
+<li>w/o pcp: ~90% idle, load average: ~0.5</li>
+</ul></li>
+<li>iftop
+
+<ul>
+<li>with pc: ~2Gb/s</li>
+<li>w/o pcp: ~5Mb/s</li>
+</ul></li>
+<li>sockets
+
+<ul>
+<li>When idling few (~5) sockets show up every few seconds (5 - 10). For each motion plan action a few more sockets pop up.</li>
+</ul></li>
+</ul>
+
+        <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2013-09-07 20:52:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>As I mentioned above, the load is usually around 50 ~ 70% (desktop) / 50% ~ 90% (robot) (using top). iftop is an interesting tool! Shows me that the local traffic (lo interface) goes up to 2Gb/s, when starting to process point clouds.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2013-09-08 22:12:52 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Which process is generating the load? Is it the roscore or one / multiple of the started nodes?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2575">Dirk Thomas</a> on 2013-09-09 11:34:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The rosmaster load is neglectable. The main load comes from MoveIt&#39;s move_group node (more details added in the question). And it&#39;s only that node&#39;s topics, services and actions, which are processed extremely slow. The other nodes run fine, what is probably because the CPU is not fully used.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2013-09-09 16:33:42 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>More than an answer, this may serve as a first diagnostics step.</p>
+
+<p>How loaded is your system when this happens?. I recommend a first sweep with the following tools:</p>
+
+<ul>
+<li><p><code>top</code> to check <strong>idle CPU resources</strong> and <strong>load average</strong>. </p></li>
+<li><p><code>iftop</code> (may require sudo) to query the <strong>traffic on your network interfaces</strong>, eg. <code>sudo iftop -i lo</code> for loopback only.</p></li>
+<li><p>It might also be good to check the <strong>number of sockets with a given status</strong>, eg. <code>netstat | grep ESTABLISHED | wc -l</code>. ESTABLISHED, CONNECTED correspond to sockets currently in use, while TIME_WAIT, CLOSE_WAIT are pending to close. Pay special attention to the latter, as large counts here can indicate lots of short-lived sockets, which usually occur in ROS environments when you frequently query the master (non-persistent service calls or parameter reads). Many socket opening/closing operations will increase your system CPU load (shown in top under Cpu(s) .... sy).</p></li>
+</ul>
+
+<p><strong>Edit:</strong> From the updated question details.</p>
+
+<p>Could you post for completeness the CPU load and network traffic values with pointcloud perception disabled?.</p>
+
+<p>It seems that the pointcloud messages are taking up a lot of bandwidth, and (de)serializing + processing them (coordinate system change, self-filtering, object detection, etc.) is in turn consuming significant CPU resourecs (maxing out a core, leaving no room to the scheduler to process all incoming messages).</p>
+
+<p>What kind of pointcloud input are you feeding <code>move_group</code>?. If it&#39;s the raw input from a Kinect-like RGBD sensor, that might indeed prove prohibitive. Preprocessing the pointcloud might help. These are some indicative numbers I took some time ago:</p>
+
+<ul>
+<li>Original cloud contains 200k-300k valid points.</li>
+<li>Crop to a bounding volume of interest (~1 order of magnitude less points)</li>
+<li>Downsample with octomap (additional ~2 orders of magnitude reduction)</li>
+</ul>
+
+<p>Finally, if you need point clouds at discrete time instances (as opposed to a continuous stream), gate pointcloud traffic through an on-demand snapshotter.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/410">Adolfo Rodriguez T</a> on 2013-09-08 21:57:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for listing these helpful tools. I added the result of them to my question. To me CPU load looks OK as well as the sockets. The network traffic looks high, but then I have no idea what is &quot;high&quot; and &quot;low&quot; regarding the traffic on the lo interface. Do you have any experience with it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2013-09-09 19:35:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Extra info added. Your suggestions about preprocessing the point cloud is a good idea. I wonder however, if there are other ways to improve this situation. There is still 10% of the computation power unused. Also, there are multiple cores available. Can&#39;t that be used?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2013-09-09 22:22:34 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>Just found this interesting Q&amp;A: <a href="http://answers.ros.org/question/53055/ros-callbacks-threads-and-spinning/">http://answers.ros.org/question/53055/ros-callbacks-threads-and-spinning/</a> Could multiple callback queues be useful in the current case? <a href="http://wiki.ros.org/roscpp/Overview/Callbacks%20and%20Spinning#Advanced:_Using_Different_Callback_Queues">link</a></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/62">bit-pirate</a> on 2013-09-09 22:26:59 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

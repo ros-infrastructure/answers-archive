@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Using Time Optimal Parameterization with Cartesian Paths - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/367401">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Using Time Optimal Parameterization with Cartesian Paths</h2>
+      <div class="question">
+        <p>Hi All,</p>
+
+<p>I will keep this as brief as possible.</p>
+
+<p>Background:
+I have been playing around with Time Optimal Parameterization. I hacked a portion of the MoveIt code in &quot;add<em>time</em>optimal<em>parameterization.cpp&quot; to take in parameters from a launch file for resample</em>dt, path<em>tolerance, and min</em>angle_change so I could play around with &quot;higher resolution&quot; trajectories.</p>
+
+<p>Question:
+I noticed, while plotting some of these trajectories in RQT that Cartesian paths do not get resampled (as far as I can tell). I&#39;m wondering if Cartesian paths are treated differently somehow. I couldn&#39;t find anything explicitly refusing to work with Cartesian paths in the &quot;time<em>optimal</em>trajectory_generation.cpp&quot; file.</p>
+
+<p>Here&#39;s a normal path with resample_dt set to 0.03
+<img src="https://raw.githubusercontent.com/drewhamiltonasdf/chewbot/main/images/high_resample_dt.png" alt="image description"></p>
+
+<p>And here&#39;s a cartesian path with resample_dt set to 0.03
+<img src="https://raw.githubusercontent.com/drewhamiltonasdf/chewbot/main/images/high_resample_dt_cartesian.png" alt="image description"></p>
+
+<p>Just curious.</p>
+
+<p>I&#39;ll also take this opportunity to re-apologize to gvdhoorn for indirectly being a jerk in a previous question. Please forgive me.</p>
+
+<p>My robot and images of trajectories are on my github: <a href="https://github.com/drewhamiltonasdf/chewbot/blob/main/README.md">https://github.com/drewhamiltonasdf/chewbot/blob/main/README.md</a></p>
+
+<p>Best,
+Drew Hamilton</p>
+
+<p>P.S. Would it be a silly MoveIt! pull request to add this option to set these variables from the parameter server?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-10 00:24:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I believe this is all because the cartesian path generator does not support the general planning request adapter setup.</p>
+
+<p>I found this answer here: <a href="https://github.com/ros-planning/moveit/issues/453">https://github.com/ros-planning/moveit/issues/453</a></p>
+
+<blockquote>
+<p>the hard-coded time
+parameterization should probably be
+configurable once we have other
+working methods upstream. A simple ROS
+parameter to choose, or disable the
+parameterization if you do it yourself
+afterwards, could suffice imo.</p>
+
+<p>Background information: Until not too
+long ago there was no time
+parameterization in the capability. I
+just added IPTP (wink) in fc7da44</p>
+</blockquote>
+
+<p>The code is found here:   moveit/moveit_ros/move_group/src/default_capabilities/<strong>cartesian_path_service_capability.cpp</strong></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-12 22:03:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As far as setting the variables resample_dt etc from the parameter server goes. I hacked something together by editing add_time_optimal_parameterization.cpp, add something like:</p>
+
+<pre><code> double path_tolerance_override;
+    if (!nh.getParam(&quot;/path_tolerance&quot;, path_tolerance_override))
+    {
+        ROS_INFO(&quot;No param found for path_tolerance&quot;);
+    }
+    else
+    {
+        path_tolerance = path_tolerance_override;
+        ROS_INFO(&quot;Overriding path_tolerance parameters: %f&quot;, path_tolerance);
+    }
+</code></pre>
+
+<p>for all the three variables in question to the top of the initialize() method, and added default values that are overwritten if there is a matching parameter found.
+  double path_tolerance = 0.1;
+  double resample_dt = 0.1;
+  double min_angle_change = 0.001;</p>
+
+<p>I opened a moveit pull request for this added feature. Who knows if it will be accepted.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/64242">DrewHamilton</a> on 2020-12-12 22:47:23 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Seems like this is a duplicate of #q326511.</p>
+
+<p>Nice of you to show the code you ended up using though.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-01-03 05:12:39 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>See the above comments for notes about why MoveIt, barring a pull request, won&#39;t compute time optimal cartesian paths from within RViz. With that said, you can still program your own time optimal cartesian paths in a move_group node. This worked for me:</p>
+
+<pre><code>  move_group.setStartStateToCurrentState();
+  geometry_msgs::Pose start_pose = move_group.getCurrentPose().pose;
+
+  std::vector&lt;geometry_msgs::Pose&gt; waypoints;
+  waypoints.push_back(start_pose);
+
+  geometry_msgs::Pose target_pose3 = start_pose;
+
+  target_pose3.position.x += inch_to_m(8);
+  target_pose3.position.z += inch_to_m(-10);
+  target_pose3.position.y += inch_to_m(-8);
+  waypoints.push_back(target_pose3);  
+
+  moveit_msgs::RobotTrajectory trajectory;
+  const double jump_threshold = 0.0;
+  const double eef_step = 0.01;
+  double fraction = move_group.computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
+  ROS_INFO_NAMED(&quot;tutorial&quot;, &quot;Visualizing (Cartesian path) (%.2f%% acheived)&quot;, fraction * 100.0);
+
+  robot_trajectory::RobotTrajectory trajectory_for_totg(move_group.getRobotModel(), PLANNING_GROUP);
+
+  robot_state::RobotState start_state(*move_group.getCurrentState());
+
+  trajectory_for_totg.setRobotTrajectoryMsg(start_state, trajectory);
+
+  //Get these from param server later, plz
+  double path_tolerance = 0.002;
+  double resample_dt = 0.03;
+  double min_angle_change = 0.001;
+
+  trajectory_processing::TimeOptimalTrajectoryGeneration time_param(path_tolerance, resample_dt, min_angle_change);
+  time_param.computeTimeStamps(trajectory_for_totg, 1.0);  //1.0 accel scaling
+
+  moveit_msgs::RobotTrajectory totg_trajectory;
+  trajectory_for_totg.getRobotTrajectoryMsg(totg_trajectory);
+
+  visual_tools.deleteAllMarkers();
+  visual_tools.publishText(text_pose, &quot;Cartesian Path&quot;, rvt::WHITE, rvt::XLARGE);
+  visual_tools.publishPath(waypoints, rvt::LIME_GREEN, rvt::SMALL);
+
+  const moveit::core::LinkModel* link_model6 = move_group.getCurrentState()-&gt;getLinkModel(&quot;link6&quot;);
+  visual_tools.publishTrajectoryLine(totg_trajectory, link_model6, joint_model_group, rviz_visual_tools::ORANGE);
+
+  for (std::size_t i = 0; i &lt; waypoints.size(); ++i)
+    visual_tools.publishAxisLabeled(waypoints[i], &quot;pt&quot; + std::to_string(i), rvt::SMALL);
+  visual_tools.trigger();
+  visual_tools.prompt(&quot;Press &#39;next&#39; in the RvizVisualToolsGui window move arm.&quot;);
+
+  move_group.execute(totg_trajectory);
+</code></pre>
+
+<p>A nice time optimal cartesian path:
+<img src="https://raw.githubusercontent.com/drewhamiltonasdf/chewbot/main/images/good-time-optimal-cartesian.png" alt="image description"></p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/64242">DrewHamilton</a> on 2021-01-02 20:28:12 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

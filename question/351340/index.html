@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Visualisation marker not correct orientation - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/351340">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Visualisation marker not correct orientation</h2>
+      <div class="question">
+        <p>Hi</p>
+
+<p>Im using PCL library to obtain the orientation of detected objects. Basically, I only need to get the OBB of the object (Box on the ground). So for that, I was using the Moment of Inertia from this tutorial<a href="https://pcl-tutorials.readthedocs.io/en/latest/moment_of_inertia.html?highlight=moment%20of%20inertia">PCL Tutorial</a>. So first, I filter the cloud using the Pass through Filter, then done the planar segmentation to remove the ground floor. And at the end, I used the extracted point cloud Box( without the plane surface) to get the OBB of the box object. In the end, I visualize the OBB in Rviz (ROS). Here the code in C++ </p>
+
+<pre><code>ros::Publisher pub, markers_pub_;
+
+void cloud_cb(const sensor_msgs::PointCloud2::ConstPtr &amp;msg){
+
+    // Convert to pcl point cloud
+    pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr cloud_msg (new pcl::PointCloud&lt;pcl::PointXYZRGB&gt;);
+    pcl::fromROSMsg(*msg,*cloud_msg);
+    //ROS_DEBUG(&quot;%s: new ponitcloud (%i,%i)(%zu)&quot;,_name.c_str(),cloud_msg-&gt;width,cloud_msg-&gt;height,cloud_msg-&gt;size());
+
+    // Filter cloud
+    pcl::PassThrough&lt;pcl::PointXYZRGB&gt; pass;
+    pass.setInputCloud(cloud_msg);
+    pass.setFilterFieldName (&quot;y&quot;);
+    pass.setFilterLimits(0.001,10);
+    pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr cloud (new pcl::PointCloud&lt;pcl::PointXYZRGB&gt;);
+    pass.filter (*cloud);
+
+    // Get segmentation ready
+    pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
+    pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+    pcl::SACSegmentation&lt;pcl::PointXYZRGB&gt; seg;
+    pcl::ExtractIndices&lt;pcl::PointXYZRGB&gt; extract;
+    seg.setOptimizeCoefficients (true);
+    seg.setModelType (pcl::SACMODEL_PLANE);
+    seg.setMethodType (pcl::SAC_RANSAC);
+    seg.setDistanceThreshold(0.04);
+
+    // Create pointcloud to publish inliers
+    pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr cloud_pub(new pcl::PointCloud&lt;pcl::PointXYZRGB&gt;);
+
+
+        // Fit a plane
+        seg.setInputCloud(cloud);
+        seg.segment(*inliers, *coefficients);
+
+        // Check result
+        if (inliers-&gt;indices.size() == 0)
+           {
+            ROS_WARN_STREAM (&quot;Could not estimate a planar model for the given dataset.&quot;) ;
+            }
+
+
+        // Extract inliers
+        extract.setInputCloud(cloud);
+        extract.setIndices(inliers);
+        extract.setNegative(true);
+        //pcl::PointCloud&lt;pcl::PointXYZRGB&gt; cloudF;
+        pcl::PointCloud&lt;pcl::PointXYZRGB&gt;::Ptr cloud_box (new pcl::PointCloud&lt;pcl::PointXYZRGB&gt; ());
+        extract.filter(*cloud_box);
+
+  //Moment of Inertia
+  pcl::MomentOfInertiaEstimation &lt;pcl::PointXYZRGB&gt; feature_extractor;
+  feature_extractor.setInputCloud (cloud_box);
+  feature_extractor.compute ();
+
+  std::vector &lt;float&gt; moment_of_inertia;
+  std::vector &lt;float&gt; eccentricity;
+
+  pcl::PointXYZRGB min_point_OBB;
+  pcl::PointXYZRGB max_point_OBB;
+  pcl::PointXYZRGB position_OBB;
+  Eigen::Matrix3f rotational_matrix_OBB;
+  float major_value, middle_value, minor_value;
+  Eigen::Vector3f major_vector, middle_vector, minor_vector;
+  Eigen::Vector3f mass_center;
+
+  feature_extractor.getMomentOfInertia (moment_of_inertia);
+  feature_extractor.getEccentricity (eccentricity);
+  feature_extractor.getOBB (min_point_OBB, max_point_OBB, position_OBB, rotational_matrix_OBB);
+  feature_extractor.getEigenValues (major_value, middle_value, minor_value);
+  feature_extractor.getEigenVectors (major_vector, middle_vector, minor_vector);
+  feature_extractor.getMassCenter (mass_center);
+
+  Eigen::Vector3f position (position_OBB.x, position_OBB.y, position_OBB.z);
+  Eigen::Quaternionf quat (rotational_matrix_OBB);
+
+  cout &lt;&lt; &quot; orientation x  = &quot; &lt;&lt; quat.x() &lt;&lt;  endl;
+  cout &lt;&lt; &quot; orientation y = &quot;  &lt;&lt; quat.y() &lt;&lt;  endl;
+  cout &lt;&lt; &quot; orientation z = &quot;  &lt;&lt; quat.z() &lt;&lt;  endl;
+  cout &lt;&lt; &quot; orientation w = &quot;  &lt;&lt; quat.w() &lt;&lt;  endl;
+  cout &lt;&lt; &quot; postion x  = &quot; &lt;&lt; position_OBB.x &lt;&lt;  endl;
+  cout &lt;&lt; &quot; postion y  = &quot; &lt;&lt; position_OBB.y &lt;&lt;  endl;
+  cout &lt;&lt; &quot; postion z  = &quot; &lt;&lt; position_OBB.z &lt;&lt;  endl;
+
+    // Publish points
+    sensor_msgs::PointCloud2 cloud_publish;
+    pcl::toROSMsg(*cloud_box,cloud_publish);
+    pub.publish(cloud_publish);
+
+  //Visualisation Marker
+  std::string ns; 
+  float r; 
+  float g; 
+  float b;
+  visualization_msgs::MarkerArray msg_marker;
+  visualization_msgs::Marker bbx_marker;
+  bbx_marker.header.frame_id = &quot;zed_left_camera_frame&quot;;
+  bbx_marker.header.stamp = ros::Time::now();
+  bbx_marker.ns = ns;
+  bbx_marker.type = visualization_msgs::Marker::CUBE;
+  bbx_marker.action = visualization_msgs::Marker::ADD;
+  bbx_marker.pose.position.x =  position_OBB.x;
+  bbx_marker.pose.position.y =  position_OBB.y;
+  bbx_marker.pose.position.z =  position_OBB.z;
+  bbx_marker.pose.orientation.x = quat.x();
+  bbx_marker.pose.orientation.y = quat.x();
+  bbx_marker.pose.orientation.z = quat.x();
+  bbx_marker.pose.orientation.w = quat.x();
+  bbx_marker.scale.x = (max_point_OBB.x - min_point_OBB.x);
+  bbx_marker.scale.y = (max_point_OBB.y - min_point_OBB.y);
+  bbx_marker.scale.z = (max_point_OBB.z - min_point_OBB.z);
+  bbx_marker.color.b = b;
+  bbx_marker.color.g = g;
+  bbx_marker.color.r = r;
+  bbx_marker.color.a = 0.4;
+  bbx_marker.lifetime = ros::Duration();
+  msg_marker.markers.push_back(bbx_marker);
+  markers_pub_.publish(msg_marker);
+
+}
+
+int
+main (int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init (argc, argv, &quot;my_pcl_tutorial&quot;);
+  ros::NodeHandle nh;
+  // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe (&quot;/zed/zed_node/point_cloud/cloud_registered&quot;, 200, cloud_cb);
+  // Create a ROS publisher for the output point cloud
+  pub = nh.advertise&lt;sensor_msgs::PointCloud2&gt; (&quot;cloud_publish&quot;, 100);
+  markers_pub_ = nh.advertise&lt;visualization_msgs::MarkerArray&gt; (&quot;msg_marker&quot;, 100);
+    ros::spin();
+  ros::spin ();
+}
+</code></pre>
+
+<p>Here the point cloud scene. <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15885877136489301.png" alt="The whole pointcloud scene">
+Then the extracted box and the visualized marker with orientation and position. <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15885877546109998.png" alt="Visualized OBB"></p>
+
+<p>So my question is why the orientation of the OBB is not correct? is not aligned with the red box. Also, the output is following</p>
+
+<pre><code>orientation x  = 0.553429
+ orientation y = 0.409076
+ orientation z = 0.575402
+ orientation w = 0.441912
+ postion x  = 0.688811
+ postion y  = 0.296049
+ postion z  = -0.0444195
+ orientation x  = 0.551899
+ orientation y = 0.41675
+ orientation z = 0.556839
+ orientation w = 0.460061
+ postion x  = 0.6858
+ postion y  = 0.297214
+ postion z  = -0.0479018
+ orientation x  = -0.447575
+ orientation y = 0.523119
+ orientation z = -0.488997
+ orientation w = 0.535635
+ postion x  = 0.687003
+ postion y  = 0.296398
+ postion z  = -0.0541157
+ orientation x  = -0.435059
+ orientation y = 0.533038
+ orientation z = -0.483508
+ orientation w = 0.541123
+ postion x  = 0.689015
+ postion y  = 0.299274
+ postion z  = -0.0532807
+ orientation x  = -0.483639
+ orientation y = 0.486945
+ orientation z = -0.526589
+ orientation w = 0.50168
+ postion x  = 0.687567
+ postion y  = 0.290984
+ postion z  = -0.0566443
+ orientation x  = -0.451907
+ orientation y = 0.514618
+ orientation z = -0.499482
+ orientation w = 0.530533
+ postion x  = 0.688489
+ postion y  = 0.300407
+ postion z  = -0.0544657
+ orientation x  = -0.462979
+ orientation y = 0.508457
+ orientation z = -0.503387
+ orientation w = 0.523185
+ postion x  = 0.687322
+ postion y  = 0.294014
+ postion z  = -0.0556483
+ orientation x  = 0.507688
+ orientation y = 0.462501
+ orientation z = 0.530055
+ orientation w = 0.497381
+ postion x  = 0.687552
+ postion y  = 0.293263
+ postion z  = -0.055368
+ orientation x  = -0.413774
+ orientation y = 0.554115
+ orientation z = -0.456901
+ orientation w = 0.559455
+</code></pre>
+
+<p>As can see orientation change as well. Please, any help how to improve the results? Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2020-05-04 05:25:42 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is this not a duplicate of #q351039? Or at least (very) similar to it?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-04 05:56:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>it is not. That one doesn&#39;t have the visualization marker. Anyway, any help?.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2020-05-04 09:54:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I suspect this is your problem:</p>
+
+<pre><code>bbx_marker.pose.orientation.x = quat.x();
+bbx_marker.pose.orientation.y = quat.x();
+bbx_marker.pose.orientation.z = quat.x();
+bbx_marker.pose.orientation.w = quat.x();
+</code></pre>
+
+<p>You likely want:</p>
+
+<pre><code>bbx_marker.pose.orientation.x = quat.x();
+bbx_marker.pose.orientation.y = quat.y();
+bbx_marker.pose.orientation.z = quat.z();
+bbx_marker.pose.orientation.w = quat.w();
+</code></pre>
+
+<p>Does that give you the expected result?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33908">tryan</a> on 2020-05-04 15:09:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>that was a typo.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2020-05-05 05:35:40 UTC</p></div>
+</div>
+<div class="comment">
+              <p>ok. I have done some filtering and now the OBB is correct. thanks. Fix it. Now its works</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/2221">Astronaut</a> on 2020-05-05 21:50:34 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

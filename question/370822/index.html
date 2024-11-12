@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>subscribers in noetic seem to fail at a faster rate than in previous versions when there are a large number of subscribers - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/370822">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>subscribers in noetic seem to fail at a faster rate than in previous versions when there are a large number of subscribers</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/98184/subscribers-in-noetic-seem-to-fail-at-a-faster-rate-than-in-previous-versions-wh">https://robotics.stackexchange.com/questions/98184/subscribers-in-noetic-seem-to-fail-at-a-faster-rate-than-in-previous-versions-wh</a>.</p>
+        <p>My organization has a large ROS-based system with on the order of almost 300 topics being transmitted at various rates. I was recently tasked with updating from Kinetic on Ubuntu 16.04 to Noetic on 20.04, and after I got it up and running, there was abnormal behavior that I eventually tracked down to some topics simply not being handled in some nodes. However, there was a probabilistic nature to which topics were not being handled. Sometimes the system would work well, and sometimes one or more topics were unhandled in certain nodes.</p>
+
+<p>After much investigation, I was able to determine several data points.</p>
+
+<ul>
+<li>I was not simply getting <em>fewer</em> messages of a certain topic handled, but <em>no</em> messages handled.</li>
+<li>The outages were on a per-connection basis as opposed to a per-topic basis. I.e. if Node1 and Node2 both subscribed to TopicA, there were times Node1 ignored the topic while Node2 was handling it.</li>
+<li><code>rosnode info</code> and <code>rostopic info</code> both showed that all the connections that were <em>supposed</em> to be there were.</li>
+<li><code>roswtf</code> just crashes with an <code>OsNotDetected</code> exception.</li>
+<li>The <code>ss</code> networking tool showed that data <em>was</em> going across the sockets and being successfully received/ACKed, which would seem to imply that data was getting there, just not being handled.</li>
+<li>Which handlers failed to be called was somewhat probabalistic, and possibly dependent on position in code. For example, a ROS timer that was initialized at the end of the <code>onInit()</code> of a node with many publishers and subscribers would be handled, while if it was moved to the top of the function, it would not be handled.</li>
+<li>Using single vs multi-threaded <code>NodeHandler</code>s did not solve the problem.</li>
+</ul>
+
+<p>So I decided to make a small <code>roscpp</code>-based app for stress testing. I created two nodes -- one publisher and one subscriber. The publisher advertised N topics and published an Int32 message over each of them once a second. The subscriber node simply received them and kept track of which topics had been heard. The nodes were run in separate processes.</p>
+
+<p>When N was in the 400-500 range, I began seeing the same issue manifest -- some topics were being ignored for the duration of the run. Which topics they were and how many there were changed from run to run, and at the lower end of the range (N=400), sometimes all topics were handled.</p>
+
+<p>Ignored topics were in continuous blocks (going by the order in which they were subscribed to):</p>
+
+<ul>
+<li>On 20.04, the ignored topics are nearly always among those first subscribed to (e.g. topics 0-120).</li>
+<li>On 18.04, the ignored topics are nearly always among the last of those subscribed to (e.g. topics  950-990).</li>
+</ul>
+
+<p>I understand that our system is rather large, and that any system will eventually degrade if loaded enough, but we have been running it on Ubuntu 16.04 and 18.04 systems, so I wasn&#39;t sure why this issue was suddenly becoming visible. I ran the stress test on 16.04 and 18.04 systems, and I had to increase N to the 900-1000 range before I started seeing the same issue. The systems were all VMs running on a modern machine. To get another data point, I ran the stress test inside a 20.04 docker container on the same 18.04 VM I had just used to test, and the results in the 20.04 docker container were comparable to what I saw on the 20.04 VM. So it seems like, for some reason, ROS on noetic is not as scalable as kinetic/melodic on 16.04/18.04, respectively.</p>
+
+<p>So I guess my final question is: Is this a known trait of noetic on 20.04? If so, is there perhaps a default setting in Ubuntu or noetic that can be adjusted to get better scalability? I&#39;m guessing the ideal solution is to move everything over to ROS2, but that&#39;s not feasible at the moment.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/69102">jblee123</a> on 2021-02-02 00:00:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>And a suggestion: please update the title of your question with the actual observation.</p>
+
+<p>Your current title does not really mean anything and seems to already suggest a possible conclusion.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-02 04:07:31 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You mention <code>onInit(..)</code>, which I associate with <code>nodelet</code>s, not regular nodes.</p>
+
+<p>Does your system use nodelets instead of regular nodes?</p>
+
+<p>If that&#39;s the case, perhaps <a href="https://github.com/ros/nodelet_core/issues/106">ros/nodelet_core#106</a> is related.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2021-02-02 03:53:16 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Yes, they are nodelets, but they are all running in their own process (defeats the purpose of nodelets, I know, but project history... :/ ), so I mentally conflate the two. I&#39;m betting that issue is related. I did a quick test where I set a single one-shot timer in onInit() and did the &quot;real&quot; initialization in its handler, and I am now getting result comparable to kinetic/melodic -- it now starts bugging out at the N=[900-1000] range, and when it does, I am getting the &quot;couldn&#39;t resolve publisher host&quot; error messages like I did with previous versions. I&#39;ll need to spend some time investigating in the large project to see if this workaround pans out.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69102">jblee123</a> on 2021-02-02 10:39:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>IIUC, the regression discussed in the issue I linked has been &#39;fixed&#39; by reverting the PR which introduced it.</p>
+
+<p>So depending on <em>when</em> you ran your tests, you may just need to update your ROS packages and it could already be back to how things worked in Kinetic.</p>
+
+<p>I would not start changing your code just yet.</p>
+
+<p>According to <a href="http://repositories.ros.org/status_page/ros_noetic_default.html?q=nodelet">status_page/ros_noetic_default.html?q=nodelet</a>, the fixed version (ie: <code>1.10.1-1</code>) is waiting for a sync. To test it, you could configure the <a href="http://wiki.ros.org/TestingRepository">testing repository</a> and install the updated version.</p>
+
+<p>Oh, and:</p>
+
+<blockquote>
+<p>Yes, they are nodelets, but they are all running in their own process [..], so I mentally conflate the two.</p>
+</blockquote>
+
+<p>that may be, but when asking for help on a forum, it pays to be precise. You only use the word <code>nodes</code>. Because of your single mention of <code>onInit(..)</code> I wondered whether it were actually nodelets, and whether the issue I linked was related.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-02 10:57:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yep -- point taken on precision. I have tested with the <code>1.10.1-1</code> version of the nodelet package, and it&#39;s behaving <em>much</em> better. I think we&#39;ll just have to do prelim work now and wait until this gets into mainline before making the official switch. Thanks -- you&#39;ve been tons of help!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/69102">jblee123</a> on 2021-02-02 16:36:52 UTC</p></div>
+</div>
+<div class="comment">
+          <blockquote>
+<p>Thanks for trying out the new version of nodelet in the testing repo. Sounds like a new Noetic sync is a good idea.</p>
+</blockquote>
+
+<p>@sloretz: yes, please do a sync. This is a critical regression which has come up in multiple cases of reduced performance / non-functioning systems.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-02-03 03:52:33 UTC</p></div>
+</div>
+<div class="comment">
+          <p><a href="https://discourse.ros.org/t/new-packages-for-noetic-2021-02-08/18868">ROS Noetic sync with nodelet 1.10.1 is out</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/23470">sloretz</a> on 2021-02-09 12:42:46 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

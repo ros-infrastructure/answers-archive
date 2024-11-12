@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Python SimpleActionServer stops unexpectedly (deadlock!) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/50276">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Python SimpleActionServer stops unexpectedly (deadlock!)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/46500/python-simpleactionserver-stops-unexpectedly-deadlock">https://robotics.stackexchange.com/questions/46500/python-simpleactionserver-stops-unexpectedly-deadlock</a>.</p>
+        <p>Hi all,</p>
+
+<p>I&#39;m writing a small piece of code that leverages actionlib, specifically SimpleActionServer. The main intricacy is that I register a preempt callback, but then I <strong>set_preempted</strong> on another thread (see code below).</p>
+
+<p>However, when the rate of requests is relatively high (~1Hz) sometimes actionlib stops processings new requests. It does not crash, it does not print nor log anything, it just idles.</p>
+
+<p>Below is a simplified version of my code:</p>
+
+<pre><code>class Node():
+
+    def __init__(self):   
+        self.server = actionlib.SimpleActionServer(
+            &quot;Topic&quot;, 
+            Action,
+            execute_cb=self.run,
+            auto_start=False )
+
+        #Variables so that preemption works
+        self.myLock = threading.Lock()
+        self.taskID = None
+
+        #register preempt callbacks
+        self.server.register_preempt_callback( self.stop )
+
+        #Start actionlib
+        self.server.start()
+
+
+    def run(self, goal):      
+        with self.myLock:
+            self.taskID =  startTask() #Launch task in another thread
+
+        #Wait for task to be completed or killed
+        if not (self.taskID is None):
+            wait( self.taskID ) #Wait for task to finish
+
+        #Do not allow task to be preempted from now
+        with self.myLock:
+            self.taskID = None
+
+        # Get actionlib result
+        result = ActionResult()
+        getResult(result)
+
+        if not valid(result): #valid() defined elsewhere
+            self.server.set_aborted( result )        
+        elif self.server.is_preempt_requested() :
+            self.server.set_preempted( result )
+        else :
+            self.server.set_succeeded( result )
+
+        # Sometimes actionlib will stop processing new requests after this!!
+
+
+    def stop( self ):
+        with self.myLock:
+            if ( not ( self.taskID is None ) and self.server.is_preempt_requested() ):
+                killTask( self.taskID ) # Function defined elsewhere
+                self.taskID = None
+</code></pre>
+
+<p>Am I using actionlib in an invalid way? Could this be an actionlib bug?</p>
+
+<p>Thanks,
+Miguel S.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3547">Miguel S.</a> on 2012-12-12 04:13:10 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just curious, which ROS distro are you using?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/875">130s</a> on 2012-12-15 14:17:11 UTC</p></div>
+</div>
+<div class="comment">
+              <p>It&#39;s Fuerte on Ubuntu 12.04</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3547">Miguel S.</a> on 2012-12-17 01:18:10 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Can you interrupt the program and get a backtrace?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2012-12-25 15:42:38 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@tfoote See my answer. @IsaacSaito Also present in Groovy in Ubuntu 12.04.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3547">Miguel S.</a> on 2013-07-12 09:02:54 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>For a few months I sidestepped this problem. But today I&#39;ve found the deadlock. I reckon there&#39;s a bug in <a href="https://github.com/ros/actionlib/blob/hydro-devel/src/actionlib/simple_action_server.py">simple_action_server.py</a>.</p>
+
+<p>I wasn&#39;t able to get the python debugger to produce the stack traces that explained the problem. But after looking at the roslog debug messages and the source code, I came up with the following reconstruction of the events:</p>
+
+<p><strong>Thread A (rospy&#39;s message dispatcher?)</strong></p>
+
+<ul>
+<li>Deadlocked in: <code>self.execute_condition.acquire()</code></li>
+<li>In function: <code>SimpleActionServer.internal_goal_callback()</code> [simple_action_server.py:211] which was called from: <code>ActionServer.internal_goal_callback()</code> [action_server.py:293]</li>
+<li>This thread <em>has</em> <code>ActionServer.lock</code> and <em>wants</em> to acquire <code>SimpleActionServer.lock</code> (condition variable was initialised with the latter lock).</li>
+</ul>
+
+<p><strong>Thread B (SimpleActionServer&#39;s executeLoop thread)</strong></p>
+
+<ul>
+<li>Deadlocked in: <code>with self.action_server.lock</code></li>
+<li>In function <code>ServerGoalHandle.set_accepted()</code> [server_goal_handle.py:71] which was called from: <code>SimpleActionServer.accept_new_goal()</code>[simple_action_server.py:131] which was called from: <code>SimpleActionServer.executeLoop()</code>[simple_action_server.py:284] which at that point is holding <code>SimpleActionServer.lock</code></li>
+<li>This thread <em>wants</em> <code>ActionServer.lock</code> and <em>has</em> <code>SimpleActionServer.lock</code></li>
+</ul>
+
+<p>In summary, if if a new goal arrives at the same time executeLoop is trying to get a previous (but still <em>new</em>, SimpleActionServer will deadlock.</p>
+
+<p>I suspect the solution involves calling <code>accept_new_goal()</code> [simple_action_server.py:284] without holding <code>SimpleActionServer.lock</code>. My intuition is that simply setting a flag will do, but I will have to study the code a bit more to make sure there no side-effects.</p>
+
+<p>I will try to code the solution myself unless someone fixes it quicker :)</p>
+
+<p>Best,
+Miguel S.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3547">Miguel S.</a> on 2013-07-12 09:01:13 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for debugging into it.  I&#39;ve opened a ticket here: <a href="https://github.com/ros/actionlib/issues/4">https://github.com/ros/actionlib/issues/4</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2013-07-12 11:19:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Issue has just been fixed! :)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3547">Miguel S.</a> on 2013-07-23 07:13:36 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

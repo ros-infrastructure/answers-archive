@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gazebo load the wrong plugin - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/376542">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gazebo load the wrong plugin</h2>
+      <div class="question">
+        <p>Hello, I really hope someone could help me with this:</p>
+
+<p>The problem is simple, I have made 2 very simples plugins &quot;blinker<em>light</em>control&quot; and &quot;scooter<em>stop</em>light_control&quot;. They are both working separately, but when I use both of them in the same URDF, I have some undefined behaviours.</p>
+
+<p>I reference them as following in the URDF file :</p>
+
+<pre><code>&lt;gazebo reference=&quot;blinker_right&quot;&gt;
+&lt;visual&gt;
+&lt;plugin name=&quot;blinker_light_control&quot; filename=&quot;libblinker_light_control.so&quot;&gt;
+         &lt;topicName&gt;/scooter/blinker_right&lt;/topicName&gt;
+&lt;/plugin&gt;
+&lt;/visual&gt;
+&lt;/gazebo&gt;
+
+&lt;gazebo reference=&quot;stop_light&quot;&gt;
+&lt;visual&gt;
+&lt;plugin name=&quot;scooter_stop_light_control&quot; filename=&quot;libstop_light_control.so&quot;&gt;
+         &lt;topic&gt;/scooter/stop_light&lt;/topic&gt;
+&lt;/plugin&gt;
+ &lt;/visual&gt;
+&lt;/gazebo&gt;
+</code></pre>
+
+<p>However, the stop<em>light</em>control plugin is loaded on both links! How is that possible? If someone could at least tell me where should I search that would be super helpful! the links (blinker<em>right and stop</em>light) both have a common parent if it can help...
+(I have tried to put them in 2 different packages it doesn&#39;t change anything)</p>
+
+<p>Thanks in advance!</p>
+
+<p>The code of my 2 plugins if needed :</p>
+
+<p>BlinkerPlugin :</p>
+
+<pre><code>#include &lt;traffic_package/gazebo_ros_blinkers_control.h&gt;
+#include &lt;iostream&gt;
+#include &lt;tf/tf.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;unistd.h&gt;
+using namespace std;
+
+namespace gazebo {
+    // Register this plugin with the simulator
+    GZ_REGISTER_VISUAL_PLUGIN(BlinkerLightPlugin)
+
+    //constructor
+    BlinkerLightPlugin::BlinkerLightPlugin()
+    {
+        this-&gt;color_red= ignition::math::Color(1.0,0.0,0.0);
+        this-&gt;color_green= ignition::math::Color(0.0,1.0,0.0);
+        this-&gt;color_yellow=ignition::math::Color(1.0,0.5,0.0);
+        this-&gt;color_black=ignition::math::Color(0.0,0.0,0.0);
+        this-&gt;blinking = false;
+    }
+
+    //destructor
+    BlinkerLightPlugin::~BlinkerLightPlugin(){
+        cout &lt;&lt; &quot;==========VISUAL PLUGIN KILLED===========&quot;&lt;&lt; endl;
+        this-&gt;rosnode_-&gt;shutdown();
+        this-&gt;callback_queue_thread_.join();
+        delete this-&gt;rosnode_;
+    }
+
+
+    void BlinkerLightPlugin::Load(rendering::VisualPtr _visual, sdf::ElementPtr _sdf){
+
+        //check if we have the visual
+        cout &lt;&lt; &quot; INIT STARTED BLINKER&quot; &lt;&lt;endl;
+        if (!_visual || !_sdf){
+            gzerr &lt;&lt; &quot;No visual or SDF element specified. Plugin won&#39;t load.&quot; &lt;&lt; std::endl;
+            return;
+        }
+
+        this-&gt;sdf_ = _sdf;
+        this-&gt;model_blinker = _visual;
+
+
+        //getting all the needed elements from the custom XML elements
+        this-&gt;robot_namespace_ = &quot;&quot;;
+        if (this-&gt;sdf_-&gt;HasElement(&quot;topicName&quot;))
+            this-&gt;robot_namespace_ = this-&gt;sdf_-&gt;Get&lt;std::string&gt;(&quot;topicName&quot;);
+
+        //starting with the init state 
+        this-&gt;stop_blink();
+
+        //initialisation of the nodes and the subscriber
+        this-&gt;rosnode_ = new ros::NodeHandle(this-&gt;robot_namespace_);
+        ros::SubscribeOptions so = ros::SubscribeOptions::create&lt;std_msgs::Bool&gt;(&quot;/&quot;+this-&gt;robot_namespace_,1,boost::bind(&amp;BlinkerLightPlugin::ServiceCallback, this, _1),ros::VoidPtr(), &amp;this-&gt;model_queue_);
+        this-&gt;srv_ = this-&gt;rosnode_-&gt;subscribe(so);
+        //init of the callback thread
+        this-&gt;callback_queue_thread_ = std::thread(std::bind(&amp;BlinkerLightPlugin::VisualQueueThread, this));
+
+        cout &lt;&lt; &quot; INIT FINISHED&quot; &lt;&lt;endl;
+    }
+
+    //funciton to make the model blink
+    void BlinkerLightPlugin::blink()
+    {   
+        //seting the bool floag at true to start the &quot;infinite&quot; loop
+        this-&gt;blinking = true;
+        while(this-&gt;blinking)
+        {
+            //Changing color of the blinker
+            this-&gt;model_blinker-&gt;SetAmbient(this-&gt;color_black);
+            usleep(750000);
+            this-&gt;model_blinker-&gt;SetAmbient(this-&gt;color_yellow);
+            usleep(750000);
+        }
+        return;
+    }
+
+    //function tos stop the blinking
+    void BlinkerLightPlugin::stop_blink()
+    {
+        //Stopping the thread using the bool flag
+        this-&gt;blinking = false;
+        //waiting for the thread to die 
+        usleep(750000*2);
+        //changing hte color to black
+        this-&gt;model_blinker-&gt;SetAmbient(this-&gt;color_black);
+    }
+
+
+     // Callback when using service
+    void BlinkerLightPlugin::ServiceCallback(const std_msgs::BoolConstPtr &amp;_msg){
+
+        // retrieving data
+        const bool&amp; test = _msg-&gt;data;
+        cout&lt;&lt;test&lt;&lt;endl;
+        if(test)
+        {
+            cout&lt;&lt;&quot;BLINK&quot;&lt;&lt;endl;
+            //if the thread doesn&#39;t exist
+            if(this-&gt;nb_times_thread_started ==0)
+            {
+                //creating a thread
+                this-&gt;blink_thread = std::thread(&amp;BlinkerLightPlugin::blink,this);
+                //increment a counter to be sure to not start 2 times the thread if the user call 
+                // this topic with true then true again
+                this-&gt;nb_times_thread_started++;
+            }
+
+        }else
+        {
+            cout&lt;&lt;&quot;STOP BLINK&quot;&lt;&lt;endl;
+            this-&gt;stop_blink();
+            //if the thread exist
+            if(this-&gt;nb_times_thread_started&gt;0)
+            {
+                //we join it
+                this-&gt;nb_times_thread_started--;
+                //we decrement the counter to avoid trying to join a not started thread
+                // if the user call false then false again 
+                this-&gt;blink_thread.join();
+            }
+        }
+    }
+
+
+    void BlinkerLightPlugin::VisualQueueThread()
+    {
+        static const double timeout = 0.01;
+        while (this-&gt;rosnode_-&gt;ok()) {
+            model_queue_.callAvailable(ros::WallDuration(timeout));
+        }
+    }
+}
+</code></pre>
+
+<p>And the StopPlugin :</p>
+
+<pre><code>#include &lt;my_package/gazebo_ros_scooter_stop_light_control.h&gt;
+#include &lt;iostream&gt;
+#include &lt;tf/tf.h&gt;
+#include &lt;tf/transform_listener.h&gt;
+#include &lt;unistd.h&gt;
+using namespace std;
+
+namespace gazebo {
+    // Register this plugin with the simulator
+    GZ_REGISTER_VISUAL_PLUGIN(Stop_Light_Plugin)
+
+
+    //constructor
+    Stop_Light_Plugin::Stop_Light_Plugin()
+    {
+        //init of the colors 
+        this-&gt;color_red= ignition::math::Color(1.0,0.0,0.0);
+        this-&gt;color_green= ignition::math::Color(0.0,1.0,0.0);
+        this-&gt;color_yellow=ignition::math::Color(1.0,0.5,0.0);
+        this-&gt;color_black=ignition::math::Color(0.0,0.0,0.0);
+    }
+
+    //destructor
+    Stop_Light_Plugin::~Stop_Light_Plugin(){
+        cout &lt;&lt; &quot;==========VISUAL PLUGIN KILLED===========&quot;&lt;&lt; endl;
+        this-&gt;rosnode_-&gt;shutdown();
+        this-&gt;callback_queue_thread_.join();
+        delete this-&gt;rosnode_;
+    }
+
+
+    void Stop_Light_Plugin::Load(rendering::VisualPtr _visual, sdf::ElementPtr _sdf){
+
+        if (!_visual || !_sdf){
+            gzerr &lt;&lt; &quot;No visual or SDF element specified. Plugin won&#39;t load.&quot; &lt;&lt; std::endl;
+            return;
+        }
+        cout &lt;&lt; &quot; INIT STARTED STOP&quot; &lt;&lt;endl;
+
+        this-&gt;sdf_ = _sdf;
+        this-&gt;robot_namespace_ = &quot;&quot;;
+        this-&gt;model_stop = _visual;
+
+        //getting all the needed elements from the custom XML elements
+        if (this-&gt;sdf_-&gt;HasElement(&quot;topic&quot;))
+            this-&gt;robot_namespace_ = this-&gt;sdf_-&gt;Get&lt;std::string&gt;(&quot;topic&quot;);
+
+        this-&gt;go();
+
+        //initialisation of the nodes and the subscriber
+        this-&gt;rosnode_ = new ros::NodeHandle(this-&gt;robot_namespace_);
+        ros::SubscribeOptions so = ros::SubscribeOptions::create&lt;std_msgs::Bool&gt;(&quot;/&quot;+this-&gt;robot_namespace_,1,boost::bind(&amp;Stop_Light_Plugin::ServiceCallback, this, _1),ros::VoidPtr(), &amp;this-&gt;model_queue_);
+        this-&gt;srv_ = this-&gt;rosnode_-&gt;subscribe(so);
+        //init of the callback queue thread
+        this-&gt;callback_queue_thread_ = std::thread(std::bind(&amp;Stop_Light_Plugin::VisualQueueThread, this));
+        cout &lt;&lt; &quot; INIT FINISHED STOP&quot; &lt;&lt;endl;
+
+    }
+
+    //Light the stop light
+    void Stop_Light_Plugin::stop()
+    {
+        this-&gt;model_stop-&gt;SetAmbient(this-&gt;color_red);
+    }
+
+    //turn of the stop light
+    void Stop_Light_Plugin::go()
+    {
+        this-&gt;model_stop-&gt;SetAmbient(this-&gt;color_black);
+    }
+
+
+     // Callback when using service
+    void Stop_Light_Plugin::ServiceCallback(const std_msgs::BoolConstPtr &amp;_msg){
+
+        const bool&amp; test = _msg-&gt;data;
+        cout&lt;&lt;test&lt;&lt;endl;
+        if(test)
+        {
+            this-&gt;stop();
+        }else
+        {
+            this-&gt;go();
+        }
+    }
+
+
+    void Stop_Light_Plugin::VisualQueueThread()
+    {
+        static const double timeout = 0.01;
+        while (this-&gt;rosnode_-&gt;ok()) {
+            model_queue_.callAvailable(ros::WallDuration(timeout));
+        }
+    }
+}
+</code></pre>
+
+<p>EDIT :</p>
+
+<p>Deleted /build and /devel content before catkin_make and now everything is fine</p>
+
+        <div class="owner"><p>Asked by <a href="/users/73508">Yougo</a> on 2021-04-20 04:58:09 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

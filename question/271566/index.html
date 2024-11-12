@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>robot_localization: enhance local positioning with IMU - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/271566">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>robot_localization: enhance local positioning with IMU</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/82993/robot-localization-enhance-local-positioning-with-imu">https://robotics.stackexchange.com/questions/82993/robot-localization-enhance-local-positioning-with-imu</a>.</p>
+        <p>I&#39;m testing sensor fusion with robot_localization package. </p>
+
+<p>I&#39;ve got a small wheeled robot with an xSense IMU and a quasi-UWB local positioning system.</p>
+
+<p>The local positioning consists of two mounted ultrasonic beacons, each is separately localized against several static beacons spread around the room. The system is rather precise: manufacturer reports 2 cm standard deviation, and it&#39;s believable. But the update rate is low (around 1 Hz), and the beacons report only position, no orientation. </p>
+
+<p>As the robot moves on the flat floor, I use relative position of two beacons to calculate robot position and 2D yaw (dumb middle point for position, dumb relative vector for orientation). The result is accurate, except for the position jumps between updates, and remarkable yaw jitter.</p>
+
+<p>I try to use IMU data and robot_localization to provide smooth pose estimation between updates. As for now, my setup is as follows:</p>
+
+<ul>
+<li><p>from the beacons&#39; data I construct a PoseWithCovarianceStamped message. I do not have reported covariances, so I construct covariance matrix simply setting diagonal elements for X,Y,Z, and Z rotation as squared standard deviation (e.g. if x deviation of beacons is 0.02 m, I set covariance[0] to 0.0004). Frame_id is set to ‘map’ in the message.</p></li>
+<li><p>The IMU sends out standard sensor<em>msgs/imu message, the only issue is that I have to remove the first &#39;/&#39; from its frame</em>id, as the ekf node sends out warnings. I&#39;ve got a separate correction node for this. Also a static transform from base<em>link to IMU data frame</em>id is published.</p></li>
+<li><p>ekf node 1 with world_frame set to map, inputs are IMU data and pose calculated from beacons</p></li>
+<li><p>ekf node 2 with world_frame set to odom, IMU as the only input</p></li>
+<li><p>constructed pose and output of odometry/filtered are visualized by rviz</p></li>
+</ul>
+
+<p>Everything is up and running, but the result is far from desired. Filtered odometry follows the constructed pose closely: after each position jump (=update) the filtered pose drifts slowly towards new position for half a second, then jumps to new position altogether.</p>
+
+<p>Questions:</p>
+
+<p>1) Could anyone hint me about what parameters I should try to tweak to achieve smooth continuous movement of filtered pose?</p>
+
+<p>2) Is there a ROS functionality to calculate robot pose from position of two mounted beacons? Say, I write static tf transforms from base_link to the two beacons&#39; hardpoints, and ROS calculates the robot position/orientation for me, possibly with some cool Kalman magic? Then, of course, feeds it into the EKF node.</p>
+
+<p>Below are the YAML parameter files for my EKF nodes. Note that I use 2d mode for both, but turning it off doesn&#39;t change the situation much.</p>
+
+<p>IMU-only node:</p>
+
+<pre><code>frequency: 100
+
+sensor_timeout: 0.1
+
+two_d_mode: true
+
+transform_time_offset: 0.0
+
+transform_timeout: 0.0
+
+print_diagnostics: true
+
+debug: false
+
+debug_out_file: /path/to/debug/file.txt
+publish_tf: true
+
+publish_acceleration: false
+
+map_frame: map              # Defaults to &quot;map&quot; if unspecified
+odom_frame: odom            # Defaults to &quot;odom&quot; if unspecified
+base_link_frame: base_link  # Defaults to &quot;base_link&quot; if unspecified
+world_frame: odom           # Defaults to the value of odom_frame if unspecified
+
+imu0: imu/data_c
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false, false,
+              true,  true,  true,
+              true,  true,  true]
+imu0_nodelay: false
+imu0_differential: false
+imu0_relative: true
+imu0_queue_size: 5
+imu0_pose_rejection_threshold: 0.8                 # Note the difference in parameter names
+imu0_twist_rejection_threshold: 0.8                #
+imu0_linear_acceleration_rejection_threshold: 0.8  #
+
+imu0_remove_gravitational_acceleration: false
+
+use_control: false
+stamped_control: false
+control_timeout: 0.2
+control_config: [true, false, false, false, false, true]
+
+    acceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 3.4]
+    deceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 4.5]
+acceleration_gains: [0.8, 0.0, 0.0, 0.0, 0.0, 0.9]
+deceleration_gains: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+process_noise_covariance: [0.1, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0.1, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]
+
+initial_estimate_covariance: [1e-8, 0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    1e-8, 0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,             
+                     0,    0,    1e-8, 0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,     0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9,  0,     0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     1e-9,  0,     0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     1e-9,  0,    0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     1e-9, 0,    0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    1e-9, 0,
+                      0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    1e-9]
+</code></pre>
+
+<p>IMU+pose node:</p>
+
+<pre><code>frequency: 30
+
+sensor_timeout: 0.1
+
+two_d_mode: true
+
+transform_time_offset: 0.0
+
+transform_timeout: 0.0
+
+print_diagnostics: true
+
+debug: false
+
+debug_out_file: /path/to/debug/file.txt
+
+publish_tf: true
+
+publish_acceleration: false
+
+map_frame: map              # Defaults to &quot;map&quot; if unspecified
+odom_frame: odom            # Defaults to &quot;odom&quot; if unspecified
+base_link_frame: base_link  # Defaults to &quot;base_link&quot; if unspecified
+world_frame: map           # Defaults to the value of odom_frame if unspecified
+
+pose0: /pose_synth
+pose0_config: [true,  true,  true,
+               false, false, true,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+pose0_differential: false
+pose0_relative: false
+pose0_queue_size: 5
+pose0_rejection_threshold: 2  # Note the difference in parameter name
+pose0_nodelay: false
+
+imu0: imu/data_c
+
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false, false,
+              true,  true,  true,
+              true,  true,  true]
+imu0_nodelay: false
+imu0_differential: false
+imu0_relative: true
+imu0_queue_size: 5
+imu0_pose_rejection_threshold: 0.8                 # Note the difference in parameter names
+imu0_twist_rejection_threshold: 0.8                #
+imu0_linear_acceleration_rejection_threshold: 0.8  #
+
+imu0_remove_gravitational_acceleration: false
+
+use_control: false
+stamped_control: false
+control_timeout: 0.2
+control_config: [true, false, false, false, false, true]
+acceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 3.4]
+deceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 4.5]
+acceleration_gains: [0.8, 0.0, 0.0, 0.0, 0.0, 0.9]
+deceleration_gains: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+process_noise_covariance: [0.1, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0.1, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]
+
+initial_estimate_covariance: [1e-8, 0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    1e-8, 0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    1e-8, 0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,     0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9,  0,     0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     1e-9,  0,     0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     1e-9,  0,    0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     1e-9, 0,    0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    1e-9, 0,
+                              0,    0,    0,    0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    1e-9]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/32020">teonik</a> on 2017-09-26 10:00:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>This looks like a great project, but I am confused about what message type your beacon node gives? Is it a PoseWithCovarianceStampedmessage type? Also, is the initial estimate covariance for the imu or the uwb beacon position?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/72816">georgie96</a> on 2021-04-02 15:50:36 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>A few notes:</p>
+
+<ul>
+<li>You are fusing yaw from your beacon poses <em>and</em> from the IMU. Do they have the same world frame? In other words, if you point your robot at some direction (say, magnetic north) and drive straight, do the IMU and your beacon have the same heading estimate? It seems that, if your IMU has a compass, it&#39;s going to read 0 at magnetic north. Unless you have your beacon system set up such that forward motion towards magnetic north produces a manufactured heading of 0, you&#39;re going to see your headings rapidly jump between both estimates.</li>
+<li>I&#39;m not sure that you need a dual EKF setup, because...</li>
+<li>Integration of IMU data alone, or even IMU with some pose reference, will not get what you want. IMUs have accelerometers with biases in them, and those accelerations will be integrated into velocities, which are going to cause your robot&#39;s pose estimate to move rapidly away, and then once in a while get &quot;jerked&quot; back towards the pose estimate (whenever it&#39;s received). I have yet to add acceleration bias correction for the IMU data to the filter, but even if I did, I think you&#39;d want a velocity reference. </li>
+</ul>
+
+<p>Your setup is pretty much analagous to setups with GPS + IMU alone, and it&#39;s not a use case that is especially well-supported by <code>r_l</code>. If I added IMU bias correction, it might help, but time is an increasingly rare commodity. Another option is that you can try differentiating your poses and sending that velocity to the EKF as well. You&#39;re giving it the same info twice, but it might make things a bit smoother overall.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3384"></a> on 2017-11-15 05:15:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

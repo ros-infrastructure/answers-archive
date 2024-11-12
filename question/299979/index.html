@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>MoveIt plan fails after attaching an object, but not from Rviz or after restarting requesting node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/299979">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>MoveIt plan fails after attaching an object, but not from Rviz or after restarting requesting node</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/88403/moveit-plan-fails-after-attaching-an-object-but-not-from-rviz-or-after-restarti">https://robotics.stackexchange.com/questions/88403/moveit-plan-fails-after-attaching-an-object-but-not-from-rviz-or-after-restarti</a>.</p>
+        <p>I am implementing a tool change procedure by attaching a collision object to the robot&#39;s gripper. However, after attaching the object, the planner fails to sample any valid states for the goal tree. More strangely, if I leave the scene untouched, restart the node without re-attaching the object, and execute the same planning requests, they succeed. Launching the planning requests from Rviz works, and goToNamedPose (see code below) also works, strangely.</p>
+
+<p>I figure that means that the move group itself is intact, but something pollutes my code that causes the planning to fail. What is it? What could I do to debug further? Setting the rqt<em>logger</em>level to debug did not turn up any useful messages from the move group.</p>
+
+<p>I have tried to condense the code to the pertinent parts. I can send a dockerized sandbox to anyone who is interested in checking this out, it just contains other messy code that I wouldn&#39;t want to upload needlessly.</p>
+
+<p>Any pointers or ideas are appreciated.</p>
+
+<pre><code>main()
+{
+  // ROS_INFO(&quot;Testing the tool mounting.&quot;);
+  o2as_skill_server.equipTool(&quot;b_bot&quot;, &quot;tool_m5&quot;);
+
+  o2as_skill_server.goToNamedPose(&quot;home_b&quot;, &quot;b_bot&quot;);
+
+  geometry_msgs::PoseStamped target_ps = makePoseStamped();
+  target_ps.header.frame_id = &quot;tray_1&quot;;
+  target_ps.pose.position.z = .02;
+  // We ignore the orientation of the (they always point down) and assign an appropriate orientation
+  // TODO: How to find a good pose for the robot automatically? Launch a planning request to MoveIt?
+  target_ps.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0, 0, -(110.0/180.0 *M_PI));   // Z-axis pointing up.
+  std::string link_name = &quot;b_bot_tool_m5_tip_link&quot;;
+  std::string robot_name = &quot;b_bot&quot;;
+  moveToCartPosePTP(target_ps, robot_name, true, link_name);
+
+  o2as_skill_server.unequipTool(&quot;b_bot&quot;);
+  ROS_INFO(&quot;Done.&quot;);
+}
+
+bool equipTool(std::string robot_name, std::string tool_id) {return equipUnequipTool(robot_name, tool_id, &quot;equip&quot;);}
+bool unequipTool(std::string robot_name) {return equipUnequipTool(robot_name, held_tool_, &quot;unequip&quot;);}
+
+bool equipUnequipTool(std::string robot_name, std::string tool_id, std::string equip_or_unequip)
+{
+  bool equip = (equip_or_unequip == &quot;equip&quot;);
+  bool unequip = (equip_or_unequip == &quot;unequip&quot;);   
+
+  // Plan &amp; execute motion to in front of tool holder
+  geometry_msgs::PoseStamped ps_approach, ps_tool_holder;
+  ps_approach.header.frame_id = tool_id + &quot;_link&quot;;
+
+  ps_approach.pose.position.y = .1;
+  ps_approach.pose.position.z = .017;
+  ps_approach.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0, 0, -M_PI / 2);
+  ROS_INFO(&quot;Moving to tool approach pose PTP.&quot;);
+  moveToCartPosePTP(ps_approach, robot_name);
+
+  if (equip) {
+    openGripper(robot_name);
+    ROS_INFO(&quot;Spawning tool. Waiting for a while to be safe.&quot;);
+    spawnTool(tool_id);
+  }
+
+  // Plan &amp; execute linear motion to the tool change position
+  ps_tool_holder = ps_approach;
+  ps_tool_holder.pose.position.y = -0.03;
+  ROS_INFO(&quot;Moving to pose in tool holder LIN.&quot;);
+  moveToCartPoseLIN(ps_tool_holder, robot_name);
+
+  // Close gripper, attach the tool object to the gripper in the Planning Scene.
+  if (equip)
+  {
+    closeGripper(robot_name);
+    attachTool(tool_id, robot_name);
+  }
+  else if (unequip) 
+  {
+    openGripper(robot_name);
+    detachTool(tool_id, robot_name);
+  }
+
+  // Plan &amp; execute linear motion away from the tool change position
+  ROS_INFO(&quot;Moving back to tool approach pose LIN.&quot;);
+  moveToCartPoseLIN(ps_approach, robot_name);
+
+  if (unequip) despawnTool(tool_id);
+
+  return true;
+}
+
+bool moveToCartPosePTP(geometry_msgs::PoseStamped pose, std::string robot_name, bool wait, std::string end_effector_link)
+{
+  moveit::planning_interface::MoveGroupInterface::Plan myplan;
+  moveit::planning_interface::MoveItErrorCode 
+    success_plan = moveit_msgs::MoveItErrorCodes::FAILURE, 
+    motion_done = moveit_msgs::MoveItErrorCodes::FAILURE;
+
+  moveit::planning_interface::MoveGroupInterface* group_pointer;
+  group_pointer = robotNameToMoveGroup(robot_name);
+
+  group_pointer-&gt;setStartStateToCurrentState();
+  group_pointer-&gt;setEndEffectorLink(end_effector_link);
+  group_pointer-&gt;setPoseTarget(pose);
+
+  ROS_DEBUG_STREAM(&quot;Planning motion for robot &quot; &lt;&lt; robot_name &lt;&lt; &quot; and EE link &quot; &lt;&lt; end_effector_link + &quot;_tip_link.&quot;);
+  success_plan = group_pointer-&gt;move(myplan);
+  if (success_plan) 
+  {
+    if (wait) motion_done = group_pointer-&gt;execute(myplan);
+    else motion_done = group_pointer-&gt;asyncExecute(myplan);
+    if (motion_done) {
+      return true;
+    }
+  }
+  ROS_WARN(&quot;Failed to perform motion.&quot;);
+  return false;
+}
+
+bool goToNamedPose(std::string pose_name, std::string robot_name)
+{
+  moveit::planning_interface::MoveGroupInterface* group_pointer;
+  group_pointer = robotNameToMoveGroup(robot_name);
+
+  group_pointer-&gt;setStartStateToCurrentState();
+  group_pointer-&gt;setNamedTarget(pose_name);
+
+  moveit::planning_interface::MoveGroupInterface::Plan myplan;
+  moveit::planning_interface::MoveItErrorCode 
+    success_plan = moveit_msgs::MoveItErrorCodes::FAILURE, 
+    motion_done = moveit_msgs::MoveItErrorCodes::FAILURE;
+
+  success_plan = group_pointer-&gt;move();
+
+  return true;
+}
+
+bool spawnTool(std::string tool_id)
+{
+  std::vector&lt;moveit_msgs::CollisionObject&gt; collision_objects;
+  collision_objects.resize(1);
+
+  moveit_msgs::CollisionObject tool_m5;
+  tool_m5.header.frame_id = &quot;tool_m5_link&quot;;
+  tool_m5.id = &quot;tool_m5&quot;;
+  tool_m5.operation = tool_m5.ADD;
+  tool_m5.primitives.resize(1);
+  tool_m5.primitive_poses.resize(1);
+  tool_m5.primitives[0].type = tool_m5.primitives[0].BOX;
+  tool_m5.primitives[0].dimensions.resize(3);
+  tool_m5.primitives[0].dimensions[0] = 0.026;
+  tool_m5.primitives[0].dimensions[1] = 0.04;
+  tool_m5.primitives[0].dimensions[2] = 0.055;
+  tool_m5.primitive_poses[0].position.x = 0;
+  tool_m5.primitive_poses[0].position.y = -0.009;
+  tool_m5.primitive_poses[0].position.z = 0.0275;
+
+  if (tool_id == &quot;tool_m5&quot;) collision_objects[0] = tool_m5;
+
+  collision_objects[0].operation = collision_objects[0].ADD;
+
+  planning_scene_interface_.applyCollisionObjects(collision_objects);
+
+  return true;
+}
+
+// Remove the tool from the scene so it does not cause unnecessary collision calculations
+bool despawnTool(std::string tool_id)
+{
+    std::vector&lt;moveit_msgs::CollisionObject&gt; collision_objects;
+    collision_objects.resize(1);
+
+    collision_objects[0].id = tool_id;
+    collision_objects[0].operation = collision_objects[0].REMOVE;
+    planning_scene_interface_.applyCollisionObjects(collision_objects);
+
+    return true;
+}
+
+bool attachDetachTool(std::string tool_id, std::string robot_name, std::string attach_or_detach)
+{
+  moveit_msgs::AttachedCollisionObject att_coll_object;
+
+  if (tool_id == &quot;tool_m5&quot;) att_coll_object.object = tool_m5;
+  else { ROS_WARN_STREAM(&quot;No tool specified to &quot; &lt;&lt; attach_or_detach); }
+
+  att_coll_object.link_name = robot_name + &quot;_gripper_tip_link&quot;;
+
+  if (attach_or_detach == &quot;attach&quot;) att_coll_object.object.operation = att_coll_object.object.ADD;
+  else if (attach_or_detach == &quot;detach&quot;) att_coll_object.object.operation = att_coll_object.object.REMOVE;
+
+  ROS_INFO_STREAM(attach_or_detach &lt;&lt; &quot;ing tool &quot; &lt;&lt; tool_id);
+  planning_scene_interface_.applyAttachedCollisionObject(att_coll_object);
+  return true;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/8631">fvd</a> on 2018-08-08 00:08:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>In a classic example of rubber duck debugging, I figured it out after finishing the question. After picking up the tool, the pose goal is assigned to a different end effector link, but the previous goal for the default link remains. The planning request thus asks for the end effector to be in two different places at once. The solution is simply clearing the goals.</p>
+
+<p>The call to &quot;clearPoseTargets()&quot; is the only thing I had to change above.</p>
+
+<pre><code>  [...]
+  moveit::planning_interface::MoveGroupInterface* group_pointer;
+  group_pointer = robotNameToMoveGroup(robot_name);
+
+  group_pointer-&gt;clearPoseTargets();
+  group_pointer-&gt;setStartStateToCurrentState();
+  group_pointer-&gt;setEndEffectorLink(end_effector_link);
+  group_pointer-&gt;setPoseTarget(pose);
+  [...]
+</code></pre>
+
+<p>I appreciate that this behavior exists for multi-arm setups, but I wish there had been a more helpful message somewhere (maybe &quot;X pose goals set for links Y&quot; in the debug log).</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/8631">fvd</a> on 2018-08-08 00:39:31 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you. I have problem too</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37313">huthamcau</a> on 2018-09-04 02:06:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Yes, this is confusing indeed.
+Please provide a patch if possible (or an issue at least with a proposal how to fix it)!</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/4809">v4hn</a> on 2018-09-04 08:03:51 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I dumped it as <a href="https://github.com/ros-planning/moveit/issues/1048">an issue</a> for now so that I have it on my list.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8631">fvd</a> on 2018-09-04 09:55:58 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

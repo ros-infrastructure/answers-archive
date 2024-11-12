@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to move a holonomic robot/object in Gazebo from one position to another? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/235747">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to move a holonomic robot/object in Gazebo from one position to another?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/74213/how-to-move-a-holonomic-robot-object-in-gazebo-from-one-position-to-another">https://robotics.stackexchange.com/questions/74213/how-to-move-a-holonomic-robot-object-in-gazebo-from-one-position-to-another</a>.</p>
+        <p>I have a cylinder model which uses the Gazebo<em>ROS</em>planar<em>move plugin (libgazebo</em>ros<em>planar</em>move.so). 
+It uses the Carrot planner for the global path.</p>
+
+<pre><code>&lt;param name=&quot;base_global_planner&quot; value=&quot;carrot_planner/CarrotPlanner&quot;/&gt;
+</code></pre>
+
+<p>When I command it to move from one position to another, it uses the TrajectoryPlannerROS local planner to define local paths for a non-holonomic robot. I tried setting it to SimpleTrajectoryGenerator in the base<em>local</em>planner_params.yaml, but it still still works like a non-holonomic robot.</p>
+
+<pre><code>SimpleTrajectoryGenerator:
+  max_vel_x: 0.5
+  min_vel_x: 0.1
+  max_vel_y: 0.5
+  min_vel_y: 0.1
+  max_rotational_vel: 2.0
+  min_in_place_rotational_vel: 0.1
+
+  acc_lim_th: 3.2
+  acc_lim_x: 2.5
+  acc_lim_y: 2.5
+
+  holonomic_robot: true
+  y_vels:  [-0.3, -0.1, 0.1, 0.3]
+
+  occdist_scale: 0.1
+</code></pre>
+
+<p>I just want the object to move in a straight path from one position to another (rotation does not matter at all, as it as a vertical cylinder).</p>
+
+        <div class="owner"><p>Asked by <a href="/users/22361">webvenky</a> on 2016-05-31 23:06:36 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Write a simple proportional controller like the one below:</p>
+
+<pre><code>using namespace std;
+
+double curr_pos_x, curr_pos_y, curr_orientation_angle_x,quat_z,quat_w;
+double new_pos_x, new_pos_y, new_orientation_angle_x;
+
+ros::Publisher *vel_pub;
+
+std::vector&lt;std::array&lt;double,2&gt;&gt; waypoints;
+
+void poseCallback(const nav_msgs::Odometry&amp; msgIn)
+{
+  curr_pos_x = msgIn.pose.pose.position.x;
+  curr_pos_y = msgIn.pose.pose.position.y;
+  quat_z = msgIn.pose.pose.orientation.z;
+  quat_w = msgIn.pose.pose.orientation.w;
+  curr_orientation_angle_x = 2*atan2(quat_z,quat_w);
+  // cout&lt;&lt;&quot;Angle ====&gt;&gt;&quot;&lt;&lt;(float)(orientation_angle_x*(180.0/3.1415))&lt;&lt;endl;
+}
+
+void updatePosition(ros::NodeHandle nh, string pose_str, double&amp; temp_pos_x, double&amp; temp_pos_y, double&amp; temp_orientation_angle_x)
+{
+    ros::Rate rate(5);
+    ros::Subscriber sub2 = nh.subscribe(pose_str, 1, &amp;poseCallback);
+
+    curr_pos_x = 0;
+    while(ros::ok()) {
+
+        ros::spinOnce();
+
+        if(curr_pos_x!=0)
+        {
+            temp_pos_x = curr_pos_x; temp_pos_y = curr_pos_y;
+            temp_orientation_angle_x = curr_orientation_angle_x;
+
+            break;
+        }
+        else
+            // cout&lt;&lt;&quot;\t Updating Position: Waiting for information...&quot;&lt;&lt;endl;
+
+        // Wait until it&#39;s time for another iteration.
+        rate.sleep();       
+    }
+}
+
+int main(int argc, const char** argv){
+
+
+    if(argc!=2)
+    {
+      std::cout&lt;&lt;&quot;Not enough arguments!! (&quot; &lt;&lt; argc &lt;&lt; &quot;). Exiting!!&quot;&lt;&lt;std::endl;
+      return 0;
+    }
+
+  std::array&lt;int,2&gt; pos = {1,1};
+  std::array&lt;int,2&gt; next_pos;
+
+  char *robot_name = argv[1];
+
+  string pose_str =  &quot;/&quot; ;
+  pose_str += robot_name;
+  pose_str += &quot;/odom&quot;;
+
+  string vel_str = &quot;/&quot;;
+  vel_str += robot_name;
+  vel_str += &quot;/cmd_vel&quot;;
+
+  string node_name = &quot;square_goals_&quot;;
+  node_name += robot_name;
+
+  ros::init(argc, (char **)argv, node_name );
+  ros::NodeHandle nh;
+
+  waypoints.push_back({4,4});
+  waypoints.push_back({4,2});
+  waypoints.push_back({2,2});
+  waypoints.push_back({2,4});
+
+
+  vel_pub = new ros::Publisher(nh.advertise&lt;geometry_msgs::Twist&gt;(vel_str, 1000));
+
+  bool set_new_goal = true;
+
+  cout&lt;&lt;&quot;Updating Position... \n&quot;;
+  updatePosition(nh, pose_str, curr_pos_x, curr_pos_y, curr_orientation_angle_x);
+  cout&lt;&lt;&quot; Position Updated. \n&quot;;
+
+  int i = 0;
+  int curr_goal_idx = 0;
+  // for(int i=0;i&gt;=0;) // Change this for the number of waypoints
+  while(ros::ok())
+  {
+
+    // cout&lt;&lt;&quot;Going to waypoint # = &quot;&lt;&lt;i&lt;&lt;endl;
+
+  if(set_new_goal == true)
+  {
+
+    cout&lt;&lt;&quot;Curr Goal IDX: = &quot;&lt;&lt;curr_goal_idx&lt;&lt;endl;
+    cout&lt;&lt;&quot;Prev Goal Pos: X = &quot;&lt;&lt;new_pos_x&lt;&lt;&quot;, Y = &quot;&lt;&lt;new_pos_y&lt;&lt;&quot;;&quot;&lt;&lt;endl;
+
+    curr_goal_idx += 1;
+    curr_goal_idx = curr_goal_idx % 4;
+    next_pos = {waypoints[curr_goal_idx][0], waypoints[curr_goal_idx][1]};
+
+    new_pos_x = next_pos[0];
+    new_pos_y = next_pos[1];
+
+    cout&lt;&lt;&quot;New Goal IDX: = &quot;&lt;&lt;curr_goal_idx&lt;&lt;endl;
+    cout&lt;&lt;&quot;New Goal Pos: X = &quot;&lt;&lt;new_pos_x&lt;&lt;&quot;, Y = &quot;&lt;&lt;new_pos_y&lt;&lt;&quot;;&quot;&lt;&lt;endl;
+
+    set_new_goal = false;
+    i++;
+    cout&lt;&lt;&quot;====================================&quot;&lt;&lt;endl;
+  }
+
+  // cout&lt;&lt;&quot;Updating Position... \n&quot;;
+  updatePosition(nh, pose_str, curr_pos_x, curr_pos_y, curr_orientation_angle_x);
+  // cout&lt;&lt;&quot;Robot Position Updated. \n&quot;;
+
+  double dist_to_waypoint = sqrt(pow(curr_pos_x-new_pos_x,2)+pow(curr_pos_y-new_pos_y,2));
+  double vel_x = min(2.5,2*dist_to_waypoint)*(-(curr_pos_x-new_pos_x)/dist_to_waypoint);
+  double vel_y = min(2.5,2*dist_to_waypoint)*(-(curr_pos_y-new_pos_y)/dist_to_waypoint);
+
+  geometry_msgs::Twist msgOut;
+  msgOut.linear.x = vel_x;
+  msgOut.linear.y = vel_y;
+  msgOut.angular.z = 0;
+
+  // cout&lt;&lt;&quot;Sending angular velocity =&gt; vel_x = &quot;&lt;&lt;msgOut.linear.x&lt;&lt;&quot;; vel_y = &quot;&lt;&lt;msgOut.linear.y&lt;&lt;endl;
+  vel_pub-&gt;publish(msgOut);
+
+  // cout&lt;&lt;&quot;Distance to waypoint = &quot;&lt;&lt;dist_to_waypoint&lt;&lt;endl;
+  if(dist_to_waypoint &lt; 0.2)
+  {
+     set_new_goal = true;
+  }
+
+  }
+
+  return 0;
+}
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/22361">webvenky</a> on 2016-07-02 22:43:29 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

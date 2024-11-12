@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to keep constant orientation for given waypoints ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/406691">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to keep constant orientation for given waypoints ?</h2>
+      <div class="question">
+        <p>Hey ROS community, I want a simulated drone in Gazebo to perform a task in the xz plan, without touching at the y axis. I want the drone to face the y axis perpendicular to the xz plan, and not to change orientation by giving a waypoint. Here is my python script to publish a ros message with a moveto method, and also an extract of the moveto_action src file.</p>
+
+<pre><code>import rospy
+from std_msgs.msg import String
+import actionlib
+from uav_mavros_takeoff.msg import TakeoffAction, TakeoffGoal
+from mavros_moveto.msg import MovetoAction, MovetoGoal
+from tf.transformations import quaternion_from_euler
+import sys
+import random
+
+def planner_client():
+    client_takeoff = actionlib.SimpleActionClient(&#39;command/takeoff&#39;, TakeoffAction)
+    client_moveto = actionlib.SimpleActionClient(&#39;command/moveto&#39;, MovetoAction)
+
+    client_takeoff.wait_for_server()
+    goal_takeoff = TakeoffGoal(altitude=1.0)
+    client_takeoff.send_goal(goal_takeoff)
+    client_takeoff.wait_for_result()
+
+    client_moveto.wait_for_server()
+    goal_moveto = MovetoGoal()
+
+
+    quaternion = quaternion_from_euler(0, 0, -1.57) # roll, pitch, yaw
+
+    waypoints_xz = [[(x,z) for x in range(0,15,5)] for z in reversed(range(0,10,5))]
+    waypoints_y = 0
+    for i in range(len(waypoints_xz)):
+        for j in range(len(waypoints_xz[0])):
+            goal_moveto.goal.pose.position.x = waypoints_xz[i][j][0]
+            goal_moveto.goal.pose.position.z = waypoints_xz[i][j][1]
+            goal_moveto.goal.pose.position.y = waypoints_y
+
+            goal_moveto.goal.pose.orientation.x = quaternion[0]
+            goal_moveto.goal.pose.orientation.y = quaternion[1]
+            goal_moveto.goal.pose.orientation.z = quaternion[2]
+            goal_moveto.goal.pose.orientation.w = quaternion[3]
+
+            print(quaternion)
+            print(waypoints_xz[i][j][0], waypoints_xz[i][j][1], waypoints_y)
+            client_moveto.send_goal(goal_moveto)
+            client_moveto.wait_for_result()
+
+    return 0
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;planner_client&#39;)
+    result = planner_client()
+    #except rospy.ROSInterruptException:
+        #print(&quot;program interrupted before completion&quot;, file=sys.stderr)
+</code></pre>
+
+<p>C++:</p>
+
+<pre><code>#include &quot;moveto_action.h&quot;
+
+/**
+ * @brief Whether the goal has been reached.
+ * @param goal The goal pose to reach.
+ * @return Whether the current position is closer that pos_tolerance to the goal.
+ */
+bool reached (geometry_msgs::PoseStamped goal) {
+    double dx = position.pose.position.x - goal.pose.position.x;
+    double dy = position.pose.position.y - goal.pose.position.y;
+
+    return dx*dx + dy*dy &lt; pos_tolerance*pos_tolerance;
+}
+
+/**
+ * @brief Callback function to receive the position of the CPS.
+ * @param msg The local position in cartesian coordinates.
+ */
+void position_cb (const geometry_msgs::PoseStamped::ConstPtr&amp; msg)
+{
+    position = *msg;
+    position_received = true;
+    ROS_DEBUG_ONCE(&quot;MOVETO - Got local position: (%.2f,%.2f,%.2f)&quot;, msg-&gt;pose.position.x, msg-&gt;pose.position.y, msg-&gt;pose.position.z);
+
+    static tf2_ros::TransformBroadcaster br;
+    geometry_msgs::TransformStamped transformStamped;
+
+    transformStamped.header.stamp = ros::Time::now();
+    transformStamped.header.frame_id = &quot;map&quot;;
+    transformStamped.child_frame_id = &quot;base_link&quot;;
+    transformStamped.transform.translation.x = msg-&gt;pose.position.x;
+    transformStamped.transform.translation.y = msg-&gt;pose.position.y;
+    transformStamped.transform.translation.z = msg-&gt;pose.position.z;
+    transformStamped.transform.rotation = msg-&gt;pose.orientation;
+
+    br.sendTransform(transformStamped);
+}
+
+/**
+ * @brief Callback to execute the move to action server.
+ */
+bool execute_cb (const mavros_moveto::MovetoGoal::ConstPtr&amp; goal, Server* as)
+{
+    ROS_DEBUG(&quot;MOVETO - Executing move to action...&quot;);
+
+    Rate rate(loop_rate);
+
+    // goal position
+    geometry_msgs::PoseStamped goal_position;
+    goal_position.pose.position.x = goal-&gt;goal.pose.position.x;
+    goal_position.pose.position.y = goal-&gt;goal.pose.position.y;
+    goal_position.pose.position.z = goal-&gt;goal.pose.position.z;
+
+    // communication to client
+    mavros_moveto::MovetoFeedback feedback;
+    mavros_moveto::MovetoResult result;
+
+    // move
+    while (ok() &amp;&amp; as-&gt;isPreemptRequested() == false &amp;&amp; reached(goal_position) == false) {
+        // publish goal to fcu
+        goal_pub.publish(goal_position);
+
+        // publish feedback to client
+        feedback.pose = position;
+        as-&gt;publishFeedback(feedback);
+
+        // wait
+        rate.sleep();
+        spinOnce();
+    }
+
+    ROS_DEBUG(&quot;MOVETO - Reached position (%.2f, %.2f, %.2f)&quot;, position.pose.position.x, position.pose.position.y, position.pose.position.z);
+
+    // communicate result
+    if (reached(goal_position)) {
+        result.reached = true;
+        as-&gt;setSucceeded(result);
+    }
+    else if (as-&gt;isPreemptRequested()) {
+        result.reached = false;
+        as-&gt;setPreempted(result);
+    }
+    else {
+        result.reached = false;
+        as-&gt;setAborted(result);
+    }
+
+    return true;
+}
+
+/**
+ * @brief A ROS node that provides the move to action server.
+ * @param argc Number of command line arguments.
+ * @param argv Array of command line arguments.
+ * @return Success.
+ */
+int main(int argc, char **argv) {
+    init(argc, argv, &quot;moveto_action&quot;);
+    NodeHandle nh;
+
+    // read parameters
+    nh.getParam(this_node::getName() + &quot;/loop_rate&quot;, loop_rate);
+    int queue_size;
+    nh.getParam(this_node::getName() + &quot;/queue_size&quot;, queue_size);
+    nh.getParam(this_node::getName() + &quot;/pos_tolerance&quot;, pos_tolerance);
+
+    // ros communication
+    Subscriber pos_sub = nh.subscribe&lt;geometry_msgs::PoseStamped&gt;(&quot;mavros/local_position/pose&quot;, queue_size, position_cb);
+    goal_pub = nh.advertise&lt;geometry_msgs::PoseStamped&gt;(&quot;mavros/setpoint_position/local&quot;, queue_size);
+
+    Rate rate(loop_rate);
+
+    // wait for position information
+    while (ok() &amp;&amp; !position_received) {
+        ROS_DEBUG_ONCE(&quot;MOVETO - Waiting for local position...&quot;);
+        spinOnce();
+        rate.sleep();
+    }
+    ROS_DEBUG(&quot;MOVETO - Local position received&quot;);
+
+
+    // provide action server
+    Server server(nh, &quot;command/moveto&quot;, boost::bind(&amp;execute_cb, _1, &amp;server), false);
+    server.start();
+    ROS_DEBUG(&quot;MOVETO - Action server available&quot;);
+    spin();
+
+    return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/109555">jofaure</a> on 2022-09-20 09:28:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

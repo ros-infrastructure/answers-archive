@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>I want to disable spin and backup in nav22. - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/399916">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>I want to disable spin and backup in nav22.</h2>
+      <div class="question">
+        <p>I only want to use the wait on the RECOVERIES<em>SERVER when I am stuck.
+I changed recovery</em>plugins to &quot;wait&quot; only, but it fails to start.
+in ros2 galactic</p>
+
+<pre><code>recoveries_server:   
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    # recovery_plugins: [&quot;wait&quot;]
+    recovery_plugins: [&quot;wait&quot;, &quot;spin&quot;, &quot;backup&quot;]
+    spin:
+      plugin: &quot;nav2_recoveries/Spin&quot;
+    backup:
+      plugin: &quot;nav2_recoveries/BackUp&quot;
+    wait:
+      plugin: &quot;nav2_recoveries/Wait&quot;
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_timeout: 0.1
+    use_sim_time: False
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/36638">hamada</a> on 2022-04-30 01:06:28 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>EDIT: This isn&#39;t enough, you need to modify Behavior Tree too. Sorry for misleading before.</p>
+
+<hr>
+
+<p>Did you try with something like:</p>
+
+<pre><code>recoveries_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    recovery_plugins: [&quot;wait&quot;]
+    wait:
+      plugin: &quot;nav2_recoveries/Wait&quot;
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_timeout: 0.1
+    use_sim_time: true
+</code></pre>
+
+<p>based on:</p>
+
+<p><a href="https://navigation.ros.org/configuration/packages/configuring-behavior-server.html#default-plugins">https://navigation.ros.org/configuration/packages/configuring-behavior-server.html#default-plugins</a> ?</p>
+
+<hr>
+
+<p>Modification of the Behavior Tree - you can use the <a href="https://github.com/BehaviorTree/Groot#compilation-instructions-ros">Groot</a>. For the ROS2 Galactic use:</p>
+
+<pre><code>   cd ~/dev_ws/src
+   git clone https://github.com/BehaviorTree/Groot.git
+   cd ..
+   rosdep install --from-paths src --ignore-src
+   colcon build --symlink-install --packages-select groot
+</code></pre>
+
+<p>I have <code>sudo apt install ros-galactic-behaviortree-cpp-v3</code> before too.</p>
+
+<p>You have to <code>source install/setup.bash</code> and <code>./build/groot/Groot</code>. </p>
+
+<p>You can load BT XMLs  from the Nav2 repository and modify it, e.g. like this:</p>
+
+<pre><code>root main_tree_to_execute=&quot;MainTree&quot;&gt;
+    &lt;BehaviorTree ID=&quot;MainTree&quot;&gt;
+        &lt;Control ID=&quot;RecoveryNode&quot; name=&quot;NavigateRecovery&quot; number_of_retries=&quot;6&quot;&gt;
+            &lt;Control ID=&quot;PipelineSequence&quot; name=&quot;NavigateWithReplanning&quot;&gt;
+                &lt;Decorator ID=&quot;RateController&quot; hz=&quot;0.333&quot;&gt;
+                    &lt;Control ID=&quot;RecoveryNode&quot; name=&quot;ComputePathThroughPoses&quot; number_of_retries=&quot;1&quot;&gt;
+                        &lt;ReactiveSequence&gt;
+                            &lt;Action ID=&quot;RemovePassedGoals&quot; input_goals=&quot;{goals}&quot; output_goals=&quot;{goals}&quot; radius=&quot;0.7&quot;/&gt;
+                            &lt;Action ID=&quot;ComputePathThroughPoses&quot; goals=&quot;{goals}&quot; path=&quot;{path}&quot; planner_id=&quot;GridBased&quot; start=&quot;&quot;/&gt;
+                        &lt;/ReactiveSequence&gt;
+                        &lt;ReactiveFallback name=&quot;ComputePathThroughPosesRecoveryFallback&quot;&gt;
+                            &lt;Condition ID=&quot;GoalUpdated&quot;/&gt;
+                            &lt;Action ID=&quot;ClearEntireCostmap&quot; name=&quot;ClearGlobalCostmap-Context&quot; service_name=&quot;global_costmap/clear_entirely_global_costmap&quot;/&gt;
+                        &lt;/ReactiveFallback&gt;
+                    &lt;/Control&gt;
+                &lt;/Decorator&gt;
+                &lt;Control ID=&quot;RecoveryNode&quot; name=&quot;FollowPath&quot; number_of_retries=&quot;1&quot;&gt;
+                    &lt;Action ID=&quot;FollowPath&quot; controller_id=&quot;FollowPath&quot; goal_checker_id=&quot;GoalChecker&quot; path=&quot;{path}&quot;/&gt;
+                    &lt;ReactiveFallback name=&quot;FollowPathRecoveryFallback&quot;&gt;
+                        &lt;Condition ID=&quot;GoalUpdated&quot;/&gt;
+                        &lt;Action ID=&quot;ClearEntireCostmap&quot; name=&quot;ClearLocalCostmap-Context&quot; service_name=&quot;local_costmap/clear_entirely_local_costmap&quot;/&gt;
+                    &lt;/ReactiveFallback&gt;
+                &lt;/Control&gt;
+            &lt;/Control&gt;
+            &lt;ReactiveFallback name=&quot;RecoveryFallback&quot;&gt;
+                &lt;Condition ID=&quot;GoalUpdated&quot;/&gt;
+                &lt;Control ID=&quot;RoundRobin&quot; name=&quot;RecoveryActions&quot;&gt;
+                    &lt;Sequence name=&quot;ClearingActions&quot;&gt;
+                        &lt;Action ID=&quot;ClearEntireCostmap&quot; name=&quot;ClearLocalCostmap-Subtree&quot; service_name=&quot;local_costmap/clear_entirely_local_costmap&quot;/&gt;
+                        &lt;Action ID=&quot;ClearEntireCostmap&quot; name=&quot;ClearGlobalCostmap-Subtree&quot; service_name=&quot;global_costmap/clear_entirely_global_costmap&quot;/&gt;
+                    &lt;/Sequence&gt;
+                    &lt;Action ID=&quot;Wait&quot; wait_duration=&quot;5&quot;/&gt;
+                &lt;/Control&gt;
+            &lt;/ReactiveFallback&gt;
+        &lt;/Control&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/63587"></a> on 2022-05-01 16:15:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>That wouldn&#39;t be sufficient, you need to remove spin / backup from the behavior tree XML file you&#39;re using as well so its not trying to call those behaviors. The Behavior Tree is what actually defines the navigation logic.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2022-05-02 16:07:18 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>The <a href="https://navigation.ros.org/behavior_trees/index.html">behavior tree</a> decides what to do. The default behavior tree has a <code>spin</code> and <code>backup</code> in the <code>RecoveryFallback</code>.</p>
+
+<p>What you&#39;re doing isn&#39;t changing the behavior tree, but changing what plugin is linked to what name. You&#39;re removing the plugins without removing the reference to them in the behavior tree.</p>
+
+<p>You&#39;ll need to make your own behavior tree without the <code>spin</code> and <code>backup</code> plugins and use that in Nav2.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50769">Joe28965</a> on 2022-05-02 02:26:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

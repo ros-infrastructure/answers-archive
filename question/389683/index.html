@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Deserialise a `SerializedMessage` into something other than a ROS2 message. E.g JSON - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/389683">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Deserialise a `SerializedMessage` into something other than a ROS2 message. E.g JSON</h2>
+      <div class="question">
+        <p>You can use <code>rclcpp::Serialization&lt;MessageT&gt;::deserialize_message</code> to deserialise a <code>SerializedMessage</code> into <code>MessageT</code> where <code>MessageT</code> is any ROS2 message. E.g. </p>
+
+<pre><code>std::shared_ptr&lt;rclcpp::SerializedMessage&gt; msg;
+using MessageT = std_msgs::msg::String;
+        MessageT string_msg;
+        auto serializer = rclcpp::Serialization&lt;MessageT&gt;();
+        serializer.deserialize_message(msg.get(), &amp;string_msg);
+        // Finally print the ROS2 message data
+        std::cout &lt;&lt; &quot;serialized data after deserialization: &quot; &lt;&lt; string_msg.data &lt;&lt; std::endl;
+</code></pre>
+
+<p>(Example from <a href="https://github.com/ros2/demos/blob/master/demo_nodes_cpp/src/topics/listener_serialized_message.cpp#L56-L63">https://github.com/ros2/demos/blob/master/demo_nodes_cpp/src/topics/listener_serialized_message.cpp#L56-L63</a>)</p>
+
+<p><strong>But what if I wanted to deserialise into something other than a ROS2 message?</strong></p>
+
+<p>E.g </p>
+
+<pre><code>#include &lt;nlohmann/json.hpp&gt;
+using nlohmann::json;
+
+rclcpp::Serialization&lt;json&gt;().deserialize_message()
+</code></pre>
+
+<p>Or</p>
+
+<pre><code>rclcpp::Serialization&lt;QVariantMap&gt;().deserialize_message()
+</code></pre>
+
+<p>What would be the best way to go about doing this? Could I create a template specialisation? And what would be the easiest way to inspect the <code>SerializedMessage</code> and generate my own class from this?</p>
+
+<p>Are there any functions from the implementation of <code>rclcpp::Serialization&lt;MessageT&gt;::deserialize_message</code> (where <code>MessageT</code> is a ROS2 message) that I could use in my template specialisation for when <code>MessageT</code> is not a ROS2 message?</p>
+
+<p><strong><em>Edit - Extra info in response to gvdhooms comment :</em></strong></p>
+
+<p>The reason why I want to do this is I am trying to create a topic echo node in C++. After I have done this, I then want to expose the <code>rclcpp::create_generic_subscription</code> to QML, so I can create subscriptions to topics in the QML language.</p>
+
+<p>Using the resource you provided, here is my code for the cpp topic echo node:</p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &quot;rclcpp/node.hpp&quot;
+#include &quot;rclcpp/serialization.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+#include &quot;dynmsg_demo/typesupport_utils.hpp&quot;
+#include &quot;dynmsg_demo/message_reading.hpp&quot;
+#include &lt;memory.h&gt;
+
+
+int main(int argc, char* argv[])
+{
+  std::vector&lt;std::string&gt; arguments(argv + 1, argv + argc);
+
+  auto topic_name = arguments.at(0);
+  auto topic_type = arguments.at(1);
+
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node(&quot;topic_echo_cpp&quot;);
+
+  auto callback = [&amp;topic_type](std::shared_ptr&lt;rclcpp::SerializedMessage&gt; msg){
+
+    InterfaceTypeName topic_type_name = get_topic_type_from_string_type(topic_type);
+    const rosidl_message_type_support_t* ts = get_type_support(topic_type_name);
+    auto deserializer = rclcpp::SerializationBase(ts);
+    auto result = RosMessage();
+    deserializer.deserialize_message(msg.get(), &amp;result);
+    auto yaml_result = message_to_yaml(result);
+    std::cout &lt;&lt; yaml_result &lt;&lt; std::endl;
+
+  };
+
+  node.create_generic_subscription(topic_name, topic_type, 10, callback);
+
+  return 0;
+}
+</code></pre>
+
+<p>Here is my prototype for exposing <code>rclcpp::create_generic_subscription</code> to QML. It is currently in python, because type introspection is built into the language in python, but I would like to do this in C++.</p>
+
+<pre><code>@Slot(str, str, QJSValue)
+def create_subscriber(self, topic_type: str, topic_name: str, js_callback: QJSValue):
+    #Called from MainThread (QML)
+
+    MsgType = get_message(topic_type)
+    self.node.create_subscription(MsgType, topic_name, self.make_subscription_callback(js_callback), 10)
+    self.node.get_logger().info(f&quot;created subscriber to topic {topic_name}&quot;)
+
+def make_subscription_callback(self, js_callback: QJSValue):
+    #Called from MainThread (QML)
+    def subscription_callback(msg: Ros2MessageProtocol):
+        #Called from ThreadPoolExecutorTheaed (ROS2)
+        self.node.get_logger().debug(f&#39;executing js callback with {msg}&#39;)
+        od = message_to_ordereddict(msg)
+        data: str = json.dumps(od)
+        #Emit signal so this can be done in the QML thread
+        self.execute_subscription_js_callback_sig.emit(js_callback, data)
+    return subscription_callback
+
+@Slot(QJSValue, str)
+def execute_subscription_js_callback(self, js_callback: QJSValue, data: str):
+    #Called from MainThread (QML)
+    converter = self.engine.evaluate(&quot;JSON.parse&quot;)
+    qjsvalue = converter.call([QJSValue(data)])
+    js_callback.call([qjsvalue])
+</code></pre>
+
+<p>And how this is used in QML</p>
+
+<pre><code>   //Ros2Subscription.qml
+    import QtQuick 2.0    
+    QtObject {
+        id: main
+
+        required property string topic_name
+        required property string topic_type
+        property bool echo: false
+        property var current_value: null //the last message received on this subscription
+
+        function callback(msg) {
+            if(echo){
+                console.log(&#39;received message on topic&#39;, topic_name, JSON.stringify(msg))
+            }
+            current_value = msg
+        }
+
+        readonly property var init : function() {
+            create_subscriber(topic_type, topic_name, callback)
+        }
+    }
+</code></pre>
+
+<p>And to display this value</p>
+
+<pre><code>//Ros2MsgFeildDisplay.qml
+import QtQuick.Controls 2.15
+import QtQuick.Layouts
+import QtQml 2.15
+
+//Display a feild of a topic
+
+GroupBox {
+    id: main
+    required property string name
+    required property string topic_name
+    required property string topic_type
+    required property var default_value
+    property bool echo: false
+    property alias current_value: subscription.current_value
+    property alias init: subscription.init
+    property var feilds : []
+
+    property var get_feild_from_msg : function(msg) { //this can be replaced with other logic if needed
+        for (const elem of feilds) {
+            msg = msg[elem]
+        }
+        return msg
+    }
+
+    Subscription {
+        id: subscription
+        topic_name: main.topic_name
+        topic_type: main.topic_type
+        echo: main.echo
+    }
+
+    RowLayout {
+        id: layout
+        property alias label_text: value_label.text
+        Label { text: name }
+        Label {
+            id: value_label
+            text: current_value ? get_feild_from_msg(current_value) : default_value
+        }
+    }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/88469">CraigH100</a> on 2021-10-30 06:46:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Without knowing <em>why</em> you want to do this (and so perhaps helping you with an <a href="https://xyproblem.info">xy-problem</a>): I&#39;d suggest to take a look at this ROS Discourse post: <a href="https://discourse.ros.org/t/ros-2-type-support-introspection-and-conversion-of-c-c-messages-to-from-yaml/22295">ROS 2 type support introspection and conversion of C/C++ messages to/from YAML</a>. It discusses a similar topic and links to a set of packages/libraries which go in the direction you seem to want to go.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-30 07:13:11 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks for the reply. As for why I want to do this, I want to expose the <code>rclcpp::create_generic_subscription</code> function to QML. I have already done this in python, but to be able to do that in C++ I need to be able to deserialise a <code>SerializedMessage</code> into a QJSVaue. Before doing this, I want to create a ros2 topic echo node in C++ to practice with type introspection.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/88469">CraigH100</a> on 2021-10-30 10:58:31 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>As for why I want to do this, I want to expose the <code>rclcpp::create_generic_subscription</code> function to QML.</p>
+</blockquote>
+
+<p>you might want to take a look at <a href="https://github.com/StefanFabian/qml_ros_plugin">StefanFabian/qml_ros_plugin</a>. In <a href="https://discourse.ros.org/t/qml-ros-plugin-release/22096">QML ROS Plugin Release</a> the author mentions they&#39;re working on a ROS 2 compatible version as well.</p>
+
+<p>I would really recommend to <em>not</em> duplicate effort here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-10-31 06:33:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I had no idea this existed! And has done for 3 years! Neither searching google for ROS2 QML nor rclqml returns this plugin.</p>
+
+<p>I may send the author a message with my python prototype which works with ROS2. It currently can create subscribers to a topic of any type, publish messages, access the ros2 logger, call services, and call actions (which also sets up subscribers to the feedback and action status messages). I also have figured out how to safely pass data between the ros2 thread and qml thread</p>
+
+<p>Maybe some of this will be useful for the author.</p>
+
+<p>I only wanted to migrate it to C++ so I could compare performance, and if it is not significantly different, I would have kept it in python.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/88469">CraigH100</a> on 2021-10-31 16:07:51 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>Neither searching google for ROS2 QML nor rclqml returns this plugin.</p>
+</blockquote>
+
+<p>it&#39;s about the first result for me. So either I am or you are in a search bubble.</p>
+
+<p>There have actually been more ROS&lt;-&gt;QML integrations, but most were ROS 1.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2021-11-01 02:49:43 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

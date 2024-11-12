@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Ros2, callback with time synchronizer never called - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/409973">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Ros2, callback with time synchronizer never called</h2>
+      <div class="question">
+        <p>Hello,</p>
+
+<p>I have a node that need to process two different images: one is the image from the camera, the other one is the depth map of the image (extrapolated through a neural network). The two images are published by 2 different topics, one just after the other (minimal difference). I&#39;m trying to use a TimeSynchronizer with a callback to execute some operations on the images from the 2 topics at the same time, but the callback is never called.</p>
+
+<p>This issue is partially related to this question <a href="https://answers.ros.org/question/409928/ros2-message_filterssynchronizer-callback-not-called/">here</a>,  where it was pointed out that the Synchronizer must be declared as a class member as well - so I did it. 
+I also changed the header timestamps of the two images so that they are exactly the same, in order to be able to use exact policy for synchronization.</p>
+
+<p>Here is the current code (minimal example)</p>
+
+<p>node.hpp:</p>
+
+<pre><code>using ImageMsg = sensor_msgs::msg::Image;
+class MonocularSlamNode : public rclcpp::Node
+{
+public:
+    MonocularSlamNode(ORB_SLAM2::System* pSLAM, const string &amp;strVocFile, const string &amp;strSettingsFile, const string &amp;strSensor);
+    ~MonocularSlamNode();
+
+private:         
+    void GrabRGBD(const sensor_msgs::msg::Image::SharedPtr msgIm, const sensor_msgs::msg::Image::SharedPtr msgD);    
+
+     message_filters::Subscriber&lt;ImageMsg&gt; image_sub_;
+     message_filters::Subscriber&lt;ImageMsg&gt; depth_sub_; 
+
+    using exact_policy = message_filters::sync_policies::ExactTime&lt;ImageMsg,ImageMsg&gt;;
+    typedef message_filters::Synchronizer&lt;exact_policy&gt; Synchronizer;
+    std::unique_ptr&lt;Synchronizer&gt; sync_;
+}
+</code></pre>
+
+<p>node.cpp:</p>
+
+<pre><code>MonocularSlamNode::MonocularSlamNode(ORB_SLAM2::System* pSLAM, const string &amp;strVocFile, const string &amp;strSettingsFile, const string &amp;strSensor)
+:   Node(&quot;orbslam&quot;),
+    m_SLAM(pSLAM)
+{
+
+    // define quality of service: all messages that you want to receive must have the same
+    rmw_qos_profile_t custom_qos_profile = rmw_qos_profile_default;
+    custom_qos_profile.depth = 100;
+    custom_qos_profile.reliability = rmw_qos_reliability_policy_t::RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    custom_qos_profile.history = rmw_qos_history_policy_t::RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+    custom_qos_profile.durability = rmw_qos_durability_policy_t::RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+
+    image_sub_.subscribe(this, &quot;camera&quot;, custom_qos_profile);
+    depth_sub_.subscribe(this, &quot;depth_map&quot;, custom_qos_profile);
+
+    sync_.reset(new message_filters::Synchronizer&lt;exact_policy&gt;(exact_policy(100), image_sub_, depth_sub_));
+    sync_-&gt;registerCallback(&amp;MonocularSlamNode::GrabRGBD,this);
+}
+
+void MonocularSlamNode::GrabRGBD(const ImageMsg::SharedPtr msgIm, const ImageMsg::SharedPtr msgD)
+{
+    cout &lt;&lt; &quot;I&#39;m here&quot; &lt;&lt; endl;
+    }
+</code></pre>
+
+<p>And this is how the two topics are published in node.py:</p>
+
+<pre><code>    self.pub_image_raw = self.node.create_publisher(Image, &#39;camera&#39;, 100)
+    self.pub_depth_map = self.node.create_publisher(Image, &#39;depth_map&#39;, 100)
+
+    (...)
+            timestamp = self.node.get_clock().now().to_msg()
+
+            # Publish opencv frame using CV bridge
+            msg = self.bridge.cv2_to_imgmsg(numpy.array(frame), &#39;bgr8&#39;)
+            msg.header.frame_id = self.tf_drone
+            msg.header.stamp = timestamp
+            self.pub_image_raw.publish(msg)
+
+            # Publish opencv depth map using CV bridge
+            msg = self.bridge.cv2_to_imgmsg(numpy.array(depth_map), &#39;mono8&#39;)
+            msg.header.frame_id = self.tf_drone
+            msg.header.stamp = timestamp
+            self.pub_depth_map.publish(msg)
+</code></pre>
+
+<p>The code compiles, it also runs correctly (the two topics are published), and tI also see their subscription count increase so the subscribe instructions in the .cpp work fine, however it never enters the callback. As you see from the code I&#39;m using 100 as queue size which I&#39;m sure is more than enough (the second image is published just a fraction of second after the first one, so they should be in the same window of the synchronizer). I&#39;ve also tried this exact code using approximate<em>policy instead of exact</em>policy, but it doesn&#39;t work as well. I tried everything I could think, but the callback is never called. </p>
+
+<p>If someone has some hints I would really appreciated, I have been stuck here for quite a long time now and I don&#39;t know what else to try to make this working. Thanks!</p>
+
+<p>(for reference using ros2 on ubuntu 20.04, foxy distro)</p>
+
+        <div class="owner"><p>Asked by <a href="/users/120573">damiano</a> on 2022-11-29 00:07:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Ok, found out the answer finally!</p>
+
+<p>The problem was in these lines:</p>
+
+<pre><code>    custom_qos_profile.reliability = rmw_qos_reliability_policy_t::RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+custom_qos_profile.history = rmw_qos_history_policy_t::RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+custom_qos_profile.durability = rmw_qos_durability_policy_t::RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+</code></pre>
+
+<p>Removed them and the code works fine, finally the callback is called.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/120573">damiano</a> on 2022-11-29 00:21:24 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

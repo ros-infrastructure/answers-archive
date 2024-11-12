@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Obstacles management in Moveit - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/157716">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Obstacles management in Moveit</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/59028/obstacles-management-in-moveit">https://robotics.stackexchange.com/questions/59028/obstacles-management-in-moveit</a>.</p>
+        <p>I would be delighted if someone can explain very clearly.</p>
+
+<p>I have recently started working on a robot that has a Jaco Arm. (MetraLab Scitos G5).</p>
+
+<p>I am using the ASUS xtion pro for the obstacle avoidance. Once this is done, I am able to view the Octree in the monitored<em>planning</em>scene topic (using rviz).</p>
+
+<p><strong>1.</strong> I also found that I could specify collision objects using the PlanningSceneInterface Class. What is the difference between the two approaches?</p>
+
+<p><strong>2.</strong> Also, what is the exact approach to using a PlanningSceneMonitor. In the planning scene tutorial, it is mentioned that the PlanninSceneMonitor is the elegant way to manage a Planning Scene. But, is there a tutorial for the PlanningSceneMonitor?</p>
+
+<p><strong>3.</strong> I saw that the PlanningSceneMonitor has a protected function called &quot;excludeWorldObjectFromOctree()&quot; .</p>
+
+<p>Sometimes when I try to grasp an object (using xtion for obstacle avoidance), the plan fails since there is a potential collision between the fingers of the JACO arm and the object that I intend to pickup. I thought I could add it as a World object using the Planning Scene Interface (this I am able to do) and then use the &quot;excludeWorldObjectFromOctree()&quot; method to exclude the object from being considered for collision checking. Is there a more straight forward way of excluding a world object from collision checking?</p>
+
+<p><strong>4.</strong> I have somewhat understood how you could modify the AllowedCollisionMatrix. But then, how do I ensure that this ACM is updated to the current Planning Scene? I expect that there is a method in PlanningSceneInterface like &quot;updateAllowedCollisionMatrix()&quot; ? Am I guessing right? or is there a serious error in my understanding?</p>
+
+<p>Please clarify!</p>
+
+<p>Thank you so much!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1973">McMurdo</a> on 2014-04-26 08:39:17 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The octomap is updated live from your Xtion sensor data. The collision
+objects are added by you. They are used to add collision objects that
+you know the position of; the most common way is to have some sort of
+object recognition node that recognizes, for example, tabletop objects,
+and adds these objects as collision objects to the PlanningSceneWorld.
+(If you look at moveit_msgs/PlanningSceneWorld, you can see that it has
+one octomap and a list of collision objects).</p>
+
+<p>You can add objects by either publishing to the &quot;/collision_object&quot;
+topic, or by using a convenience function from the move_group C++
+interface.</p>
+
+<p>Once a collision object is added to the PlanningScene, the voxels that
+overlap with it are automatically filtered out of the octomap. You do
+not need to call excludeWorldObjectFromOctree() yourself (that&#39;s
+probably why it&#39;s protected).</p>
+
+<p>By default, collision checking is done between all robot links and the
+octomap, and between all robot links and each collision object.
+However, you can disable collision checks between certain robot links
+and certain collision objects, and that&#39;s exactly what you should do:
+disable collision checking between the fingers and the object you&#39;re
+trying to pick up. There are basically two ways to do it:</p>
+
+<ol>
+<li><p>Disable the collision checks before calling the move_group action.
+All calls to the move_group action after that will ignore those
+collisions. You&#39;ll have to remember to re-enable the collisions
+afterwards.</p></li>
+<li><p>Specify the allowed collisions for that specific move_group call
+only, as a parameter of that action call. This is somewhat nicer in
+my opinion.</p></li>
+</ol>
+
+<p>For (1), there are a couple of options:</p>
+
+<p>1a. Using the PlanningSceneMonitor. From C++, I think this is better
+    than the solution (1b) below. It should go something like this
+    (warning, completely untested!):</p>
+
+<pre><code>#include &lt;moveit/planning_scene_monitor/planning_scene_monitor.h&gt;
+
+planning_scene_monitor::PlanningSceneMonitorPtr psm = planning_scene_monitor::PlanningSceneMonitorPtr(
+    new planning_scene_monitor::PlanningSceneMonitor(&quot;robot_description&quot;, tf, &quot;name&quot;));
+
+planning_scene_monitor::LockedPlanningSceneRW planning_scene = planning_scene_monitor::LockedPlanningSceneRW(psm);
+
+collision_detection::AllowedCollisionMatrix acm = planning_scene-&gt;getAllowedCollisionMatrix();
+
+// TODO: modify acm here as explained in the PlanningScene tutorial: http://docs.ros.org/api/pr2_moveit_tutorials/html/planning/src/doc/planning_scene_tutorial.html
+
+As an inspiration, I found digging through this code helpful: https://github.com/ros-planning/moveit_ros/tree/hydro-devel/visualization/planning_scene_rviz_plugin
+</code></pre>
+
+<p>1b. Publishing to the &quot;/planning_scene&quot; topic. From Python, it looks
+    like this:</p>
+
+<pre><code>    self._pubPlanningScene = rospy.Publisher(&#39;planning_scene&#39;, PlanningScene)
+    rospy.wait_for_service(&#39;/get_planning_scene&#39;, 10.0)
+    get_planning_scene = rospy.ServiceProxy(&#39;/get_planning_scene&#39;, GetPlanningScene)
+    request = PlanningSceneComponents(components=PlanningSceneComponents.ALLOWED_COLLISION_MATRIX)
+    response = get_planning_scene(request)
+
+    acm = response.scene.allowed_collision_matrix
+    if not &#39;button&#39; in acm.default_entry_names:
+        # add button to allowed collision matrix
+        acm.default_entry_names += [&#39;button&#39;]
+        acm.default_entry_values += [True]
+
+        planning_scene_diff = PlanningScene(
+                is_diff=True,
+                allowed_collision_matrix=acm)
+
+        self._pubPlanningScene.publish(planning_scene_diff)
+        rospy.sleep(1.0)
+</code></pre>
+
+<p>For (2), you can use the same planning_scene_diff that I computed above
+by putting it into your MoveGroupGoal.planning_options.planning_scene_diff.
+It&#39;s important that you really get the current allowed collision matrix first
+and then modify it, as shown above.</p>
+
+<p>Note that I added the collision object to the default_entry_names,
+which means that collisions between that object and <em>all</em> robot links are
+allowed, not just the fingers. That&#39;s bad, but I couldn&#39;t make it work
+otherwise.</p>
+
+<p>Another option for you is to use the <code>pick</code> action instead of implementing
+it yourself with move_group calls. It wraps the move_group action, and it
+automatically handles the allowed collision matrix etc. for you. One small
+example of using it is here:</p>
+
+<p><a href="https://github.com/uos/calvin_robot/blob/hydro/calvin_pick_n_place/src/calvin_pick_n_place.cpp">https://github.com/uos/calvin_robot/blob/hydro/calvin_pick_n_place/src/calvin_pick_n_place.cpp</a></p>
+
+<blockquote>
+<p><em>2.</em> Also, what is the exact approach to using a
+PlanningSceneMonitor. In the planning scene tutorial, it is mentioned
+that the PlanninSceneMonitor is the elegant way to manage a Planning
+Scene. But, is there a tutorial for the PlanningSceneMonitor?</p>
+</blockquote>
+
+<p>Not that I know of. The Planning Scene tutorial says that it&#39;s
+&quot;discussed in detail in the next tutorial&quot;, but that never got written
+if I&#39;m correct. (Please, everyone, correct me if I&#39;m wrong!)</p>
+
+<blockquote>
+<p><em>3.</em> I saw that the PlanningSceneMonitor has a protected function
+called &quot;excludeWorldObjectFromOctree()&quot; .</p>
+
+<p>Sometimes when I try to grasp an object (using xtion for obstacle
+avoidance), the plan fails since there is a potential collision
+between the fingers of the JACO arm and the object that I intend to
+pickup. I thought I could add it as a World object using the Planning
+Scene Interface (this I am able to do) and then use the
+&quot;excludeWorldObjectFromOctree()&quot; method to exclude the object from
+being considered for collision checking. Is there a more straight
+forward way of excluding a world object from collision checking?</p>
+</blockquote>
+
+<p>See above. Once you add a CollisionObject, it is automatically excluded
+from the octomap, but of course not from collision checking.</p>
+
+<blockquote>
+<p><em>4.</em> I have somewhat understood how you could modify the
+AllowedCollisionMatrix. But then, how do I ensure that this ACM is
+updated to the current Planning Scene? I expect that there is a
+method in PlanningSceneInterface like
+&quot;updateAllowedCollisionMatrix()&quot; ? Am I guessing right? or is there a
+serious error in my understanding?</p>
+</blockquote>
+
+<p>See above.</p>
+
+<blockquote>
+<p>Please clarify!</p>
+
+<p>Thank you so much!</p>
+
+<p>Chittaranjan S Srinivas</p>
+
+<p>Orebro University</p>
+</blockquote>
+
+<p>Cheers,
+Martin</p>
+
+<p>I have posted this from the reply on moveit-users google mailing list.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/1973">McMurdo</a> on 2014-06-20 10:16:34 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Quoted from this answer: &quot;It&#39;s important that you really get the current allowed collision matrix first and then modify it, as shown above.&quot; Why is this the case? What is the meaning of the <code>is_diff</code> argument, if not to indicate that the acm published is the diff between current and desired acm?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21732">dinosaur</a> on 2015-05-19 15:43:55 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>A hacky way to ignore collisions with the environment (i.e. collisions that are caused by Octomap) is to clear octomap just before planning the motion. For C++:</p>
+
+<pre><code>system(&quot;rosservice call /clear_octomap&quot;);
+</code></pre>
+
+<p>I&#39;m using this just for my final Cartesian approach to a grasp. Obviously it&#39;s kinda dangerous.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/21281"></a> on 2017-01-20 14:21:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Please don&#39;t call services using a <code>system(..)</code> call. If at all possible, use a proper <code>ServiceClient</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-20 16:14:25 UTC</p></div>
+</div>
+<div class="comment">
+          <p>OK. Here&#39;s a better answer from the Moveit Google group:</p>
+
+<pre><code>planning_scene-&gt;getAllowedCollisionMatrixNonConst().setEntry(&quot;&lt;octomap&gt;&quot;, left_hand_links_vector_, true);
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2017-01-21 10:17:31 UTC</p></div>
+</div>
+<div class="comment">
+          <p>planning_scene-&gt;getAllowedCollisionMatrixNonConst().setEntry(&quot;<octomap>&quot;,    left_hand_links_vector_, true);</p>
+
+<p>This is giving segfault, can yoy help me out of this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29133">Manish_Soni_1908</a> on 2017-01-21 13:59:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Maybe you don&#39;t have a vector of links called left_hand_links_vector_? Try just a single link from the urdf.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21281">AndyZe</a> on 2017-01-21 14:56:13 UTC</p></div>
+</div>
+<div class="comment">
+          <p>but if we do not write anything in place of left_hand_links_vector , then it should avoid collision for all robot links from octomap. but i tried that, it is not doing that, and can we give multiple links name without defining a vector</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29133">Manish_Soni_1908</a> on 2017-01-21 15:23:12 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

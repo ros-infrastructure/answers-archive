@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to use dwa_local_planner ROS C++ API - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/399835">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to use dwa_local_planner ROS C++ API</h2>
+      <div class="question">
+        <p>Hello, </p>
+
+<p>I am trying to use dwa<em>local</em>planner C++ API. I am using Ubuntu 20.04 running ROS Noetic. Below is my following code for same:</p>
+
+<p>Robot.h File:</p>
+
+<pre><code>#include &lt;dwa_local_planner/dwa_planner_ros.h&gt;
+#include &lt;costmap_2d/costmap_2d_ros.h&gt;
+#include &lt;iostream&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;geometry_msgs/PoseStamped.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;nav_msgs/Path.h&gt;
+
+class Robot { 
+public:
+
+    Robot();
+
+    void getPath(const nav_msgs::Path::ConstPtr &amp;msg);
+
+    void dwaPlanner();
+
+private:
+    ros::NodeHandle nh;
+    ros::Subscriber pathSub;
+    ros::Publisher cmdVelPub;
+    tf2_ros::Buffer* tf1;
+    costmap_2d::Costmap2DROS *costmap_ros;
+    geometry_msgs::PoseStamped globalPose;
+    std::vector&lt;geometry_msgs::PoseStamped&gt; posesVec, vec;
+    dwa_local_planner::DWAPlannerROS dwa;
+};
+</code></pre>
+
+<p>Robot.cpp File:</p>
+
+<pre><code>#include &lt;Robot.h&gt;
+
+Robot::Robot() {
+    pathSub = nh.subscribe&lt;nav_msgs::Path&gt;(&quot;/robot_path/r0&quot;, 10, &amp;Robot::getPath, this);
+    cmdVelPub = nh.advertise&lt;geometry_msgs::Twist&gt;(&quot;/r0/cmd_vel&quot;, 10);
+}
+
+void Robot::getPath(const nav_msgs::Path::ConstPtr &amp;msg) {
+    for (uint i = 0; i &lt; msg-&gt;poses.size(); ++i) {
+        posesVec.emplace_back(msg-&gt;poses[i]);
+    }
+}
+
+void Robot::dwaPlanner() {
+    tf2_ros::Buffer buffer(ros::Duration(10));
+    tf2_ros::TransformListener tf(buffer);
+    costmap_ros = new costmap_2d::Costmap2DROS(&quot;global_costmap&quot;, buffer);
+    costmap_ros-&gt;start();
+    costmap_ros-&gt;getRobotPose(globalPose);
+    dwa_local_planner::DWAPlannerROS dwa;
+    dwa.initialize(&quot;local_planner&quot;, &amp;buffer, costmap_ros);
+    if(dwa.setPlan(posesVec)) {
+        ROS_INFO(&quot;SET&quot;);
+    }
+    else {
+        ROS_INFO(&quot;NOT SET&quot;);
+    }
+    geometry_msgs::Twist cmdVel;
+    cmdVel.linear.x = 0.0;
+    cmdVel.angular.z = 0.0;
+    while (!dwa.isGoalReached())
+    {
+        // Update costmaps
+        costmap_ros-&gt;updateMap();
+
+        // Compute velocity commands
+        if (dwa.dwaComputeVelocityCommands(globalPose, cmdVel))
+        {
+            ROS_INFO(&quot;DWA compute cmd_vel: SUCCESS&quot;);
+        }
+        else
+        {
+            ROS_ERROR(&quot;DWA compute cmd_vel: FAILED&quot;);
+        }
+        // Send commands
+        cmdVelPub.publish(cmdVel);
+    }
+}
+</code></pre>
+
+<p>And here is my main file:</p>
+
+<pre><code>#include &lt;Robot.h&gt;
+
+int main(int argc, char **argv) {
+    ros::init(argc, argv, &quot;main&quot;);
+    ROS_INFO(&quot;Initializing DWA Planner&quot;);
+    Robot robot;
+    robot.dwaPlanner();
+    ros::spin();
+
+    return 0;
+}
+</code></pre>
+
+<p>When I launch this code, my launch just gets killed after it sets the plan:</p>
+
+<pre><code>[ INFO] [1651139647.557302447]: Initializing DWA Planner
+[ INFO] [1651139647.575485673]: Loading map from image &quot;/home/chinmay/dwa_ws/src/custom_planner/maps/map_3.pgm&quot;
+[ INFO] [1651139647.834757522, 304.169000000]: Read a 672 X 608 map @ 0.025 m/cell
+[ INFO] [1651139647.844822415, 304.179000000]: global_costmap: Using plugin &quot;obstacle_layer&quot;
+[ INFO] [1651139647.857668793, 304.192000000]:     Subscribed to Topics: 
+[ INFO] [1651139647.883297257, 304.208000000]: global_costmap: Using plugin &quot;inflation_layer&quot;
+[ INFO] [1651139647.979511985, 304.301000000]: Sim period is set to 0.05
+[ INFO] [1651139648.071583387, 304.395000000]: Got new plan
+[ INFO] [1651139648.071736261, 304.395000000]: SET
+[custom_planner_node-3] process has died [pid 122672, exit code -11, cmd 
+/home/chinmay/dwa_ws/devel/lib/custom_planner/custom_planner_node __name:=custom_planner_node __log:=/home/chinmay/.ros/log/6d935e04-c6d8-11ec-a371-0566167ff1f1/custom_planner_node-3.log].
+log file: /home/chinmay/.ros/log/6d935e04-c6d8-11ec-a371-0566167ff1f1/custom_planner_node-3*.log
+</code></pre>
+
+<p>However, if I use dwa.computeVelocityCommands it enters the while loop and gives me the ROS_ERROR message of could not find a path.</p>
+
+<p>Here is part of the path for your reference, I have published as nav<em>msgs/Path but to dwa.setPlan I am passing std::vector&lt;geometry</em>msgs/PoseStamped&gt;.</p>
+
+<pre><code>header: 
+    seq: 0
+    stamp: 
+        secs: 13
+        nsecs: 512000000
+    frame_id: &quot;map&quot;
+poses: 
+    - 
+        header: 
+            seq: 0
+            stamp: 
+                secs: 13
+                nsecs: 512000000
+            frame_id: &quot;map&quot;
+        pose: 
+            position: 
+                 x: 0.20000000298023224
+                 y: 3.799999952316284
+                 z: 0.0
+            orientation: 
+                x: 0.0
+                y: 0.0
+                z: 0.0
+                w: 1.0
+    - 
+        header: 
+            seq: 1
+            stamp: 
+                secs: 13
+                nsecs: 512000000
+            frame_id: &quot;map&quot;
+        pose: 
+            position: 
+                x: 0.20000000298023224
+                y: 3.5999999046325684
+                z: 0.0
+            orientation: 
+                x: 0.0
+                y: 0.0
+                z: 0.0
+                w: 1.0
+</code></pre>
+
+<p>Please let me know where I am going wrong.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/75894">cjoshi17</a> on 2022-04-28 05:21:59 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Is there some reason you don&#39;t want to just use the <code>move_base</code> ros node? I have never seen any guidelines for using this local planner as a &quot;standalone&quot; class. I suspect you will need to study the <code>move_base</code> source code and comments to understand how the interaction is supposed to be done.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2022-04-30 11:32:04 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

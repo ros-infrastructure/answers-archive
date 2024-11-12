@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Problem with twist message:  unqualified-id before numeric constant - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/48147">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Problem with twist message:  unqualified-id before numeric constant</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/45713/problem-with-twist-message-unqualified-id-before-numeric-constant">https://robotics.stackexchange.com/questions/45713/problem-with-twist-message-unqualified-id-before-numeric-constant</a>.</p>
+        <p>Hi folks!</p>
+
+<p>I&#39;m having a bit of trouble assigning values to a Twist type message, my code below runs into an error:</p>
+
+<pre><code>    /home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:183:22: error: expected unqualified-id before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:183:22: error: expected ‘;’ before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:184:22: error: expected unqualified-id before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:184:22: error: expected ‘;’ before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:185:22: error: expected unqualified-id before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:185:22: error: expected ‘;’ before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:186:23: error: expected unqualified-id before numeric constant
+/home/parcon/ros_workspace/arl_ardrone/arl_ardrone_control/src/pid_to_point.cpp:186:23: error: expected ‘;’ before numeric constant
+</code></pre>
+
+<p>The error comes from the last few lines of the code where the Twist message values are assigned. I&#39;ve looked at the types, the definition of Twist, with no success. Can anyone see where I&#39;m going wrong? 
+I expect to be able to assign a float to this value: twist_msg.linear.x</p>
+
+<p>Thanks for the help!</p>
+
+<pre><code>/*
+     *  Copyright (c) 2012, Parker Conroy
+     *  ARLab @ University of Utah
+     *  All rights reserved.
+     *
+     *
+     *  
+     *
+     *
+     *
+     *  This software is distributed in the hope that it will be useful,
+     *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+     *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+     *  GNU General Public License for more details.
+     *
+     */
+    #include &quot;ros/ros.h&quot;
+    #include &lt;math.h&gt;
+    #include &lt;tf/transform_broadcaster.h&gt;
+    #include &quot;tf/transform_listener.h&quot;
+    #include &quot;geometry_msgs/TransformStamped.h&quot;
+    #include &quot;ros/time.h&quot;
+    #include &lt;geometry_msgs/Twist.h&gt;
+
+    #define yaw 0
+    #define pitch 1
+    #define roll 2
+    #define thrust 3
+
+    #define x 0
+    #define y 1
+    #define z 2
+    #define t 3
+
+     // Variables!!!
+    tf::Transformer transformer;
+    tf::TransformListener tf_listener;
+    tf::TransformBroadcaster br;
+
+    tf::StampedTransform desired_pos;
+    tf::StampedTransform ardrone;
+    tf::StampedTransform trackee;
+    tf::StampedTransform desired_in_ardrone_coords;
+
+    ros::Publisher pub_twist;
+    geometry_msgs::Twist twist_msg;
+
+    //btQuaternion ardrone_yawed;
+
+    double new_data[4];
+    double old_data[4];
+    double integration[4];
+    double derivative[4];
+    float controls[4];
+    float min_control[4];
+    float max_control[4];
+    double pid[4];
+    float min_pid;
+    float max_pid;
+
+    float map(float value, float in_min, float in_max, float out_min, float out_max) {
+      return (float)((value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
+    }
+
+    int main(int argc, char **argv)
+    {
+        int rate= 200;
+        float inv_rate=1/rate;
+
+        ros::init(argc, argv, &quot;Tracker&quot;);
+        ros::NodeHandle n;
+        ros::Rate r(200); //update @ 200hz
+
+        memset(controls, 0, sizeof(int64_t)*4);
+        memset(old_data, 0, sizeof(double)*4);
+        memset(new_data, 0, sizeof(double)*4);
+        memset(integration, 0, sizeof(double)*4);
+        memset(derivative, 0, sizeof(double)*4);
+        memset(pid, 0, sizeof(double)*4);
+
+        //PID params
+        min_control[yaw] =-1.0;
+        min_control[roll] =-1.0;
+        min_control[pitch]=-1.0;
+        min_control[thrust]=-1.0;
+
+        max_control[yaw]=1.0;
+        max_control[roll]=1.0;
+        max_control[pitch]=1.0;
+        max_control[thrust]=1.0;
+
+        min_pid =-5.0;
+        max_pid =5.0;
+
+        float K_p[] = {1, 1, 1};
+        float K_d[] = {0,0,0};
+        float K_i[] = {0,0,0};
+
+        while (ros::ok())
+        {
+              try {
+            //Get desired position transform
+            tf_listener.waitForTransform(&quot;/optitrak&quot;, &quot;/desired_position&quot;, ros::Time(0), ros::Duration(inv_rate));
+            tf_listener.lookupTransform(&quot;/optitrak&quot;, &quot;/desired_position&quot;,  ros::Time(0), desired_pos); 
+            // Get the quad rotor transform
+            tf_listener.waitForTransform(&quot;/optitrak&quot;, &quot;/ardrone&quot;, ros::Time(0), ros::Duration(inv_rate));
+            tf_listener.lookupTransform(&quot;/optitrak&quot;, &quot;/ardrone&quot;,  ros::Time(0), ardrone);
+
+
+        //  desired_position = trackee.getOrigin(); //vector of position (x,y,z)
+        //  btMatrix3x3(trackee.getRotation()).getRPY(roll, pitch, yaw); // vector of orientation (roll, pitch, yaw)
+
+
+            // Isolate the yaw component
+             /*
+              double y1, p1, r1;
+              btMatrix3x3(ardrone.getRotation()).getRPY(r1, p1, y1);
+              ardrone_yawed(y1, 0.0, 0.0);
+              ardrone.setRotation(ardrone_yawed);
+        */
+
+              double y1, p1, r1;
+              btMatrix3x3(ardrone.getRotation()).getRPY(r1, p1, y1);
+              btQuaternion ardrone_yawed(y1, 0.0, 0.0);
+              ardrone.setRotation(ardrone_yawed);
+
+              //set up twist publisher
+              pub_twist = n.advertise&lt;geometry_msgs::Twist&gt;(&quot;/cmd_vel&quot;, 1); /* Message queue length is just 1 */
+
+              // Register the ardrone without roll and pitch with the transform system
+              br.sendTransform( tf::StampedTransform(ardrone, ros::Time::now(), &quot;/optitrak&quot;, &quot;ardrone_wo_rp&quot;) );
+
+              // Get the vector between quad without roll and pitch and the desired point
+              tf_listener.waitForTransform(&quot;/ardrone_wo_rp&quot;, &quot;/desired&quot;, ros::Time(0), ros::Duration(inv_rate));
+              tf_listener.lookupTransform(&quot;/qardrone_wo_rp&quot;, &quot;/desired&quot;, ros::Time(0), desired_in_ardrone_coords);
+
+              // Extract the x, y, &amp; z components
+             /*
+              diff = desired_in_ardrone_coords.getOrigin();
+              new_data[x] = diff.getX();
+              new_data[y] = diff.getY();
+              new_data[z] = diff.getZ();
+             */
+
+              new_data[x] = desired_in_ardrone_coords.getOrigin().getX();
+              new_data[y] = desired_in_ardrone_coords.getOrigin().getY();
+              new_data[z] = desired_in_ardrone_coords.getOrigin().getZ();
+
+
+              new_data[t] = (double)ros::Time::now().toSec();
+              ROS_DEBUG(&quot;Error: [x: %f y:  %f z: %f]&quot;, new_data[x], new_data[y], new_data[z]);
+
+              // Integrate the data
+              double deltaT = (new_data[t] - old_data[t]);
+              integration[x] += new_data[x] * deltaT;
+              integration[y] += new_data[y] * deltaT;
+              integration[z] += new_data[z] * deltaT;
+
+              ROS_DEBUG(&quot;Integration: [deltaT: %f x: %f y: %f z: %f]&quot;, deltaT, integration[x], integration[y], integration[z]);
+
+              derivative[x] = (new_data[x] - old_data[x])/deltaT;
+              derivative[y] = (new_data[y] - old_data[y])/deltaT;
+              derivative[z] = (new_data[z] - old_data[z])/deltaT;
+
+              ROS_DEBUG(&quot;Derivative: [deltaT: %f x: %f y: %f z: %f]&quot;, deltaT, derivative[x], derivative[y], derivative[z]);
+
+              // Calculate the PID values
+              pid[x] = K_p[x] * new_data[x] + K_d[x] * derivative[x] + K_i[x] * integration[x];
+              pid[y] = K_p[y] * new_data[y] + K_d[y] * derivative[y] + K_i[y] * integration[y];
+              pid[z] = K_p[z] * new_data[z] + K_d[z] * derivative[z] + K_i[z] * integration[z];
+
+              ROS_DEBUG(&quot;PID: [x: %f y:  %f z: %f]&quot;, pid[x], pid[y], pid[z]);
+
+              memcpy(old_data, new_data, sizeof(double)*4);
+
+              controls[yaw] =    map(0.0,    min_pid, max_pid, min_control[yaw], max_control[yaw]);
+              controls[roll] =   map(pid[x], min_pid, max_pid, min_control[roll], max_control[roll]);
+              controls[pitch] =  map(pid[y], min_pid, max_pid, min_control[pitch], max_control[pitch]);
+              controls[thrust] = map(pid[z], min_pid, max_pid, min_control[thrust], max_control[thrust]);
+              ROS_DEBUG(&quot;Controls: [yaw: %f roll: %f pitch: %f thrust: %f]&quot;, controls[yaw], controls[roll], controls[pitch], controls[thrust]);
+
+              //change the ref frame to inverted x-y-z coords. by modifying the directional control
+              twist_msg.linear.x=-control[roll]; 
+              twist_msg.linear.y=-control[pitch];   
+              twist_msg.linear.z=-control[thrust];
+              twist_msg.angular.z=controls[yaw];
+
+              pub_twist.publish(twist_msg);
+
+              } catch (...) {
+                ROS_ERROR(&quot;Failed on Trackee TF&quot;);}
+
+
+        }//while ros ok      
+
+    }//main
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/1936">0pc0</a> on 2012-11-12 13:33:47 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>If you <code>#define x 0</code> then <code>twist.linear.x</code> is going to turn into <code>twist.linear.0</code> after the preprocessor.</p>
+
+<p>Don&#39;t <code>#define</code> single characters unless you hate happiness.</p>
+
+<p>More here: <a href="http://hbfs.wordpress.com/2009/11/17/defines-are-evil/">#defines are EVIL</a></p>
+
+<p>As an aside, if you look at your preprocessor output, you&#39;ll find that your variables like <code>max_pid</code> are actually going to be <code>ma0_pid</code> and so on and so forth... So yeah, don&#39;t ever do this.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/50">jbohren</a> on 2012-11-12 16:55:03 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thank you sir! I&#39;ve learned my lesson.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1936">0pc0</a> on 2012-11-13 10:16:55 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

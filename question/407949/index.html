@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to override DEFAULT_RMW_IMPLEMENTATION ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/407949">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to override DEFAULT_RMW_IMPLEMENTATION ?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/102544/how-to-override-default-rmw-implementation">https://robotics.stackexchange.com/questions/102544/how-to-override-default-rmw-implementation</a>.</p>
+        <p>When I build things with colcon I see compiler invocations like this:</p>
+
+<pre><code>g++ -DDEFAULT_RMW_IMPLEMENTATION=rmw_fastrtps_cpp ...
+</code></pre>
+
+<p>I would like to override that preprocessor definition. How do I do that? Something like this has no effect:</p>
+
+<pre><code>export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+</code></pre>
+
+<p>On a Ubuntu 20.04 host with foxy installed, this is the only file that mentions <code>DEFAULT_RMW_IMPLEMENTATION</code>:</p>
+
+<pre><code>$ grep -rl &#39;DEFAULT_RMW_IMPLEMENTATION&#39; /opt/ros/foxy
+/opt/ros/foxy/share/rmw_implementation/cmake/rmw_implementationExport.cmake
+</code></pre>
+
+<p>Within that file, here is the section that sets the <code>CPPFLAGS</code>:</p>
+
+<pre><code>$ grep -nC2 &#39;DEFAULT_RMW_IMPLEMENTATION&#39; /opt/ros/foxy/share/rmw_implementation/cmake/rmw_implementationExport.cmake
+55-
+56-set_target_properties(rmw_implementation::rmw_implementation PROPERTIES
+57:  INTERFACE_COMPILE_DEFINITIONS &quot;DEFAULT_RMW_IMPLEMENTATION=rmw_fastrtps_cpp&quot;
+58-  INTERFACE_LINK_LIBRARIES &quot;rcpputils::rcpputils;rcutils::rcutils;rmw::rmw&quot;
+59-)
+</code></pre>
+
+<p>Here is the package that provides that file:</p>
+
+<pre><code>$ dpkg -S /opt/ros/foxy/share/rmw_implementation/cmake/rmw_implementationExport.cmake
+ros-foxy-rmw-implementation: /opt/ros/foxy/share/rmw_implementation/cmake/rmw_implementationExport.cmake
+</code></pre>
+
+<p>Here is the version of that package at the time of this writing:</p>
+
+<pre><code>$ apt-cache policy ros-foxy-rmw-implementation
+ros-foxy-rmw-implementation:
+  Installed: 1.0.3-1focal.20220922.205522
+  Candidate: 1.0.3-1focal.20220922.205522
+  Version table:
+ *** 1.0.3-1focal.20220922.205522 500
+        500 http://packages.ros.org/ros2/ubuntu focal/main amd64 Packages
+        100 /var/lib/dpkg/status
+</code></pre>
+
+<p>Short of changing the content of this <code>*.cmake</code> file for this package, how do I change the default rmw implementation definition used by the preprocessor?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/118515">realtime-neil</a> on 2022-10-14 09:55:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>AFAIK, you cannot change the default used by <code>ros-foxy-rmw-implementation</code>, as it&#39;s hard-coded into the <code>.cmake</code> file you already found.</p>
+
+<p>The way this was implemented (not by me) is that <em>at build time</em> of <code>rmw_implementation</code>, the <code>RMW_IMPLEMENTATION</code> environment variable is checked, and if set, it gets used (<a href="https://github.com/ros2/rmw_implementation/blob/8c3c133eb070a4f19259f027cc2cea720b28eff0/rmw_implementation/CMakeLists.txt#L62-L63">here</a>) to populate a <code>target_compile_definitions(... DEFAULT_RMW_IMPLEMENTATION=...)</code> for the <code>rmw_implementation</code> target (which then gets <code>install(... export ...)</code>-ed later on, resulting in the <code>rmw_implementationExport.cmake</code> file you found).</p>
+
+<p>That file is used/loaded by <code>rmw_implementation_cmake</code> (<a href="https://github.com/ros2/rmw/blob/b635eec56ab3841965f2c1db39e0143d51304c79/rmw_implementation_cmake/cmake/get_default_rmw_implementation.cmake">here</a> fi) to determine which value it should return in case the <code>RMW_IMPLEMENTATION</code> environment variable isn&#39;t set.</p>
+
+<p>While you probably have your reasons, I must point out the intended way for this to be used is to set the <code>RMW_IMPLEMENTATION</code> environment variable before starting any nodes. Regardless of what the value of <code>DEFAULT_RMW_IMPLEMENTATION</code> is, the RMW corresponding to <code>RMW_IMPLEMENTATION</code> will be loaded (unless the <code>RMW_IMPLEMENTATION_DISABLE_RUNTIME_SELECTION</code> CMake option of <code>rmw_implementation</code> was set when it was built).</p>
+
+<p>Note also that AFAIK, setting <code>RMW_IMPLEMENTATION</code> at build time will <em>not</em> affect anything other than the value returned by CMake functions like <code>get_default_rmw_implementation(..)</code> and the value passed to the compiler. There don&#39;t appear to be any other code paths taken or code excluded or included based on that value anywhere in the core packages (in other words: the core ROS 2 packages will behave exactly the same, whether or not you set that variable, as all RMWs are loaded at runtime anyway, including any default, if configured).</p>
+
+<p>Having written that: the direct answer to your question would seem to be: you can change the value which ends up in <code>DEFAULT_RMW_IMPLEMENTATION</code> by setting the <code>RMW_IMPLEMENTATION</code> environment variable during the build of the <code>rmw_implementation</code> package. You might also be able to pass the value to CMake as a <code>--cmake-arg</code> using <code>-DRMW_IMPLEMENTATION=...</code> (<a href="https://github.com/ros2/rmw_implementation/blob/8c3c133eb070a4f19259f027cc2cea720b28eff0/rmw_implementation/CMakeLists.txt#L37-L42">this</a> seems to suggest that). This would make it somewhat more manageable, as CMake args can be more easily stored in files.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2022-10-15 08:53:42 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>This was also discussed in <a href="https://discourse.ros.org/t/change-the-default-dds-implementation/2813/2">Change the default DDS implementation</a> on ROS Discourse, which seems like it answers your question as well. I took the time to add some more detail and link to some of the files involved.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-10-15 08:54:54 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

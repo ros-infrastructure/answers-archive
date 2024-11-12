@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Having problems with my odometry code - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/90316">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Having problems with my odometry code</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/54792/having-problems-with-my-odometry-code">https://robotics.stackexchange.com/questions/54792/having-problems-with-my-odometry-code</a>.</p>
+        <p>Update: Added retrieve pose from gazebo on setting initial pose in rviz. </p>
+
+<p>I am having two problems with this code if someone has the time to look at it I would greatly appreciate their time.I tried to document the code as clearly as possible so it would be easy to follow.</p>
+
+<p>First: The robot in both gazebo and rviz run backwards. This is based on the values return by move<em>base as can be seen in the code for cmd</em>vel. It is my understanding that a negative value should cause the robot to move forward and that move<em>base navigation is not trying to move away from the goal. The setting of fixed frame does not affect the direction of the robot. Why is move base sending negative values if it expects the robot to move forward. If  move</em>base thought the goal was behind the robot then why not rotate?</p>
+
+<p>Second: The robot moves in a straight line regardless of the trajectory path. As if it things the goal is directly in front of it at all times. The initial pose I set is 45 degrees off the goal line. There is no attempt to rotate toward the goal. At some point it stops moving and starts rotating in a circle. I believe after it thinks it has reached the goal.</p>
+
+<p>Below is a pic the of rviz image and the output from the ROS<em>INFO in the code showing the values as given by both move</em>base and ros-gazebo plugin.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/13816971304688117.png" alt="image description"></p>
+
+<pre><code>#include &lt;string&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/transform_broadcaster.h&gt;
+#include &lt;tf2_ros/static_transform_broadcaster.h&gt;
+#include &lt;std_msgs/String.h&gt;
+#include &lt;std_msgs/Float64.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/TransformStamped.h&gt;
+#include &lt;geometry_msgs/Quaternion.h&gt;
+#include &lt;geometry_msgs/Pose.h&gt;
+#include &lt;geometry_msgs/PoseWithCovarianceStamped.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+#include &lt;sensor_msgs/JointState.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/time_synchronizer.h&gt;
+#include &lt;control_msgs/JointControllerState.h&gt;
+#include &lt;gazebo_msgs/GetModelState.h&gt;
+#include &lt;gazebo_msgs/ModelState.h&gt;
+
+
+using namespace sensor_msgs;
+using namespace message_filters;
+const double wheel_track = .40;  // distance between two wheels in meters  (1-base) sub meters
+const double wheel_diameter = .2; 
+
+
+//*************************************************************
+//*****  Class: process initial pose
+//*****         process cmd_vel topic (twist msgs) from move_base
+//*************************************************************
+class PublishOdometry
+{
+public:
+  PublishOdometry()
+  {
+     // Listen and wait for initial pose from rviz navigation panel
+     // Nothing hanppens until we recieve the initialpose message
+     subInitialPose = n.subscribe(&quot;/initialpose&quot;, 1, &amp;PublishOdometry::handelerInitialPose,this);
+  }
+
+
+void handelerInitialPose(geometry_msgs::PoseWithCovarianceStamped msg)
+{
+     // Sends static latch transforms and initial odometry on recipt of intial pose
+     // Sets up sequence handeler for left and right wheels cmd_vel msgs
+
+     // advertise topics used in handelerJointControllerState
+     pubOdometry    = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;/odom&quot;, 10);
+     pubJointState  = n.advertise&lt;sensor_msgs::JointState&gt;(&quot;/joint_states&quot;, 10);
+
+
+     // take pose from gazebo: ignore rviz pose: Should override initialpose topic and re-issue it here.
+     ros::ServiceClient client = n.serviceClient&lt;gazebo_msgs::GetModelState&gt;(&quot;/gazebo/get_model_state&quot;);
+     gazebo_msgs::GetModelState getmodelstate;
+     getmodelstate.request.model_name =&quot;rrbot&quot;;
+     client.call(getmodelstate);
+
+
+     // set starting data x,y and theta for odometry used in handelerJointControllerState
+     theta = getmodelstate.response.pose.orientation.z;
+     x     = getmodelstate.response.pose.position.x; 
+     y     = getmodelstate.response.pose.position.y;
+
+
+     // set up data for transform and odometry
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id = &quot;base_link&quot;;
+     odom_trans.header.stamp =  msg.header.stamp;
+     odom_trans.transform.translation.x = getmodelstate.response.pose.position.x;
+     odom_trans.transform.translation.y = getmodelstate.response.pose.position.y;
+     odom_trans.transform.translation.z = getmodelstate.response.pose.position.z;
+     odom_trans.transform.rotation      = getmodelstate.response.pose.orientation;
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg.header.stamp;
+     odometry.pose.pose = getmodelstate.response.pose;
+
+
+     // publish initial pose
+     odom_broadcaster.sendTransform(odom_trans);  // publish initial odom-&gt;base_link transform
+     pubOdometry.publish(odometry);               // publish initial pose odom-&gt;base_link 
+     publishLatchTransforms();                    // publish static latch transforms for fixed links
+
+     // Setup sync&#39;d joint state callbacks : topics published by ros-gazebo-plugin
+     j1_sub.reset(new Subscriber&lt;control_msgs::JointControllerState&gt;(n, &quot;/rrbot/joint1_position_controller/state&quot;, 10));
+     j2_sub.reset(new Subscriber&lt;control_msgs::JointControllerState&gt;(n, &quot;/rrbot/joint2_position_controller/state&quot;, 10));
+     sync.reset(new TimeSynchronizer&lt;control_msgs::JointControllerState, 
+                                     control_msgs::JointControllerState&gt;(*j1_sub, *j2_sub, 10));
+     sync-&gt;registerCallback(boost::bind(&amp;PublishOdometry::handelerJointControllerState, this, _1, _2));
+}
+
+void publishLatchTransforms()
+{
+  // Send static link transforms
+  geometry_msgs::TransformStamped msg;
+
+  msg.header.stamp = ros::Time::now();
+  msg.transform.translation.x = 0.05;
+  msg.transform.translation.y = 0;
+  msg.transform.rotation.x =  0.0;
+  msg.transform.rotation.y =  0.0;
+  msg.transform.rotation.z =  0.0;
+  msg.transform.rotation.w =  1;
+
+  msg.header.frame_id = &quot;base_link&quot;;   
+  msg.transform.translation.z = 0.1;
+  msg.child_frame_id = &quot;tower_link&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;tower_link&quot;;   
+  msg.transform.translation.z = 0.3;
+  msg.child_frame_id = &quot;hokuyo_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+
+  msg.header.frame_id = &quot;tower_link&quot;;   
+  msg.transform.translation.z = 0.3;
+  msg.child_frame_id = &quot;camera_frame&quot;;
+  static_broadcaster.sendTransform(msg);
+}
+
+
+void handelerJointControllerState(const control_msgs::JointControllerStateConstPtr&amp; msg1,
+                                  const control_msgs::JointControllerStateConstPtr&amp; msg2)
+{
+     // Called when both a right and left joint cmd velocity msg is avaialbe from ros-gazebo-plugin 
+     // Based on Dead Reckoning in : http://rossum.sourceforge.net/papers/DiffSteer/
+
+     double  dt = msg1-&gt;time_step;             // elapsed time in seconds
+     float   j1 = msg1-&gt;process_value*dt;      // calc distance using velocity in meters/sec
+     float   j2 = msg2-&gt;process_value*dt;  
+
+     if (msg1-&gt;set_point == 0) j1 = 0.0;       // ignore none commands
+     if (msg2-&gt;set_point == 0) j2 = 0.0;
+
+     float distance  =   ( (j1 + j2) / 2.0);          // distance in meters
+     float dtheta    =   ( (j1 - j2) / wheel_track);  // rotation                                                
+     float dx = distance*cos(theta);
+     float dy = distance*sin(theta);     
+
+     theta = theta + dtheta; 
+     x = x + dx;
+     y = y + dy; 
+
+    //***** publish base_link-&gt;odom transform
+
+     geometry_msgs::Quaternion  quaternion;
+     quaternion.x = 0.0;
+     quaternion.y = 0.0; 
+     quaternion.z = -sin(theta);           
+     quaternion.w = cos(theta);  
+
+     geometry_msgs::TransformStamped odom_trans;
+     odom_trans.header.frame_id = &quot;odom&quot;;
+     odom_trans.child_frame_id  = &quot;base_link&quot;;
+     odom_trans.header.stamp    =  msg1-&gt;header.stamp;
+     odom_trans.transform.translation.x = x;
+     odom_trans.transform.translation.y = y;
+     odom_trans.transform.translation.z = theta;
+     odom_trans.transform.rotation = quaternion;
+
+     odom_broadcaster.sendTransform(odom_trans);
+
+
+     ROS_INFO(&quot;pv1=[%f] pv2=[%f] &quot;,msg1-&gt;process_value, msg2-&gt;process_value);
+     ROS_INFO(&quot;er1=[%f] er2=[%f] &quot;,msg1-&gt;error, msg2-&gt;error);
+     ROS_INFO(&quot;sp1=[%f] sp2=[%f] &quot;,msg1-&gt;set_point, msg2-&gt;set_point);
+     ROS_INFO(&quot;ts1=[%f] ts2=[%f] &quot;,msg1-&gt;time_step, msg2-&gt;time_step);
+     ROS_INFO(&quot;x =[%f], y  =[%f] &quot;,x, y);
+
+    //***** publish base_link-&gt;odom odometry
+
+     nav_msgs::Odometry odometry;
+     odometry.header.frame_id = &quot;odom&quot;;
+     odometry.child_frame_id  = &quot;base_link&quot;;
+     odometry.header.stamp    = msg1-&gt;header.stamp;
+
+     odometry.pose.pose.position.x  = x;
+     odometry.pose.pose.position.y  = y;
+     odometry.pose.pose.position.z  = 0;
+     odometry.pose.pose.orientation = quaternion;
+     odometry.twist.twist.linear.x  = dx/dt;       // convert back to velocities
+     odometry.twist.twist.linear.y  = dy/dt; 
+     odometry.twist.twist.angular.z = dtheta/dt;   
+
+     pubOdometry.publish(odometry);              
+
+     //***** send joint states to robot_state_publisher
+     sendJointStates(msg1,msg2);
+}
+
+
+
+void sendJointStates(const control_msgs::JointControllerStateConstPtr&amp; msg1, 
+                     const control_msgs::JointControllerStateConstPtr&amp; msg2)
+{
+  // Send joint states to robot_state_publisher
+  sensor_msgs::JointState jointStateMsg;
+
+  jointStateMsg.header.stamp = msg1-&gt;header.stamp;
+  jointStateMsg.name.resize(2);
+  jointStateMsg.position.resize(2);
+
+  jointStateMsg.name[0] = &quot;Joint1&quot;;
+  jointStateMsg.position[0] = msg1-&gt;process_value;
+
+  jointStateMsg.name[1] = &quot;Joint2&quot;;
+  jointStateMsg.position[1] = msg2-&gt;process_value;
+
+  pubJointState.publish(jointStateMsg);
+}
+
+private:
+
+   float x,y;
+   float theta;
+
+   ros::NodeHandle n;
+   ros::Publisher pubOdometry;
+   ros::Publisher pubJointState;
+   tf2_ros::TransformBroadcaster odom_broadcaster;
+   tf2_ros::StaticTransformBroadcaster static_broadcaster;
+   ros::Subscriber subInitialPose;
+
+
+   boost::shared_ptr&lt;Subscriber&lt;control_msgs::JointControllerState&gt; &gt; j1_sub;
+   boost::shared_ptr&lt;Subscriber&lt;control_msgs::JointControllerState&gt; &gt; j2_sub;
+   boost::shared_ptr&lt;TimeSynchronizer&lt;control_msgs::JointControllerState, control_msgs::JointControllerState&gt; &gt; sync;
+
+};  //************** PublishOdometry endof Class
+
+
+
+
+//*************************************************************
+//*****  Class: process cmd_vel  (twist messages)  and send as joint cmd vel to wheels
+//*****  Listen and wait on cmd_vel topic from move_base navigation
+//*****  move_base will send cmd_vel (twist messages) after recieving at set goal. 
+//*************************************************************
+class PublishCmdVel
+{
+public:
+  PublishCmdVel()
+  {  
+     // Advertize joint vel command topic to ros-gazebo-plugin.
+     pubRightVel = n.advertise&lt;std_msgs::Float64&gt;(&quot;/rrbot/joint1_position_controller/command&quot;, 10);
+     pubLeftVel  = n.advertise&lt;std_msgs::Float64&gt;(&quot;/rrbot/joint2_position_controller/command&quot;, 10);
+
+     // Subscribe to cmd_vel published by move_base.
+     // This topic is not published until a set goal is sent to move_base 
+     subTwist    = n.subscribe(&quot;/cmd_vel&quot;, 10, &amp;PublishCmdVel::handelerTwist,this);
+  } 
+
+
+
+void handelerTwist(const geometry_msgs::Twist msg)
+{ 
+   // Process twist msg : send right and left cmd velocity msg to joints.
+   std_msgs::Float64 cmdVel1;
+   std_msgs::Float64 cmdVel2;  
+
+   ROS_INFO(&quot;liner.x[%f]  angular.z[%f]&quot;,msg.linear.x , msg.angular.z);
+
+   float vel1 =  (msg.linear.x - msg.angular.z * (wheel_track/2) )*(2/wheel_diameter);
+   float vel2 =  (msg.linear.x + msg.angular.z * (wheel_track/2) )*(2/wheel_diameter);
+
+   cmdVel1.data = vel1; 
+   cmdVel2.data = vel2;
+   pubLeftVel.publish(cmdVel1);
+   pubRightVel.publish(cmdVel2);
+} 
+
+private:
+   ros::NodeHandle n;
+
+   ros::Publisher pubRightVel;
+   ros::Publisher pubLeftVel;
+   ros::Subscriber subTwist;
+
+
+};  //**************** PublishCmdVel Endof Class
+
+
+int main(int argc, char **argv)
+{ 
+  ros::init(argc, argv, &quot;robot_odometry&quot;);
+
+  PublishCmdVel pc;   // Move base naviagtion to gazebo robot
+  PublishOdometry po; // Gazebo robot to move base navigation
+
+  ros::spin();
+
+  return 0;
+}
+</code></pre>
+
+<p>Data::********************************************************</p>
+
+<pre><code>[ INFO] [1381690469.603390691, 12.264000000]: pv1=[-1.001473] pv2=[-1.001638]
+[ INFO] [1381690469.603450491, 12.264000000]: er1=[0.001473] er2=[0.001638] 
+[ INFO] [1381690469.603484294, 12.264000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690469.603515735, 12.264000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690469.603546256, 12.264000000]: x =[-4.965168e-01], y =[-6.101050e-03]
+[ INFO] [1381690469.837938544, 12.287000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690470.599817740, 12.364000000]: pv1=[-1.001474] pv2=[-1.001633]
+[ INFO] [1381690470.599885755, 12.364000000]: er1=[0.001474] er2=[0.001633] 
+[ INFO] [1381690470.599920818, 12.364000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690470.599956022, 12.364000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690470.599990882, 12.364000000]: x =[-5.065324e-01], y =[-6.083413e-03]
+[ INFO] [1381690470.988638996, 12.402000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690471.601222457, 12.464000000]: pv1=[-1.001474] pv2=[-1.001627]
+[ INFO] [1381690471.601291815, 12.464000000]: er1=[0.001474] er2=[0.001627] 
+[ INFO] [1381690471.601326997, 12.464000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690471.601364980, 12.464000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690471.601400043, 12.464000000]: x =[-5.165478e-01], y =[-6.065815e-03]
+[ INFO] [1381690472.115598898, 12.515000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690472.602594895, 12.564000000]: pv1=[-1.001472] pv2=[-1.001621]
+[ INFO] [1381690472.602675567, 12.564000000]: er1=[0.001472] er2=[0.001621] 
+[ INFO] [1381690472.602770657, 12.564000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690472.602852917, 12.564000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690472.602937731, 12.564000000]: x =[-5.265633e-01], y =[-6.048255e-03]
+[ INFO] [1381690473.296609439, 12.632000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690473.606637420, 12.664000000]: pv1=[-1.001471] pv2=[-1.001615]
+[ INFO] [1381690473.606697236, 12.664000000]: er1=[0.001471] er2=[0.001615] 
+[ INFO] [1381690473.606728971, 12.664000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690473.606763009, 12.664000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690473.606794329, 12.664000000]: x =[-5.365787e-01], y =[-6.030733e-03]
+[ INFO] [1381690474.548521253, 12.758000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690474.606357784, 12.764000000]: pv1=[-1.001468] pv2=[-1.001610]
+[ INFO] [1381690474.606425920, 12.764000000]: er1=[0.001468] er2=[0.001610] 
+[ INFO] [1381690474.606460867, 12.764000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690474.606482509, 12.764000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690474.606499956, 12.764000000]: x =[-5.465941e-01], y =[-6.013248e-03]
+
+[ INFO] [1381690475.604766829, 12.864000000]: pv1=[-0.995905] pv2=[-0.995618]
+[ INFO] [1381690475.604821548, 12.864000000]: er1=[-0.004095] er2=[-0.004382] 
+[ INFO] [1381690475.604851440, 12.864000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690475.604878770, 12.864000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690475.604909148, 12.864000000]: x =[-5.565517e-01], y =[-5.995898e-03]
+[ INFO] [1381690475.726373970, 12.875000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690476.605963143, 12.964000000]: pv1=[-0.993403] pv2=[-0.993588]
+[ INFO] [1381690476.606026469, 12.964000000]: er1=[-0.006597] er2=[-0.006412] 
+[ INFO] [1381690476.606058612, 12.964000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690476.606092447, 12.964000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690476.606123914, 12.964000000]: x =[-5.664866e-01], y =[-5.978517e-03]
+
+[ INFO] [1381690476.928189215, 12.996000000]: liner.x[-0.100000]  angular.z[0.000000]
+[ INFO] [1381690477.603723783, 13.064000000]: pv1=[-0.996015] pv2=[-0.995133]
+[ INFO] [1381690477.603789266, 13.064000000]: er1=[-0.003985] er2=[-0.004867] 
+[ INFO] [1381690477.603826042, 13.064000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690477.603859148, 13.064000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690477.603893081, 13.064000000]: x =[-5.764423e-01], y =[-5.961146e-03]
+
+[ INFO] [1381690478.098446977, 13.113000000]: liner.x[-0.100000]  angular.z[0.000000]
+[ INFO] [1381690478.616513187, 13.164000000]: pv1=[-1.000925] pv2=[-1.000402]
+[ INFO] [1381690478.616573683, 13.164000000]: er1=[0.000925] er2=[0.000402] 
+[ INFO] [1381690478.616609597, 13.164000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690478.616644218, 13.164000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690478.616674062, 13.164000000]: x =[-5.864490e-01], y =[-5.943465e-03]
+
+[ INFO] [1381690479.265940182, 13.229000000]: liner.x[-0.100000]  angular.z[0.000000]
+[ INFO] [1381690479.613516892, 13.264000000]: pv1=[-1.001179] pv2=[-1.000929]
+[ INFO] [1381690479.613612931, 13.264000000]: er1=[0.001179] er2=[0.000929] 
+[ INFO] [1381690479.613667930, 13.264000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690479.613711488, 13.264000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690479.613757163, 13.264000000]: x =[-5.964595e-01], y =[-5.925646e-03]
+[ INFO] [1381690480.484175752, 13.350000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+
+[ INFO] [1381690480.617057104, 13.364000000]: pv1=[-1.001615] pv2=[-1.001495]
+[ INFO] [1381690480.617127616, 13.364000000]: er1=[0.001615] er2=[0.001495] 
+[ INFO] [1381690480.617167269, 13.364000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690480.617202100, 13.364000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690480.617237475, 13.364000000]: x =[-6.064750e-01], y =[-5.907756e-03]
+
+
+[ INFO] [1381690481.609987358, 13.464000000]: pv1=[-1.001427] pv2=[-1.001442]
+[ INFO] [1381690481.610059319, 13.464000000]: er1=[0.001427] er2=[0.001442] 
+[ INFO] [1381690481.610099430, 13.464000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690481.610133888, 13.464000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690481.610167974, 13.464000000]: x =[-6.164894e-01], y =[-5.889838e-03]
+[ INFO] [1381690481.720369313, 13.474000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690482.612124481, 13.564000000]: pv1=[-1.001405] pv2=[-1.001476]
+[ INFO] [1381690482.612259451, 13.564000000]: er1=[0.001405] er2=[0.001476] 
+[ INFO] [1381690482.612299657, 13.564000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690482.612339847, 13.564000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690482.612377116, 13.564000000]: x =[-6.265037e-01], y =[-5.871924e-03]
+[ INFO] [1381690482.962601634, 13.599000000]: liner.x[-0.100000]  angular.z[0.000000]
+
+[ INFO] [1381690483.614193993, 13.664000000]: pv1=[-1.001387] pv2=[-1.001493]
+[ INFO] [1381690483.614296509, 13.664000000]: er1=[0.001387] er2=[0.001493] 
+[ INFO] [1381690483.614364448, 13.664000000]: sp1=[-1.000000] sp2=[-1.000000] 
+[ INFO] [1381690483.614438756, 13.664000000]: ts1 =[0.010000] ts2 =[0.010000]
+[ INFO] [1381690483.614485431, 13.664000000]: x =[-6.365181e-01], y =[-5.854027e-03]
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-10-13 10:49:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <ol>
+<li><p>What exactly is wrong, i.e. what would you expect differently? When you look at rviz, what are you displaying - /odom -&gt; /base_link? In that case, if the robot moves backwards in gazebo/real world and does the same in rviz based on the odometry, then everything is fine!</p></li>
+<li><p>You mentioned move_base. I assume you use that for control. If you are unsure about odometry or other basics, I&#39;d highly recommend not using move_base. Use a joystick/keyboard control to manually send out cmd_vel messages, so you don&#39;t debug two things at once.</p></li>
+<li><p>Make the position outputs fixed instead of scientific notation. Besides that they look OK in principle. Maybe just a wrong scaling factor. Linear.x is negative and the x coord gets more negative. That looks alright.</p></li>
+</ol>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/122">dornhege</a> on 2013-10-13 20:48:45 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It is my understanding that a negative value should cause the robot to move forward and that move_base navigation is not trying to move away from the goal. The setting of fixed frame does not affect the direction of the robot. Why is move base sending negative values if it expects the robot to move forward.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-10-14 01:57:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Indeed, if everything looks ok in principle then why does the robot not follow the navigation path. How can I look at move_base to see what it thinks it is doing.  The model is running in Gazebo is there a joystick / keyboard control for gazebo? In either case I want to use the move base for object avoidance and mapping.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5119">rnunziata</a> on 2013-10-14 02:06:42 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Negative velocity will move along the negative x-axis (relative to the robot!).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2013-10-14 03:42:18 UTC</p></div>
+</div>
+<div class="comment">
+          <p>In any case you should debug things independently. First verify odometry is correct without move_base, afterwards turn to move_base. For velocity control you can use any of the generic teleoperation packages. They only send out /cmd_vel, which is independent of gazebo/reality.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/122">dornhege</a> on 2013-10-14 03:43:32 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>Changing to ros::Time:now instead of message header time fixed a few problems. Also removed joint states to robot state publisher and issue my own static transforms for fixed rotation wheels. Which is less costly and robot state publisher never actually published correct transforms for the wheels. Also corrected dx dy calculation.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5119">rnunziata</a> on 2013-10-20 10:40:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

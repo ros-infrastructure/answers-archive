@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Any experience about difference between controller design in ROS and Matlab - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/12689">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Any experience about difference between controller design in ROS and Matlab</h2>
+      <div class="question">
+        <p>Hi,</p>
+
+<p>I have designed a backstepping controller and verified that it worked well in Matlab. The goal of controller is to make the hovercraft follow the given circular trajectory in 2D.
+But the controller implemented in C++ does not work well in ROS. The hovercraft mostly rotates in gazebo simulation wheares it follows the circular trajectory in Matlab.
+I think I have checked every variables, time step, and etc.
+If there is anyone who has those experience, 
+could you let me know something which I have to check to make my controller implemented in C++ work in ROS ?</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/Wrench.h&gt;
+#include &lt;algorithm&gt;
+#include &lt;eigen3/Eigen/Core&gt;
+#include &lt;eigen3/Eigen/LU&gt;
+
+//#include &lt;LinearMath/btQuaternion.h&gt; // Needed to convert rotation ...
+//#include &lt;LinearMath/btMatrix3x3.h&gt;  // ... quaternion into Euler angles
+
+
+class Controller
+{
+public:
+  Controller();
+
+private:
+  void controllerCallback(const nav_msgs::Odometry::ConstPtr&amp; controller);
+
+  ros::NodeHandle nh_;
+  ros::Publisher left_fan_force_pub_;
+  ros::Publisher right_fan_force_pub_;
+  ros::Subscriber odom_sub_;
+
+  double goal_x;
+  double goal_y;
+  double old_time;
+  double old_x;
+  double old_y;
+  Eigen::Vector2d old_alpha;
+  bool init_odom_;
+  double init_odom_time_;
+  geometry_msgs::Wrench left_fan_force_;
+  geometry_msgs::Wrench right_fan_force_;
+};
+
+
+Controller::Controller()
+{
+  init_odom_ = true;
+  old_time = ros::Time::now().toSec();
+  old_x = 0;
+  old_y = 0;
+  Eigen::Vector2d old_alpha(0, 0);
+  goal_x = 5.0;
+  goal_y = 0.0;
+  psi = 0;
+  left_fan_force_pub_ = nh_.advertise&lt;geometry_msgs::Wrench&gt;(&quot;left_fan_force&quot;, 1);
+  right_fan_force_pub_ = nh_.advertise&lt;geometry_msgs::Wrench&gt;(&quot;right_fan_force&quot;, 1);
+  odom_sub_ = nh_.subscribe&lt;nav_msgs::Odometry&gt;(&quot;base_pose_ground_truth&quot;, 10, &amp;Controller::controllerCallback, this);
+}
+
+void Controller::controllerCallback(const nav_msgs::Odometry::ConstPtr&amp; odom)
+{
+  if (init_odom_){
+    init_odom_time_ = odom-&gt;header.stamp.toSec();
+    init_odom_ = false;
+  }
+  double m = 15.67;
+  double d = 0.2;
+  double Izz = 0.952;
+  double u_des = 0.2;
+  double omega_des = 0.1;
+  double time = odom-&gt;header.stamp.toSec() - init_odom_time_;
+  double dt = time - old_time;
+  double psi_des = omega_des*time;
+
+
+//  std::cout &lt;&lt; 2*sin(psi_des) &lt;&lt; &quot; &quot; &lt;&lt; -2*cos(psi_des) + 2 &lt;&lt; std::endl;
+//  std::cout &lt;&lt; psi_des &lt;&lt; std::endl;
+
+  double q0 = odom-&gt;pose.pose.orientation.w;
+  double q1 = odom-&gt;pose.pose.orientation.x;
+  double q2 = odom-&gt;pose.pose.orientation.y;
+  double q3 = odom-&gt;pose.pose.orientation.z;
+
+  double vx = odom-&gt;twist.twist.linear.x;
+  double vy = odom-&gt;twist.twist.linear.y;
+  double omega = odom-&gt;twist.twist.angular.z;
+
+  double psi = atan2(2*(q0*q3+q1*q2),1-2*(q2*q2+q3*q3));
+
+//  std::cout &lt;&lt; psi &lt;&lt; std::endl;
+
+  Eigen::Vector2d vel(vx, vy);
+  Eigen::Matrix2d R; // This R is actaully the transposed R.
+  R &lt;&lt; cos(psi), sin(psi),
+      -sin(psi), cos(psi); 
+
+  Eigen::Vector2d delta(-0.05, 0);
+  Eigen::Vector2d nu = R*vel;
+  Eigen::Vector2d Pdot_des(u_des*cos(psi_des), u_des*sin(psi_des));
+  Eigen::Vector2d P2dot_des(-u_des*omega_des*sin(psi_des),
+                             u_des*omega_des*cos(psi_des));
+
+  double dv = 0.45; //translational damping coeffcient ;
+  double Ke = 4; // This is controller parameter
+  Eigen::Matrix2d Dv;
+  Dv &lt;&lt; dv, 0, 0, dv;
+  Eigen::Matrix2d Kphi;
+  Kphi &lt;&lt; 2, 0, 0, 2; // This is controller parameter
+  Eigen::Matrix2d M;
+  M &lt;&lt; m, 0, 0, m;
+  Eigen::Matrix2d Minv;
+  Minv &lt;&lt; 1/m, 0, 0, 1/m;
+
+  Eigen::Vector2d P(odom-&gt;pose.pose.position.x, odom-&gt;pose.pose.position.y);
+  Eigen::Vector2d Pdes(2*sin(psi_des), -2*cos(psi_des) + 2);
+  Eigen::Vector2d e = R*(P - Pdes);
+  Eigen::Matrix2d B;
+  B &lt;&lt; 1, -m*delta(1), 0, m*delta(0);
+
+  Eigen::Vector2d z1 = nu - R*Pdot_des + Ke/m*e;
+  Eigen::Vector2d h = -Dv*(delta + R*Pdot_des - Ke/m*e) - M*R*P2dot_des + Ke*z1
+                      - pow(Ke, 2)/m*e;
+  Eigen::Vector2d phi = z1 - delta;
+  Eigen::Vector2d alpha = -B.inverse()*(Minv*e + h + Minv*Kphi*phi);
+  double u1 = alpha(0);
+
+//  std::cout &lt;&lt; psi &lt;&lt; std::endl;  
+//  std::cout &lt;&lt; Pdot_des(0) &lt;&lt; &quot; &quot; &lt;&lt; Pdot_des(1) &lt;&lt; std::endl;  
+//  std::cout &lt;&lt; old_time &lt;&lt; &quot; &quot; &lt;&lt; time &lt;&lt; &quot;  &quot; &lt;&lt; psi &lt;&lt; std::endl;
+
+  Eigen::Matrix2d S;
+  S &lt;&lt; 0, -omega, omega, 0;
+//  S &lt;&lt; 0, omega, -omega, 0;
+  Eigen::Vector2d e_dot = -S*e + nu - R*Pdot_des;
+  Eigen::Vector2d h_dot = -Dv*(-S*R*Pdot_des + R*P2dot_des - Ke/m*(-S*e + nu - R*Pdot_des));
+
+  Eigen::Matrix2d M_nu;
+  M_nu &lt;&lt;  dv/m, -omega, omega, dv/m;
+  Eigen::Vector2d M_u(u1/m, 0);
+  Eigen::Vector2d nu_dot = -M_nu*nu + M_u;
+
+
+/*
+  Eigen::Vector2d P2dot((odom-&gt;twist.twist.linear.x - old_x)/dt,
+                        (odom-&gt;twist.twist.linear.y - old_y)/dt);
+  old_x = odom-&gt;twist.twist.linear.x;
+  old_y = odom-&gt;twist.twist.linear.y;
+*/
+//  std::cout &lt;&lt; old_x &lt;&lt; &quot; &quot; &lt;&lt; old_y &lt;&lt; std::endl;
+
+  Eigen::Vector2d phi_dot = nu_dot + S*R*Pdot_des - R*P2dot_des +
+                            Ke/m*(-S*e + nu - R*Pdot_des);
+
+  Eigen::Vector2d alpha_dot = -B.inverse()*(Minv*e_dot + h_dot + Minv*Kphi*phi_dot);
+
+//  std::cout &lt;&lt; P2dot(0) &lt;&lt; &quot; &quot; &lt;&lt; P2dot(1) &lt;&lt; std::endl;
+
+  double alpha2dot = alpha_dot(1);
+  double alpha2 = alpha(1);
+  Eigen::Vector2d Bb(-m*delta(1), m*delta(0));
+  double dw = 0.41; //0.41;
+  double Kz2 = 2; // This is controller parameter
+  double z2 = omega - alpha(1);
+  double u2 = -Bb.dot(M*phi) + dw*alpha2 + Izz*alpha2dot - Kz2*z2;
+
+//  std::cout &lt;&lt; u1 &lt;&lt; &quot; &quot; &lt;&lt; u2 &lt;&lt; std::endl;
+
+  double f1 = 0.5*(u1 - u2/d);
+  double f2 = 0.5*(u1 + u2/d);
+
+  Eigen::Vector2d force_int(f1, f2);
+  Eigen::Vector2d force_SP = R*force_int;
+
+if (time &lt; 5){
+  std::cout &lt;&lt; u1 &lt;&lt;&quot; &quot;&lt;&lt; u2 &lt;&lt;&quot; &quot;&lt;&lt; alpha(1) &lt;&lt;&quot; &quot;&lt;&lt; alpha2dot &lt;&lt; std::endl;  
+//  std::cout &lt;&lt; nu(1) &lt;&lt;&quot; &quot;&lt;&lt; nu_dot(0) &lt;&lt;&quot; &quot;&lt;&lt; nu_dot(1) &lt;&lt; std::endl;
+//  std::cout &lt;&lt; f1 &lt;&lt; &quot; &quot; &lt;&lt; f2 &lt;&lt; std::endl;
+//  std::cout &lt;&lt; P(0) &lt;&lt; &quot; &quot; &lt;&lt; P(1) &lt;&lt; std::endl;
+}
+
+  left_fan_force_.force.x = force_SP(0);
+  right_fan_force_.force.x = force_SP(1);
+
+  old_time = time;
+}
+
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;hover_controller&quot;);
+  Controller hover_controller;
+  ros::spin();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/1429">maruchi</a> on 2012-01-19 02:29:27 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Marcus, there are differences in the open loop test both in gazebo and Matlab.  When I apply unit force or moment both in gazebo and Matlab, the outputs of positions and velocities from gazebo are much small than those from Matlab. Is this difference related to time problem in gazebo ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1429">maruchi</a> on 2012-01-23 04:46:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Furthermore, I assume you built a model of the hovercraft for your gazebo simulation, too. This model might differ from the one you are using in your Matlab simulation and hence you might need to adjust your parameters accordingly.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2012-01-19 11:53:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Which simulation environment are you usingin Matlab? As Stefan already pointed out, timing issues can lead to big differences in the behaviour/performance of the controller. Do you use a real-time environment?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/62">bit-pirate</a> on 2012-01-19 11:48:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I know when I was porting things from MATLAB, I would save inputs and outputs to functions as .MAT files.  You can then read from these MAT files to create unit tests.  This way you can insure that your math is ported over correctly, with no uncertainty.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/9">mjcarroll</a> on 2012-01-19 11:07:30 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hi, Stuart, I put the controller code. I check the values of every variables for the first few steps. They are similar to the values from Matlab simulation, but the trend of values are different from each other, between ROS and Matlab. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1429">maruchi</a> on 2012-01-19 10:50:03 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Without seeing your code, it&#39;s hard to say what&#39;s wrong.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/46">sglaser</a> on 2012-01-19 05:20:29 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You should write some tests and check if the results of both implementations are the same for identical input data. Of course, depending on the scenario, timing issues might also play a role, e.g. if you try to run your C++ code on a real system with (unsatisfied) hard real-time constraints.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/57">Stefan Kohlbrecher</a> on 2012-01-19 05:09:41 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The question is quite vague, and the answer is quite likely to be ultra specific to your particular code. You&#39;ll need to provide much more information. </p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/351">Asomerville</a> on 2012-01-19 03:45:29 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

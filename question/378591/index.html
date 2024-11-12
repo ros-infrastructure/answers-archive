@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Moveit Motion planning API, waypoints not increasing with time - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/378591">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Moveit Motion planning API, waypoints not increasing with time</h2>
+      <div class="question">
+        <p>I just started trying to work with the motion planner api as per <a href="https://ros-planning.github.io/moveit_tutorials/doc/motion_planning_api/motion_planning_api_tutorial.html">https://ros-planning.github.io/moveit_tutorials/doc/motion_planning_api/motion_planning_api_tutorial.html</a>. To actually try executing it I followed <a href="https://answers.ros.org/question/310827/how-can-we-execute-a-plan-via-motion-planning-interface-in-moveit/">this</a> with </p>
+
+<pre><code>  moveit::planning_interface::MoveGroupInterface move_group_interface(PLANNING_GROUP);
+  moveit::planning_interface::MoveGroupInterface::Plan my_plan;
+  my_plan.trajectory_ = response.trajectory;
+  move_group_interface.execute(my_plan);
+</code></pre>
+
+<p>The error given when trying to actually move the robot :</p>
+
+<pre><code>[ INFO] [1621434276.856536029]: Execution request received
+[ERROR] [1621434276.857951441]: Trajectory message contains waypoints that are not strictly increasing in time.
+[ WARN] [1621434276.858424280]: Controller scaled_pos_joint_traj_controller failed with error INVALID_GOAL: Trajectory message contains waypoints that are not strictly increasing in time.
+[ WARN] [1621434276.858571201]: Controller handle scaled_pos_joint_traj_controller reports status FAILED
+[ INFO] [1621434276.858625647]: Completed trajectory execution with status FAILED ...
+[ INFO] [1621434276.858725778]: Execution completed: FAILED
+[ INFO] [1621434276.858971024]: ABORTED: Solution found but controller failed during execution
+</code></pre>
+
+<p>When I worked just with the move<em>group</em>interface and encountered this error, the solution was to eliminate a first current waypoint and let the robot figure it out. </p>
+
+<p>In this case, however, I am not sure if it&#39;s the same cause, what state would that be? If i comment out   <code>planning_scene-&gt;getCurrentStateNonConst().setToDefaultValues(joint_model_group, &quot;up&quot;);</code>, the robot doesn&#39;t start from its starting upwards pose. I am not yet familiar with how the api works, excuse me if there&#39;s an obvious solution to it.</p>
+
+<p>I am using a UR5, ubuntu 18.04, ros melodic.</p>
+
+<p>Any help is appreciated, be it ideas , links etc.</p>
+
+<p>my node:</p>
+
+<pre><code>#include &lt;pluginlib/class_loader.h&gt;
+#include &lt;ros/ros.h&gt;
+
+#include &lt;moveit/robot_model_loader/robot_model_loader.h&gt;
+#include &lt;moveit/planning_interface/planning_interface.h&gt;
+#include &lt;moveit/planning_scene/planning_scene.h&gt;
+#include &lt;moveit/kinematic_constraints/utils.h&gt;
+#include &lt;moveit_msgs/DisplayTrajectory.h&gt;
+#include &lt;moveit_msgs/PlanningScene.h&gt;
+#include &lt;moveit_visual_tools/moveit_visual_tools.h&gt;
+
+#include &lt;boost/scoped_ptr.hpp&gt;
+#include &lt;boost/foreach.hpp&gt;
+#include &lt;boost/lexical_cast.hpp&gt;
+
+# include &lt;moveit/move_group_interface/move_group_interface.h&gt;
+#include &lt;moveit/planning_scene_interface/planning_scene_interface.h&gt;
+
+#define foreach BOOST_FOREACH
+
+
+
+int main(int argc, char** argv)
+{
+  const std::string node_name = &quot;motion_planning_api&quot;;
+  ros::init(argc, argv, node_name);
+  ros::AsyncSpinner spinner(1);
+  spinner.start();
+  ros::NodeHandle node_handle(&quot;~&quot;);
+
+  const std::string PLANNING_GROUP = &quot;manipulator&quot;;
+  robot_model_loader::RobotModelLoader robot_model_loader(&quot;robot_description&quot;);
+  const moveit::core::RobotModelPtr&amp; robot_model = robot_model_loader.getModel();
+
+  moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(robot_model));
+  const moveit::core::JointModelGroup* joint_model_group = robot_state-&gt;getJointModelGroup(PLANNING_GROUP);
+
+  planning_scene::PlanningScenePtr planning_scene(new planning_scene::PlanningScene(robot_model));
+
+
+  planning_scene-&gt;getCurrentStateNonConst().setToDefaultValues(joint_model_group, &quot;up&quot;);
+
+  boost::scoped_ptr&lt;pluginlib::ClassLoader&lt;planning_interface::PlannerManager&gt;&gt; planner_plugin_loader;
+  planning_interface::PlannerManagerPtr planner_instance;
+  std::string planner_plugin_name;
+
+  if (!node_handle.getParam(&quot;planning_plugin&quot;, planner_plugin_name))
+    ROS_FATAL_STREAM(&quot;Could not find planner plugin name&quot;);
+  try
+  {
+    planner_plugin_loader.reset(new pluginlib::ClassLoader&lt;planning_interface::PlannerManager&gt;(
+        &quot;moveit_core&quot;, &quot;planning_interface::PlannerManager&quot;));
+  }
+  catch (pluginlib::PluginlibException&amp; ex)
+  {
+    ROS_FATAL_STREAM(&quot;Exception while creating planning plugin loader &quot; &lt;&lt; ex.what());
+  }
+  try
+  {
+    planner_instance.reset(planner_plugin_loader-&gt;createUnmanagedInstance(planner_plugin_name));
+    if (!planner_instance-&gt;initialize(robot_model, node_handle.getNamespace()))
+      ROS_FATAL_STREAM(&quot;Could not initialize planner instance&quot;);
+    ROS_INFO_STREAM(&quot;Using planning interface &#39;&quot; &lt;&lt; planner_instance-&gt;getDescription() &lt;&lt; &quot;&#39;&quot;);
+  }
+  catch (pluginlib::PluginlibException&amp; ex)
+  {
+    const std::vector&lt;std::string&gt;&amp; classes = planner_plugin_loader-&gt;getDeclaredClasses();
+    std::stringstream ss;
+    for (const auto&amp; cls : classes)
+      ss &lt;&lt; cls &lt;&lt; &quot; &quot;;
+    ROS_ERROR_STREAM(&quot;Exception while loading planner &#39;&quot; &lt;&lt; planner_plugin_name &lt;&lt; &quot;&#39;: &quot; &lt;&lt; ex.what() &lt;&lt; std::endl
+                                                         &lt;&lt; &quot;Available plugins: &quot; &lt;&lt; ss.str());
+  }
+
+
+  namespace rvt = rviz_visual_tools;
+  moveit_visual_tools::MoveItVisualTools visual_tools(&quot;base_link&quot;);
+  visual_tools.loadRobotStatePub(&quot;/display_robot_state&quot;);
+  visual_tools.enableBatchPublishing();
+  visual_tools.deleteAllMarkers();  // clear all old markers
+  visual_tools.trigger();
+
+  visual_tools.loadRemoteControl();
+
+  Eigen::Isometry3d text_pose = Eigen::Isometry3d::Identity();
+  text_pose.translation().z() = 1.75;
+  visual_tools.publishText(text_pose, &quot;Motion Planning API Demo&quot;, rvt::WHITE, rvt::XLARGE);
+
+
+  visual_tools.trigger();
+  visual_tools.prompt(&quot;Press &#39;next&#39; in the RvizVisualToolsGui window to start the demo, after you insert the scene&quot;);
+
+
+
+
+  // Pose Goal
+  // ^^^^^^^^^
+  // 
+  visual_tools.publishRobotState(planning_scene-&gt;getCurrentStateNonConst(), rviz_visual_tools::GREEN);
+  visual_tools.trigger();
+  planning_interface::MotionPlanRequest req;
+  planning_interface::MotionPlanResponse res;
+  geometry_msgs::PoseStamped pose;
+  pose.header.frame_id = &quot;base_link&quot;;
+  pose.pose.position.x = 0.3;
+  pose.pose.position.y = 0.4;
+  pose.pose.position.z = 0.75;
+  pose.pose.orientation.w = 1.0;
+
+  std::vector&lt;double&gt; tolerance_pose(3, 0.01);
+  std::vector&lt;double&gt; tolerance_angle(3, 0.01);
+
+  moveit_msgs::Constraints pose_goal =  kinematic_constraints::constructGoalConstraints(&quot;ee_link&quot;, pose,     tolerance_pose, tolerance_angle);
+
+  req.group_name = PLANNING_GROUP;
+  req.goal_constraints.push_back(pose_goal);
+
+  planning_interface::PlanningContextPtr context = planner_instance-&gt;getPlanningContext(planning_scene, req, res.error_code_);
+  context-&gt;solve(res);
+  if (res.error_code_.val != res.error_code_.SUCCESS)
+  {
+    ROS_ERROR(&quot;Could not compute plan successfully&quot;);
+    return 0;
+  }
+
+  // Visualize the result
+  // ^^^^^^^^^^^^^^^^^^^^
+  ros::Publisher display_publisher =   node_handle.advertise&lt;moveit_msgs::DisplayTrajectory&gt;(&quot;/move_group/display_planned_path&quot;, 1, true);
+  moveit_msgs::DisplayTrajectory display_trajectory;
+
+  moveit_msgs::MotionPlanResponse response;
+  res.getMessage(response);
+
+  display_trajectory.trajectory_start = response.trajectory_start;
+  display_trajectory.trajectory.push_back(response.trajectory);
+  visual_tools.publishTrajectoryLine(display_trajectory.trajectory.back(), joint_model_group);
+  visual_tools.trigger();
+  display_publisher.publish(display_trajectory);
+
+
+  robot_state-&gt;setJointGroupPositions(joint_model_group, response.trajectory.joint_trajectory.points.back().positions);
+  planning_scene-&gt;setCurrentState(*robot_state.get());
+
+  visual_tools.publishRobotState(planning_scene-&gt;getCurrentStateNonConst(), rviz_visual_tools::GREEN);
+  visual_tools.publishAxisLabeled(pose.pose, &quot;goal_1&quot;);
+  visual_tools.publishText(text_pose, &quot;Pose Goal (1)&quot;, rvt::WHITE, rvt::XLARGE);
+
+
+
+
+  // Joint Space Goals
+  // ^^^^^^^^^^^^^^^^^
+  //
+
+  visual_tools.trigger();
+  visual_tools.prompt(&quot;Press &#39;next&#39; in the RvizVisualToolsGui window to plan joint space&quot;);
+
+  moveit::core::RobotState goal_state(robot_model);
+
+  std::vector&lt;double&gt; joints_s = {1.5707, -1.5707, 0.0, -1.5707, 0.0, 0.0};
+  std::vector&lt;double&gt; joint_values = joints_s;
+
+  goal_state.setJointGroupPositions(joint_model_group, joint_values);
+  moveit_msgs::Constraints joint_goal = kinematic_constraints::constructGoalConstraints(goal_state, joint_model_group);
+  req.goal_constraints.clear();
+  req.goal_constraints.push_back(joint_goal);
+
+
+  context = planner_instance-&gt;getPlanningContext(planning_scene, req, res.error_code_);
+  context-&gt;solve(res);
+
+  if (res.error_code_.val != res.error_code_.SUCCESS)
+  {
+    ROS_ERROR(&quot;Could not compute plan successfully&quot;);
+    return 0;
+  }
+
+  res.getMessage(response);
+  display_trajectory.trajectory.push_back(response.trajectory);
+
+
+  visual_tools.publishTrajectoryLine(display_trajectory.trajectory.back(), joint_model_group);
+  visual_tools.trigger();
+  display_publisher.publish(display_trajectory);
+
+  robot_state-&gt;setJointGroupPositions(joint_model_group,     response.trajectory.joint_trajectory.points.back().positions);
+  planning_scene-&gt;setCurrentState(*robot_state.get());
+
+  visual_tools.publishRobotState(planning_scene-&gt;getCurrentStateNonConst(), rviz_visual_tools::GREEN);
+  visual_tools.publishAxisLabeled(pose.pose, &quot;goal_2&quot;);
+  visual_tools.publishText(text_pose, &quot;Joint Space Goal (2)&quot;, rvt::WHITE, rvt::XLARGE);
+
+
+
+  // EXECUTION
+  // ^^^^^^^^^
+
+  visual_tools.trigger();
+  visual_tools.prompt(&quot;Press &#39;next&#39; in the RvizVisualToolsGui window only if you want to go with the execution&quot;);
+
+  moveit::planning_interface::MoveGroupInterface move_group_interface(PLANNING_GROUP);
+  move_group_interface.setPlanningTime(10.0);
+  moveit::planning_interface::MoveGroupInterface::Plan my_plan;
+  my_plan.trajectory_ = response.trajectory;
+  move_group_interface.execute(my_plan);
+
+  visual_tools.trigger();
+  visual_tools.prompt(&quot;Press &#39;next&#39; in the RvizVisualToolsGui window to exit&quot;);
+  planner_instance.reset();
+
+  return 0;
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/74813">Io</a> on 2021-05-19 10:13:07 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>In my case the response.trajectory.joint_trajectory had no time_from_start for any points, so I manually set the time for each waypoint found, thus the exection could run.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/74813">Io</a> on 2021-05-20 05:25:04 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Can you share a code snippet?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/60501">lorepieri</a> on 2021-06-12 09:16:48 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The way i did it, I just added for each point of each trajectory of the display_trajectory a time_from_start which is a ros::duration. </p>
+
+<pre><code>for ( t from 0 to end ){
+
+    sz_tr = display_trajectory.trajectory[t].joint_trajectory.points.size();
+
+    for (i from 0 to sz_tr){
+
+      ros::Duration time_dur_ros = ros::Duration(time_dur);
+      display_trajectory.trajectory[t].joint_trajectory.points[i].time_from_start = time_dur_ros;
+      time_dur += 0.01; // this controls the speed of execution as well
+      }
+  }
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/74813">Io</a> on 2021-06-14 11:28:27 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You should use <a href="http://docs.ros.org/en/api/moveit_commander/html/classmoveit__commander_1_1move__group_1_1MoveGroupCommander.html#a5fb1d772b6d248a6c4113412eacb4330">retime_trajectory</a> if you want to execute the trajectory on a robot. Also consider using the <code>MoveGroupInterface</code>&#39;s <code>move</code>, <code>plan</code> and <code>execute</code> functions directly. You might not need to work this low-level.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8631">fvd</a> on 2021-06-15 00:30:01 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you for the reply, i shall try it like this as well.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/74813">Io</a> on 2021-06-16 03:32:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

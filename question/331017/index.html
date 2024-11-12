@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Controller parameter server - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/331017">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Controller parameter server</h2>
+      <div class="question">
+        <p>ROS version: Dashing</p>
+
+<p>I was trying to perform the demo using the code snippet given in the README.md in <a href="https://github.com/ros-controls/ros2_control">ros2_control</a>. However i kept running into issues with the parameter server with the following message</p>
+
+<p><code>[INFO] [my_robot_joint_trajectory_controller]: parameter server not available</code></p>
+
+<p>This causes the controller to fail to configure and as such could not be used.
+To my knowledge, there is no global parameter server in ROS2, so I am unsure if I need to create another parameter server or there is some issue with the parameter client.</p>
+
+<p>Side note:</p>
+
+<p>The failure occurs in line 115 of <a href="https://github.com/ros-controls/ros2_controllers/blob/dashing/ros_controllers/src/joint_trajectory_controller.cpp">ros2_controllers/JointTrajectoryController</a> at the
+<code>parameters_client_-&gt;wait_for_service(1s)</code> which always returns false even with longer time given. This causes the message above to be displayed through the code in line 138</p>
+
+<p>The parameter client used is defined in <a href="https://github.com/ros-controls/ros2_control/blob/dashing/controller_interface/include/controller_interface/controller_interface.hpp">ros2<em>control/controller</em>interface.hpp</a> line 64, with the initialisation being found <a href="https://github.com/ros-controls/ros2_control/blob/dashing/controller_interface/src/controller_interface.cpp">here</a> in lines 50-55.</p>
+
+<p>My code is as such: </p>
+
+<pre><code>#include &lt;memory&gt;
+#include &lt;iostream&gt;
+#include &lt;rclcpp/executors/multi_threaded_executor.hpp&gt;
+#include &lt;rclcpp/executors/single_threaded_executor.hpp&gt;
+#include &lt;rclcpp/node.hpp&gt;
+#include &lt;rclcpp/rate.hpp&gt;
+#include &quot;controller_manager/controller_manager.hpp&quot;
+#include &quot;my_robot.hpp&quot;
+
+using rclcpp::executors::MultiThreadedExecutor;
+using myrobots_hardware_interface::MyRobot;
+using rclcpp::Rate;
+
+void spin(std::shared_ptr&lt;MultiThreadedExecutor&gt; exe)
+{
+    exe-&gt;spin();
+}
+
+int main(int argc, char** argv)
+{
+// do all the init stuff
+rclcpp::init(argc,argv);
+Rate r(2.0);
+bool active = true;
+
+// create my_robot instance
+auto my_robot = std::make_shared&lt;MyRobot&gt;();
+
+// initialize the robot
+if (my_robot-&gt;init() != hardware_interface::HW_RET_OK)
+{
+    fprintf(stderr, &quot;failed to initialized hardware\n&quot;);
+    return -1;
+}
+// MultiThreadedExecutor executor1;
+// executor1.add_node(master_node);
+auto executor =
+    std::make_shared&lt;MultiThreadedExecutor&gt;();
+
+
+// start the controller manager with the robot hardware
+controller_manager::ControllerManager cm(my_robot, executor);
+// load the joint state controller.
+// &quot;ros_controllers&quot; is the resource index from where to look for controllers
+// &quot;ros_controllers::JointStateController&quot; is the class we want to load
+// &quot;my_robot_joint_state_controller&quot; is the name for the node to spawn
+cm.load_controller(
+    &quot;ros_controllers&quot;,
+    &quot;ros_controllers::JointStateController&quot;,
+    &quot;my_robot_joint_state_controller&quot;);
+// load the trajectory controller
+cm.load_controller(
+    &quot;ros_controllers&quot;,
+    &quot;ros_controllers::JointTrajectoryController&quot;,
+    &quot;my_robot_joint_trajectory_controller&quot;);
+
+
+// there is no async spinner in ROS 2, so we have to put the spin() in its own thread
+auto future_handle = std::async(std::launch::async, spin, executor);
+
+// we can either configure each controller individually through its services
+// or we use the controller manager to configure every loaded controller
+if (cm.configure() != controller_interface::CONTROLLER_INTERFACE_RET_SUCCESS)
+{
+    RCUTILS_LOG_ERROR(&quot;at least one controller failed to configure&quot;);
+    return -1;
+}
+// and activate all controller
+if (cm.activate() != controller_interface::CONTROLLER_INTERFACE_RET_SUCCESS)
+{
+    RCUTILS_LOG_ERROR(&quot;at least one controller failed to activate&quot;);
+    return -1;
+}
+// main loop
+hardware_interface::hardware_interface_ret_t ret;
+while (active)
+{
+    ret = my_robot-&gt;read();
+    if (ret != hardware_interface::HW_RET_OK)
+    {
+        fprintf(stderr, &quot;read failed!\n&quot;);
+    }
+
+    cm.update();
+
+    ret = my_robot-&gt;write();
+    if (ret != hardware_interface::HW_RET_OK)
+    {
+        fprintf(stderr, &quot;write failed!\n&quot;);
+    }
+
+    r.sleep();
+}
+
+executor-&gt;cancel();
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/44974">diameda_boot</a> on 2019-08-19 05:25:46 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>There is currently WIP for dashing. <a href="https://github.com/ros-controls/ros2_control/issues/18#issuecomment-519400393">https://github.com/ros-controls/ros2_control/issues/18#issuecomment-519400393</a>
+The issue you mentioned is pretty much was I was referring to in the linked comment. The parameter server was developed at a time of ROS2 where there was no node-specific parameters yet. So for dashing, I actually don&#39;t really see a need for that global parameter server any longer.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/8211">Karsten</a> on 2019-08-19 11:41:54 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

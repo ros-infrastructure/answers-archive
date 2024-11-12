@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>First Robot - Rubbish odom &amp; Laser_scan_matcher architecture - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/417643">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>First Robot - Rubbish odom &amp; Laser_scan_matcher architecture</h2>
+      <div class="question">
+        <p>Hi All</p>
+
+<p>I have been playing with ROS1 for 6 weeks or so.  </p>
+
+<p>I have a robot built - 2 motors and a caster - differential drive, pi 4 (no arduinio etc), motor controllers, 2 x wheel encoders, ld19 lidar,  ICM20948 IMU.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16903183653034518.jpg" alt="Robot"></p>
+
+<p>I have Ubuntu 20.04 on the Pi and on a virtual machine on the laptop, ROS Noetic installed on both, a driver node and odom node written, ld19 and imu drivers working into ROS.</p>
+
+<p>My (I say my, mostly used from various tutorials) code is all here:  <a href="https://github.com/KevWal/ROS-Bot-Workspace/">https://github.com/KevWal/ROS-Bot-Workspace/</a></p>
+
+<p>My odometry quality seems to be rubbish, displaying my odometry transform in rviz is not bad in a straight line, but in a turn is totally unreliable - often being 90 deg out in either direction in a 360 deg turn.  I have tried with Yellow &#39;tt&#39; motors - but they are a bit fast and because the encoders are on the same shaft as the wheels you get very few encoder ticks per ROS spin.  I have also tried with Micro Metal Gear motors, with magnetic encoders directly on the moto shafts - allows a driver node frequency of 10hz with plenty of encoder ticks per ROS spin, but was still very unreliable in rviz for me.<br>
+<strong>Q1)</strong> Any thoughts on should it be better, am I doing anything wrong, etc?</p>
+
+<p>I have tried robot<em>pose</em>ekf setups to improve the odometry (<a href="https://github.com/KevWal/ROS-Bot-Workspace/tree/master/src/edukit_bot/param/archive">robot_pose</a>), but didnt manage to get anything better.</p>
+
+<p>With the TT motors limited to their minimum speed, or with the much higher geared Micro Metal motors I have successfully created a <a href="https://github.com/KevWal/ROS-Bot-Workspace/blob/master/src/edukit_bot/map/loft_map_2.pgm">map</a> with Hector (hector_mapping.launch called from bringup.launch) - <a href="https://github.com/KevWal/ROS-Bot-Workspace/tree/master/src/edukit_bot/launch">launch files</a>.</p>
+
+<p>I wondered if amcl would deal with my poor odometry when combined with the laser scanner, but even with very high odom_alpha settings it didn&#39;t give a good result, didn&#39;t manage to keep the map aligned with reality.  <a href="https://github.com/KevWal/ROS-Bot-Workspace/tree/master/src/edukit_bot/launch/archive">Old Launch Files</a></p>
+
+<p>Lots of research later I do think I have got my head around the frames used and the transformations between them.  I wrote out my understanding:</p>
+
+<pre><code>world
+  |
+  | - static tf
+  |
+ map - Origin = Where mapping 0,0 is
+  |
+  |  - Can jump, can have only occasional updates, but shouldn&#39;t drift over time
+  |  - Typically done with amcl, gmapping, laser_scan_matcher
+  |
+odom - Origin = Where robot initialised
+  |
+  |  - Can drift over time, but should be frequent updates
+  |  - Typically done direct from odom node or via robot_pose_ekf etc
+  |
+base_footprint
+  |
+  |  - With no large roll or pitch changes can be a static tf
+  |
+base_link
+  /\
+  | | - static tf 
+  | |
+imu laser
+</code></pre>
+
+<p><strong>Q2)</strong> Is my understanding above reasonably correct?  I am particularly unsure about what normally generates the map to odom and odom to base_footprint (or base link) transforms?  </p>
+
+<p><strong>Q3)</strong> Do the irregular map -&gt; odom transformation typically override drift / issues in the the frequent odom -&gt; base_footprint transformation?  I can&#39;t get my head around how that works, how the two different transforms link join together - as just applying them both would create a mess effectively doubling the distance / rotation moved :)</p>
+
+<p>What I have got working quite nicely is laser<em>scan</em>matcher, <strong>after lots of odom issues that was a woohoo moment</strong> :)  With a static odom to base<em>footprint transformation, with laser</em>scan_matcher using key frames it is quite jerky, but at least it stays aligned!  This is my all combined <a href="https://github.com/KevWal/ROS-Bot-Workspace/blob/master/src/edukit_bot/launch/bringup.launch">bringup.launch</a>.  </p>
+
+<pre><code>&lt;!-- Localisaion and Navigation --&gt;
+&lt;group if=&quot;$(arg move_base)&quot;&gt;
+  &lt;!-- Map Server --&gt;
+  &lt;!-- Publishes /map and /map_metadata with frame_id map --&gt;
+  &lt;node name=&quot;map_server&quot; pkg=&quot;map_server&quot; type=&quot;map_server&quot; args=&quot;$(find edukit_bot)/map/loft_map_2.yaml&quot;/&gt;
+
+  &lt;!-- Laser Scan Matcher --&gt;
+  &lt;!-- Subscribes to /scan (sensor_msgs/LaserScan), /imu/data (sensor_msgs/IMU) and /odom --&gt;
+  &lt;!-- Publishes TF for odom to base_footprint frames and /pose2D (geometry_msgs/Pose2D)--&gt;
+-  &lt;node pkg=&quot;laser_scan_matcher&quot; type=&quot;laser_scan_matcher_node&quot; name=&quot;laser_scan_matcher_node&quot; output=&quot;screen&quot;&gt;
+    &lt;param name=&quot;fixed_frame&quot; value=&quot;odom&quot;/&gt;
+    &lt;param name=&quot;base_frame&quot; value=&quot;base_footprint&quot;/&gt;
+
+    &lt;param name=&quot;use_imu&quot; value = &quot;true&quot; /&gt;
+    &lt;param name=&quot;use_odom&quot; value = &quot;true&quot; /&gt;
+    &lt;param name=&quot;use_vel&quot; value = &quot;false&quot; /&gt;
+
+&lt;!--Can use every frame not just key frames to remove jerk, but will get drift --&gt;
+&lt;!--    &lt;param name=&quot;kf_dist_linear&quot; value = &quot;0&quot; /&gt; --&gt;
+&lt;!--    &lt;param name=&quot;kf_dist_angular&quot; value = &quot;0&quot; /&gt; --&gt;
+
+    &lt;param name=&quot;publish_tf&quot; value = &quot;true&quot; /&gt;
+  &lt;/node&gt;
+
+  &lt;node pkg =&quot;tf&quot; type=&quot;static_transform_publisher&quot; name=&quot;static_odom_to_base_footprint&quot; args=&quot;0.0 0.0 0.0 0.0 0.0 0.0 /odom /base_footprint 50&quot;/&gt;
+</code></pre>
+
+<p><strong>Q4)</strong> What I dont understand here is that with a fixed frame of odom, and a base frame of base<em>footprint, I thought is should generate transformations from odom to base</em>footprint, but it doesnt, the transformation is from map to odom as show by rosrun tf view_frames.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16903100349836673.jpg" alt="frames.pdf"></p>
+
+<p><strong>Q5)</strong> In this setup mapping doesn&#39;t seem to work as I thought it should - sometimes it shows the map my map server is publishing, sometimes it shows a map that seems to be generated live - I am not sure what from or why?</p>
+
+<p>What my map should look like (ie the saved map file):  <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16903169524924345.jpg" alt="working map"></p>
+
+<p>How my map actually looks:  <img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16903177444411106.jpg" alt="broken map"></p>
+
+<p><strong>Q6)</strong>  Finally, I seem to have got myself a bit lost in the overall ROS software architecture I should be using.  I think my goal is to show my robot (in the right place) on a map as i move it by a joystick, but also be able to navigate from a start point to a Nav Goal.  I can add move<em>base to do the navigation and pretty sure I can get that running ok (already have had it running with <a href="https://github.com/KevWal/ROS-Bot-Workspace/blob/master/src/edukit_bot/launch/archive/mapserver_amcl_movebase.launch">AMCL launch</a> and my very poor odom), Q6a) but what should I use for frequent odom to base transformation (I was thinking I could use laser</em>scan_matcher agains with a zero <a href="http://wiki.ros.org/laser_scan_matcher#Keyframes">kf_dist</a> setting?)  Q6b) how do I tie my position together with my map served by map server - I think AMCL should do this, so do I need AMCL for odom to base tf, but using what inputs?  my poor odom?</p>
+
+<p>Sorry for the long post, but I wanted to try and be helpful to others by including my understanding of transformation frames and cover the journey I have been on.</p>
+
+<p>Thanks very much
+Kevin</p>
+
+        <div class="owner"><p>Asked by <a href="/users/142877">KevWal</a> on 2023-07-21 15:48:20 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Some advice: this post is asking about too many different topics. Your chances of getting a good answer are better if you focus on one topic per post. On this site, it&#39;s OK to open multiple questions. It is also OK to edit this post to contain fewer questions (but it would be rude to remove something that someone has already commented on or answered.)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/75154">Mike Scheutzow</a> on 2023-07-23 08:05:02 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks Mike, I have tried to post the final architecture question separately here:  <a href="https://answers.ros.org/question/417695/laser_scan_matcher-with-amcl-amd-move_base/">https://answers.ros.org/question/417695/laser_scan_matcher-with-amcl-amd-move_base/</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/142877">KevWal</a> on 2023-07-25 13:09:57 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

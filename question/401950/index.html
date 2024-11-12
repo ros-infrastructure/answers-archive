@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>[ROS2] Any idea on how to pass parameters (YAML) to a Xacro file via launch python script? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/401950">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>[ROS2] Any idea on how to pass parameters (YAML) to a Xacro file via launch python script?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/101898/ros2-any-idea-on-how-to-pass-parameters-yaml-to-a-xacro-file-via-launch-pyth">https://robotics.stackexchange.com/questions/101898/ros2-any-idea-on-how-to-pass-parameters-yaml-to-a-xacro-file-via-launch-pyth</a>.</p>
+        <p>In my <code>launch</code> python script I can load and pass parameters from a <code>.yaml</code> file into my code without any problem:</p>
+
+<pre><code>from ament_index_python.packages       import get_package_share_path
+from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.actions                import Node
+from launch.substitutions              import Command, LaunchConfiguration
+from launch.actions                    import DeclareLaunchArgument, ExecuteProcess
+from launch                            import LaunchDescription
+
+import os
+
+def generate_launch_description():
+
+    package_p     = get_package_share_path(&#39;my_pkg&#39;)
+    urdf_path      = os.path.join(package_p, &#39;my_robot.urdf&#39;)
+    config_path   = os.path.join(package_p, &#39;my_params.yaml&#39;)
+
+    prog = Node(package    = &quot;my_pkg&quot;,
+                       executable  = &quot;my_pkg&quot;,
+                       output         = &quot;screen&quot;,
+                       parameters  = [config_path]) 
+
+    return LaunchDescription([prog])
+</code></pre>
+
+<p>The parameters defined in the <code>my_params.yaml</code> file are passed to my node.</p>
+
+<p>The problem is that I need to pass the same parameters to my xacro file, where I defined my robot.</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;robot name=&quot;my_robot&quot; xmlns:xacro=&quot;http://www.ros.org/wiki/xacro&quot;&gt;
+
+    &lt;xacro:arg name=&quot;first_parameter&quot;/&gt;
+
+&lt;/robot&gt;
+</code></pre>
+
+<p>As you can see I don&#39;t know how to &quot;catch&quot; the parameters into the xacro/urdf file.</p>
+
+<p>Do you have any idea?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/19675">Andromeda</a> on 2022-06-05 13:13:24 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>Is your end goal to use xacro for your robot_state_publisher at runtime? Xacro actually has a function (<code>load_yaml()</code>) that allows you to read in a yaml from a file path. In this case you can hand the path of the file through your xacro call using the <code>xacro_arg_name:=param_to_pass</code> notation.  If you are running Galactic or later here is how I would do it (with launch configurations for full runtime flexibility):</p>
+
+<p><strong>EDIT:</strong></p>
+
+<p>For foxy you may need to use an opaque functions as described in the second answer of <a href="https://answers.ros.org/question/382000">this question</a></p>
+
+<p><strong>Launch File:</strong></p>
+
+<pre><code>#!/usr/bin/env python3
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, LogInfo
+from launch.substitutions import LaunchConfiguration, Command, PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
+
+def generate_launch_description():
+  this_pkg = FindPackageShare(&#39;test_package&#39;)
+
+  model_path = LaunchConfiguration(&#39;model_path&#39;)
+  params_path = LaunchConfiguration(&#39;params_path&#39;)
+
+  return LaunchDescription([
+    DeclareLaunchArgument(
+      &#39;model_path&#39;,
+      default_value=PathJoinSubstitution([this_pkg,&#39;xacro&#39;,&#39;model.xacro&#39;]),
+      description=&#39;Full path to model xacro file including filename and extension&#39;
+    ),
+
+    DeclareLaunchArgument(
+      &#39;params_path&#39;,
+      default_value=PathJoinSubstitution([this_pkg,&#39;params&#39;,&#39;model.yaml&#39;]),
+      description=&#39;Full path to parameter yaml file including filename and extension&#39;
+    ),        
+
+    Node(
+      package=&#39;robot_state_publisher&#39;,
+      executable=&#39;robot_state_publisher&#39;,
+      name=&#39;robot_state_publisher&#39;,
+      output=&#39;screen&#39;,
+      parameters=[{
+        &#39;robot_description&#39;: ParameterValue(Command([&#39;xacro &#39;,model_path,&#39; params_path:=&#39;,params_path]), value_type=str)
+      }],
+    )
+
+  ])
+</code></pre>
+
+<p><strong>Xacro File:</strong> <code>model.xacro</code></p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;robot name=&quot;model&quot; xmlns:xacro=&quot;http://www.ros.org/wiki/xacro&quot;&gt;
+  &lt;!-- 
+    The xacro:arg &quot;params_path&quot; exposes the arg to launch file.
+    The xacro:property &quot;params_path&quot; is required to get the evaluated symbol into xacro before &quot;load_yaml&quot;
+    The xacro:proterty &quot;mp&quot; (which stands for &quot;model parameters&quot;) gets the dictionary from &quot;params_path&quot;
+    and is accessed using ${mp[&#39;key_name&#39;]} which will evaluate to the key value
+
+    The xacro:arg and xacro:property &quot;params_path&quot; shares a name but does not seem to clobber eachother.
+    They are not required to have the same name, it was just convenient
+  --&gt;
+  &lt;xacro:arg name=&quot;params_path&quot; default=&quot;&quot;/&gt; &lt;!-- Need argument to get from launch file --&gt;
+  &lt;xacro:property name=&quot;params_path&quot; value=&quot;$(arg params_path)&quot;/&gt; &lt;!-- Need seperate property for xacro inorder processing --&gt;
+  &lt;xacro:property name=&quot;mp&quot; value=&quot;${load_yaml(params_path)}&quot;/&gt; &lt;!-- Read in the yaml dict as mp (short for model parameters) --&gt;
+
+
+  &lt;xacro:property name=&quot;PI&quot; value=&quot;3.1415926535897931&quot; /&gt;
+
+  &lt;xacro:property name=&quot;wheel_mass&quot; value=&quot;${mp[&#39;wheel_mass&#39;]}&quot;/&gt;
+  &lt;xacro:property name=&quot;wheel_width&quot; value=&quot;${mp[&#39;wheel_width&#39;]}&quot;/&gt;
+  &lt;xacro:property name=&quot;wheel_radius&quot; value=&quot;${mp[&#39;wheel_radius&#39;]}&quot;/&gt;
+
+
+  &lt;link name=&quot;base_link&quot;/&gt;
+
+  &lt;link name=&quot;body_link&quot;&gt;
+    &lt;!-- Visual box geometry --&gt;
+    &lt;visual name=&quot;visual&quot;&gt;
+      &lt;geometry&gt;
+        &lt;box size=&quot;1 1 0.5&quot;/&gt;
+      &lt;/geometry&gt;
+    &lt;/visual&gt;
+
+    &lt;!-- Collision box geometry--&gt;
+    &lt;collision name=&quot;collision&quot;&gt;
+      &lt;geometry&gt;
+        &lt;box size=&quot;1 1 0.5&quot;/&gt;
+      &lt;/geometry&gt;
+    &lt;/collision&gt;
+
+    &lt;!-- Inertia for a box --&gt;
+    &lt;inertial&gt;
+      &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 0 0&quot;/&gt;
+      &lt;mass value=&quot;1645.0&quot;/&gt;
+      &lt;inertia
+          ixx=&quot;${(1.0/12.0) * 1645.0 * ( 1 * 1 + 0.5 * 0.5 )}&quot;  
+          ixy=&quot;0&quot; 
+          ixz=&quot;0&quot; 
+          iyy=&quot;${(1.0/12.0) * 1645.0 * ( 1 * 1 + 0.5 * 0.5 )}&quot;  
+          iyz=&quot;0&quot; 
+          izz=&quot;${(1.0/12.0) * 1645.0 * ( 1 * 1 + 1 * 1 )}&quot; /&gt; 
+    &lt;/inertial&gt;
+  &lt;/link&gt;
+
+  &lt;joint name=&quot;body_joint&quot; type=&quot;fixed&quot;&gt;
+    &lt;origin xyz=&quot;0 0 0.25&quot; rpy=&quot;0 0 0&quot; /&gt;
+    &lt;parent link=&quot;base_link&quot;/&gt;
+    &lt;child link=&quot;body_link&quot;/&gt;
+  &lt;/joint&gt;
+
+  &lt;link name=&quot;axle_link&quot;&gt;
+    &lt;inertial&gt;
+      &lt;!-- Pose --&gt;
+      &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 0 0&quot;/&gt;
+
+      &lt;!-- Dummy Mass --&gt;
+      &lt;mass value=&quot;10.0&quot;/&gt;
+
+      &lt;!-- Dummy Inertia Sphere --&gt;
+      &lt;inertia
+          ixx=&quot;${(2.0/5.0) * 10.0 * 0.1 * 0.1}&quot;  
+          ixy=&quot;0&quot; 
+          ixz=&quot;0&quot; 
+          iyy=&quot;${(2.0/5.0) * 10.0 * 0.1 * 0.1}&quot;  
+          iyz=&quot;0&quot; 
+          izz=&quot;${(2.0/5.0) * 10.0 * 0.1 * 0.1}&quot;  /&gt; 
+    &lt;/inertial&gt;
+  &lt;/link&gt;
+
+  &lt;joint name=&quot;axle_joint&quot; type=&quot;fixed&quot;&gt;
+    &lt;origin xyz=&quot;0 0 2.0&quot; rpy=&quot;0 0 0&quot;/&gt;
+    &lt;parent link=&quot;body_link&quot;/&gt;
+    &lt;child link=&quot;axle_link&quot;/&gt;
+  &lt;/joint&gt;
+
+  &lt;link name=&quot;wheel_link&quot;&gt;
+    &lt;visual&gt;
+      &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 ${PI/2} ${PI/2}&quot;/&gt;
+      &lt;geometry&gt;
+        &lt;cylinder length=&quot;${wheel_width}&quot; radius=&quot;${wheel_radius}&quot;/&gt; 
+      &lt;/geometry&gt;
+    &lt;/visual&gt;
+
+    &lt;collision&gt;
+      &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 ${PI/2} ${PI/2}&quot;/&gt;
+      &lt;geometry&gt;
+        &lt;cylinder length=&quot;${wheel_width}&quot; radius=&quot;${wheel_radius}&quot;/&gt; 
+      &lt;/geometry&gt;
+    &lt;/collision&gt;
+
+    &lt;inertial&gt;
+      &lt;origin xyz=&quot;0 0 0&quot; rpy=&quot;0 ${PI/2} ${PI/2}&quot;/&gt;
+      &lt;mass value=&quot;${wheel_mass}&quot;/&gt;
+      &lt;inertia
+        ixx=&quot;${(1/12) * wheel_mass * (3 * wheel_radius * wheel_radius + wheel_width * wheel_width) }&quot; 
+        ixy=&quot;0.0&quot; 
+        ixz=&quot;0.0&quot;
+        iyy=&quot;${(1/12) * wheel_mass * (3 * wheel_radius * wheel_radius + wheel_width * wheel_width) }&quot;
+        iyz=&quot;0.0&quot;
+        izz=&quot;${(1/2) * wheel_mass * wheel_radius * wheel_radius}&quot;/&gt;
+    &lt;/inertial&gt;
+  &lt;/link&gt;
+
+  &lt;joint name=&quot;wheel_joint&quot; type=&quot;fixed&quot;&gt;
+    &lt;origin xyz=&quot;0 0.25 0&quot; rpy=&quot;0 0 0&quot; /&gt;
+    &lt;parent link=&quot;axle_link&quot;/&gt;
+    &lt;child link=&quot;wheel_link&quot;/&gt;
+    &lt;axis xyz=&quot;0 1 0&quot; rpy=&quot;0 0 0 &quot;/&gt;
+  &lt;/joint&gt;
+&lt;/robot&gt;
+</code></pre>
+
+<p><strong>YAML File:</strong> <code>model.yaml</code></p>
+
+<pre><code>wheel_mass: 10.0
+wheel_width: 0.25
+wheel_radius: 0.5
+</code></pre>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/74140">djchopp</a> on 2022-06-13 09:26:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

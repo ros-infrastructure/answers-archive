@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Industrial Robot Client sends wrong velocity on last waypoint? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/338545">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Industrial Robot Client sends wrong velocity on last waypoint?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93933/industrial-robot-client-sends-wrong-velocity-on-last-waypoint">https://robotics.stackexchange.com/questions/93933/industrial-robot-client-sends-wrong-velocity-on-last-waypoint</a>.</p>
+        <p>Abstract:</p>
+
+<p>Created a plan to rotate single joint from 0 to pi/2 radians.
+Examined plan looks fine with smoothly tapering velocity,
+however, actual robot motion ends with accelerated jerk at end.
+Wireshark packet sniffing reveals velocity in broadcast packet
+for the last waypoint is wrong.</p>
+
+<p>Details:</p>
+
+<p>Ubuntu 16.04 (kernel 4.15.0-70-generic) ROS Kinetic
+Used apt dist-upgrade to get to latest versions</p>
+
+<p>Using Staubli Experimental Package with Staubli TX60</p>
+
+<p>Reduced joint speeds using joint<em>limits.yaml to set all max joint velocities to 1
+In particular, joint</em>3 had velocity 9.424777960769999 and we set it to 1 (approx 1/10th).</p>
+
+<p>I think I am using OMPL RRT Connect </p>
+
+<p>Setup problem where we move single joint, joint_3 from 0 to -pi/2 radians.</p>
+
+<pre><code>Start: -0.000
+Goal:  -1.571
+</code></pre>
+
+<p>Use moveit to construct a plan:</p>
+
+<pre><code>group.set_joint_value_target(joint_goal)
+plan = group.plan()
+</code></pre>
+
+<p>Plan has 13 steps with these way points (updated table with full precision values):</p>
+
+<pre><code>Pt   Time       Pos        Vel      
+
+ 0     0.000   0.00000  0.000000 
+ 1   510.895 -0.13089 -0.435163 
+ 2   724.038 -0.26179 -0.700843 
+ 3   890.239 -0.39268 -0.855525 
+ 4   1031.980 -0.52358 -0.961742 
+ 5   1162.875 -0.65447 -1.000000 
+ 6   1293.770 -0.78537 -1.000000 
+ 7   1424.665 -0.91626 -1.000000 
+ 8   1555.560 -1.04716 -0.961742 
+ 9   1697.300 -1.17805 -0.855525 
+10   1863.502 -1.30895 -0.700843 
+11   2076.645 -1.43984 -0.435163 
+12   2587.540 -1.57074  0.000000 
+</code></pre>
+
+<p>Basically, velocity follows a bell curve and position looks like a cumulative normal.</p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/15747213164781627.png" alt="image description"></p>
+
+<p>Use wireshark to capture outgoing &quot;simplemessage&quot; to robot controller.
+Joint Trajectory Point (rounded to 3 decimals).</p>
+
+<p>The broadcast also has 13 waypoints.</p>
+
+<p>It looks like the scaling factor for max velocity has been applied in
+executor?? For instance, 0.435 * (1.0/9.424) = 0.0461 ...</p>
+
+<p>Velocity and Duration from Trajectory Point Messages (updated by extracting directly by script from wireshark json log of dissected messages):</p>
+
+<pre><code>Pt   Velocity          Duration
+ 0   0.10000000   10.00000000
+ 1   0.04617230    0.51089500
+ 2   0.07436170    0.21314300
+ 3   0.09077400    0.16620200
+ 4   0.10204400    0.14174000
+ 5   0.10610300    0.13089500
+ 6   0.10610300    0.13089500 
+ 7   0.10610300    0.13089500 
+ 8   0.10204400    0.13089500
+ 9   0.09077400    0.14174000
+10   0.07436170   0.16620200
+11   0.04617230   0.21314300
+12   0.10000000   0.51089500   &lt;- odd high velocity of 0.1 on last point
+</code></pre>
+
+<p>In a separate run inspired by Simon&#39;s comment, we were able to capture the position coming back from the robot. It seems like the robot controller is falling behind the plan. If we change the joint velocity limit to a lower value, the plan velocities adjust as expected, but the robot still seems to fall behind. The sudden velocity increase at the end looks like an attempt by the robot to catch up to the desired position. In the graph below we set the joint limit to 0.75 and the peak plan velocity is in fact 0.75.  The scaling with joint velocity limit suggests that the problem is not a physical capability limit of the robot, but some scaling factor somewhere. This is taken with the pendant/MCP velocity set to 100% and the Velocity Overwrite disabled in the val3 driver. </p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/1575749621453999.png" alt="image description"></p>
+
+<p>Analysis of the Staubli Val3 motion server suggests it is looking only at velocity which might explain the behavior.</p>
+
+<p>The Staubli Val3 packet receiving logic in pushMotion.pgx copies velocity and duration into local structure and enqueues it</p>
+
+<pre><code>  l_mTrajPt.mDesc.vel  = limit((rosTrajPtMsg.jointTrajPt.nVelocity * 100), 0, 100)
+
+  l_mTrajPt.nDuration  = rosTrajPtMsg.jointTrajPt.nDuration
+</code></pre>
+
+<p>The Staubli Val3 waypoint execution logic in motionControl.pgx dequeues waypoint and calls a Staubli val3 motion primitive with only the velocity (which would be in the mDesc component). There is no mechanism to communicate the duration to the Staubli controller.</p>
+
+<pre><code>  movej(l_motion.jJointRx, tTool, l_motion.mDesc)
+</code></pre>
+
+<p>Most Related Question and Answer</p>
+
+<p><a href="https://github.com/ros-planning/moveit/issues/416">ros-planning/moveit#416</a> (Jan 16, 2017 Moveit! trajectory velocity has weird behavior on kinetic).</p>
+
+<p>This answer seems to describe erratic behavior throughout the trajectory caused by the path simplifier, however, I think the problem described here might be happening after the path simplifier because times have already been applied?
+So this is probably not the planner or simplifier?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/49739">bprice</a> on 2019-11-25 15:32:23 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Observation: just about all of what you write happens in the <code>industrial_robot_client</code> and the VAL3 parts of <code>staubli_val3_driver</code>. Not MoveIt. The &quot;trajectory execution manager&quot; in MoveIt (when configured with a <code>MoveItSimpleControllerManager</code> (the default)) forwards the <code>JointTrajectory</code> wholesale to the <code>FollowJointTrajectory</code> action server without any changes. The action server in this case would be the <code>industrial_robot_client</code>.</p>
+
+<p>MoveIt issue 416 is also most likely not related.</p>
+
+<p>Suggestion: change the title of your question and add at least the tags <code>staubli</code>, <code>val3</code> and <code>industrial_robot_client</code>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-25 15:55:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>As to the behaviour your describing: it would appear that perhaps either duration should be used instead of velocity (on the VAL3 side), or the calculation of the velocity should be fixed.</p>
+
+<p>For the latter: I&#39;ve opened <a href="https://github.com/ros-industrial/industrial_core/issues/247">ros-industrial/industrial_core#247</a>.</p>
+
+<blockquote>
+<p>I have a plot of this, but not enough karma to attach it.</p>
+</blockquote>
+
+<p>you do now, so please attach it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-25 16:04:11 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks gvdhoorn for opening a ticket and the background info. Learning more all the time.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49739">bprice</a> on 2019-11-25 17:46:47 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve opened <a href="https://github.com/ros-industrial/staubli_experimental/issues/42">ros-industrial/staubli_experimental#42</a> to track this on the <code>staubli_val3_driver</code> side.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-26 03:11:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>You wrote: &lt;-- Velocity is wrong on last point, but duration correct</p>
+
+<p>but I&#39;m not sure why that would be wrong? I think the first data point is always the current position (so the velocity does indeed not matter) and the last one is the &quot;command to move to the last position&quot; so it should not have zero velocity (you would never reach the goal)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21773">Simon Schmeisser</a> on 2019-11-26 08:32:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I see that a velocity of zero would be problematic... It seemed like seq 1 and seq 12 could not both be consistent velocity-duration pairs and I made the assumption it was velocity that was wrong.  The shift in values between plan and observed packets seems suspicious. I will rerun this experiment tomorrow with more decimal places under the assumption that the zero in the last step of the plan is just a very small value and double check the values in the packet sequence.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49739">bprice</a> on 2019-11-26 23:37:01 UTC</p></div>
+</div>
+<div class="comment">
+              <p>wrt the factor, please have a look at <code>rostopic echo /joint_trajectory_action/goal</code> to see what actually gets transferred to industrial_robot_controller from MoveIt!. You can also send hand crafted packets to this topic and compare that. Also plotting <code>/joint_states</code> can show you what the robot actually did. Can be surprising (UR ...)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21773">Simon Schmeisser</a> on 2019-11-27 04:20:17 UTC</p></div>
+</div>
+<div class="comment">
+              <p>please also check this <a href="https://github.com/ros-industrial/staubli_experimental/issues/39">https://github.com/ros-industrial/staubli_experimental/issues/39</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/21773">Simon Schmeisser</a> on 2019-11-27 04:22:39 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@Simon Schmeisser: that last issue is also linked to in <a href="https://github.com/ros-industrial/staubli_experimental/issues/42">ros-industrial/staubli_experimental#42</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-27 04:52:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Reran the experiment and captured plan with more decimals and wrote a script to computationally parse out wireshark dissection logs. Updated the data tables. The last velocity coming out of the industrial robot client as reported by wireshark seems high. Will follow up on Simon&#39;s suggestions to check additional topics.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49739">bprice</a> on 2019-11-27 19:52:56 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <blockquote>
+<p>The shift in values between plan and observed packets seems suspicious.</p>
+</blockquote>
+
+<p>this is probably due to the fact that a <code>JointTrajectory</code> encodes the <em>state</em> of the system under control <em>at specific times</em>, while a typical industrial robot trajectory (or really: program) specifies constraints on segments (ie: <em>between</em> points).</p>
+
+<p>A segment is defined by two points: start and end. So in the <code>JointTrajectory</code>, start and end velocity could be 0, as in the first list of points you show. But if we translate that into segments, no velocity can be 0 any more, as that would lead the industrial robot controller to not move at all.</p>
+
+<p>Without using a real-time, external motion control interface (with which you typically are able to specify the desired state of the system at any point in time (ie: specify position, velocity and/or effort setpoints)), I don&#39;t know of any industrial robot controller that allows you to specify state of the system at specific points in time.</p>
+
+<p>They always only let you (implicitly) define segments and attach constraints to those segments (ie: please use a <em>maximum</em> of <code>0.511</code> seconds to move along this segment, please execute this motion (ie: travel along this segment) with 50% of maximum joint velocity, etc). Important to realise is that those constraints (or: motion settings or modifiers) typically really only specify a desired maximum velocity or time. The industrial robot controller then uses those constraints to generate a velocity profile with the desired characteristics (ie: leads to motion that takes <code>0.511</code> seconds from start to end, or leads to a velocity profile with its maximum (ie: constant phase) velocity at 50% of maximum joint velocity, etc). But you never control the <em>state</em> of the system (ie: the robot and its joints) directly.</p>
+
+<p>That is a fundamentally different way of encoding robot motion and the <code>industrial_robot_client</code> needs to translate between the two.</p>
+
+<p>It is this discrepancy which is what I believe causes what you observe.</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<blockquote>
+<p>The last velocity coming out of the industrial robot client as reported by wireshark seems high</p>
+</blockquote>
+
+<p>This may be <a href="https://github.com/ros-industrial/industrial_core/issues/247">ros-industrial/industrial_core#247</a>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2019-11-27 02:35:58 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I&#39;ve converted my comment to an answer, as I believe this is now the answer to your question.</p>
+
+<p>The initial question asked what caused the &quot;jerk&quot; the end of trajectory execution on a Stäubli robot. If that is still a problem, then I would recommend continuing at <a href="https://github.com/ros-industrial/staubli_experimental/issues/42">ros-industrial/staubli_experimental#42</a>, as that may be a problem in <code>staubli_val3_driver</code>.</p>
+
+<p>After your edits, you seem to ask why there is a non-zero velocity encoded in the last traj pt which the <code>industrial_robot_client</code> sends. The rationale for that is in my answer.</p>
+
+<p>Summarising: it&#39;s not really a trajectory point, as much as it is a segment. Segments cannot have zero velocity, as there would be no motion (of course it&#39;s valid to have a zero-velocity segment, that would (should!) just cause the robot to pause).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-11-27 03:05:39 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>gazebo_ros2_control: different namespace - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/415655">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>gazebo_ros2_control: different namespace</h2>
+      <div class="question">
+        <p>Hi, I am running ros2 humble and I have detected some problems when spawning multiple entities of the same type. I have created a toy problem, to avoid ambiguities with duplication names. In particular I want to control two robots, each being just a revolute joint controlled in velocity. The robots are &quot;pinocchio&quot;, associated to /r1/r1<em>controller (and yes, there is a double r1, just to make sure there is no ambiguity/problem with the namespace: I have patched the code so instead of having a hard-coded &quot;controller</em>manager&quot; I have the namespace + &quot;controller<em>manager&quot;, but please neglect that it doesn&#39;t change the result) and &quot;geppetto&quot;, associated to /r2/r2</em>controller. See the attached picture.<a href="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/16847594696710501.png">C:\fakepath\markers.png</a>.  Notice that in order to have two different controller managers I had to apply what suggested in <a href="https://github.com/ros-controls/gazebo_ros2_control/issues/127">here</a> (which to my understanding it is not yet merged ). So all in all, after launching the following launch script all the nodes are in place (robot state publisher, controller manager, and the entity - robot - to be controlled). At that point I manually trigger the controllers (one for each robot) instantiation:</p>
+
+<pre><code>ros2 control load_controller --set-state  -c &quot;/r2/r2controller_manager&quot; geppetto
+
+[gzserver-1] [INFO] [1684332993.826170124] [r2.r2controller_manager]: Loading controller &#39;geppetto&#39;
+[gzserver-1] [ERROR] [1684332993.901249319] [r2.geppetto]: &#39;joints&#39; parameter was empty
+[gzserver-1] [INFO] [1684332993.845766414] [r2.r2controller_manager]: Setting use_sim_time=True for geppetto to match controller manager (see ros2_control#325 for details)
+[gzserver-1] [INFO] [1684332993.901068783] [r2.r2controller_manager]: Configuring controller &#39;geppetto&#39;
+[gzserver-1] [ERROR] [1684332993.901249319] [r2.geppetto]: &#39;joints&#39; parameter was empty
+[gzserver-1] [WARN] [1684332993.901323149] []: Error occurred while doing error handling.
+[gzserver-1] [ERROR] [1684332993.901347966] [r2.r2controller_manager]: After configuring, controller &#39;geppetto&#39; is in state &#39;unconfigured&#39; , expected inactive.
+</code></pre>
+
+<p>This is confirmed by dumpling the parameter for geppetto:</p>
+
+<pre><code>ros2 param dump /r2/geppetto
+/r2/geppetto:
+  ros__parameters:
+    interface_name: velocity
+    joints: []
+    qos_overrides:
+      /clock:
+        subscription:
+          depth: 1
+          durability: volatile
+          history: keep_last
+          reliability: best_effort
+    update_rate: 0
+    use_sim_time: true
+</code></pre>
+
+<p>while instead for the other robot we have:</p>
+
+<pre><code>ros2 param dump /r1/pinocchio
+/r1/pinocchio:
+  ros__parameters:
+    command_interfaces:
+    - velocity
+    interface_name: velocity
+    joints:
+    - r1rollingBar_to_Tablet
+    qos_overrides:
+      /clock:
+        subscription:
+          depth: 1
+          durability: volatile
+          history: keep_last
+          reliability: best_effort
+    state_interfaces:
+    - position
+    - velocity
+    update_rate: 0
+    use_sim_time: true
+</code></pre>
+
+<p>Notice that I <strong>can control only one (but not always the same, I guess the parameters of one somehow override the ones of the second, see below for details on why I use the term &quot;override&quot;) robot(i.e. joint).</strong>  At the same time if I spawn only a robot, removing either ga1 or ga2 from the following file, I can control either of them without any issue.</p>
+
+<p>This is the launch file I use:</p>
+
+<pre><code>import os
+
+from ament_index_python.packages import get_package_share_directory
+
+
+from launch import LaunchDescription
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+from launch_ros.actions import Node
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
+import xacro
+from launch.actions import GroupAction
+from launch_ros.actions import PushRosNamespace
+
+
+
+def generate_launch_description():
+
+
+    gazebo = IncludeLaunchDescription(
+                PythonLaunchDescriptionSource([os.path.join(
+                    get_package_share_directory(&#39;gazebo_ros&#39;), &#39;launch&#39;), &#39;/gazebo.launch.py&#39;]),
+             )
+    gzserver = ExecuteProcess(
+        cmd=[&#39;gzserver&#39;,
+             &#39;-s&#39;, &#39;libgazebo_ros_init.so&#39;,
+             &#39;-s&#39;, &#39;libgazebo_ros_factory.so&#39;,
+             &#39;extra-gazebo-args&#39;, &#39;--ros-args&#39;],
+        output=&#39;screen&#39;,
+    )
+
+    # Gazebo client
+    gzclient = ExecuteProcess(
+        cmd=[&#39;gzclient&#39;],
+        output=&#39;screen&#39;,
+    )
+
+    gazebo_ros2_control_demos_path = os.path.join(
+        get_package_share_directory(&#39;gazebo_ros2_control_demos&#39;))
+
+    xacro_file1 = os.path.join(gazebo_ros2_control_demos_path,
+                              &#39;urdf&#39;,
+                              &#39;with_namespace.xacro.urdf&#39;)
+
+    generic_namespace = &#39;r1&#39;
+    doc1 = xacro.process_file(xacro_file1, mappings={&#39;genns&#39;:generic_namespace})
+    params1 = {&#39;robot_description&#39;: doc1.toxml()}
+
+    node_robot_state_publisher1 = Node(
+        package=&#39;robot_state_publisher&#39;,
+        executable=&#39;robot_state_publisher&#39;, name=generic_namespace+&#39;rsp&#39;,
+        output=&#39;screen&#39;,
+        parameters=[params1]
+    )
+
+    xacro_file2 = os.path.join(gazebo_ros2_control_demos_path,
+                              &#39;urdf&#39;,
+                              &#39;with_namespace.xacro.urdf&#39;)
+
+    generic_namespace = &#39;r2&#39;
+    doc2 = xacro.process_file(xacro_file2, mappings={&#39;genns&#39;:generic_namespace})
+    params2 = {&#39;robot_description&#39;: doc2.toxml()}
+    node_robot_state_publisher2 = Node(
+        package=&#39;robot_state_publisher&#39;, name=generic_namespace+&#39;rsp&#39;,
+        executable=&#39;robot_state_publisher&#39;,
+        output=&#39;screen&#39;,
+        parameters=[params2]
+    )
+
+    spawn_entity1 = Node(package=&#39;gazebo_ros&#39;, executable=&#39;spawn_entity.py&#39;,
+                        arguments=[&#39;-topic&#39;, &#39;/r1/robot_description&#39;,
+                                   &#39;-entity&#39;, &#39;cartpole1&#39;,
+                                   &#39;-y&#39;, &#39;2&#39;,
+                                   &#39;-x&#39;, &#39;1&#39;],
+                        output=&#39;screen&#39;)
+
+    spawn_entity2 = Node(package=&#39;gazebo_ros&#39;, executable=&#39;spawn_entity.py&#39;,
+                        arguments=[&#39;-topic&#39;, &#39;/r2/robot_description&#39;,
+                                   &#39;-entity&#39;, &#39;cartpole2&#39;,
+                                   &#39;-y&#39;, &#39;-2&#39;,
+                                   &#39;-x&#39;, &#39;-1&#39;],
+                        output=&#39;screen&#39;)
+
+
+    ga1 = GroupAction(actions = [PushRosNamespace(&#39;/r1&#39;),
+                                 node_robot_state_publisher1,
+                                 spawn_entity1])
+
+    ga2 = GroupAction(actions = [PushRosNamespace(&#39;/r2&#39;),
+                                 node_robot_state_publisher2,
+                                 spawn_entity2])
+
+
+    return LaunchDescription([
+        gazebo,
+        ga1,
+        ga2
+    ])
+</code></pre>
+
+<p>With the xacro file being:</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot; ?&gt;
+&lt;robot name=&quot;cartopole&quot; xmlns:xacro=&quot;http://ros.org/wiki/xacro&quot;&gt;
+  &lt;xacro:include filename=&quot;$(find gazebo_ros2_control_demos)/urdf/load_controller.xacro.urdf&quot; /&gt;
+  &lt;xacro:arg name=&quot;genns&quot; default=&quot;caffa&quot; /&gt;
+  &lt;xacro:property name=&quot;genns&quot; value=&quot;$(arg genns)&quot;/&gt;
+
+  &lt;link name=&quot;world&quot;/&gt;
+   &lt;gazebo reference=&quot;${genns}rollingBar&quot;&gt;
+       &lt;material&gt;Gazebo/Wood&lt;/material&gt;
+  &lt;/gazebo&gt; 
+  &lt;link name=&quot;${genns}rollingBar&quot;&gt;
+    &lt;visual&gt;
+      &lt;geometry&gt;
+        &lt;box size=&quot;1 0.05 0.05&quot;/&gt;
+      &lt;/geometry&gt;
+      &lt;origin xyz=&quot;0 0 0&quot;/&gt; 
+      &lt;material name=&quot;green&quot;&gt;
+        &lt;color rgba=&quot;0 0.8 .8 1&quot;/&gt;
+      &lt;/material&gt;
+    &lt;/visual&gt;
+    &lt;inertial&gt;
+      &lt;mass value=&quot;100&quot;/&gt;
+      &lt;inertia ixx=&quot;1.0&quot; ixy=&quot;0.0&quot; ixz=&quot;0.0&quot; iyy=&quot;1.0&quot; iyz=&quot;0.0&quot; izz=&quot;1.0&quot;/&gt;
+    &lt;/inertial&gt;
+  &lt;/link&gt;
+   &lt;gazebo reference=&quot;${genns}tablet&quot;&gt;
+       &lt;material&gt;marker_with_frame&lt;/material&gt;
+  &lt;/gazebo&gt;
+  &lt;link name=&quot;${genns}tablet&quot;&gt;
+    &lt;visual&gt;
+      &lt;geometry&gt;
+        &lt;box size=&quot;1.0 1.0 0.05&quot;/&gt;
+      &lt;/geometry&gt;
+      &lt;origin xyz=&quot;0 0 0&quot;/&gt;
+      &lt;material name=&quot;red&quot;&gt;
+        &lt;color rgba=&quot;1 0 0.1 1&quot;/&gt;
+      &lt;/material&gt;
+    &lt;/visual&gt;
+    &lt;inertial&gt;
+      &lt;mass value=&quot;1&quot;/&gt;
+      &lt;inertia ixx=&quot;1.0&quot; ixy=&quot;0.0&quot; ixz=&quot;0.0&quot; iyy=&quot;1.0&quot; iyz=&quot;0.0&quot; izz=&quot;1.0&quot;/&gt;
+    &lt;/inertial&gt;
+  &lt;/link&gt;
+  &lt;joint name=&quot;${genns}world_to_rolling_bar&quot; type=&quot;fixed&quot;&gt;
+    &lt;origin rpy=&quot;0 0 0&quot; xyz=&quot;0 0 1&quot;/&gt;
+    &lt;parent link=&quot;world&quot;/&gt;
+    &lt;child link=&quot;${genns}rollingBar&quot;/&gt;
+  &lt;/joint&gt;
+  &lt;joint name=&quot;${genns}rollingBar_to_Tablet&quot; type=&quot;revolute&quot;&gt;
+    &lt;axis xyz=&quot;1 0 0&quot;/&gt;
+    &lt;origin xyz=&quot;0.0 0.0 0.0&quot;/&gt;
+    &lt;parent link=&quot;${genns}rollingBar&quot;/&gt;
+    &lt;child link=&quot;${genns}tablet&quot;/&gt;
+    &lt;limit effort=&quot;1000.0&quot; lower=&quot;-15&quot; upper=&quot;15&quot; velocity=&quot;30&quot;/&gt;
+    &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+  &lt;/joint&gt;
+
+  &lt;ros2_control name=&quot;${genns}GazeboSystem&quot; type=&quot;system&quot;&gt;
+    &lt;hardware&gt;
+      &lt;plugin&gt;gazebo_ros2_control/GazeboSystem&lt;/plugin&gt;
+    &lt;/hardware&gt;
+    &lt;joint name=&quot;${genns}rollingBar_to_Tablet&quot;&gt;
+      &lt;command_interface name=&quot;velocity&quot;&gt;
+        &lt;param name=&quot;min&quot;&gt;-10&lt;/param&gt;
+        &lt;param name=&quot;max&quot;&gt;10&lt;/param&gt;
+      &lt;/command_interface&gt;
+      &lt;state_interface name=&quot;position&quot;/&gt;
+      &lt;state_interface name=&quot;velocity&quot;/&gt;
+      &lt;state_interface name=&quot;effort&quot;/&gt;
+    &lt;/joint&gt;
+  &lt;/ros2_control&gt;
+
+  &lt;gazebo&gt;
+    &lt;plugin filename=&quot;libgazebo_ros2_control.so&quot; name=&quot;gazebo_ros2_control&quot;&gt;
+      &lt;ros&gt;
+        &lt;namespace&gt;/${genns}&lt;/namespace&gt;
+        &lt;remapping&gt;/tf:=/${genns}/tf&lt;/remapping&gt;
+      &lt;/ros&gt;  
+      &lt;parameters&gt;$(find gazebo_ros2_control_demos)/config/${genns}/${genns}_controller.yaml&lt;/parameters&gt;
+      &lt;robot_param_node&gt;${genns}rsp&lt;/robot_param_node&gt;
+    &lt;/plugin&gt;
+  &lt;/gazebo&gt;
+&lt;/robot&gt;
+</code></pre>
+
+<p>And with the controller yaml files (may be I have a problem in here? ) file being:</p>
+
+<pre><code>r1:
+  r1controller_manager:
+    ros__parameters:
+      update_rate: 30  # Hz
+      pinocchio:
+        type: velocity_controllers/JointGroupVelocityController
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+r1:
+  pinocchio:
+    ros__parameters:
+      joints:
+        - r1rollingBar_to_Tablet
+      command_interfaces:
+        - velocity
+      state_interfaces:
+        - position
+        - velocity
+</code></pre>
+
+<p>and</p>
+
+<pre><code>r2:
+  r2controller_manager:
+    ros__parameters:
+      update_rate: 30  # Hz
+      geppetto:
+        type: velocity_controllers/JointGroupVelocityController
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+r2:
+  geppetto:
+    ros__parameters:
+      joints:
+        - r2rollingBar_to_Tablet
+      command_interfaces:
+        - velocity
+      state_interfaces:
+        - position
+        - velocity
+</code></pre>
+
+<p>Finally, I don&#39;t get any problem if instead of using load<em>controller, I instead use the controller</em>manager spawner: with the following 2 commands I am able to control both robots (and see both tf/joints etc being correctly published) by publishing on the respective [pinocchio|geppetto]/commands topics:</p>
+
+<pre><code>ros2 run  controller_manager spawner -c &quot;/r2/r2controller_manager&quot; --namespace &quot;r2&quot;   -p ./gazebo_ros2_control_demos/config/r2/geppetto.yaml  -t velocity_controllers/JointGroupVelocityController geppetto
+ros2 run  controller_manager spawner -c &quot;/r1/r1controller_manager&quot; --namespace &quot;r1&quot;   -p ./gazebo_ros2_control/gazebo_ros2_control_demos/config/r1/pinocchio.yaml  -t velocity_controllers/JointGroupVelocityController pinocchio
+</code></pre>
+
+<p>where the configuration file for the controllers are a little bit different from the yaml files from above:</p>
+
+<p>pinocchio yaml file:</p>
+
+<pre><code>r1/pinocchio:
+   ros__parameters:
+      joints:
+         - r1rollingBar_to_Tablet
+      command_interfaces:
+        - velocity
+      state_interfaces:
+        - position
+        - velocity
+</code></pre>
+
+<p>geppetto yaml file:</p>
+
+<pre><code>r2/geppetto:
+   ros__parameters:
+      joints:
+         - r2rollingBar_to_Tablet
+      command_interfaces:
+        - velocity
+      state_interfaces:
+        - position
+        - velocity
+</code></pre>
+
+<p>I could not spot on the fly the problem for the load_controller node, but may be anyone has some ideas where to look for? Also should we setup and merge a test which takes into account a similar example so we cover the case with different namespaces? Does it sound good to you? </p>
+
+<p>Thanks</p>
+
+        <div class="owner"><p>Asked by <a href="/users/2958">maurizio</a> on 2023-05-22 08:37:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

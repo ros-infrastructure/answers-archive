@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Static tf2 transform returns correct position but opposite quaternion - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/305353">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Static tf2 transform returns correct position but opposite quaternion</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/89240/static-tf2-transform-returns-correct-position-but-opposite-quaternion">https://robotics.stackexchange.com/questions/89240/static-tf2-transform-returns-correct-position-but-opposite-quaternion</a>.</p>
+        <p>Trying to read the state of my robotic arm, I found that the manufacturer provided transforms for everything up to the flange but not to the center of the closed fingers in the end effector. In the manual, they give the transform as an Rz(-pi/4)+Tz(0.1034). I found out the most convenient way to get to that pose seems to be to set up a static tf2 transform with the given data, using the static<em>transform</em>publisher.</p>
+
+<pre><code>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;!DOCTYPE launch&gt;
+
+&lt;launch&gt;
+    &lt;node pkg=&quot;tf2_ros&quot; type=&quot;static_transform_publisher&quot; name=&quot;panda_closed_fingers_center_broadcaster&quot; args=&quot;0 0 0.1034 0 0 0 1 panda_link8 panda_cfc&quot; /&gt;
+
+    &lt;node pkg=&quot;panda_manager&quot; type=&quot;read_state.py&quot; name=&quot;state_reader&quot; output=&quot;screen&quot; /&gt;
+&lt;/launch&gt;
+</code></pre>
+
+<p>As you can see from the args, I am disregarding the rotation, as it seems I give <code>args=&quot;0 0 0.1034 0 0 -0.383 0.924 panda_link8 panda_cfc&quot;</code> I get very incorrect results, but it might for other reasons, hence me posting this as well. I then have this python script which gets panda<em>link8&#39;s pose from a MoveGroupCommander, tries to lookup the transform between panda</em>link0 and panda_cfc, and then applies said transform to a null pose (0, 0, 0, 1, 0, 0, 0).</p>
+
+<pre><code>#!/usr/bin/env python
+
+import rospy
+import tf2_ros
+import tf2_geometry_msgs
+import moveit_commander
+
+from actionlib_msgs.msg import GoalStatusArray
+from geometry_msgs.msg import PoseStamped
+
+
+if __name__ == '__main__':
+    rospy.init_node("read_state")
+
+    tf_buffer = tf2_ros.Buffer(rospy.Duration(1200))
+    tf_listener = tf2_ros.TransformListener(tf_buffer)
+
+    rospy.loginfo("Waiting for move_group/status")
+    rospy.wait_for_message('move_group/status', GoalStatusArray)
+
+    mgc_pa = moveit_commander.MoveGroupCommander('panda_arm')
+
+    rate = rospy.Rate(1)
+    while not rospy.is_shutdown():
+        print('--')
+
+        pose_flange = mgc_pa.get_current_pose('panda_link8').pose
+        print("flange pos: [{: f}, {: f}, {: f} ]".format(pose_flange.position.x,
+                                                          pose_flange.position.y,
+                                                          pose_flange.position.z))
+        print("flange rot: [{: f}, {: f}, {: f}, {: f} ]".format(pose_flange.orientation.w,
+                                                                 pose_flange.orientation.x,
+                                                                 pose_flange.orientation.y,
+                                                                 pose_flange.orientation.z))
+
+        try:
+            transform = tf_buffer.lookup_transform('panda_link0',
+                                                   'panda_cfc',     # source frame
+                                                   rospy.Time(0))   # get the tf at first available time
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            rate.sleep()
+            continue
+
+        pose_empty_stamped = PoseStamped()
+        pose_empty_stamped.header.frame_id = 'panda_link0'
+        pose_empty_stamped.header.stamp = rospy.Time().now()
+        pose_empty_stamped.pose.orientation.w = 1.0
+
+        pose_cfc = tf2_geometry_msgs.do_transform_pose(pose_empty_stamped, transform).pose
+        print("cfc    pos: [{: f}, {: f}, {: f} ]".format(pose_cfc.position.x,
+                                                          pose_cfc.position.y,
+                                                          pose_cfc.position.z))
+        print("cfc    rot: [{: f}, {: f}, {: f}, {: f} ]".format(pose_cfc.orientation.w,
+                                                                 pose_cfc.orientation.x,
+                                                                 pose_cfc.orientation.y,
+                                                                 pose_cfc.orientation.z))
+        rate.sleep()
+</code></pre>
+
+<p>This all results in me getting the correct flange pose, the (seemingly) correct cfc position and a quaternion exactly opposite to the one I need, for example:</p>
+
+<pre><code>flange pos: [ 0.558647, -0.035861,  0.267268 ]
+flange rot: [ 0.143811, -0.833978,  0.397952, -0.354166 ]
+cfc    pos: [ 0.631565, -0.040205,  0.194085 ]
+cfc    rot: [-0.143811,  0.833978, -0.397952,  0.354166 ]
+</code></pre>
+
+<p><a href="https://gamedev.stackexchange.com/questions/34519/rotation-matrix-derived-from-quaternion-is-opposite-of-expected-direction">Some</a> point to it being due to the transformation matrices being transposed, but I have no access to them.</p>
+
+<p><strong>EDIT</strong>:
+@tfoote&#39;s answer got me tinkering with the code, as at first his suggestion had me happy the quaternion was now correct, but then I noticed the position was way off. I tried some combinations, checked if the missing -pi/4 was the cause, however eventually I disabled the static publisher and asked for the transform T^8<em>0 with `transform = tf</em>buffer.lookup<em>transform(&#39;panda</em>link8&#39;, &#39;panda_link0&#39;, rospy.Time(0))` and applied it to ((0, 0, 0),(1, 0, 0, 0)), obtaining:</p>
+
+<pre><code>panda_link8 pos: [ 0.306968, -0.000056,  0.589830 ]
+panda_link8 rot: [ 0.000071, -0.923964,  0.382478,  0.000168 ]
+tf_to_link8 pos: [-0.216981,  0.216924,  0.589908 ]
+tf_to_link8 rot: [ 0.000071,  0.923964, -0.382478, -0.000168 ]
+</code></pre>
+
+<p>Now the position is way off (off in the same way it is off if I transform to the center of closed fingers), and the quaternion takes the opposite path but leads to the same orientation. Among other things while trying to understand the position mistake, I tried to invert the order to see what would happen, like I was incorrectly doing yesterday, and in fact using T^0_8 returns:</p>
+
+<pre><code>panda_link8 pos: [ 0.306972, -0.000056,  0.589821 ]
+panda_link8 rot: [ 0.000067, -0.923963,  0.382481,  0.000176 ]
+tf_to_link8 pos: [ 0.306970, -0.000047,  0.589824 ]
+tf_to_link8 rot: [-0.000061,  0.923967, -0.382471, -0.000169 ]
+</code></pre>
+
+<p>...which apart from the opposite rotation path, is the same, which it shouldn&#39;t be. Is this a bug in the franka emika code or am I missing something obvious? (-0.21, 0.21, 0.59) is a point behind the arm somewhat to the left, same height as the home position, but where nothing should be.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-10 04:52:05 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>If you&#39;re getting the inverse of what you&#39;re expecting it&#39;s likely that you&#39;re confusing the direction of the API.</p>
+
+<p>See: <a href="https://answers.ros.org/question/194046/the-problem-of-transformerlookuptransform/">https://answers.ros.org/question/194046/the-problem-of-transformerlookuptransform/</a> or <a href="https://answers.ros.org/question/296844/time-travel-with-tf-tutorial-confusing-target-and-source-frames/">https://answers.ros.org/question/296844/time-travel-with-tf-tutorial-confusing-target-and-source-frames/</a> or <a href="https://answers.ros.org/question/229463/confusing-tf-transforms/">https://answers.ros.org/question/229463/confusing-tf-transforms/</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2018-10-10 12:27:38 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>It was a confusing notation also in the robotics course at uni, and the API works exactly like transformation matrices are supposed to. Thank you! However the problem is not quite solved yet, I added an edit, as it still feels related to this question rather than its own.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-11 05:48:11 UTC</p></div>
+</div>
+<div class="comment">
+          <p>I replied before having the whole thing extra clear, thanks. The issue was I needed the transform from cfc to link0 (i.e. <code>tf_buffer.lookup_transform(&#39;panda_link0&#39;, &#39;panda_cfc&#39;, rospy.Time(0))</code>) and to apply it to a point in the frame panda_cfc (i.e. <code>pose_empty_stamped.header.frame_id = &#39;panda_cfc&#39;</code>).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/37353">aPonza</a> on 2018-10-11 08:34:07 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Multiple TCP connections using rosserial_server with WiFi Arduino - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/274159">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Multiple TCP connections using rosserial_server with WiFi Arduino</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/83545/multiple-tcp-connections-using-rosserial-server-with-wifi-arduino">https://robotics.stackexchange.com/questions/83545/multiple-tcp-connections-using-rosserial-server-with-wifi-arduino</a>.</p>
+        <p>Dear all,</p>
+
+<p>I am currently running an Arduino Uno* with an <a href="https://www.adafruit.com/product/2999">ATWINC1500 WiFi </a> breakout from Adafruit and can successfully publish topics over WiFi to a master using <code>rosrun rosserial_python serial_node.py tcp</code>.  This has been achieved using code modified from <a href="https://answers.ros.org/question/232774/launch-a-ros-node-over-wifi/">this previous ROS answer</a> supplied by <a href="https://answers.ros.org/users/1034/ahendrix/">@ahendrix</a>. </p>
+
+<p>The trouble I run into is running two of these devices at the same time.  They both have unique IP addresses and are connected to the network, running differently named topics, and individually can be successfully connected and publish topics.</p>
+
+<p>The first device can be connected using <code>rosrun rosserial_python serial_node.py tcp</code>.  Simply starting a second device does not lead to be being connected.  If I run a second serial<em>node.py with a different node name to avoid conflicts (by using `rosrun rosserial</em>python serial<em>node.py tcp _</em>name:=OtherNodeName<code>), I get an error</code>&quot;socket.error: [Errno 98] Address already in use&quot;`.</p>
+
+<p>As the socket can&#39;t be given as an argument to serial<em>node.py, I tried using `rosrun rosserial</em>server socket<em>node` as rosserial</em>server in theory can handle multiple connections.  Using default port 11411, I find the node displays:</p>
+
+<p><code>Listening for rosserial TCP connection on port 11411</code>
+but never finds any devices, unlike rosserial<em>python serial</em>node.py which was successful.</p>
+
+<p>Am I missing something for rosserial_server to be able to identify and connect to these devices?</p>
+
+<p>Is there another way of connecting multiple TCP devices such as these arduinos with wifi simultaneously?</p>
+
+<p>Thank you for your time,</p>
+
+<p>Andy</p>
+
+<hr>
+
+<p><strong>UPDATE:</strong></p>
+
+<p>Having followed some very good advice from <a href="https://answers.ros.org/users/5184/gvdhoorn/">gvdhoorn</a>, I investigated the packet traffic using Wireshark.  Turns out for <code>rosserial_server socket_node</code> the connection between the arduino and the master must not complete (there are a few messages back and forth, but finishes before the &quot;normal&quot; regular published traffic commences as seen when using <code>rosserial_python serial_node.py tcp</code>).</p>
+
+<p>By adding a short delay after <code>nh.advertise()</code>, the master and the arduino are able to make a connection (though socket_node reports some errors to begin with), and start publishing.  This also allows for multiple arduinos to be connected!  However, the connection then drops out after a minute or so from what I observe as TCP out-of-order issues.</p>
+
+<p>I thought this might be because of the <code>delay(1000)</code> in the main loop, so I replaced this instead for using <code>millis()</code> and letting <code>nh.spinonce()</code> not get held up.  This didn&#39;t improve the situation, it in fact might have made the drop out occur earlier, but I haven&#39;t done any actual timings to confirm that.</p>
+
+<p>There are occurrences of TCP out-of-order when using <code>serial_node.py</code>, but they seem to resolve themselves very quickly and not terminate the connection between the arduino and the master when using identical code.  I left this running for a few hours with no termination of connection.</p>
+
+<p><em>Better questions:</em></p>
+
+<p>What is it about <code>socket_node</code> that leads to traffic being treated differently compared to <code>serial_node.py</code> and lead to the connection being terminated?</p>
+
+<p>What could be done to improve the stability of TCP connections when using <code>rosserial_server socket_node</code>, in particular when using arduinos?</p>
+
+<p>Is there a more elegant way of automatically reestablishing a connection if it is lost, beyond using <code>if (!nh.connected()){reconnect_function}</code> ?</p>
+
+<p>Thanks.</p>
+
+<hr>
+
+<p>Below is the <em>original</em> code on the arduino for anyone who is interested:</p>
+
+<pre><code>#include &lt;SPI.h&gt;
+#include &lt;WiFi101.h&gt;
+#include &lt;ros.h&gt;
+#include &lt;std_msgs/String.h&gt;
+
+//////////////////////
+// WiFi Definitions //
+//////////////////////
+#include &quot;arduino_secrets.h&quot;
+const char* ssid[] = SECRET_SSID;
+const char* password[] = SECRET_PASS;
+
+IPAddress server(192, 168, 0, 100); // ip of your ROS server
+IPAddress ip;  //Storage local IP address
+int status = WL_IDLE_STATUS;
+
+WiFiClient client;
+
+class WiFiHardware {
+
+  public:
+  WiFiHardware() {};
+
+  void init() {
+    // do your initialization here. this probably includes TCP server/client setup
+    client.connect(server, 11411);
+  }
+
+  // read a byte from the serial port. -1 = failure
+  int read() {
+    // implement this method so that it reads a byte from the TCP connection and returns it
+    //  you may return -1 is there is an error; for example if the TCP connection is not open
+    return client.read();         //will return -1 when it will works
+  }
+
+  // write data to the connection to ROS
+  void write(uint8_t* data, int length) {
+    // implement this so that it takes the arguments and writes or prints them to the TCP connection
+    for(int i=0; i&lt;length; i++)
+      client.write(data[i]);
+  }
+
+  // returns milliseconds since start of program
+  unsigned long time() {
+     return millis(); // easy; did this one for you
+  }
+};
+
+
+//ROS applicable
+
+ros::NodeHandle_&lt;WiFiHardware&gt; nh;
+std_msgs::String msg;
+ros::Publisher string(&quot;outString&quot;, &amp;msg);
+
+char hello[13] = &quot;Hello World!&quot;;
+
+
+void setupWiFi()
+{
+  WiFi.begin(ssid, password);
+  //Print to serial to find out IP address and debugging
+  Serial.print(&quot;\nConnecting to &quot;); Serial.println(ssid);
+  uint8_t i = 0;
+  while (WiFi.status() != WL_CONNECTED &amp;&amp; i++ &lt; 20) delay(500);
+  if(i == 21){
+    Serial.print(&quot;Could not connect to&quot;); Serial.println(ssid);
+    while(1) delay(500);
+  }
+  Serial.print(&quot;Ready! Use &quot;);
+  ip = WiFi.localIP();
+  Serial.print(ip);
+  Serial.println(&quot; to access client&quot;);
+}
+
+void setup() {
+
+  //Configure pins for adafruit ATWINC1500 breakout
+  WiFi.setPins(8,7,4);
+
+
+  Serial.begin(9600);
+  setupWiFi();
+  delay(2000);
+
+
+  nh.initNode();
+  nh.advertise(string);
+}
+
+void loop() {
+
+
+  msg.data = hello;
+  string.publish(&amp;msg);
+  nh.spinOnce();
+  delay(1000);
+
+
+}
+</code></pre>
+
+<p>*<em>Actually a Teensy 3.2 because the Uno does not have enough memory, however it emulates and behaves like an Uno</em></p>
+
+        <div class="owner"><p>Asked by <a href="/users/32333">Andy West</a> on 2017-10-26 04:50:06 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;m not a <code>rosserial</code> expert, but just to get a feeling for what is going on at the network level, I&#39;d run Wireshark while trying to get things to connect. That should at least tell you whether your clients are trying to connect, how, where and in what way. It should also show server activity.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-10-26 05:08:48 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Note that using TCP/IP over a wireless link is not a very good choice for anything interactive. Whenever I used <code>rosserial</code> over wireless I&#39;ve used the UDP variant. Trouble is though that it currently lacks some of the functionality that the TCP implementation does have.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-10-26 05:09:56 UTC</p></div>
+</div>
+<div class="comment">
+              <p>I&#39;ve investigated using Wireshark.  For <code>rosserial_python serial_node.py</code> it appears to run nicely, however for <code>rosserial_server socket_node</code> there are some errors being thrown around.  By adding <code>delay(100);</code> just after <code>nh.advertise();</code> the arduinos manage to connect!  But dropout randomly later.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32333">Andy West</a> on 2017-10-26 08:53:04 UTC</p></div>
+</div>
+<div class="comment">
+              <p>The <code>&quot;socket.error: [Errno 98] Address already in use&quot;</code> suggest that both copies of <code>serial_node.py</code> are trying to listen on the same port number. I&#39;m not sure if a single node is designed to handle multiple clients or not, you might want to look for documentation about this.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2017-10-27 21:45:07 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If a single node is supposed to handle multiple clients, then this behavior is a bug. Otherwise you may want to try running the second node and its Arduino on a different port number.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2017-10-27 21:46:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>(Failing to handle multiple clients is still probably a bug for most software that has a listening socket, but if the docs don&#39;t say it&#39;s supported you may have a hard time getting this &quot;bug&quot; fixed unless you&#39;re willing to submit the fix yourself)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1034">ahendrix</a> on 2017-10-27 21:47:08 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Hello dear community. I need your help. I am facing problems with rosserial_server socket_node.
+can you please take a look to my post? Thank you so much
+<a href="https://answers.ros.org/question/361530/rosserial_server-wifi-connection-raspberry-pi-esp8266/">RosSerial_Server</a></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/49972">subarashi</a> on 2020-09-14 09:57:21 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The result of this investigation is that it may have been an intermittent bug.  Having reinstalled <code>rosserial_server</code> just to be pedantic in checking everything, the continual dropping out of devices using <code>rosserial_server socket.launch</code> has be greatly reduced (drop out ~ 1 per hour compared to ~1 per minute).</p>
+
+<p>The <code>rosserial_server socket_node</code> will accept multiple clients successfully as it should (unlike <code>serial_node.py</code> as <a href="https://answers.ros.org/users/1034/ahendrix/">ahendrix</a> points out).</p>
+
+<p>The only advice I can offer to others is to include a reconnect function as mentioned in the question.  As <code>rosserial_server</code> is in development, if I can track down where this bug might of occurred, I will report it.</p>
+
+<p>Thank you all for your help.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/32333">Andy West</a> on 2017-10-31 08:56:25 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I don&#39;t know how much this applies to your problem but I use multiple rosserial_server nodes instead (one for each client) by adding <code>args=&quot;_port:=11412&quot;</code>, etc. to the .launch file.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32506">prnthp</a> on 2017-11-05 15:08:02 UTC</p></div>
+</div>
+<div class="comment">
+          <p>That&#39;s a useful tip!  Never though of setting separate ports to allow for separate nodes when using <code>rosserial_server</code>.  Thanks <a href="https://answers.ros.org/users/32506/prnthp/">prnthp</a>.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/32333">Andy West</a> on 2017-11-05 15:34:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>can you guys elaborate how to do this port modification? can i make the port number arguments changable and connect to several ports like that? please guide</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/33833">ELLEO</a> on 2018-02-22 21:05:02 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Gearbox Motor Controller Design - Differential Drive - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/270862">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Gearbox Motor Controller Design - Differential Drive</h2>
+      <div class="question">
+        <p>I decided to write my own Pidgets motor controller code because I was unable to get the Phidget code working properly and found no support. The problem is that wheel speeds did not match the navigation velocity requests by a factor of 5. </p>
+
+<p>The attached code is a proof of concept. I am not requesting a code rewrite. I am hoping for comments that will tell me what approach is fraught with trouble and where I clearly don’t understand basic concepts or leverage existing ROS libraries. My code is absolutely disgusting in places, however, it functions well enough that the robot gets close to the target before exhibiting bizarre behavior. I need to calibrate the pid controllers and recalibrate the navigation stack. I don’t want to attempt that on a faulty design.</p>
+
+<ol>
+<li> The chunk of code that determines the sign for linear speed, reverse vs. forward, is most embarrassing. I suspect I can replace it with single line that leverages the quaternion library. I can use some help.</li>
+<li> As an alternative, my son suggested I transform navigation speed targets from the map coordinate system to linear x and angular z speeds in a robot coordinate system. That means I only need to deal with the linear x to get linear speed and its sign to determine if it is going forward or backward. My understanding of quaternions is too weak to implement that transformation. </li>
+<li> I found motor driver code snippets in Lentin Joseph’s Mastering ROS book. It helped me combine linear and angular speed components. I’m uneasy about my implementation. It tests out fine on the floor.</li>
+<li> Are there other nicely written examples or white papers that I missed in my searchers? For example, the Turtlebot3 OpenCR controller code didn’t appear to be applicable because I am using a gearhead motor, not a Dynamixel.</li>
+<li> The differential_drive package looks tempting but I see support stopped with groovy. Are there standard motor control packages that I’ve missed?</li>
+</ol>
+
+<p>Odometry aside: Currently, I can create maps by joy-sticking around and using odometry from the Phidgets motor encoders. I’ve been able to use the ROS navigation tuning guides to calibrate. Measured distances and velocities match odom messages. This means a lot is working.</p>
+
+<p>Phidget controller aside: I didn’t understand how to use the motor control parameters for the motor<em>control</em>hc node in the Phidgets package. At one point I hacked the controller by multiplying the requested velocity by 5. I had moderate navigation success after that. This helped me understand the problem.</p>
+
+<pre><code>void setMotorPower ()
+{
+    float wheel0_speed = 0;
+    float wheel1_speed = 0;
+
+    // *** Compute the current wheel speeds ***
+    // First compute the Robot&#39;s linear and angular speeds
+    float xspeed = odom_.twist.twist.linear.x;
+    float yspeed = odom_.twist.twist.linear.y;
+    float linear_speed = sqrt (xspeed * xspeed + yspeed * yspeed);
+
+    float angular_speed = odom_.twist.twist.angular.z;
+
+    // Now compute wheel speed by summing linear and rotational elements.
+    // It makes a difference if the robot is backing up or going forward.
+    // Direction is determined by the sign of x and y speeds plus which way
+    // the robot is facing.
+
+    // Translate the quaternion position angle to Euler yaw in the range 
+    // from 0 to 2PI. I suspect there a library function that does this nicely.
+    float rotation_angle = fmod (atan2 (odom_.pose.pose.orientation.z, 
+                    odom_.pose.pose.orientation.w) * 2 + 2 * M_PI, 2 * M_PI);
+    // The yaw, x speed and y speed determine the direction of the linear speed.
+    // I know this code is an embarrassment - again I suspect there is a nice 
+    // library function.
+    if ((rotation_angle &gt;= 0 &amp;&amp; rotation_angle &lt;= M_PI / 2 &amp;&amp; 
+                                               xspeed &gt;= 0 &amp;&amp; yspeed &gt;= 0) ||
+         (rotation_angle &gt;= M_PI / 2 &amp;&amp; rotation_angle &lt;= M_PI &amp;&amp; 
+                                               xspeed &lt;= 0 &amp;&amp; yspeed &gt;= 0) ||
+         (rotation_angle &gt;= M_PI &amp;&amp; rotation_angle &lt;= 3 * M_PI / 2 &amp;&amp; 
+                                               xspeed &lt;= 0 &amp;&amp; yspeed &lt;= 0) ||
+         (rotation_angle &gt;= 3 * M_PI / 2 &amp;&amp; rotation_angle &lt;= 2* M_PI &amp;&amp; 
+                                               xspeed &gt;= 0 &amp;&amp; yspeed &lt;= 0)){
+         // robot is moving forward
+         wheel0_speed = linear_speed + angular_speed * wheelbase_ / 2.0;
+         wheel1_speed = linear_speed - angular_speed * wheelbase_ / 2.0;
+    }
+    else if ((rotation_angle &gt; 0 &amp;&amp; rotation_angle &lt;= M_PI / 2 &amp;&amp; 
+                                               xspeed &lt; 0 &amp;&amp; yspeed &lt; 0) ||
+         (rotation_angle &gt; M_PI / 2 &amp;&amp; rotation_angle &lt;= M_PI &amp;&amp; 
+                                               xspeed &gt;= 0 &amp;&amp; yspeed &lt; 0) ||
+         (rotation_angle &gt; M_PI &amp;&amp; rotation_angle &lt;= 3 * M_PI / 2 &amp;&amp; 
+                                               xspeed &gt;= 0 &amp;&amp; yspeed &gt;= 0) ||
+         (rotation_angle &gt; 3 * M_PI / 2 &amp;&amp; rotation_angle &lt;= 2* M_PI &amp;&amp; 
+                                               xspeed &lt; 0 &amp;&amp; yspeed &gt;= 0)){
+        // robot is backing up
+        wheel0_speed = -linear_speed + angular_speed * wheelbase_ / 2.0;
+        wheel1_speed = -linear_speed - angular_speed * wheelbase_ / 2.0;
+    }
+    else {
+        // We shouldn&#39;t be here but we are on occasion
+    ROS_INFO (&quot;speed x %.2f y %.2f angle %.2f&quot;, 
+                                        xspeed, yspeed, rotation_angle);
+    }
+
+    // *** Compute target wheel speeds ***
+    float wheel0_target_speed = target_.linear.x + 
+                                target_.angular.z * wheelbase_ / 2.0;
+    float wheel1_target_speed = target_.linear.x - 
+                                target_.angular.z * wheelbase_ / 2.0;
+
+    // *** Compute motor control power ***
+    // Motor power computed between -100 and 100 percent of full power
+    ros::Time time = ros::Time::now();
+    power_wheel0_ = power_wheel0_ + pid_motor0_.computeCommand(
+                        wheel0_target_speed - wheel0_speed, time - last_time_);
+    if (power_wheel0_ &gt;  100) power_wheel0_ =  100;
+    if (power_wheel0_ &lt; -100) power_wheel0_ = -100;
+
+    power_wheel1_ = power_wheel1_ + pid_motor1_.computeCommand(
+                         wheel1_target_speed - wheel1_speed, time - last_time_);
+    if (power_wheel1_ &gt;  100) power_wheel1_ =  100;
+    if (power_wheel1_ &lt; -100) power_wheel1_ = -100;
+    last_time_ = time;
+
+    // *** apply power to the motors ***
+    CPhidgetMotorControl_setVelocity (phid_, 0, power_wheel0_);
+    CPhidgetMotorControl_setVelocity (phid_, 1, -power_wheel1_);
+    CPhidgetMotorControl_setAcceleration (phid_, 0, acceleration_);
+    CPhidgetMotorControl_setAcceleration (phid_, 1, acceleration_);
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/23761">Ed C.</a> on 2017-09-13 19:09:26 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

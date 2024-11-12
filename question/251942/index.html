@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ros::Node as static member - any better ideas - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/251942">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ros::Node as static member - any better ideas</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/78343/rosnode-as-static-member-any-better-ideas">https://robotics.stackexchange.com/questions/78343/rosnode-as-static-member-any-better-ideas</a>.</p>
+        <h2>Situation</h2>
+
+<p>I&#39;m part of a larger team working with robots and ROS. My current project is to create easy-to-use libraries for navigation and other things from existing code in our repositories. Over time, many people in our lab have implemented the same function a bit differently and I want to unify and streamline these implementations in one single library.</p>
+
+<p>Now, the library has to publish on and subscribe to multiple topics and therefore it requires a <code>ros::NodeHandle</code> to work with. So far my library is purely static (i.e. no classes are instantiated, static members are called directly). This has the advantage, that my library has global awareness and I can prevent many user/robot/real-time errors. Furthermore, subscribing to topics takes a bit of time and messages can be missed. This is another argument for static members, since I can have a static subscriber and initialize it when the node is created. </p>
+
+<h2>Problem</h2>
+
+<p>When I have a <code>ros::NodeHandle</code> as a static class member, it is initialized right on program-launch, before <code>ros::init()</code> can be called. This returns an error as soon as the rosnode using my library is launched - makes sense. </p>
+
+<h2>My Solution</h2>
+
+<p>I thought I could perform lazy-initialization of my static members, including subscribers, publishers and the nodehandle. In order to achieve this, all ros objects are <strong>static pointers</strong>, that I initialize right before first use. My classes all look something like this.</p>
+
+<pre><code>// Class used to actually send various commands to robot
+class RobotHelper {
+public:
+  static int sendCommand(...);
+
+private:
+  static void initialize();
+  static void callback(const my_msgs::Telemetry &amp;msg);
+
+  static bool initialized;
+  static std::unique_ptr&lt;ros::NodeHandle&gt; nh_ptr_;
+  static std::unique_ptr&lt;ros::Publisher&gt; cmd_pub_ptr_;
+  static std::unique_ptr&lt;ros::Subscriber&gt; telemetry_sub_ptr_;
+};
+
+int RobotHelper::sendCommand(...) {
+  // Lazy-initialize the RobotHelper
+  initialize();
+
+  // Uses telemetry and other things to make sure nothing dangeorus happens when
+  // command is sent
+  // Also uses telemetry to make sure the robot accepted the command, so
+  // we don&#39;t have to worry about that later
+  // ...
+  // ...
+
+  return 0;
+}
+
+void RobotHelper::initialize() {
+  if (initialized) {
+    // nothing to do, already initialized
+    return;
+  }
+
+  // Initialize all the static ros members
+  nh_ptr_ = std::unique_ptr&lt;ros::NodeHandle&gt;(new ros::NodeHandle);
+
+  // create subscriber
+  telemetry_sub_ptr_ = std::unique_ptr&lt;ros::Subscriber&gt;(new ros::Subscriber);
+  *telemetry_sub_ptr_ =
+      nh_ptr_-&gt;subscribe(&quot;telemetry&quot;, 10, &amp;RobotHelper::callback);
+
+  while (ros::ok()) {
+    // Wait for crucial telemetry subscriber to receive messages
+    // NOTE: Here, time is wasted waiting. I don&#39;t want to do that too often 
+    // ...
+  }
+
+  // Create publisher
+  some_pub_ptr_ = std::unique_ptr&lt;ros::Publisher&gt;(new ros::Publisher);
+  *some_pub_ptr_ = nh_ptr_-&gt;advertise&lt;std_msgs::Bool&gt;(&quot;commands&quot;, 10);
+}
+
+
+class PathNavigation : public NavigationBase {
+public:
+  // For every navigation action I create its own object
+  PathNavigation(double x, double y, double z);
+
+  // Actually perform the navigation
+  // This has to be called periodically until navigation is complete.
+  // In between I could handle obstacle avoidance or perform other actions.
+  // Hence this should be a non-blocking function and called periodically
+  int execute(bool &amp;navigation_completed);
+
+private:
+  static std::unique_ptr&lt;ros::NodeHandle&gt; nh_ptr_;
+  static std::unique_ptr&lt;ros::Publisher&gt; some_pub_ptr_;
+};
+
+PathNavigation::PathNavigation(double x, double y, double z) {
+  // In the constructor I compute the trajectory for example, as this remains
+  // valid until the goal is reached.
+}
+
+int PathNavigation::execute() {
+  // Every class function needs to check the initialization
+  // since there is no knowing which function is going to be called first.
+  initialize();
+
+  // Publish commands like this
+  RobotHelper::sendCommand(...);  // First call will initialize RobotHelper
+
+  return 0; // no errors
+}
+
+
+int main(int argc, char **argv) {
+  ros::init(argc, argv, &quot;example&quot;);
+
+  // Create navigation
+  // The end-user does not need to know about RobotHelper. The navigation-
+  // objects take care of everything automatically. 
+  std::queue&lt;PathNavigation&gt; navigation_queue;
+
+  PathNavigation waypoint1(1.0, 2.0, 0.0);
+  navigation_queue.push(waypoint1);
+
+  PathNavigation waypoint2(3.0, 3.0, 0.0);
+  navigation_queue.push(waypoint2);
+
+  // Execute navigation
+  bool nav_complete = false;
+  while (ros::ok() &amp;&amp; !navigation_queue.empty()) {
+    navigation_queue.front().execute(nav_complete);
+
+    // Check if waypoint reached
+    if (nav_complete) {
+      // Proceed with next waypoint
+      navigation_queue.pop();
+    }
+  }
+
+  return 0;
+}
+</code></pre>
+
+<p>This approach works fine, but I have the feeling I am wasting resources with the constant <code>if(initialized)</code> checks inside every single one of the library&#39;s functions. Is there a common approach to this problem of requiring a static node handle and other things?</p>
+
+<p>EDIT: I expanded the example to make more sense.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-14 10:34:14 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>@gvdhoom :There are two reasons for the statics. First one is as you suspected, that I don&#39;t want to miss messages. So I initialize the subscribers once and wait to receive messages. If I do that for every new navigation action, I&#39;m wasting time waiting for the new subscriber every time.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-15 03:12:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Global awareness might be the wrong term. Essentially I wanted to always know whether my subscribers are receiving messages after they have been initialized once, statically. In other words, I&#39;m only using <code>static</code> to eliminate the time it would take to re-initialize my publishers and subscribers.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-15 03:15:43 UTC</p></div>
+</div>
+<div class="comment">
+              <p>What did you mean by &quot;exposing as action&quot;? This sounds exactly like what I need. Would that be having a separate Node running for these actions and triggering them via service calls for example?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-15 03:19:49 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The overuse of <code>static</code> here is a red flag that this is not a good way to approach this. Can you elaborate a bit on how <code>static</code> makes things better? If not missing msgs is <em>really</em> important, an async pub/sub pattern might not be suitable here.</p>
+
+<p><code>int PathNavigation::goTo(double x, double y, double z)</code>: if this is a function that (ultimately) actually makes your platform move to <code>x, y, z</code>, then it might make sense to expose that as an Action, instead of a subscriber. That would allow your client &amp; server to synchronise their control flows, making it immediately clear if/when a msg is lost. Additionally, the action server could provide feedback while performing the action (fi: distance travelled or remaining).</p>
+
+<blockquote>
+<p>This has the advantage, that my library has global awareness and I can prevent many user/robot/real-time errors</p>
+</blockquote>
+
+<p>Can you also elaborate on this? &#39;global awareness&#39; is typically not seen as an advantage, as it results in tightly coupled code (low locality of change, implicit assumptions about control flow, no access control, etc).</p>
+
+<hr>
+
+<p>Edit:</p>
+
+<blockquote>
+<p>There are two reasons for the statics. First one is as you suspected, that I don&#39;t want to miss messages. So I initialize the subscribers once and wait to receive messages. If I do that for every new navigation action, I&#39;m wasting time waiting for the new subscriber every time.</p>
+
+<p>Global awareness might be the wrong term. Essentially I wanted to always know whether my subscribers are receiving messages after they have been initialized once, statically. In other words, I&#39;m only using <code>static</code> to eliminate the time it would take to re-initialize my publishers and subscribers.</p>
+</blockquote>
+
+<p>I&#39;m slightly confused: why would you want to reinitialise your publishers and subscribers?</p>
+
+<p>You have an object, with a lifetime probably longer than that of a single request. Make use of that by initialising your publishers and subscribers only once (initialise member variables in the ctor fi), and use those instances when handling future requests.</p>
+
+<blockquote>
+<p>What did you mean by &quot;exposing as action&quot;? This sounds exactly like what I need. Would that be having a separate Node running for these actions and triggering them via service calls for example?</p>
+</blockquote>
+
+<p>In short: periodic dataflow where a single msg lost is not the end of the world: topics. Short (almost instantaneous) synchronous invocations: services. For long running (a)synchronous invocations that you also would like to monitor and potentially preempt: actions.</p>
+
+<p>For a discussion on the different interaction patterns, please see <a href="http://wiki.ros.org/ROS/Patterns/Communication">ROS/Patterns/Communication</a>. The <a href="http://wiki.ros.org/actionlib">actionlib</a> library implements support for the Action pattern (essentially async services with a future or promise).</p>
+
+<p>Can you give us an example of what a typical flow of control and data is for the functionality that you are wrapping? It sounds a bit like various responsibilites are mixed and that your current mapping of what you have and how you could/would use that in a ROS application are suboptimal. From your <code>PathNavigation</code> example fi I get the impression that you&#39;re very much thinking in an imperative way (ie: calling blocking functions or methods, with control flow basically dictated by the top-to-bottom order in which such invocations are encoded in some outer function (<code>main(..)</code>, etc). Replicating that in a ROS node never really works very well (although it&#39;s possible), and having to resort to tricks like in the OP should make your &#39;spidey sense&#39; go off.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2017-01-15 04:57:27 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Sorry, I expanded my pseudo code now and hopefully it will make more sense. Basically I am using a class for navigations, and for every new navigation I instantiate a new object. That&#39;s why I would recreate subscribers and publishers every time.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-15 06:14:05 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You are completely right, I do feel I am doing something wrong/unnecessary. That&#39;s why I am asking for best practices here. Or maybe example libraries doing something similar (basic navigation).</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-15 06:14:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>For one &#39;example library&#39; that deals with navigation, you could look at <a href="http://wiki.ros.org/move_base">move_base</a>. That seems to do at least what you show in your extended example, and a bit more even, but without all the blocking calls, and with a bit more separation of concerns.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 06:26:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>As to your current design: you could still initialise your pubs &amp; subs once, if you change your <code>PathNavigation</code> class to be more of an &#39;executor&#39;, which stays alive, and just receives new commands (<em>goals</em> in <code>move_base</code> terminology), instead of being recreated for every waypoint.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 07:18:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>So instead of pushing <code>PathNavigation</code> instances, you&#39;d create a single instance, which is your &quot;robot controller&quot; so to say, introduce a data structure to encapsulate just the waypoint info and give your <code>PathNavigation</code> instance a list of waypoints to navigate to.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 07:20:53 UTC</p></div>
+</div>
+<div class="comment">
+          <p>But that is basically what <code>move_base</code> does.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 07:21:04 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thank you very much. I will look into all that you have written and rethink the entire thing.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/29041">potaahto</a> on 2017-01-15 11:19:29 UTC</p></div>
+</div>
+<div class="comment">
+          <p>No problem. Let us know about your progress.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-01-15 11:42:36 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

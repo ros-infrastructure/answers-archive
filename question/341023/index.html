@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>What general assumptions (if any) does Nav2d make about Twist rate and robot behavior? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/341023">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>What general assumptions (if any) does Nav2d make about Twist rate and robot behavior?</h2>
+      <div class="question">
+        <p>Hi, I&#39;m using nav2d together with google cartographer in order to do SLAM + autonomous navigation.
+I see that by default (correct me if I&#39;m wrong) nav2d produces Twist messages at a rate of several messages per second.</p>
+
+<p>This appears to me to be a very high rate, so I&#39;m guessing this assumes the robot will execute whatever is indicated by the Twist message for a very small amount of time (smaller than the rate at which Twist messages arrive) and then come to a stop. In this way, if the robot receives 10 Twist messages in one second telling it to move let&#39;s say x=1.0, then it would move along x at speed 1 for 1 second (by effectively having moved 10 clicks of 100 ms each).</p>
+
+<p>Is my understanding correct? The reason I ask is that a cannot grasp how to process this great amount of Twist messages unless the robot executes them faster than they arrive. Maybe related to that, I&#39;ve seen that a general approach for autonomous robots is for them to be at a full stop by default, as a security measure (so in case communication is lost or something else happens, the robot would immediately stop), I don&#39;t know if this notion comes into play here too.</p>
+
+<p>Thanks!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/50676">JotaDePicas</a> on 2020-01-04 15:20:13 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>tl;dr: <a href="http://docs.ros.org/api/geometry_msgs/html/msg/Twist.html">geometry_msgs/Twist</a> encodes <em>velocity</em>, not position. There is no quantum of motion (ie: no particular distance is expected per <code>Twist</code>) and any &quot;safety&quot; included by the controller/driver (ie: command timeout) is nice, but not part of the semantics of <code>geometry_msgs/Twist</code>.</p>
+
+<p>Navigation stacks typically use <code>Twist</code> messages to provide setpoints to lower-level controllers that will make the robot attain the velocities encoded in them. These setpoints are generated as part of the position control feedback loop closed by <a href="http://docs.ros.org/api/nav_msgs/html/msg/Odometry.html">nav_msgs/Odom</a> (or TF) and which produces velocity commands.</p>
+
+<p>The entity running the position controller (fi a local planner, or something else) would be responsible for sending appropriate velocity setpoints to make the robot reach the desired location (or pose).</p>
+
+<hr>
+
+<p>Almost all local planners in the nav stack (and <code>nav2d</code> is similar afaik) implement something like a velocity-based feedback control loop to control base platform position (ie: 2D (2.5) or 3D pose of the robot in some reference frame).</p>
+
+<p><code>geometry_msgs/Twist</code> does not encode something like a &quot;unit of movement&quot;, but velocities. Both linear and angular.</p>
+
+<p>The nav stack uses this message to <em>continuously</em> provide setpoints to the entity that is supposed to make your robot move based on those setpoints. So there is no quantum of distance that it expects as behaviour. The local planners will try to drive the base platform towards the pose they have been given (by a global planner or something else) by computing appropriate <code>geometry_msgs/Twist</code> messages which are then published.</p>
+
+<p><code>nav_msgs/Odom</code> (or TF) is used to close the loop (ie: to provide information on where the robot actually is, compared to where it needs to go).</p>
+
+<blockquote>
+<p>What general assumptions (if any) does Nav2d make about Twist rate and robot behavior?</p>
+</blockquote>
+
+<p>I would say that the assumption is for a consumer of <code>Twist</code> messages to exist and for <em>something</em> (not necessarily that same consumer directly, but it would be a typical setup) to cause a corresponding motion of the base platform (ie: if the planner / controller requests a linear velocity of 1m/s to be attained along the X-axis, that is actually what happens).</p>
+
+<p>Implicitly there is probably also the assumption of low latency between the publisher and subscriber, and a reasonably accurate &#39;execution&#39; of these velocity commands (if this is not true, you&#39;ll generally observe unstable behaviour (ie: robot oscillating, not reaching its goal position, etc)).</p>
+
+<blockquote>
+<p>I see that by default (correct me if I&#39;m wrong) nav2d produces Twist messages at a rate of several messages per second. This appears to me to be a very high rate [..]</p>
+</blockquote>
+
+<p>for a(n) (on-line) control system &quot;several times a second&quot; is actually not very high at all. It all depends on the dynamics of the robot: small and/or lightweight robots tend to be able to &quot;move fast&quot;, so they can better track incoming setpoints, larger and/or heavy robots (with lots of inertia) tend to need some time to catch up with a velocity setpoint, so they will not be able to track the setpoints very well, but that doesn&#39;t matter.</p>
+
+<blockquote>
+<p>I&#39;m guessing this assumes the robot will execute whatever is indicated by the Twist message for a very small amount of time (smaller than the rate at which Twist messages arrive) and then come to a stop. </p>
+</blockquote>
+
+<p>This is one way to do it, but that&#39;s not encoded in the <code>Twist</code> message itself. The message simply asks for <em>something</em> to make sure the robot reaches the indicated linear and angular velocities.</p>
+
+<p>Stopping after a certain amount of time -- without receiving a new input message -- is nice behaviour, but not part of the &quot;contract&quot; of <code>geometry_msgs/Twist</code>.</p>
+
+<blockquote>
+<p>In this way, if the robot receives 10 Twist messages in one second telling it to move let&#39;s say x=1.0, then it would move along x at speed 1 for 1 second (by effectively having moved 10 clicks of 100 ms each).</p>
+</blockquote>
+
+<p>Again: this is a possible implementation, but not necessarily what is expected.</p>
+
+<p>At the very basic level, a single <code>Twist(x=1.0)</code> sent to a base controller should make that controller work to attain a velocity of 1m/s in the X-direction (as defined in the robot&#39;s local coordinate system) <em>and then keep that velocity</em> (ie: no matter whether it&#39;s going up or downhill fi). At this same basic level, only a <code>Twist</code> with all fields set to <code>0</code> would result in the robot stopping.</p>
+
+<p>Many drivers/controllers will indeed add a command timeout which will do something like you describe, to avoid runaway robots, but again, that is a separate responsibility, and not part of the semantics of <code>geometry_msgs/Twist</code>.</p>
+
+<blockquote>
+<p>The reason I ask is that a cannot grasp how to process this great amount of Twist messages unless the robot executes them faster than they arrive.</p>
+</blockquote>
+
+<p>As <code>Twist</code>s encode velocity setpoints, processing many messages is simple: update the velocity setpoint of whatever piece of software or hardware is making your robot move <em>with every message</em>. This could be an underlying motor controller, a PID loop you wrote yourself, the embedded motion controller of your robot vehicle, anything. This could mean that with a 5 Hz update rate (and consequently, 5 <code>Twist</code>s per second), you would be updating the velocity <em>setpoint</em> of your robot 5 times a second (note: the setpoint, so the desired velocity, you would <em>not</em> wait for the velocity to reach that setpoint when processing these messages).</p>
+
+<p>If your driver/controller is incapable of updating its velocity setpoint at that rate, implement some throttling (in your <code>Twist</code> consumer, or by inserting a <code>topic_tools/Throttle</code> node), or configure the local planner to run at a lower frequency (it cannot produce more setpoints than its update rate).</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/5184"></a> on 2020-01-05 08:53:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for your thorough answer @gvdhoorn! I think I need to check how my firmware is interpreting velocity commands, and also what you said about Twist encoding <em>setpoints</em> and not having to wait the velocity to actually reach it.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/50676">JotaDePicas</a> on 2020-01-06 16:34:38 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Passing pcl::shared_ptr to subscriber (ROS2 Foxy) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/387014">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Passing pcl::shared_ptr to subscriber (ROS2 Foxy)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/100140/passing-pclshared-ptr-to-subscriber-ros2-foxy">https://robotics.stackexchange.com/questions/100140/passing-pclshared-ptr-to-subscriber-ros2-foxy</a>.</p>
+        <p>I am trying to write a pointcloud filtering node in ROS2 foxy using <code>pcl</code> but I am running into some problems I think are resulting from the publishing.</p>
+
+<p>The resulting error is </p>
+
+<pre><code>~/ros2_ws$ colcon build --symlink-install --packages-select pointcloud_filters
+Starting &gt;&gt;&gt; pointcloud_filters
+--- stderr: pointcloud_filters                                
+** WARNING ** io features related to pcap will be disabled
+** WARNING ** io features related to png will be disabled
+** WARNING ** io features related to libusb-1.0 will be disabled
+/usr/bin/ld: CMakeFiles/pointcloud_filters_node.dir/src/pointcloud_filters_node.cpp.o: in function `rclcpp::Publisher&lt;pcl::PointCloud&lt;pcl::PointXYZI&gt;, std::allocator&lt;void&gt; &gt;::Publisher(rclcpp::node_interfaces::NodeBaseInterface*, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;, rclcpp::QoS const&amp;, rclcpp::PublisherOptionsWithAllocator&lt;std::allocator&lt;void&gt; &gt; const&amp;)&#39;:
+pointcloud_filters_node.cpp:(.text._ZN6rclcpp9PublisherIN3pcl10PointCloudINS1_9PointXYZIEEESaIvEEC2EPNS_15node_interfaces17NodeBaseInterfaceERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_3QoSERKNS_29PublisherOptionsWithAllocatorIS5_EE[_ZN6rclcpp9PublisherIN3pcl10PointCloudINS1_9PointXYZIEEESaIvEEC5EPNS_15node_interfaces17NodeBaseInterfaceERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_3QoSERKNS_29PublisherOptionsWithAllocatorIS5_EE]+0x6e): undefined reference to `rosidl_message_type_support_t const* rosidl_typesupport_cpp::get_message_type_support_handle&lt;pcl::PointCloud&lt;pcl::PointXYZI&gt; &gt;()&#39;
+collect2: error: ld returned 1 exit status
+make[2]: *** [CMakeFiles/pointcloud_filters_node.dir/build.make:317: pointcloud_filters_node] Error 1
+make[1]: *** [CMakeFiles/Makefile2:78: CMakeFiles/pointcloud_filters_node.dir/all] Error 2
+make: *** [Makefile:141: all] Error 2
+---
+Failed   &lt;&lt;&lt; pointcloud_filters [12.3s, exited with code 2]
+
+Summary: 0 packages finished [12.4s]
+  1 package failed: pointcloud_filters
+  1 package had stderr output: pointcloud_filters
+</code></pre>
+
+<p>so its complaining about some undefined reference. I&#39;m not entirely sure what the problem is but it seems like it could be similar to <a href="https://answers.ros.org/question/311748/how-to-pass-boostshared_ptr-in-create_subscription-ros2/">https://answers.ros.org/question/311748/how-to-pass-boostshared_ptr-in-create_subscription-ros2/</a>. I looked at the interfaces for <code>sensor_msgs/msg/PointCloud2</code> and <code>sensor_msgs/msg./PointField</code> and it looks identical to <code>pcl::PointCloud</code> so maybe I should manually transfer the attributes?</p>
+
+<p>CPP file:</p>
+
+<pre><code>#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;sensor_msgs/msg/point_cloud2.hpp&quot;
+
+#include &quot;pcl_conversions/pcl_conversions.h&quot;
+
+#include &quot;pcl/filters/radius_outlier_removal.h&quot;
+#include &quot;pcl/impl/point_types.hpp&quot;
+#include &quot;pcl/point_cloud.h&quot;
+
+class PCFilter : public rclcpp::Node {
+public:
+  PCFilter() : Node(&quot;pointcloud_filters&quot;) {
+    pub_ = this-&gt;create_publisher&lt;pcl::PointCloud&lt;pcl::PointXYZI&gt;&gt;(
+        &quot;filters_output&quot;, 1);
+    sub_ = this-&gt;create_subscription&lt;sensor_msgs::msg::PointCloud2&gt;(
+        &quot;filters_input&quot;, 1,
+        std::bind(&amp;PCFilter::cloud_callback, this, std::placeholders::_1));
+
+    this-&gt;declare_parameter(&quot;pointcloud_filters/neighbors&quot;, 1);
+    this-&gt;declare_parameter(&quot;pointcloud_filters/radius&quot;, 0.2);
+    this-&gt;declare_parameter(&quot;pointcloud_filters/distance&quot;, 5.0);
+    this-&gt;declare_parameter(&quot;pointcloud_filters/intensity_threshold&quot;, 8);
+
+    neighbors_ = this-&gt;get_parameter(&quot;pointcloud_filters/neighbors&quot;).as_int();
+    radius_ = this-&gt;get_parameter(&quot;pointcloud_filters/radius&quot;).as_double();
+    distance_ = this-&gt;get_parameter(&quot;pointcloud_filters/distance&quot;).as_double();
+    intensity_threshold_ =
+        this-&gt;get_parameter(&quot;pointcloud_filters/intensity_threshold&quot;).as_int();
+
+    RCLCPP_INFO(this-&gt;get_logger(),
+                &quot;Filter &quot;
+                &quot;pararms:\n\tneighbors:%d\t\nradius:%f\n\tdistance:%&quot;
+                &quot;f\n\tintensity_threshold:%d&quot;,
+                neighbors_, radius_, distance_, intensity_threshold_);
+  }
+
+private:
+  void cloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud_filtered(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud_dust_filtered(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+
+    pcl::fromROSMsg(*msg, *cloud);
+
+    if (cloud-&gt;size() &gt; 0) {
+      // Filter dust based on low intensity within a certain distance from the
+      // lidar
+      double dist = 0.0;
+      for (std::size_t n = 0; n &lt; cloud-&gt;size(); n++) {
+        dist = std::sqrt(std::pow(cloud-&gt;points[n].x, 2) +
+                         std::pow(cloud-&gt;points[n].y, 2) +
+                         std::pow(cloud-&gt;points[n].z, 2));
+        if (dist &lt; distance_) {
+          if (cloud-&gt;points[n].intensity &gt; intensity_threshold_) {
+            cloud_dust_filtered-&gt;push_back(cloud-&gt;points[n]);
+          }
+        } else {
+          cloud_dust_filtered-&gt;push_back(cloud-&gt;points[n]);
+        }
+      }
+
+      cloud_dust_filtered-&gt;header.frame_id = cloud-&gt;header.frame_id;
+      cloud_dust_filtered-&gt;header.stamp = cloud-&gt;header.stamp;
+
+      // Create radius outlier removal filter
+      pcl::RadiusOutlierRemoval&lt;pcl::PointXYZI&gt; outrem;
+      outrem.setInputCloud(cloud_dust_filtered);
+      outrem.setRadiusSearch(radius_);
+      outrem.setMinNeighborsInRadius(neighbors_);
+      // Apply filter
+      outrem.filter(*cloud_filtered);
+      pub_-&gt;publish(*cloud_filtered);
+    } else {
+      pub_-&gt;publish(*cloud);
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;Empty pointcloud recieved&quot;);
+    }
+  }
+
+  int neighbors_;
+  double radius_;
+  double distance_;
+  int intensity_threshold_;
+
+  rclcpp::Publisher&lt;pcl::PointCloud&lt;pcl::PointXYZI&gt;&gt;::SharedPtr pub_;
+  rclcpp::Subscription&lt;sensor_msgs::msg::PointCloud2&gt;::SharedPtr sub_;
+};
+
+int main(int argc, char *argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;PCFilter&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>CMakeList:</p>
+
+<pre><code>cmake_minimum_required(VERSION 3.5)
+project(pointcloud_filters)
+
+# Default to C99
+if(NOT CMAKE_C_STANDARD)
+  set(CMAKE_C_STANDARD 99)
+endif()
+
+# Default to C++14
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 14)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES &quot;Clang&quot;)
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+# find dependencies
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(PCL REQUIRED)
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  # the following line skips the linter which checks for copyrights
+  # uncomment the line when a copyright and license is not present in all source files
+  #set(ament_cmake_copyright_FOUND TRUE)
+  # the following line skips cpplint (only works in a git repo)
+  # uncomment the line when this package is not in a git repo
+  #set(ament_cmake_cpplint_FOUND TRUE)
+  ament_lint_auto_find_test_dependencies()
+endif()
+
+include_directories(
+  include
+  ${PCL_INCLUDE_DIRS}
+)
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
+
+add_executable(${PROJECT_NAME}_node src/pointcloud_filters_node.cpp)
+target_link_libraries(${PROJECT_NAME}_node ${PCL_LIBRARIES})
+ament_target_dependencies(${PROJECT_NAME}_node rclcpp sensor_msgs pcl_conversions PCL)
+
+install(TARGETS
+  ${PROJECT_NAME}_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+    launch
+    DESTINATION share/${PROJECT_NAME}/
+)
+
+ament_package()
+enter code here
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-21 04:53:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>Hello there,</p>
+
+<p>I think your code is having a minor typo mistake. </p>
+
+<pre><code>PCFilter() : Node(&quot;pointcloud_filters&quot;) {
+    pub_ = this-&gt;create_publisher&lt;pcl::PointCloud&lt;pcl::PointXYZI&gt;&gt;(&quot;filters_output&quot;, 1); 
+    # Typo Extra &gt;
+
+    ...}
+</code></pre>
+
+<p>On this line you have added extra &quot;&gt;&quot; Can you please have a look at this. <code>&lt;pcl::PointCloud&lt;pcl::PointXYZI&gt;&gt;</code></p>
+
+<hr>
+
+<p>Instead of that you can use: #q187588</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/63046">Ranjit Kathiriya</a> on 2021-09-21 08:15:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I think the extra is necessary, because the <code>this-&gt;create_publisher&lt;Template&gt;</code> asks first for the message type, where the <code>pcl::PointCloud&lt;template&gt;</code> asks for the point type. So I think both are necessary.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-21 08:26:56 UTC</p></div>
+</div>
+<div class="comment">
+          <p>You should probably look at this solution. #q187588. Your error is of publishing line you can use this alternative provided in an answer of this question.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63046">Ranjit Kathiriya</a> on 2021-09-21 08:33:37 UTC</p></div>
+</div>
+<div class="comment">
+          <p>This is in ros1, I don&#39;t think the same solution works here.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-22 07:51:00 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Can you please! try this I think it will work,</p>
+
+<pre><code> typedef pcl::PointCloud&lt;pcl::PointXYZI&gt; PCLCloud;
+ graspub.publish(*grasp_points);
+ ros::Publisher graspub = this-&gt;create_publisher&lt;PCLCloud&gt;(&quot;filters_output&quot;, 1);
+</code></pre>
+
+
+  <div class="owner"><p>Asked by <a href="/users/63046">Ranjit Kathiriya</a> on 2021-09-22 07:57:59 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Doesn&#39;t work, same error error message. Doesn&#39;t make sense either that the error source should be having a full contained template definition with an extra layer.</p>
+
+<p>I replied with an alternative, working solution I found. It may not be the most effective however.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/84853">morten</a> on 2021-09-22 08:12:05 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>A potential solution I have found: taking more advantage of the <code>pcl_conversions</code> library.</p>
+
+<p>Instead of trying to publish <code>pcl::PointCloud&lt;pcl::PointXYZI&gt;&gt;</code> utilize the <code>pcl::toROSMsg</code> conversion by</p>
+
+<pre><code>void cloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+    pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud_filtered(
+        new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+    pcl::fromROSMsg(*msg, *cloud);
+
+    pass_.setInputCloud(cloud);
+    pass_.filter(*cloud_filtered);
+
+    // new things
+    sensor_msgs::msg::PointCloud2 output;
+    pcl::toROSMsg(*cloud_filtered, output);
+
+    pub_-&gt;publish(output);
+}
+</code></pre>
+
+<p>and thereby changing the subscriber to</p>
+
+<pre><code>PCFilter() : Node(&quot;pointcloud_filters&quot;) {
+    pub_ = this-&gt;create_publisher&lt;sensor_msgs::msg::PointCloud2&gt;&gt;(&quot;filters_output&quot;, 1); 
+...}
+</code></pre>
+
+<p>Note: My understanding is constantly converting with <code>pcl::fromROSMsg</code> and <code>pcl::toROSMsg</code> add unnecessary computations, looking into how to avoid this. Not so familiar with pointclouds in ROS</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/84853">morten</a> on 2021-09-22 07:53:06 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

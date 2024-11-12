@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS PCL visualizer fails on Turtlebot - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/141066">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS PCL visualizer fails on Turtlebot</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/57994/ros-pcl-visualizer-fails-on-turtlebot">https://robotics.stackexchange.com/questions/57994/ros-pcl-visualizer-fails-on-turtlebot</a>.</p>
+        <p>Hello, </p>
+
+<p>I am trying to run PCL visualizer on the turtlebot&#39;s computer such that it will subscribe to the Kinect and display a point cloud, and request three floor points from the mouse. It will use this to create and visualize a point cloud that detects people. This is from a PCL tutorial. The code I have used to run this is below. When I run the code on a separate computer that is directly connected to a Kinect, the visualizer runs fine. However, when I run it on the turtlebot, the initial point cloud is displayed, but after I input the three points and run the second point cloud, it exits and displays the following error:</p>
+
+<pre><code>Illegal instruction (core dumped)
+</code></pre>
+
+<p>Any thoughts? Here is the code.</p>
+
+<p>Thank you! </p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;cstdio&gt;
+#include &lt;cstdlib&gt;
+#include &lt;ros/ros.h&gt;
+#include &lt;pcl/console/parse.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl/visualization/pcl_visualizer.h&gt;    
+#include &lt;pcl/io/openni_grabber.h&gt;
+#include &lt;pcl/sample_consensus/sac_model_plane.h&gt;
+#include &lt;pcl/people/ground_based_people_detection_app.h&gt;
+#include &lt;pcl/common/time.h&gt;
+#include &lt;sensor_msgs/PointCloud2.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+
+typedef pcl::PointXYZRGBA PointT;
+typedef pcl::PointCloud&lt;PointT&gt; PointCloudT;
+
+// PCL viewer //
+pcl::visualization::PCLVisualizer viewer(&quot;PCL Viewer&quot;);
+
+// Mutex: //
+boost::mutex cloud_mutex;
+bool new_cloud_available_flag;
+enum { COLS = 640, ROWS = 480 };
+
+int print_help()
+{
+  cout &lt;&lt; &quot;*******************************************************&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;Ground based people detection app options:&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;   --help    &lt;show_this_help&gt;&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;   --svm     &lt;path_to_svm_file&gt;&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;   --conf    &lt;minimum_HOG_confidence (default = -1.5)&gt;&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;   --min_h   &lt;minimum_person_height (default = 1.3)&gt;&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;   --max_h   &lt;maximum_person_height (default = 2.3)&gt;&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;   --sample  &lt;sampling_factor (default = 1)&gt;&quot; &lt;&lt; std::endl;
+  cout &lt;&lt; &quot;*******************************************************&quot; &lt;&lt;std::endl;
+}
+
+ PointCloudT::Ptr cloud(new PointCloudT);
+
+void callback(const sensor_msgs::PointCloud2ConstPtr&amp; msg){
+   cloud_mutex.lock();
+   sensor_msgs::PointCloud2 msg0 = *msg;
+   PointCloudT cloud0;
+   pcl::fromROSMsg(msg0, cloud0);
+   *cloud = cloud0;
+   new_cloud_available_flag = true;
+   cloud_mutex.unlock();
+ }
+
+struct callback_args{
+  // structure used to pass arguments to the callback function
+  PointCloudT::Ptr clicked_points_3d;
+  pcl::visualization::PCLVisualizer::Ptr viewerPtr;
+};
+
+void
+pp_callback (const pcl::visualization::PointPickingEvent&amp; event, void* args)
+{
+  struct callback_args* data = (struct callback_args *)args;
+  if (event.getPointIndex () == -1)
+    return;
+  PointT current_point;
+  event.getPoint(current_point.x, current_point.y, current_point.z);
+  data-&gt;clicked_points_3d-&gt;points.push_back(current_point);
+  // Draw clicked points in red:
+  pcl::visualization::PointCloudColorHandlerCustom&lt;PointT&gt; red (data-&gt;clicked_points_3d, 255, 0, 0);
+  data-&gt;viewerPtr-&gt;removePointCloud(&quot;clicked_points&quot;);
+  data-&gt;viewerPtr-&gt;addPointCloud(data-&gt;clicked_points_3d, red, &quot;clicked_points&quot;);
+  data-&gt;viewerPtr-&gt;setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 10, &quot;clicked_points&quot;);
+  std::cout &lt;&lt; current_point.x &lt;&lt; &quot; &quot; &lt;&lt; current_point.y &lt;&lt; &quot; &quot; &lt;&lt; current_point.z &lt;&lt; std::endl;
+}
+
+int main (int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;viewer_node&quot;);
+  ros::NodeHandle n;
+  new_cloud_available_flag = false;
+
+  ros::Subscriber sub = n.subscribe&lt;sensor_msgs::PointCloud2&gt;(&quot;/camera/depth_registered/points&quot;, 1000, callback);
+
+  if(pcl::console::find_switch (argc, argv, &quot;--help&quot;) || pcl::console::find_switch (argc, argv, &quot;-h&quot;))
+        return print_help();
+
+  // Algorithm parameters:
+  std::string svm_filename = &quot;/usr/share/doc/libpcl-1.7-doc/doc/pcl-1.7/tutorials/sources/ground_based_rgbd_people_detection/data/trainedLinearSVMForPeopleDetectionWithHOG.yaml&quot;;
+  float min_confidence = -1.5;
+  float min_height = 1.3;
+  float max_height = 2.3;
+  float voxel_size = 0.06;
+  float sampling_factor = 1;
+  Eigen::Matrix3f rgb_intrinsics_matrix;
+  rgb_intrinsics_matrix &lt;&lt; 525, 0.0, 319.5, 0.0, 525, 239.5, 0.0, 0.0, 1.0; // Kinect RGB camera intrinsics
+
+ // Read if some parameters are passed from command line:
+  pcl::console::parse_argument (argc, argv, &quot;--svm&quot;, svm_filename);
+  pcl::console::parse_argument (argc, argv, &quot;--conf&quot;, min_confidence);
+  pcl::console::parse_argument (argc, argv, &quot;--min_h&quot;, min_height);
+  pcl::console::parse_argument (argc, argv, &quot;--max_h&quot;, max_height);
+  pcl::console::parse_argument (argc, argv, &quot;--sample&quot;, sampling_factor);
+
+// Wait for the first frame:
+  while(!new_cloud_available_flag)
+    {
+        std::cout&lt;&lt;&quot;waiting for first frame\n&quot;;
+        ros::Duration(0.001).sleep();
+        ros::spinOnce();
+    }
+
+std::cout&lt;&lt;&quot;got first frame\n&quot;;
+new_cloud_available_flag = false;
+
+cloud_mutex.lock ();    // for not overwriting the point cloud
+
+// Display pointcloud:
+  pcl::visualization::PointCloudColorHandlerRGBField&lt;PointT&gt; rgb(cloud);
+  viewer.addPointCloud&lt;PointT&gt; (cloud, rgb, &quot;input_cloud&quot;);
+  viewer.setCameraPosition(0,0,-2,0,-1,0,0);
+
+  // Add point picking callback to viewer:
+  struct callback_args cb_args;
+  PointCloudT::Ptr clicked_points_3d (new PointCloudT);
+  cb_args.clicked_points_3d = clicked_points_3d;
+  cb_args.viewerPtr = pcl::visualization::PCLVisualizer::Ptr(&amp;viewer);
+  viewer.registerPointPickingCallback (pp_callback, (void*)&amp;cb_args);
+  std::cout &lt;&lt; &quot;Shift+click on three floor points, then press &#39;Q&#39;...&quot; &lt;&lt; std::endl;
+
+  // Spin until &#39;Q&#39; is pressed:
+  viewer.spin();
+
+  cloud_mutex.unlock ();
+
+  // Ground plane estimation:
+  Eigen::VectorXf ground_coeffs;
+  ground_coeffs.resize(4);
+  std::vector&lt;int&gt; clicked_points_indices;
+
+  for (unsigned int i = 0; i &lt; clicked_points_3d-&gt;points.size(); i++)
+    {
+      clicked_points_indices.push_back(i);
+    }
+
+  pcl::SampleConsensusModelPlane&lt;PointT&gt; model_plane(clicked_points_3d);
+  model_plane.computeModelCoefficients(clicked_points_indices,ground_coeffs);
+
+  std::cout &lt;&lt; &quot;Ground plane: &quot; &lt;&lt; ground_coeffs(0) &lt;&lt; &quot; &quot; &lt;&lt; ground_coeffs(1) &lt;&lt; &quot; &quot; &lt;&lt; ground_coeffs(2) &lt;&lt; &quot; &quot; &lt;&lt; ground_coeffs(3) &lt;&lt; std::endl;
+
+  // Initialize new viewer:
+  pcl::visualization::PCLVisualizer viewer(&quot;PCL Viewer&quot;);          // viewer initialization
+
+  viewer.setCameraPosition(0,0,-2,0,-1,0,0);
+  // Create classifier for people detection:  
+  pcl::people::PersonClassifier&lt;pcl::RGB&gt; person_classifier;
+  person_classifier.loadSVMFromFile(svm_filename);   // load trained SVM
+
+  // People detection app initialization:
+  pcl::people::GroundBasedPeopleDetectionApp&lt;PointT&gt; people_detector;    // people detection object
+  people_detector.setVoxelSize(voxel_size);                        // set the voxel size
+  people_detector.setIntrinsics(rgb_intrinsics_matrix);            // set RGB camera intrinsic parameters
+  people_detector.setClassifier(person_classifier);                // set person classifier
+  people_detector.setHeightLimits(min_height, max_height);         // set person classifier
+  people_detector.setSamplingFactor(sampling_factor);              // set a downsampling factor to the point cloud (for increasing speed)
+//  people_detector.setSensorPortraitOrientation(true);              // set sensor orientation to vertical
+
+  // For timing:
+  static unsigned count = 0;
+  static double last = pcl::getTime ();
+
+  // Main loop:
+  while (!viewer.wasStopped() &amp;&amp; ros::ok())
+  {    
+    if (new_cloud_available_flag &amp;&amp; cloud_mutex.try_lock ())    // if a new cloud is available
+    {        
+      new_cloud_available_flag = false; 
+
+      // Perform people detection on the new cloud:
+      std::vector&lt;pcl::people::PersonCluster&lt;PointT&gt; &gt; clusters;   // vector containing persons clusters    
+      people_detector.setInputCloud(cloud);    
+      people_detector.setGround(ground_coeffs);          // set floor coefficients   
+      people_detector.compute(clusters);                           // perform people detection    
+      ground_coeffs = people_detector.getGround();                 // get updated floor coefficients
+
+      // Draw cloud and people bounding boxes in the viewer:
+      viewer.removeAllPointClouds();        
+      viewer.removeAllShapes();    
+
+      pcl::visualization::PointCloudColorHandlerRGBField&lt;PointT&gt; rgb(cloud);    
+      viewer.addPointCloud&lt;PointT&gt; (cloud, rgb, &quot;input_cloud&quot;);
+
+      unsigned int k = 0;
+
+      for(std::vector&lt;pcl::people::PersonCluster&lt;PointT&gt; &gt;::iterator it = clusters.begin(); it != clusters.end(); ++it)
+      {    
+        if(it-&gt;getPersonConfidence() &gt; min_confidence)             // draw only people with confidence above a threshold
+        {
+          // draw theoretical person bounding box in the PCL viewer:   
+          it-&gt;drawTBoundingBox(viewer, k);
+          k++;   
+        }
+      }    
+
+      if(k==1)    
+        std::cout&lt;&lt;k&lt;&lt;&quot; person found&quot; &lt;&lt; std::endl;
+      else    
+        std::cout &lt;&lt; k &lt;&lt; &quot; people found&quot; &lt;&lt; std::endl;
+
+      viewer1.spinOnce();
+      // Display average framerate: 
+      if (++count == 30)
+      {
+        double now = pcl::getTime ();
+        std::cout &lt;&lt; &quot;Average framerate: &quot; &lt;&lt; double(count)/double(now - last) &lt;&lt; &quot; Hz&quot; &lt;&lt;  std::endl;
+        count = 0;
+        last = now;
+      }
+
+      cloud_mutex.unlock ();
+   }
+ }
+}
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/11806">kmb11</a> on 2014-03-17 10:49:49 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Hello, 
+I tried to test this code in my computer and I got the following error:</p>
+
+<p>free(): invalid pointer: 0x0000000000742ba0 ***</p>
+
+<p>Did you have any problem similiar to this?</p>
+
+<p>My computer supports  SSE2. Could this be a problem?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/20765">smithers</a> on 2015-09-15 01:49:18 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I&#39;ve figured it out, it turns out that the Intel Atom on the Turtlebot&#39;s computer doesn&#39;t support SSE4. The problem is that catkin_make creates cmake files that require SSE4, which is a problem when Eigen classes come in to play and require SSE. I changed all of the cmake files to execute their operations without using SSE4, then built it using <code>make</code> in the build folder instead of <code>catkin_make</code>.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/11806">kmb11</a> on 2014-03-25 10:08:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

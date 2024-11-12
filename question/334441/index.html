@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>ROS2 Dashing - How to set parameters of a lifecycle_node via another node - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/334441">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>ROS2 Dashing - How to set parameters of a lifecycle_node via another node</h2>
+      <div class="question">
+        <p>The problem: Change parameters from a <code>lifecycle_node</code> (let&#39;s call him <code>original_node</code>) without node shut down.</p>
+
+<p>My approach: Reconfigure parameters during <code>on_configure</code> state by creating another node (let&#39;s say <code>reconfigure_node</code>), that is a client from <code>original_node/set_parameters</code> service and then call <code>async_send_request()</code>. So far I am trying to send new parameters values to <code>original_node</code></p>
+
+<p>Problems:</p>
+
+<ul>
+<li>This approach only &quot;works&quot; when I use <code>async_send_request()</code> inside a <code>wall_timer</code> and call <code>rclcpp::spin()</code> in main;</li>
+<li>When I do <code>Ctrl + C</code>, I receive message <code>[INFO] [rclcpp]: signal_handler(signal_value=2)</code> but process keeps running;</li>
+<li>If I use <code>spin_once()</code> or <code>spin_some()</code> and call <code>async_send_request()</code> inside constructor, nothing happens.</li>
+<li>When running on debug mode it stops saying <code>[DEBUG] [rcl]: Client sending service request</code></li>
+</ul>
+
+<p>To reproduce problem run <code>original_node</code> and and then <code>ros2 run reconfigure_parameters reconfigure_parameters_node __node:=original_node __params:=simple_yaml.yaml</code></p>
+
+<p>Expected result:</p>
+
+<ul>
+<li>original<em>node publishing <code>asd</code> without the `wall</em>timer<code>in</code>reconfigure_node` class.</li>
+</ul>
+
+<p>Questions:</p>
+
+<ul>
+<li>What am I missing?</li>
+<li>Is it possible to do the same using <code>SyncParametersClient</code> instead?</li>
+</ul>
+
+<p>Code:</p>
+
+<p>original_node</p>
+
+<pre><code>#include &lt;chrono&gt;
+#include &lt;memory&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+
+using namespace std::chrono_literals;
+
+/* This example creates a subclass of Node and uses a fancy C++11 lambda
+ * function to shorten the callback syntax, at the expense of making the
+ * code somewhat more difficult to understand at first glance. */
+
+class OriginalNode : public rclcpp::Node
+{
+public:
+  OriginalNode()
+  : Node(&quot;original_node&quot;), count_(0)
+  {
+    this-&gt;declare_parameter(&quot;type&quot;,&quot;empty&quot;);
+    auto timer_callback =
+      [this]() -&gt; void {
+        auto message = std_msgs::msg::String();
+        rclcpp::Parameter param_type = this-&gt;get_parameter(&quot;type&quot;);
+        message.data = param_type.as_string() + &quot;- &quot; + std::to_string(this-&gt;count_++);
+        RCLCPP_INFO(this-&gt;get_logger(), &quot;Publishing: &#39;%s&#39;&quot;, message.data.c_str());
+      };
+    timer_ = this-&gt;create_wall_timer(500ms, timer_callback);
+  }
+
+private:
+  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr publisher_;
+  size_t count_;
+};
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared&lt;OriginalNode&gt;());
+  rclcpp::shutdown();
+  return 0;
+}
+</code></pre>
+
+<p>reconfigure_parameters.hpp:</p>
+
+<pre><code>// Reconfigure Header
+#include &lt;chrono&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;vector&gt;
+
+#include &quot;rclcpp/rclcpp.hpp&quot;
+#include &quot;std_msgs/msg/string.hpp&quot;
+
+using Response = rcl_interfaces::srv::SetParameters_Response::SharedPtr;
+
+class ReconfigureParameters : public rclcpp::Node
+{
+public:
+    ReconfigureParameters(std::string name = &quot;reconfigure_parameters_node&quot;, const rclcpp::NodeOptions &amp; options = (
+        rclcpp::NodeOptions()
+        .allow_undeclared_parameters(true)
+        .automatically_declare_parameters_from_overrides(true)
+        .start_parameter_event_publisher(true)
+    ));
+    Response sendParameters();
+
+private:
+  std::vector&lt;std::string&gt; params_names_vector;
+  rclcpp::Client&lt;rcl_interfaces::srv::SetParameters&gt;::SharedPtr client;
+  rclcpp::SyncParametersClient::SharedPtr client_sync;
+  rcl_interfaces::srv::SetParameters_Request::SharedPtr request;
+  rclcpp::TimerBase::SharedPtr timer;
+  Response response;
+};
+</code></pre>
+
+<p>reconfigure_parameters.cpp</p>
+
+<pre><code>#include &quot;reconfigure_parameters.hpp&quot;
+
+using Response = rcl_interfaces::srv::SetParameters_Response::SharedPtr;
+
+ReconfigureParameters::ReconfigureParameters(std::string name, const rclcpp::NodeOptions &amp; options) :
+    Node(name, options)
+{
+    client = this-&gt;create_client&lt;rcl_interfaces::srv::SetParameters&gt;(std::string(this-&gt;get_name()) + &quot;/set_parameters&quot;);
+    request = std::make_shared&lt;rcl_interfaces::srv::SetParameters::Request&gt;();
+
+    while(!client-&gt;wait_for_service(std::chrono::seconds(1)))
+    {
+      if(!rclcpp::ok())
+        RCLCPP_ERROR(this-&gt;get_logger(), &quot;Interrupted while waiting for the service. Exiting.&quot;);
+
+      RCLCPP_INFO(this-&gt;get_logger(), &quot;service not available, waiting again...&quot;);
+    }
+
+    auto param_names = this-&gt;list_parameters({}, rcl_interfaces::srv::ListParameters::Request::DEPTH_RECURSIVE);
+
+    for(size_t i = 0; i &lt; param_names.names.size(); ++i)
+      params_names_vector.push_back(param_names.names[i]);
+
+    auto timer_callback = [this]() -&gt; void {response = sendParameters();};
+    timer = this-&gt;create_wall_timer(std::chrono::milliseconds(200), timer_callback);
+}
+
+Response ReconfigureParameters::sendParameters()
+{
+    auto param = rcl_interfaces::msg::Parameter();
+    for(auto&amp; v : params_names_vector)
+    {
+      std::cout &lt;&lt; this-&gt;get_parameter(v).get_name() &lt;&lt; &quot; - &quot; &lt;&lt; this-&gt;get_parameter(v).value_to_string() &lt;&lt; std::endl;
+      param.name = this-&gt;get_parameter(v).get_name();
+      param.value = this-&gt;get_parameter(v).get_value_message();
+      request-&gt;parameters.push_back(param);
+    }
+
+    auto result = client-&gt;async_send_request(request);
+    return result.get();
+}
+</code></pre>
+
+<p>reconfigure<em>parameters</em>node.cpp</p>
+
+<pre><code>#include &quot;reconfigure_parameters.hpp&quot;
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;ReconfigureParameters&gt;();
+    rclcpp::spin_some(node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>simple_yaml.yaml</p>
+
+<pre><code>original_node:
+  ros__parameters:
+    type: &quot;asd&quot;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/45287">ignacio</a> on 2019-10-02 13:55:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

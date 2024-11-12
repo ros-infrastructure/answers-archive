@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Hokuyo LiDAR misses scan - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/323574">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Hokuyo LiDAR misses scan</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/91724/hokuyo-lidar-misses-scan">https://robotics.stackexchange.com/questions/91724/hokuyo-lidar-misses-scan</a>.</p>
+        <p>I am working on a robocar project. The car has Nvidia jetson TX2, LiDAR, camera, IMU, etc and the ROS node is started with 4 thread</p>
+
+<pre><code>ros::MultiThreadedSpinner spinner(4)
+spinner.spin(); 
+</code></pre>
+
+<p>The LiDAR is Hokuyo UST-10LX. I used the following code to subscribe to the scan data:</p>
+
+<pre><code>_subScan = _nh.subscribe(&quot;/scan&quot;, 4, &amp;scanCallback, this, ros::TransportHints().tcpNoDelay());
+</code></pre>
+
+<p>In the callback function, the car processes the scan to localize itself and then send out Ackermann drive command to move along a pre-defined path. Hokyyo UST-10LX is 40hz which provides very dense data for the car to run smoothly. </p>
+
+<p>However, I did found that in some cases, my ROS node missed quite some scan frames. It could miss as many as 40 scans. So the car paused for about a second, did not know where to go since the callback function was not called. </p>
+
+<p>My questions are:</p>
+
+<ol>
+<li>Why the scan frames were missed and callback funciton was not called?</li>
+<li>If this could happen, what is the best way to handle this? Since all my localization and drive code are inside the LiDAR callback, if I missed the scan, the car will stop. </li>
+</ol>
+
+<p>Thanks,</p>
+
+        <div class="owner"><p>Asked by <a href="/users/35903">AutoCar</a> on 2019-05-20 23:06:39 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>check to make sure its not your application that uses scanCallback that is actually taking too long, then blocking the rest. It&#39;s unlikely the laser is not reporting data for 1 full second, or that there was a pipe delay. With your multithreaded master, you can process 4 measurement at a time (hope your not having mutex contention or fighting over a static member), and your queue size of 4 means if there&#39;s more than 4 messages in the queue it will drop them.</p>
+
+<p>Are you seeing in rostopic hz that the scan message is dropping for a second vs. the application running slower?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2019-05-21 02:10:14 UTC</p></div>
+</div>
+<div class="comment">
+              <blockquote>
+<p>what is the best way to handle this? Since all my localization and drive code are inside the LiDAR callback, if I missed the scan, the car will stop. </p>
+</blockquote>
+
+<p>Combining @stevemacenski&#39;s comment with your own observation, the best way to avoid this would be to <em>not</em> run your control law inside the callback. If your CPU isn&#39;t fast enough to process everything in 25ms (preferably less), then messages will be missed, dropped or processed with a delay.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-05-21 03:01:14 UTC</p></div>
+</div>
+<div class="comment">
+              <p>@stevemacenski Jetson TX2 has 4~6 CPU cores, so I hope the way I started the ROS will make sure the 4 measurements will be processed at different cores. Is that correct?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35903">AutoCar</a> on 2019-05-21 13:22:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>4 of those 6 cores are very weak. The A57&#39;s aren&#39;t exactly powerhouses. And if you&#39;re doing stuff on the other cores (like running any other process) then you&#39;re not going to get all that power at once. You&#39;re leaving it up to the scheduler.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2019-05-21 13:31:54 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>I found the problem. In the scanCallback, for every LiDAR frame, the latest LiDAR, camera image, IMU, odom data was saved to a file so I can debug offline. I did not use ROS bag file because I believe my own format is more compact. Regular fopen, fwrite were used when saving this data. I found sometimes, it took a long time (a couple seconds) to save even a very small amount of data, odom for example. I do not understand why...</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35903">AutoCar</a> on 2019-05-22 00:45:47 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <blockquote>
+<p>I do not understand why...</p>
+</blockquote>
+
+<p>because file IO is slow, you don&#39;t have a real-time (ie: deterministic) system and inserting a potentially blocking operation in an event handler is not a good idea in general.</p>
+
+<p>That is exactly why rosbag listens in on the message traffic: it does not insert itself into the critical path of your application, avoiding these kinds of delays while still recording the data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2019-05-22 01:34:58 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Glad you found your issue. Please mark the answer as correct to get off the unanswered questions queue :-)</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2019-05-22 08:58:06 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Thanks. What is the correct way to save the data...</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/35903">AutoCar</a> on 2019-05-22 08:58:07 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Add your data to a queue or something and have a thread saving the queued messages to file. In general you don&#39;t want &quot;long blocking&quot; operations in your callbacks if you care about making sure you see all the data.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/25940">stevemacenski</a> on 2019-05-22 09:05:10 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

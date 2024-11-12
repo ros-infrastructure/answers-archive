@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Corrupt JPEG data: premature end of data segment - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/402849">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Corrupt JPEG data: premature end of data segment</h2>
+      <div class="question">
+        <p>Hi everybody,</p>
+
+<p>I am using ROS 20 noetic on ubuntu 20.04. I try using my camera (Arducam IMX477 with usb adapter). I first started using it with a simple python script and it has worked well, then using ros was ok. But when I tried to created a camera handler in a thread to be able acquiring frame continuously in a background and being able to change the resolution when I want. </p>
+
+<pre><code>import rospy
+import os
+from pathlib import Path
+
+import cv2
+import time
+from threading import Thread
+
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+bridge = CvBridge()
+
+# Initialize architecture
+import inspect
+FILE = Path(inspect.getfile(lambda: None)).resolve() # Get the full path of the file
+node_name = os.path.splitext(FILE.name)[0]
+import rospkg
+rospack = rospkg.RosPack()
+package = rospkg.get_package_name(FILE) # Get the package name
+ROOT = Path(package).resolve() # Get the full path of the package
+
+
+# Topics to subscribe/publish
+camera_topic = &quot;/cam_2/color/image_raw&quot;
+
+# Define a camera handler
+class Camera_handler:
+
+    def __init__(self):
+        # Create the camera handler object
+
+        try:
+            entries = os.listdir(&quot;/dev&quot;)
+            num = min([int(entry[5:]) for entry in entries if &quot;video&quot; in entry])
+            src = &quot;/dev/video&quot;+str(num)
+            self.cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
+        except cv2.error as error:
+            print(&quot;[Error]: {}&quot;.format(error))
+
+        if not self.cap.isOpened():
+            print(&quot;Cannot open camera handler&quot;)
+            exit() 
+
+        (self.ret, self.img) = self.cap.read()
+        self.idx = 1 # The number of frame grabbed
+        self.width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self.height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+
+        self.cam_pub = rospy.Publisher(camera_topic, Image, queue_size=1) # Publisher
+        self.cam_thread = None
+        self.stop_thread = False
+        self.start()
+        print(&quot;Camera handler capturing %s at (%d,%d) %dFPS&quot; %(src, int(self.width),int(self.height),int(self.fps)))
+
+    def setResolution(self, width, height):
+        self.stop()
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+        # update attributes
+        self.width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self.height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+
+        print(&quot;Parameters updated to (%d,%d) %dFPS&quot; %(int(self.width),int(self.height),int(self.fps)))
+        self.start()
+
+    def read():
+        return self.img
+
+    def start(self):
+        self.stop_thread = False
+        self.cam_thread = Thread(target=self.update, args=())
+        self.cam_thread.start()
+
+    def update(self):
+        while self.cap.isOpened():
+            if self.stop_thread:
+                break
+
+            (self.ret, self.img) = self.cap.read()
+            if self.ret:
+
+                self.img = cv2.rotate(self.img, cv2.ROTATE_90_CLOCKWISE)
+                im = bridge.cv2_to_imgmsg(self.img, encoding=&quot;bgr8&quot;)
+
+                # Select one frame according to the index and publish it
+                im.header.stamp = rospy.get_rostime() # Set a timestamp
+                im.header.frame_id = &quot;frame_&quot; + str(self.idx)
+                im.header.seq = self.idx
+                self.cam_pub.publish(im) # Publish the frame
+                self.idx+=1
+
+    def stop(self):
+        self.stop_thread = True # stop immediatly the camera
+        self.cam_thread.join() 
+
+    def release(self):
+        self.stop_thread = True # stop immediatly the camera
+        self.cam_thread.join()
+        print(&quot; &quot;)
+        print(&quot;Camera thread killed&quot;)
+        self.cap.release()
+        print(&quot;VideoCapture released&quot;)
+
+
+def testIMX477_usb():
+    # Create the camera controller
+    imx = Camera_handler()
+    imx.start()
+    rospy.spin()
+
+    imx.release()
+
+
+if __name__ == &#39;__main__&#39;:
+
+    rospy.init_node(node_name, anonymous = False)
+    print(&quot;Node %s initialized&quot; %rospy.get_name())
+    testIMX477_usb()
+</code></pre>
+
+<p>However, it started saying that I get corrupted JPEG data, and I can see on rviz frames with bad quality.</p>
+
+<p>Here is an example of the messages :</p>
+
+<pre><code>Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: 197 extraneous bytes before marker 0xd9
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: 78 extraneous bytes before marker 0xd9
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: premature end of data segment
+</code></pre>
+
+<p>The fact is that when I use threading in python (without rospy), it works well, when I use threading with rospy, these issue appears.
+Is there an incompatibility between the main thread and the one I created ?</p>
+
+<p>Thank you</p>
+
+        <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-06-24 07:10:55 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Just an observation:</p>
+
+<blockquote>
+<pre><code>im.header.frame_id = &quot;frame_&quot; + str(self.idx)
+...
+self.idx+=1
+</code></pre>
+</blockquote>
+
+<p>that&#39;s not what <code>header.frame_id</code> is supposed to be used for.</p>
+
+<p><code>frame_id</code> should contain the <em>TF frame name</em> associated with the captured image.</p>
+
+<p>The <em>frame</em> here does not refer to a frame in a video sequence, but a coordinate system.</p>
+
+<p>The way you&#39;re using it here appears to be like a frame counter, which will make everything downstream very confused about <em>where</em> the sensor capturing those images is located, and will likely make using TF impossible.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2022-06-27 03:37:59 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thank you for your comment,
+I don&#39;t use tf yet but you avoid me to meet a future little error. I have changed this, thank you.</p>
+
+<p>My problem remains, does anyone have an idea to inspect ? Maybe like pecularities in ros thread which don&#39;t able me to use another thread with rospy or something else ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/108945">loupdmer</a> on 2022-06-28 06:18:08 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

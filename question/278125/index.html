@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>cannot show attached object in rviz - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/278125">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>cannot show attached object in rviz</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/84398/cannot-show-attached-object-in-rviz">https://robotics.stackexchange.com/questions/84398/cannot-show-attached-object-in-rviz</a>.</p>
+        <p>Hi.</p>
+
+<p>I&#39;m working with rviz and moveit built from source for the kinetic-devel branch. For the rest of the stack, I&#39;m using the binary packages. OS is Ubuntu xenial.</p>
+
+<p>When I attach objects to the robot arm, it does not show in rviz.</p>
+
+<p>I&#39;m having trouble with a robot model I created from scratch, but the same thing can be reproduced by the moveit &quot;ROS API Planning Scene Tutorial&quot; at
+<a href="http://docs.ros.org/kinetic/api/moveit_tutorials/html/doc/pr2_tutorials/planning/src/doc/planning_scene_ros_api_tutorial.html">http://docs.ros.org/kinetic/api/moveit_tutorials/html/doc/pr2_tutorials/planning/src/doc/planning_scene_ros_api_tutorial.html</a></p>
+
+<p>Here is an excerpt from stdout (with line numbers manually added) when I run</p>
+
+<p>roslaunch moveit<em>tutorials planning</em>scene<em>ros</em>api_tutorial.launch :</p>
+
+<pre><code>1 [ INFO] [1514083362.221299219]: Adding the object into the world at the location of the right wrist.
+2 [ INFO] [1514083372.229633700]: Attaching the object to the right wrist and removing it from the world.
+3 [ERROR] [1514083372.230641932]: Found empty JointState message
+4 [ INFO] [1514083372.230957243]: Removing world object with the same name as newly attached object: &#39;box&#39;
+5 [ INFO] [1514083372.231715610]: Attached object &#39;box&#39; to link &#39;r_wrist_roll_link&#39;
+6 [ INFO] [1514083382.229897324]: Detaching the object from the robot and returning it to the world.
+7 [ INFO] [1514083382.230552447]: Detached object &#39;box&#39; from link &#39;r_wrist_roll_link&#39; and added it back in the collision world
+8 [ INFO] [1514083392.230129313]: Removing the object from the world.
+</code></pre>
+
+<p>Here is what happens on the rviz screen:</p>
+
+<ul>
+<li>At line 1, a green box gets shown at the wrist location of PR2</li>
+<li>At line 5, the box disappears. Expected behavior is a color change of the box. Green is used for collision objects, and purple(150,50,150) is used for attached objects. The box should turn purple.</li>
+<li>At line 7, the green box appears again, as expected.</li>
+</ul>
+
+<p>I have read the following page that seems to be related, but I am not sure if it is:</p>
+
+<p><a href="https://github.com/ros-planning/moveit/issues/512">https://github.com/ros-planning/moveit/issues/512</a></p>
+
+<p>The thread says that an incorrect combination of rviz checkboxes make the attached object appear, but in my case none of the possible combination made the object appear.
+In any case, the fix discussed in this thread is merged to kinetic-devel, and I am building kinetic-devel .</p>
+
+<p>Is there something I am missing?</p>
+
+<p>--- self follow-up ---</p>
+
+<p>It seems that the planning scene update message is not correctly propagated from the moveit node to the rviz node.</p>
+
+<p>Here is what I did:</p>
+
+<p>I used rqt_graph to study the topic names that are used to communicate the planning scene messages, and learned that</p>
+
+<ul>
+<li>&quot;/planning<em>scene&quot; is used for communication from the move</em>group client (the application) to the move_group node.</li>
+<li>&quot;/move<em>group/monitored</em>planning<em>scene&quot; is used for communication from the move</em>group node to the rviz node.</li>
+</ul>
+
+<p>I set up 2 terminals running rostopic echo for the two topics.
+When my application sends out a message to attach an object in the world to the robot, it is seen in the /planning<em>scene topic, but the corresponding information is missing in the /move</em>group/monitored<em>planning</em>scene topic.  It seems that the /planning<em>scene message is triggering a /move</em>group/monitored<em>planning</em>scene message, but the &quot;attached<em>collision</em>objects&quot; array is not propagated.</p>
+
+<p>I expect that the information is relayed through this message. With what I see, there is no way for rviz to know about the attached object.</p>
+
+<p>Is something going wrong here?</p>
+
+<p>-- second self follow-up --</p>
+
+<p>I found a bug in the move_group code where the robot state gets converted to the message tree.
+A function that converts a vector of AttachedBodys to a vector of AttachedCollisionObject, ---that is,  from the in-process form into the message form--- has its signature wrong.  The author missed to add a &amp; to make the result vector passed by reference.</p>
+
+<pre><code>diff --git a/moveit_core/robot_state/include/moveit/robot_state/conversions.h b/moveit_core/robot_state/include/moveit/robot_state/conversions.h
+index 355a643..8b2167b 100644
+--- a/moveit_core/robot_state/include/moveit/robot_state/conversions.h
++++ b/moveit_core/robot_state/include/moveit/robot_state/conversions.h
+@@ -91,7 +91,7 @@ void robotStateToRobotStateMsg(const RobotState&amp; state, moveit_msgs::RobotState&amp;
+  */
+ void attachedBodiesToAttachedCollisionObjectMsgs(
+     const std::vector&lt;const AttachedBody*&gt;&amp; attached_bodies,
+-    std::vector&lt;moveit_msgs::AttachedCollisionObject&gt; attached_collision_objs);
++    std::vector&lt;moveit_msgs::AttachedCollisionObject&gt; &amp;attached_collision_objs);
+ /**
+  * @brief Convert a MoveIt! robot state to a joint state message
+  * @param state The input MoveIt! robot state object
+diff --git a/moveit_core/robot_state/src/conversions.cpp b/moveit_core/robot_state/src/conversions.cpp
+index 07aeb8b..4559075 100644
+--- a/moveit_core/robot_state/src/conversions.cpp
++++ b/moveit_core/robot_state/src/conversions.cpp
+@@ -401,7 +401,7 @@ void moveit::core::robotStateToRobotStateMsg(const RobotState&amp; state, moveit_msg
+
+ void moveit::core::attachedBodiesToAttachedCollisionObjectMsgs(
+     const std::vector&lt;const AttachedBody*&gt;&amp; attached_bodies,
+-    std::vector&lt;moveit_msgs::AttachedCollisionObject&gt; attached_collision_objs)
++    std::vector&lt;moveit_msgs::AttachedCollisionObject&gt; &amp;attached_collision_objs)
+ {
+   attached_collision_objs.resize(attached_bodies.size());
+   for (std::size_t i = 0; i &lt; attached_bodies.size(); ++i)
+</code></pre>
+
+<p>With the above fix, I got the expected behavior.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/33011">hideo67</a> on 2017-12-23 22:09:35 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>The mentioned bug had already been fixed and committed on Dec. 15.
+My local git clone was behind that.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/33011">hideo67</a> on 2017-12-24 10:39:20 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

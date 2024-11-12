@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why 'extrapolation into future' error using freenect on moving base ? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/244765">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why 'extrapolation into future' error using freenect on moving base ?</h2>
+      <div class="question">
+        <p>Environment: ROS Kinetic on Lubuntu 16.04.1</p>
+
+<p>I am setting up ROS navigation stack on my robot by following the tutorial.  </p>
+
+<p>I have built a node, called zen<em>base</em>node, which:</p>
+
+<ul>
+<li>Publishes odometry as a Twist message
+and a transform.</li>
+<li>Publishes the static transform from
+base<em>link to camera</em>link.</li>
+<li>Subscribes to cmd_vel and sends
+appropriate commands to the robots
+differential drive.</li>
+</ul>
+
+<p>I built a launch file which launches freenect and zen<em>base</em>node.</p>
+
+<p>After launching, I can see the odometry information updating in rviz.  I set /odom as the fixed frame and view pointcloud2 sent by freenect.  The pointcloud visualisation gives an error saying: </p>
+
+<blockquote>
+<p>For frame
+[camera<em>depth</em>optical<em>frame]: No
+transform to fixed frame [odom].  TF
+error: [Lookup would require
+extrapolation into the future. 
+Requested time 1475183101.321405719
+but the latest data is at time
+1475183100.575132753, when looking up transform from frame
+[camera</em>depth<em>optical</em>frame] to frame
+[odom]]</p>
+</blockquote>
+
+<p>After some googling I see I am not the first to see this problem, but I have not found a solution or explanation. I would appreciate some advice for resolving this problem.  Since I have only being using ROS for a few days, I suspect that I am doing something wrong in the code for zen<em>base</em>node which will be pretty obvious to an experienced user.</p>
+
+<p>Here is the transform tree from rviz:</p>
+
+<pre><code>Tree
+  odom
+    base_link
+      camera_link
+        camera_rgb_frame
+          camera_rgb_optical_frame
+        camera_depth_frame
+          camera_depth_optical_frame
+</code></pre>
+
+<p>Here is the full code for zen<em>base</em>node:</p>
+
+<pre><code>#include &lt;ros/ros.h&gt;
+#include &lt;tf/transform_broadcaster.h&gt;
+#include &lt;nav_msgs/Odometry.h&gt;
+#include &lt;geometry_msgs/Twist.h&gt;
+
+double Vx  = 0.1;
+double Vy  = -0.1;
+double Vth = 0.1;
+
+//*****************************************************************************************
+
+void VelCallback(const geometry_msgs::Twist::ConstPtr&amp; msg)
+{
+  ROS_INFO(&quot;I heard Vel: linear[%lf %lf %lf]  angular[%lf %lf %lf]&quot;,
+           msg-&gt;linear.x, msg-&gt;linear.y, msg-&gt;linear.z,
+           msg-&gt;angular.x, msg-&gt;angular.y, msg-&gt;angular.z);
+
+  Vx  = msg-&gt;linear.x;
+  Vy  = msg-&gt;linear.y;
+  Vth = msg-&gt;angular.z;
+}
+
+//*****************************************************************************************
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, &quot;odometry_publisher&quot;);
+
+  ros::NodeHandle n;
+  ros::Publisher odom_pub = n.advertise&lt;nav_msgs::Odometry&gt;(&quot;odom&quot;, 50);
+  tf::TransformBroadcaster broadcaster;
+
+  ros::Subscriber vel_sub = n.subscribe(&quot;cmd_vel&quot;, 50, VelCallback);
+
+  double x  = 0.0;
+  double y  = 0.0;
+  double th = 0.0;
+
+  ros::Time current_time, last_time;
+  current_time = ros::Time::now();
+  last_time = ros::Time::now();
+
+  ros::Rate r(1.0);
+  while(n.ok()){
+
+    ros::spinOnce();               // check for incoming messages
+    current_time = ros::Time::now();
+
+    //compute odometry in a typical way given the velocities of the robot
+    double dt = (current_time - last_time).toSec();
+    double delta_x  = (Vx * cos(th) - Vy * sin(th)) * dt;
+    double delta_y  = (Vx * sin(th) + Vy * cos(th)) * dt;
+    double delta_th = Vth * dt;
+
+    x  += delta_x;
+    y  += delta_y;
+    th += delta_th;
+
+    //since all odometry is 6DOF we&#39;ll need a quaternion created from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+
+    //first, we&#39;ll publish the transform over tf
+    geometry_msgs::TransformStamped odom_trans;
+    odom_trans.header.stamp = current_time;
+    odom_trans.header.frame_id = &quot;odom&quot;;
+    odom_trans.child_frame_id = &quot;base_link&quot;;
+
+    odom_trans.transform.translation.x = x;
+    odom_trans.transform.translation.y = y;
+    odom_trans.transform.translation.z = 0.0;
+    odom_trans.transform.rotation      = odom_quat;
+
+    //send the odometry transform
+    broadcaster.sendTransform(odom_trans);
+
+    //now send the transform from base_link to camera_link
+    broadcaster.sendTransform(
+    tf::StampedTransform(
+        tf::Transform(tf::Quaternion(0, 0, 0, 1), tf::Vector3(0, 0, 0)),
+            current_time,&quot;base_link&quot;, &quot;camera_link&quot;));
+
+    //Now create the odometry message
+    nav_msgs::Odometry odom;
+    odom.header.stamp = current_time;
+    odom.header.frame_id = &quot;odom&quot;;
+
+    //set the position
+    odom.pose.pose.position.x  = x;
+    odom.pose.pose.position.y  = y;
+    odom.pose.pose.position.z  = 0.0;
+    odom.pose.pose.orientation = odom_quat;
+    //set the velocity
+
+    odom.child_frame_id = &quot;base_link&quot;;
+    odom.twist.twist.linear.x  = Vx;
+    odom.twist.twist.linear.y  = Vy;
+    odom.twist.twist.angular.z = Vth;
+
+    //publish the odometry message
+    odom_pub.publish(odom);
+
+    last_time = current_time;
+    r.sleep();
+  }
+}
+</code></pre>
+
+<p>Here is the launch file:</p>
+
+<pre><code>&lt;launch&gt;
+
+  &lt;include file=&quot;$(find freenect_launch)/launch/freenect.launch&quot;/&gt;
+
+  &lt;node pkg=&quot;zen&quot; type=&quot;zen_base_node&quot; name=&quot;zen_base_node&quot; output=&quot;screen&quot;&gt;
+  &lt;/node&gt;
+
+&lt;/launch&gt;
+</code></pre>
+
+        <div class="owner"><p>Asked by <a href="/users/28066">elpidiovaldez</a> on 2016-09-29 17:46:16 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

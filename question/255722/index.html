@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>rosjava ListenerGroup causes android memory leak - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/255722">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>rosjava ListenerGroup causes android memory leak</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/79236/rosjava-listenergroup-causes-android-memory-leak">https://robotics.stackexchange.com/questions/79236/rosjava-listenergroup-causes-android-memory-leak</a>.</p>
+        <p>I have been developing an Android based application using rosjava and android_core dependencies. I have found an issue with the ListenerDispatch class leaking memory (specifically classes that extend NodeMain). These leaked classes cannot be garbage collected and cause large android applications to crash.</p>
+
+<p>I have created a simple Android application that contains two activities, each of type ROSActivity, one called &quot;Main&quot; and the other called &quot;Second&quot;. The &quot;Main&quot; activity starts the &quot;Second&quot; activity which contains a simple Heartbeat class that implements NodeMain. The Heartbeat publishes a Header message every second, and allocates 10MB when it created (to show the leak). In &quot;Second&quot;s onDestroy method, the Heartbeat is shutdown using shutdownNodeMain() provided by the NodeMainExecutor. </p>
+
+<pre><code>@Override
+protected void onDestroy() {
+    if(mNodeMainExecutor != null)
+    {
+        if(mHeartbeat != null)
+        {
+            Log.d(LOG_TAG, &quot;Shutting down Heartbeat&quot;);
+            mNodeMainExecutor.shutdownNodeMain(mHeartbeat);
+        }
+    }
+    super.onDestroy();
+}
+</code></pre>
+
+<p>To demonstrate the leak, the &quot;second&quot; activity is repetitively navigated into and out of using a button on the &quot;Main&quot; activity and the back button. The Hearbeat is created in the onCreate() call of the &quot;Second&quot; activity, executed in the init() call and is shutdown in onDestroy().  </p>
+
+<pre><code>@Override
+protected void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    setContentView(R.layout.activity_second);
+
+    Log.d(LOG_TAG, &quot;Creating a new Heartbeat&quot;);
+    mHeartbeat = new Heartbeat();
+}
+
+@Override
+protected void init(NodeMainExecutor nodeMainExecutor) {
+    mNodeMainExecutor = nodeMainExecutor;
+    mNodeConfiguration = NodeConfiguration.
+            newPublic(InetAddressFactory.newNonLoopback().getHostAddress(),getMasterUri());
+
+    if(mNodeMainExecutor != null)
+        mNodeMainExecutor.execute(mHeartbeat, mNodeConfiguration);
+}
+</code></pre>
+
+<p>The system memory continues to increase until the application crashes due to the fact that the system garbage collector cannot free memory. </p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/14882194258938958.png" alt="image description"></p>
+
+<p>After dumping the application heap and anlazing the data, it seems that the created Heartbeat objects cannot be garbage collected due a reference tree depth of 0 caused by the EventDispatcher in org.ros.concurrent.ListenerGroup. </p>
+
+<p><img src="https://ftp.osuosl.org/pub/ros/download.ros.org/downloads/se_migration/ros/14882196074940168.png" alt="image description"></p>
+
+<p>After inspecting the ListenerGroup source, it seems that the shutdown() method should be called to cancel the EventDispatchers which could be holding up the Heartbeat NodeMain from being garbage collected.</p>
+
+<p>I can&#39;t find in any of the source where the ListenerGroup.shutdown() method is called? Has anyone experienced this? </p>
+
+<p>In large Android RosJava applications any class that extends NodeMain will theoretically be leaked. Anyone have any ideas?</p>
+
+<p>Thanks in advance! </p>
+
+<p>Here is a link to the source code used to generate the leak: <a href="https://github.com/stratomda/ROSLeak">ROSLeak Source</a></p>
+
+        <div class="owner"><p>Asked by <a href="/users/19732">dambrosio</a> on 2017-02-27 13:44:21 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>I&#39;d say this seems more like a bug report than an actual question, and as such posting an issue on one of the issue trackers over at <a href="https://github.com/rosjava">github.com/rosjava</a> seems to make more sense. Has been quite some activity in <code>rosjava</code> lately, so I&#39;m hopeful you&#39;ll get a response.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-02-27 15:42:12 UTC</p></div>
+</div>
+<div class="comment">
+              <p>+1 for the analysis btw. Nice work.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-02-27 15:42:36 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Thanks, I will post a bug report there. Also I can update info here as I get it, if that is the recommended follow on action.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19732">dambrosio</a> on 2017-02-27 16:01:32 UTC</p></div>
+</div>
+<div class="comment">
+              <p>That would be very much appreciated, yes.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2017-02-27 16:17:28 UTC</p></div>
+</div>
+<div class="comment">
+              <p>+1 great analysis work! I just wanted to add that this kind of bug is not extremely unusual so without digging into it myself I would risk to guess you found a genuine bug that needs fixing. So if you have any concrete suggestion on how to fix it please do go ahead and propose it with a PR.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19864">jcerruti</a> on 2017-03-01 08:05:37 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>This one was solved in <a href="https://github.com/rosjava/rosjava_core/pull/234">https://github.com/rosjava/rosjava_core/pull/234</a>.</p>
+
+<p>Thanks @dambrosio!</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/29146">jubeira</a> on 2017-10-18 07:43:26 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

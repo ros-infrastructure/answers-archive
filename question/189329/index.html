@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf impact on perf (tf design) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/189329">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf impact on perf (tf design)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/61598/tf-impact-on-perf-tf-design">https://robotics.stackexchange.com/questions/61598/tf-impact-on-perf-tf-design</a>.</p>
+        <p>Hi all,</p>
+
+<p>I have been playing with tf a bit and I am wondering about its perfs mainly related to design reasons. Maybe some of you can put some light on my thoughts... Here they are:</p>
+
+<p>tf is kind of a swiss knife for transforms, it ensures communication between nodes even distantly, buffers the data for history access, makes transformations between frames automatically... This is really great for ease of use, though:</p>
+
+<ol>
+<li>tf buffers the transforms for historic access, it is all sorted for fast access, but even though the access is <em>as fast as possible</em> searching in a sorted list comes at a high cost</li>
+<li>The frames are accessed by name (e.g. <strong>listener.lookupTransform(&quot;/ee_link&quot;, &quot;/world&quot;, ros::Time(0), transform);)</strong>, this access implies another search in a sorted list for the name: argh!</li>
+<li>robot<em>state</em>publisher sends data we may not use, as it is over TCP/IP (and not via shared memory or so) it has an impact on perf
+
+<ul>
+<li>Especially as most use cases have nodes exchange transforms data on the same machine</li>
+</ul></li>
+<li>Interpolation / extrapolation...</li>
+</ol>
+
+<p>I am coming from the RT physics simulation / control world and so far I would have banned all the points mentioned above and traded all them off for a super-fast raw data structure with a uber-simple dereferencing for access. <strong>Is there something I missed or using tf has an enormous hit on perf?</strong></p>
+
+<p>Thanks,</p>
+
+<p>Antoine.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3981">arennuit</a> on 2014-08-07 08:41:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>You are basically right with your observations. They are somewhat offset by the fact that using tf makes many tasks very easy/convenient that otherwise would take a lot of time to implement. Given that current computers are really fast, the advantages often outweigh the (in many cases largely negligible) performance impact of using tf.</p>
+
+<p>That being said, it certainly helps to be aware of how tf works behind the scenes. For instance, designing some sort of system that launches hundreds of nodes subscribing to tf likely wouldn´t end well.</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/57"></a> on 2014-08-07 10:19:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks Stefan, your answer is clear, I get the big picture. Now there is surely something better to do than accessing the frames per string id at each time step (as done in function <em>lookupTransform()</em> - which AFAIK is the only way to read a tf), no?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3981">arennuit</a> on 2014-08-07 10:50:21 UTC</p></div>
+</div>
+<div class="comment">
+          <p>See Tully´s comprehensive answer. &quot;Better&quot; is always a matter of the metric you apply. Yes, using integer IDs rather than string IDs is better if all that matters is raw speed, but in most practical cases lookups are fast enough and there is so much happening in a robotic system that a few string comparisons (or hash lookups) are really negligible.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/57">Stefan Kohlbrecher</a> on 2014-08-07 15:06:17 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>You&#39;re right that tf was designed focusing on ease of use. I&#39;ll comment on each of your points. </p>
+
+<ol>
+<li>We have tested using a binary tree structure for lookup which is faster for arbitrary lookups. However we observed actually higher lookup times and more overhead on maintaining the structure than the linked list. The maintenance of the tree is obviously higher overhead as you need to insert into the tree and prune in the tree. And as most data comes in in sequence it never needs to walk the tree when inserting. And pruning a sorted linked list is also trivial. For the lookup times most of the time queries are very close to the front of the list and although the lookup complexity is O(n/2) where n is the length of the list. In most use cases it is much faster since it walks the list from the newest data. The other thing to keep in mind is that although the user/developer mostly sees the lookup times. There are many more insertions and background updates than lookups. </li>
+<li>Names are stored in a hash map, which does not require a search. (yes it is not realitme safe to be processing strings, but names mean a lot more to developers and users than numeric ids. We tested originally using numeric frame ids and it was wholly undebuggable. </li>
+<li>When sending data on the same machine the kernel is quite optimized and effectively passes the data through shared memory over the loopback interface. I&#39;ve never seen tf data be a bottleneck performance wise on loopback. (It does become a problem over wifi) </li>
+<li>I&#39;m not sure what you mean by this bullet point. Interpolation is required estimate transforms across unsyncronized datasources. As well as allowing lower publish rates for data which is able to reflect the bandwidth of the signal of a link. (Fast moving transforms require high speed publishing. Low speed links can publish infrequently but remain accurate. Without this every link would be required at every timestep wanted to query, so it&#39;s actually a significant performance boost.) And extrapolation is discouraged and disabled by default. </li>
+</ol>
+
+<p>Overall there are things which can be optimized however in typical testing on a desktop a tf lookup is measured in microseconds so we haven&#39;t worked on optimizing it further. There are many other things to optimize. The biggest bottleneck, mentioned earlier, is bandwidth usage over wifi. And there are several different techniques for downsampling and forwarding data over a limited bandwidth link. </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2014-08-07 11:56:10 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Haha! Thanks a lot for this very clear explanation. I better understand the solutions and trade offs now. It definitely looks less scary than it initially seemed.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3981">arennuit</a> on 2014-08-08 03:24:46 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

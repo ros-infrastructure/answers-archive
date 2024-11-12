@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>tf transform tutorial issue (past extrapolation) - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/265272">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>tf transform tutorial issue (past extrapolation)</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/81596/tf-transform-tutorial-issue-past-extrapolation">https://robotics.stackexchange.com/questions/81596/tf-transform-tutorial-issue-past-extrapolation</a>.</p>
+        <p>I&#39;m working through the <code>python</code> <a href="http://wiki.ros.org/tf/Tutorials/Time%20travel%20with%20tf%20%28Python%29">tf tutorial</a> and am having an issue with an extrapolation into the past. Here&#39;s the section:</p>
+
+<blockquote>
+<p>So let&#39;s go back to where we ended in the previous tutorial. Go to your package for the tutorial:</p>
+</blockquote>
+
+<pre><code>$ roscd learning_tf
+</code></pre>
+
+<blockquote>
+<p>Now, instead of making the second turtle go to where the first turtle is now, make the second turtle go to where the first turtle was 5 seconds ago. Edit nodes/turtle<em>tf</em>listener.py:</p>
+</blockquote>
+
+<pre><code>try:
+    now = rospy.Time.now() - rospy.Duration(5.0)
+    listener.waitForTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, now, rospy.Duration(1.0))
+    (trans, rot) = listener.lookupTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, now)
+
+except (tf.Exception, tf.LookupException, tf.ConnectivityException):
+</code></pre>
+
+<p>The referenced &quot;previous tutorial&quot; taught about <code>waitForTransform()</code> and fixed a future extrapolation like so:</p>
+
+<pre><code>listener.waitForTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, rospy.Time(), rospy.Duration(4.0))
+while not rospy.is_shutdown():
+    try:
+        now = rospy.Time.now()
+        listener.waitForTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, now, rospy.Duration(4.0))
+        (trans,rot) = listener.lookupTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, now)
+</code></pre>
+
+<p>Based on that (which worked) and the changes shown above, here is my full code:</p>
+
+<pre><code>#!/usr/bin/env python
+
+import rospy
+import tf
+import turtlesim.srv
+import geometry_msgs.msg
+import math
+
+if __name__ == &#39;__main__&#39;:
+    rospy.init_node(&#39;tf_turtle&#39;)
+
+    listener = tf.TransformListener()
+
+    rospy.wait_for_service(&#39;spawn&#39;)
+    spawner = rospy.ServiceProxy(&#39;spawn&#39;, turtlesim.srv.Spawn)
+    spawner(4, 2, 0, &#39;turtle2&#39;)
+
+    turtle_vel = rospy.Publisher(&#39;turtle2/cmd_vel&#39;,
+                                 geometry_msgs.msg.Twist,
+                                 queue_size=1)
+
+    rate = rospy.Rate(10)
+
+    listener.waitForTransform(&#39;/turtle2&#39;, &#39;/carrot1&#39;,
+                              rospy.Time().now(),
+                              rospy.Duration(4.0))
+
+    while not rospy.is_shutdown():
+        try:
+            now = rospy.Time.now() - rospy.Duration(5.0)
+            listener.waitForTransform(&#39;/turtle2&#39;, &#39;/carrot1&#39;, now, rospy.Duration(1.0))
+            (trans, rot) = listener.lookupTransform(&#39;/turtle2&#39;,
+                                                    &#39;/carrot1&#39;,
+                                                    now)
+        except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            continue
+
+        angular = 4 * math.atan2(trans[1], trans[0])
+        linear = 0.5 * math.sqrt(trans[0] ** 2 + trans[1] ** 2)
+        cmd = geometry_msgs.msg.Twist()
+        cmd.linear.x = linear
+        cmd.angular.z = angular
+        turtle_vel.publish(cmd)
+
+        rate.sleep()
+</code></pre>
+
+<p>I&#39;m getting these types of errors about past extrapolation when I run the above:</p>
+
+<pre><code>listener.waitForTransform(&#39;/turtle2&#39;, &#39;/carrot1&#39;, now, rospy.Duration(1.0))
+tf.Exception: Lookup would require extrapolation into the past.  Requested time 1498858934.730669022 but the earliest data is at time 1498858934.911530972, when looking up transform from frame [carrot1] to frame [turtle2]. canTransform returned after 1.00266 timeout was 1.
+</code></pre>
+
+<p>I&#39;ve tried inserting a <code>rospy.sleep(5)</code> above the <code>while</code> section to ensure that there&#39;s 5 seconds of data, as well as having the first call to <code>waitForTransform</code> use <code>rospy.Time.now() - rospy.Duration(5.0)</code> to match the second argument. I&#39;m not really sure what&#39;s going on. The tutorial goes on to suggest this is not really what you want anyway, but it still shows it like it should run so I&#39;m confused at my results!</p>
+
+<hr>
+
+<p><strong>EDIT:</strong> I&#39;ve left the original question as-is, but wanted to respond to the comments by making this more reproducible. I started over from the beginning, creating versions of each file as I went. These are now <a href="https://github.com/jwhendy/learning_tf">on github</a>. If you want to reproduce:</p>
+
+<pre><code>git clone https://github.com/jwhendy/learning_tf.git
+cd ~/catkin_ws
+catkin build ## or catkin_make
+roslaunch learning_tf start_demo.launch
+</code></pre>
+
+<p>The <a href="https://pastebin.com/EBRfiQrk">log file</a> may be of interested too (should have checked this initially):</p>
+
+<pre><code>[rospy.internal][WARNING] 2017-07-03 13:48:03,104: Unknown error initiating TCP/IP socket to hostname:36627 (http://hostname:38196/): Traceback (most recent call last):
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/impl/tcpros_base.py&quot;, line 557, in connect
+    self.read_header()
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/impl/tcpros_base.py&quot;, line 650, in read_header
+    self._validate_header(read_ros_handshake_header(sock, self.read_buff, self.protocol.buff_size))
+AttributeError: &#39;NoneType&#39; object has no attribute &#39;buff_size&#39;
+
+[rospy.topics][ERROR] 2017-07-03 13:48:03,104: Traceback (most recent call last):
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/topics.py&quot;, line 326, in close
+    c.close()
+  File &quot;/opt/ros/kinetic/lib/python2.7/dist-packages/rospy/impl/tcpros_base.py&quot;, line 838, in close
+    self.socket.close()
+AttributeError: &#39;NoneType&#39; object has no attribute &#39;close&#39;
+</code></pre>
+
+<p>One last thing I wondered about... Section 1 has this:</p>
+
+<pre><code>listener.waitForTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, now, rospy.Duration(1.0))
+(trans, rot) = listener.lookupTransform(&quot;/turtle2&quot;, &quot;/carrot1&quot;, now)
+</code></pre>
+
+<p>Section 2, the supposed fix has this:</p>
+
+<pre><code>listener.waitForTransformFull(&quot;/turtle2&quot;, now,
+                              &quot;/turtle1&quot;, past,
+                              &quot;/world&quot;, rospy.Duration(1.0))
+(trans, rot) = listener.lookupTransformFull(&quot;/turtle2&quot;, now,
+                                            &quot;/turtle1&quot;, past,
+                                            &quot;/world&quot;)
+</code></pre>
+
+<p>Is this correct (referencing a transform between <code>turtle2</code> and the <code>carrot1</code> frame at first, but then comparing <code>turtle2</code> and <code>turtle1</code> for the &quot;fix&quot;)? Neither the original example which is supposed to show <code>turtle2</code> going crazy, or the sane behavior in Section 2 work for me; I get past extrapolation for both.</p>
+
+<p>I&#39;ve left the current version of <code>*.py</code> as the status after <a href="http://wiki.ros.org/tf/Tutorials/Time%20travel%20with%20tf%20%28Python%29">time travel with tf</a>, Section 1.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/30308">jwhendy</a> on 2017-06-30 16:54:15 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Re your edit about log files: If you&#39;re having errors with urls like &quot;<a href="http://hostname:38196/">http://hostname:38196/</a>&quot; you need to double check your network setup. You should see valid hostnames there not the string &quot;hostname&quot;.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2017-07-03 13:59:53 UTC</p></div>
+</div>
+<div class="comment">
+              <p>That was intentional. I&#39;m not network savvy and am not sure what constitutes something I don&#39;t want floating around on the internet. I used <code>username</code> and <code>hostname</code> as generic fill-ins.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30308">jwhendy</a> on 2017-07-03 14:13:20 UTC</p></div>
+</div>
+<div class="comment">
+              <p>If you do that please mention it so that it&#39;s clear to those of us trying to help you.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/3">tfoote</a> on 2017-07-03 15:00:10 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Will do. I thought cloning/reproducing was the best way to just get to whether this is an issue or not... can you reproduce the error, or does it work for you?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30308">jwhendy</a> on 2017-07-03 15:03:06 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>It looks like you&#39;re off by 2 tenths of a second still. Waiting will almost never resolve an extrapolation into the past.</p>
+
+<p>My guess is that you&#39;ll get that error for a little bit, and then it will go away as time moves forward and the cache extends beyond 5 seconds into the past.</p>
+
+<p>Your posted code isn&#39;t printing the exceptions so I&#39;m guessing there are other local changes besides the sleep.</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2017-06-30 17:10:32 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Sorry; should have posted the full error. <code>turtle_tf_listener</code> dies after the above. Full error is <a href="https://pastebin.com/aXXSgX0H">here</a>. I&#39;m not sure what exceptions I should see instead. Also, I pushed this all to github if you want to replicate. You can check for &#39;local changes&#39; this way, too.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/30308">jwhendy</a> on 2017-07-03 13:31:42 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer">
+              <p>I see the same behavior/issues while doing tf tutorials today. Is there a fix?</p>
+
+<p>In <a href="http://wiki.ros.org/tf/Tutorials/Time%20travel%20with%20tf%20%28Python%29">Time travel with tf</a> tutorial there are two issues - </p>
+
+<p>First, I don&#39;t see uncontrolled behavior of turtle2. </p>
+
+<p>Second, I get an exception with advanced APIs (tf2.TransformException: Lookup would require extrapolation into the past).</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/35388">kiranpalla</a> on 2018-05-22 23:42:21 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>I just tried this today. Adding the following two lines above the while loop worked for me. 
+<strong>listener.waitForTransformFull(&quot;/turtle2&quot;,rospy.Time(),&quot;/turtle1&quot;,rospy.Time(),&quot;/world&quot;,rospy.Duration(5.0))
+    rospy.sleep(5.0)</strong></p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40524">musaup</a> on 2019-03-19 09:06:09 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

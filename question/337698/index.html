@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to port a node to nodelet as easy as possible? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/337698">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to port a node to nodelet as easy as possible?</h2>
+      <div class="question">
+        <p>I have a problem where I am having to compare PointCloud2 where all my clouds are currently coming from a nodelet. As I understand nodelets pass data around with addresses rather than chewing memory and so for a structure such as many clouds, passing this data around nodelets in the same manager would be more efficient. Is there an easy way to take an existing node and write it as a nodelet?</p>
+
+        <div class="owner"><p>Asked by <a href="/users/40565">PapaG</a> on 2019-11-14 20:34:58 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>There are no &quot;easy&quot; ways, you just need to follow <a href="http://wiki.ros.org/nodelet/Tutorials/Porting%20nodes%20to%20nodelets">the different steps described in the wiki</a> and it shouldn&#39;t be too difficult. I will expand on each point to make it clear because I already had some trouble with it in the past (you can also check <a href="https://github.com/ros/common_tutorials/blob/indigo-devel/nodelet_tutorial_math/src/plus.cpp">this really simple example</a>) :</p>
+
+<ul>
+<li><p>add the necessary #includes :</p>
+
+<pre><code>#include &lt;nodelet/nodelet.h&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+</code></pre></li>
+<li><p>get rid of int main() </p></li>
+</ul>
+
+<p>You don&#39;t need it anymore since your program will be run via roslaunch and the different functions can be called from the the method <code>onInit()</code> (which is described under). </p>
+
+<ul>
+<li>subclass nodelet::Nodelet </li>
+</ul>
+
+<p>This means your class needs to inherit from <code>nodelet::Nodelet</code> like this :</p>
+
+<pre><code>class TestNodelet : public nodelet::Nodelet
+</code></pre>
+
+<ul>
+<li>move code from constructor to <code>onInit()</code> </li>
+</ul>
+
+<p>The method <code>onInit</code> is called by the <code>nodelet manager</code> to initialize every nodelet. This method is defined as <code>virtual</code> in the Nodelet class API which means that you <strong>must</strong> declare this method every time you create a nodelet (in private). You will initialize everything in this method, like the nodehandle and your pub/sub or even your threads if you want.</p>
+
+<ul>
+<li>add the PLUGINLIB_EXPORT_CLASS macro</li>
+</ul>
+
+<p>Just add this at the end of your file (but within the namespace if you have one) :</p>
+
+<pre><code>PLUGINLIB_EXPORT_CLASS(test::TestNodelet, nodelet::Nodelet);
+</code></pre>
+
+<ul>
+<li>add <code>&lt;build_depend&gt;</code> and <code>&lt;run_depend&gt;</code> dependencies on nodelet in the package manifest. </li>
+</ul>
+
+<p>Just add this in <code>package.xml</code> :</p>
+
+<pre><code>  &lt;build_depend&gt;pluginlib&lt;/build_depend&gt;
+  &lt;build_depend&gt;nodelet&lt;/build_depend&gt;
+  &lt;exec_depend&gt;pluginlib&lt;/exec_depend&gt;
+  &lt;exec_depend&gt;nodelet&lt;/exec_depend&gt;
+</code></pre>
+
+<ul>
+<li>add the <code>&lt;nodelet&gt;</code> item in the <code>&lt;export&gt;</code> part of the package manifest </li>
+</ul>
+
+<p>Still in package.cml, add this :</p>
+
+<pre><code>  &lt;export&gt;
+      &lt;nodelet plugin=&quot;${prefix}/plugins/nodelets.xml&quot;/&gt;
+  &lt;/export&gt;
+</code></pre>
+
+<ul>
+<li>create the .xml file to define the nodelet as a plugin </li>
+</ul>
+
+<p>Create a folder <code>plugins</code> and add into it the file <code>nodelets.cml</code> :</p>
+
+<pre><code>&lt;library path=&quot;lib/libtest_nodelet&quot;&gt;
+  &lt;class name=&quot;your_package/TestNodelet&quot;
+         type=&quot;test::TestNodelet&quot;
+         base_class_type=&quot;nodelet::Nodelet&quot;&gt;
+    &lt;description&gt;
+      Node to nodelet test
+    &lt;/description&gt;
+  &lt;/class&gt;
+&lt;/library&gt;
+</code></pre>
+
+<ul>
+<li>make the necessary changes to CMakeLists.txt (comment out a rosbuild_add_executable, add a rosbuild_add_library) </li>
+</ul>
+
+<p>You need to add the same package as in the package.cml first :</p>
+
+<pre><code>find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  pluginlib 
+  nodelet 
+)
+</code></pre>
+
+<p>And then you just need to define the nodelet as a library and link it :</p>
+
+<pre><code># Nodelet library
+add_library(test_nodelet src/test.cpp)
+add_dependencies(test_nodelet ${PROJECT_NAME})
+target_link_libraries(test_nodelet ${catkin_LIBRARIES})
+</code></pre>
+
+<p>So your code should be like this :</p>
+
+<pre><code>#include &quot;ros/ros.h&quot;
+#include &quot;std_msgs/String.h&quot;
+#include &lt;nodelet/nodelet.h&gt;
+#include &lt;pluginlib/class_list_macros.h&gt;
+
+namespace test {
+
+/*********************
+** Nodelet
+**********************/
+class TestNodelet : public nodelet::Nodelet
+{
+    public:
+        TestNodelet()
+        {
+        }
+
+    private:
+        virtual void onInit()
+        {
+            ros::NodeHandle&amp; private_nh = getPrivateNodeHandle();
+            pub = private_nh.advertise&lt;std_msgs::String&gt;(&quot;out&quot;, 10);
+            sub = private_nh.subscribe(&quot;in&quot;, 10, &amp;TestNodelet::callback, this);
+        }
+        ros::Publisher pub;
+        ros::Subscriber sub;
+
+        void callback(const std_msgs::String::ConstPtr&amp; input)
+        {
+            std_msgs::String output;
+            output.data = input-&gt;data;
+            pub.publish(output);
+        }
+};
+PLUGINLIB_EXPORT_CLASS(test::TestNodelet, nodelet::Nodelet);
+}
+</code></pre>
+
+<p>Now you just have to create a launch file with a nodelet manager and your nodelet :</p>
+
+<pre><code>&lt;launch&gt;
+  &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;nodelet_manager&quot;  args=&quot;manager&quot; output=&quot;screen&quot;/&gt;
+
+  &lt;node pkg=&quot;nodelet&quot; type=&quot;nodelet&quot; name=&quot;test&quot; args=&quot;load your_package/TestNodelet nodelet_manager&quot; output=&quot;screen&quot;/&gt;          
+&lt;/launch&gt;
+</code></pre>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/33811"></a> on 2019-11-15 05:21:46 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

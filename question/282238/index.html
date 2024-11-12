@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>smach concurrence: race condition bug or bad usage - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/282238">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>smach concurrence: race condition bug or bad usage</h2>
+      <div class="question">
+        <p>I have been hit by a problem with the smach concurrence container. I believe it is a race condition problem.</p>
+
+<p>Scenario:</p>
+
+<ol>
+<li>A preempt request is called on the concurrence state right when the children have completed, but the concurrence state itself is still executing.</li>
+<li>The concurrence state will then (sometimes) claim that the preempt was serviced, though none of its children serviced the preempt. </li>
+</ol>
+
+<p>This violates how I intended to use the &#39;preempt&#39; concept. Am I missing something?</p>
+
+<p>For the sake of completeness, here is a python script that demonstrates the problem, it does not require any ROS code running. Since the problem is timing dependent, it might depend on your PC whether or not the script triggers the problem. The script just creates this state machine and tries to preempt it after 0.3 seconds:</p>
+
+<blockquote>
+<ul>
+<li>Sequence(top)
+
+<ul>
+<li>Concurrence(Cc)
+
+<ul>
+<li>Delay1(0.3 seconds) (for demonstration purposes: the only child of Concurrence)</li>
+</ul></li>
+<li>Delay2(0.5 seconds)</li>
+</ul></li>
+</ul>
+</blockquote>
+
+<p>Test script:</p>
+
+<pre><code>#!/usr/bin/env python
+
+from time import sleep
+from smach import State, Concurrence, Sequence
+from threading import Timer
+
+
+class DelayState(State):
+    &quot;&quot;&quot;Delay state for testing purposes&quot;&quot;&quot;
+
+    def __init__(self, delay):
+        State.__init__(self, outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;])
+        self.delay = delay
+
+    def execute(self, userdata):
+        # A better delay state should be able to preempt during its sleep state
+        sleep(self.delay)
+        if self.preempt_requested():
+            self.service_preempt()
+            return &#39;preempted&#39;
+        return &#39;succeeded&#39;
+
+
+def test_concurrence_preempt():
+    &quot;&quot;&quot;test demonstrating race condition
+
+    Creates a state machine:
+
+    - Sequence(top)
+      - Concurrence(Cc)
+        - Delay1(0.3 seconds) (for demonstration purposes: the only child of Concurrence)
+      - Delay2(0.5 seconds)
+
+    When preempting the state machine after ~0.3 seconds, the machine
+    is expected to return &#39;preempted&#39;
+    &quot;&quot;&quot;
+
+    def outcome_cb(outcome_map):
+        if &#39;preempted&#39; in outcome_map.values():
+            return &#39;preempted&#39;
+        return &#39;succeeded&#39;
+
+    cc = Concurrence(
+        outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;],
+        default_outcome=&#39;succeeded&#39;,
+        outcome_cb=outcome_cb)
+    with cc:
+        Concurrence.add(&#39;Delay1&#39;, DelayState(delay=0.3))
+
+    top = Sequence(outcomes=[&#39;succeeded&#39;, &#39;preempted&#39;],
+                   connector_outcome=&#39;succeeded&#39;)
+
+    with top:
+        Sequence.add(&#39;Cc&#39;, cc)
+        Sequence.add(&#39;Delay2&#39;, DelayState(delay=0.5))
+
+    # Execute state machine and try cancel after various milliseconds of delay
+    for msDelay in range(290, 330, 2):
+        print (&#39;Cancel after delay {}&#39;.format(msDelay))
+        t = Timer(msDelay/1000.0, top.request_preempt)
+        t.start()
+        if top.execute() != &#39;preempted&#39;:
+            print (&#39;===== TEST FAILED, delay: %sms =====&#39;, msDelay)
+            return
+
+    print (&#39;===== TEST OK =====&#39;)
+
+
+test_concurrence_preempt()
+</code></pre>
+
+<p>Actually it seems that the above scenario is just one out of several cases, where a preempt request is kind of lost. I believe similar problems occurs when:</p>
+
+<ol>
+<li>A preempt request is called on the concurrence state right when the concurrence has been told to execute, but the children are not yet active. Then the preempt request is not propagating to the children and they just go on executing.</li>
+<li>Similar problems for SimpleActionState</li>
+</ol>
+
+<p>My setup:</p>
+
+<ul>
+<li>Ubuntu 16.04, </li>
+<li>ROS kinetic</li>
+<li>ros-kinetic-smach 2.0.1-0xenial-20170608-133042-0800</li>
+</ul>
+
+        <div class="owner"><p>Asked by <a href="/users/29756">knxa</a> on 2018-02-09 04:10:53 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+      </section>
+    </div>
+  </body>
+</html>

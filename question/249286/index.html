@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>How to make a service request inside a callback function - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/249286">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>How to make a service request inside a callback function</h2>
+      <div class="question">
+        <p>Hey there,</p>
+
+<p>I am new to ROS trying to get some code running on a robot. Therefore I went to some tutorials on the web and have a brief understanding of the ROS concept.</p>
+
+<p>The task I am dealing with right now is as follows: given two nodes (AGENT and ROBOT) I want the robot to detect some objects which are defined by the AGENT-node in a single frame. So the AGENT sends a service-request (detect-object) to the ROBOT-node. So far so good the problem occurs now: The callback function executed inside the ROBOT-node needs to know which objects to detect and therefore sends a service request back to the AGENT-node asking for the object-list. (I know the detect-object.srv could forward the object-list but since it is not my framework I have to deal with the services as they are:/) The problem is (as far as I understand) that the first servic-request blocks the second... I found some comments on ros::AsyncSpinner but it is still not clear to me how to use this :/
+So question 1): Is the process calling a service request inside a service request a good idea?
+question 2): If 1):yes is ros::AsyncSpinner the right choice? If 1): no what is a good idea then?
+question 3): if ros::AsyncSpinner is the right choice, could you please give a short explaination how to use it properly?</p>
+
+<p>Thx a lot for your comments!</p>
+
+        <div class="owner"><p>Asked by <a href="/users/28692">spungia</a> on 2016-12-02 11:16:34 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>When agent node sends a service request, you can pass the object list (can be obtained by calling that specific service and including it in the service request to the robot node). If you cannot modify either services, can make a third that includes both in the request to the robot node.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27952">JoshMarino</a> on 2016-12-03 15:46:58 UTC</p></div>
+</div>
+<div class="comment">
+              <p>Passing the object list via this request seems the most convenient one! however, the services should stay fixed. Could you please go more into detail about the third service? Apart from this, would it be possible to send a service request inside a callback and how?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/28692">spungia</a> on 2016-12-04 05:17:18 UTC</p></div>
+</div>
+<div class="comment">
+              <p>From the second service being called, is the object-list part of the service request message? Otherwise you would have to be modifying the service callback function which is not keeping the service fixed. Are you able to share any of either services so I can understand what is actually going on?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/27952">JoshMarino</a> on 2016-12-04 15:36:25 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>The problem is, that you can&#39;t use the spin_node_until_future_complete() command inside the outer callback. 
+The solution is to use an MultiThreadedExecutor and different callback groups.
+Then you can call the inner service by giving it a callback function (instead of waiting for the return code with spin_node_until_future_complete).</p>
+
+<p>If you want to wait for the result from the inner service call before the outer service callback finishes you need to block the thread with a while(return_from_inner_service == false) loop.
+This is important if your outer callback is from a service, because then you want to receive the inner service result and use it to compute the result of the outer service.
+But this is bad design, because you block the spin() call from the outer service. 
+Luckily we can still handle other callbacks with the MultiThreadedExecutor as long as we assign them to a different callback group.
+If the outer callback is from a topic you don&#39;t want to block the callback, just handle the inner service call inside the assigned callback function. It will execute asynchronous.</p>
+
+<p>Here is some code example in C++
+(assuming all necessary headers included and ROS services created)</p>
+
+<p>Create the MultiThreadedExecuter and an instance of the Node in main:</p>
+
+<pre><code>int main(int argc, char *argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor executor;
+    auto node = std::make_shared&lt;Communication&gt;();
+    executor.add_node(node);
+    executor.spin();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+
+<p>Create seperate Callback group and assign it to the inner service client (inside the Node/class constructor):</p>
+
+<pre><code>callback_group_input_ = this-&gt;create_callback_group(rclcpp::callback_group::CallbackGroupType::MutuallyExclusive);
+get_input_client_ = this-&gt;create_client&lt;petra_core::srv::GetInput&gt;(&quot;GetInput&quot;, rmw_qos_profile_services_default, callback_group_input_);
+</code></pre>
+
+<p>Inside the outer callback from a topic or service, send the inner_request and define a callback for it:</p>
+
+<pre><code>int choice = -1;
+    auto inner_client_callback = [&amp;,this](rclcpp::Client&lt;petra_core::srv::GetInput&gt;::SharedFuture inner_future)
+        { 
+            auto result = inner_future.get();
+            choice = stoi(result-&gt;input);
+            RCLCPP_INFO(this-&gt;get_logger(), &quot;[inner service] callback executed&quot;);
+        };
+    auto inner_future_result = get_input_client_-&gt;async_send_request(inner_request, inner_client_callback);
+</code></pre>
+
+<p>If it is necessary to wait inside the outer callback for the result block the thread:</p>
+
+<pre><code>// Wait for the result.
+    while (choice &lt; 0 &amp;&amp; rclcpp::ok())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+</code></pre>
+
+<p>I hope it helps you, or whoever has the same problem. I was stuck with this for weeks...</p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/53868">Andreas Z</a> on 2020-05-18 05:58:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>+1 for the effort of posting this, but please note that your answer is ROS 2 specific, while I&#39;m pretty sure the OP was/is using ROS 1.</p>
+
+<p>That makes your answer essentially irrelevant here in this case.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-18 07:03:22 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

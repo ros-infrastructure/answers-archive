@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Why does AMCL post-date tf (~transform_tolerance)? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/218864">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Why does AMCL post-date tf (~transform_tolerance)?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/69901/why-does-amcl-post-date-tf-transform-tolerance">https://robotics.stackexchange.com/questions/69901/why-does-amcl-post-date-tf-transform-tolerance</a>.</p>
+        <p>A <a href="https://github.com/ros-planning/navigation/blob/jade-devel/amcl/src/amcl_node.cpp#L1249-L1278">comment in the code</a> says</p>
+
+<blockquote>
+<pre><code>    // We want to send a transform that is good up until a
+    // tolerance time so that odom can be used
+</code></pre>
+</blockquote>
+
+<p>And the <a href="http://wiki.ros.org/amcl#Parameters">wiki page</a> says</p>
+
+<blockquote>
+<p>~transform_tolerance (double, default: 0.1 seconds)
+Time with which to post-date the transform that is published, to indicate that this transform is valid into the future.</p>
+</blockquote>
+
+<p>I still don&#39;t understand why AMCL needs to pretend to be able to see the future.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2015-10-08 11:05:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer">
+              <p>According to <a href="https://github.com/ros-planning/navigation/blob/b97780ec5e9b048d756246532b023893538dac69/amcl/src/amcl_node.cpp#L1380">amcl_node.cpp:1380</a> the tf stamp is actually based on the time stamp of the laser scan plus transform_tolerance.<br>
+I would say that this transform_tolerance parameter is actually the estimation of AMCL calculation time and have nothing to do with tf availability. </p>
+
+
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/19209">EwingKang</a> on 2018-04-26 22:48:52 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Still, as the pose that amcl computes is based on the scan, it is as old as the scan itself. If I have a laser scan at time <code>t</code> and need <code>dt_compute</code> to compute the pose, that pose should have <code>t</code> as stamp and not <code>t + dt_compute</code>. The latter would mean AMCL predicts the pose of the future.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2018-07-06 03:22:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>@Stephan Ahh now that you&#39;ve mentioned that,it seems more reasonable :p. Frankly I don&#39;t know the exact reason, maybe that is a parameter that loose its function over time. The time stamp of estimation from encoder update doesn&#39;t seem to have any problem and does not involve that param.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/19209">EwingKang</a> on 2018-07-23 03:00:25 UTC</p></div>
+</div>
+  </section>
+</div>
+<div class="answer accepted">
+              <p>I&#39;ve been trying to understand this for quite some time already, please correct me if I am wrong.</p>
+
+<p>The whole tf tree is as &quot;old&quot; as the oldest tf update from any frame in the entire tree. For example:
+odom -&gt; base_link transform updates at frequency of 100hz (encoder + imu), but
+map -&gt; odom is only updated with frequency of 10hz (amcl). 
+Position of the robot in the map frame has update frequency of 10hz (so amcl is the bottleneck).</p>
+
+<p>Now if the amcl algorithm update takes 1s to compute new position, our tf broadcaster will not publish anything for 1s (since it&#39;s computing a new update and amcl run in the same loop as tf broadcaster). Therefor we need to stamp map-&gt;odom transform &quot;in the future&quot; (aprox as much as it takes for amcl algorithm to calculate new position update).
+Otherwise, we would introduce a lag in the system due to this amcl processing time, and map-&gt;base_link tf will not be updated.</p>
+
+<p>Am I missing something in my reasoning?
+Is there any way to make a map-&gt;odom tf always true until new measurement comes in?</p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/28589">Chrisando</a> on 2018-07-30 09:32:26 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>That could explain it. When looking up the &quot;latest&quot; <code>map-&gt;base_link</code>, the TF library looks for the latest common time of <code>map-&gt;odom</code> and <code>odom-&gt;base_link</code>. So if <code>map-&gt;odom</code> is old (not future-dated), we don&#39;t get the most recent <code>odom-&gt;base_link</code> in that lookup.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/266">Stephan</a> on 2018-07-30 09:58:35 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Great explanation. One supplement: the assumption to the TF transform <code>map-&gt;odom</code> is: it&#39;s stable, as it shouldn&#39;t change much in a short time. So it is OK for the AMCL node to publish such a &quot;predicted&quot; transformation.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/40266">skyofyao@gmail.com</a> on 2019-10-14 14:23:46 UTC</p></div>
+</div>
+<div class="comment">
+          <p>The way to make a transform valid until updated is to use a static transform broadcaster.  The reason AMCL does not use it is unclear to me.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/34739">Rufus</a> on 2020-05-05 03:08:22 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Most likely because it was not available at the time the AMCL wrapper nodes were written?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/5184">gvdhoorn</a> on 2020-05-05 03:09:17 UTC</p></div>
+</div>
+<div class="comment">
+          <p>Why didn&#39;t they use ros::Time::now() ?</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/52680">N.N.Huy</a> on 2022-09-14 02:58:57 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

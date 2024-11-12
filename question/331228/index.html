@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Handling a delayed localization pose? - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/331228">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Handling a delayed localization pose?</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/93035/handling-a-delayed-localization-pose">https://robotics.stackexchange.com/questions/93035/handling-a-delayed-localization-pose</a>.</p>
+        <p>Basically I am getting a global pose for localization which is 60ms delayed.<br>
+So just setting this pose to current pose will add an error of 6cm by not compensating for the driven distance ( e.g. 1m/s) in this 60ms.  </p>
+
+<p>So what I am doing is taking the old odom ( now -60ms) and the current odom, subtracting each other and add the resulting transform to the incoming localization pose.  </p>
+
+<p>And in code it looks like this:  </p>
+
+<pre><code> auto oldOdomTf = tf-&gt;lookupTransform( ODOM, currentTime, BASE_LINK, currentTime - 60ms,
+                                       ODOM );
+ auto yaw = tf_utils::getYawFromQuaternion( oldOdomTf.transform.rotation );
+ RCLCPP_INFO( node.get_logger(), &quot;get transform from old %s to %s: x: %.2f y: %.2f yaw: %.2f&quot;,
+             BASE_LINK.c_str(), ODOM.c_str(), oldOdomTf.transform.translation.x,
+              oldOdomTf.transform.translation.y, yaw );
+ auto currentOdomTf = tf-&gt;lookupTransform( ODOM, currentTime, BASE_LINK, currentTime,
+                                 ODOM );
+ yaw = tf_utils::getYawFromQuaternion( currentOdomTf.transform.rotation );
+ RCLCPP_INFO( node.get_logger(), &quot;get transform from current %s to %s: x: %.2f y: %.2f yaw: %.2f&quot;,
+              BASE_LINK.c_str(),ODOM.c_str(), currentOdomTf.transform.translation.x,
+              currentOdomTf.transform.translation.y, yaw );
+
+ tf2::Transform odomDelta, old, current;
+ tf2::fromMsg( oldOdomTf.transform, old );
+ tf2::fromMsg( currentOdomTf.transform, current );
+ odomDelta = current * old.inverse(); 
+ latest_tf_ = latest_tf_ * odomDelta; // get new map pose
+</code></pre>
+
+<p>Output is this:  </p>
+
+<pre><code>[INFO 1566381525.298737439] [testNode]: transform from map to odom: x: 1.00 y: 1.61 yaw: -1.57
+[INFO 1566381525.298759261] [testNode]: get transform from old base_link to odom: x: 0.60 y: 0.00 yaw: 0.00
+[INFO 1566381525.298953778] [testNode]: get transform from current base_link to odom: x: 0.70 y: 0.00 yaw: 0.00
+[INFO 1566381525.299004058] [testNode]: transform from old odom to new odom: x: 0.10 y: 0.00 yaw: 0.00
+[INFO 1566381525.299014972] [testNode]: transform from map to odom with time compensation: x: 1.00 y: 1.51 yaw: -1.57
+</code></pre>
+
+<p>So, it looks good but my question is if this could be done simpler?  Like with a direct tf call to transform spae and time? ;)  </p>
+
+<p>I was looking at the <a href="https://github.com/ros-planning/navigation2/blob/9f749e6d6f0e4987ae22534df1df9bbf7d6f5d52/nav2_amcl/src/amcl_node.cpp">ros2 amcl pkg</a>, where they write also something about integrating the odom data but in written code I only see a odom - base link transformation...</p>
+
+        <div class="owner"><p>Asked by <a href="/users/1492">madmax</a> on 2019-08-21 05:21:31 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+<div class="comment">
+              <p>Why not use EKF to fuse the results? <code>robot_localization</code> EKF can handle pose sources with old timestamp.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/45231">scottnothing</a> on 2019-08-28 13:42:37 UTC</p></div>
+</div>
+<div class="comment">
+              <p>From what I know it&#39;s not ported to ROS2 yet.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1492">madmax</a> on 2019-08-29 02:01:44 UTC</p></div>
+</div>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>For what you&#39;re asking it to do that looks about right. Unfortunately tf doesn&#39;t have full support for general relativity solutions. </p>
+
+<p>But I would suggest that you rethink about what you&#39;re asking for. If you do truely need the global position with 6cm with less that 100ms latency this is what you need to do. But if you step back and think about your problem it&#39;s unlikely that you need super precise global position with very low latency. In general global fixes are moderately high latency and often are discontinuous. </p>
+
+<p>As such the standard techinque is to decouple the low latency high speed positioning requirements and do all of those computations in the odometric frame. And then only deal with global positioning at a slower rate updating setpoint and goals in the odometric frame when new global information is received it updates the map -&gt; odom transform with any drift observed. But between updates the only errors is the accumulation of drift in your odometry, which should be moderately small if you have a global fix streaming in, even if it&#39;s latent by 60ms and coming in at 10Hz. </p>
+
+<p>For reference also: <a href="https://www.ros.org/reps/rep-0105.html">https://www.ros.org/reps/rep-0105.html</a> </p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2019-08-21 20:07:56 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+<div class="comment">
+          <p>Thanks for the kind and insigntful answer! you are right, we have a Camera system which reads datamatrix tags on the floor, so sometimes you see them and sometimes you dont. Problem in the first place was that we added the outdated pose to current odometry which delocalized us;) so the 60ms delay shouldnt be a problem if we just publish it on the map frame.</p>
+
+
+  <div class="owner"><p>Asked by <a href="/users/1492">madmax</a> on 2019-08-22 16:28:05 UTC</p></div>
+</div>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Sync problems between ROS and Gazebo - ROS Answers archive</title>
+
+    <link rel="stylesheet" href="/stylesheet.css">
+    <link rel="canonical" href="/question/294667">
+
+    <!-- you don't need to keep this, but it's cool for stats! -->
+    <meta name="generator" content="Nanoc 4.12.0">
+  </head>
+
+  <body>
+      <header class="site">
+    <a href="https://robotics.stackexchange.com">Robotics StackExchange</a>
+  </header>
+
+    <div id="main">
+      <h2>Sync problems between ROS and Gazebo</h2>
+      <div class="question">
+        <p class="note migrated">This question has also been migrated to <a href="https://robotics.stackexchange.com">Robotics StackExchange</a> as <a href="https://robotics.stackexchange.com/questions/87431/sync-problems-between-ros-and-gazebo">https://robotics.stackexchange.com/questions/87431/sync-problems-between-ros-and-gazebo</a>.</p>
+        <p>Hi all,</p>
+
+<p>I built a simple simulated environment and a diff-drive robot (with an Hokuyo and a Kinect) in Gazebo to perform some mapping experiments. All the config files are in <a href="https://github.com/schizzz8/lucrezio_simulation_environments">this</a> repository and you may test it by running:</p>
+
+<blockquote>
+<p>roslaunch lucrezio<em>simulation</em>environments empty<em>world</em>with<em>apartment</em>and_robot.launch</p>
+</blockquote>
+
+<p>After running the experiments I noticed strange behaviors. This is what happens when I try to localize the robot on a map that I previously built and, at the same time, on RViz I want to visualize the colored point cloud returned by the Kinect:</p>
+
+<p><a href="https://youtu.be/v7DAr12hxO0">https://youtu.be/v7DAr12hxO0</a></p>
+
+<p>The only interpretation I can give is that there is some delay in the published transforms.</p>
+
+<p>To check this, I wrote a minimal node that does the following:</p>
+
+<ul>
+<li><p>listens to <code>/scan</code> topic to receive laser messages</p></li>
+<li><p>uses <code>tf::TransformListener</code> to receive the TF between <code>/odom</code> and <code>/base_footprint</code> frames</p></li>
+</ul>
+
+<p>this is the code:</p>
+
+<pre><code>void laserCallback(const sensor_msgs::LaserScan::ConstPtr &amp;laser_msg){
+  ros::Time stamp = laser_msg-&gt;header.stamp;
+  ROS_INFO(&quot;Laser msg timestamp: %f&quot;,stamp.toSec());
+
+  tf::TransformListener odom_listener;
+  tf::StampedTransform odom_tf;
+
+  try{
+    odom_listener.waitForTransform(&quot;/odom&quot;,
+                                   &quot;/base_footprint&quot;,
+                                   stamp,
+                                   ros::Duration(1.0));
+    odom_listener.lookupTransform(&quot;/odom&quot;,
+                                  &quot;/base_footprint&quot;,
+                                  stamp,
+                                  odom_tf);
+  } catch (tf::TransformException ex){
+    ROS_ERROR(&quot;%s&quot;,ex.what());
+  }
+  ROS_INFO(&quot;Odom tf timestamp: %f&quot;,odom_tf.stamp_.toSec());
+}
+</code></pre>
+
+<p>when I execute it, this is what I get:</p>
+
+<pre><code>dede@srrg-02:~$ rosrun lucrezio_semantic_mapper pose_broadcaster_node 
+[ INFO] [1529497453.859222896, 17.178000000]: Laser msg timestamp: 17.145000
+[ERROR] [1529497454.891297562, 18.207000000]: Lookup would require extrapolation into the past.  Requested time 17.145000000 but the earliest data is at time 17.356000000, when looking up transform from frame [base_footprint] to frame [odom]
+[ INFO] [1529497454.891428167, 18.207000000]: Odom tf timestamp: 0.000000
+[ INFO] [1529497454.902422031, 18.218000000]: Laser msg timestamp: 18.196000
+[ERROR] [1529497455.937621922, 19.248000000]: Lookup would require extrapolation into the past.  Requested time 18.196000000 but the earliest data is at time 18.356000000, when looking up transform from frame [base_footprint] to frame [odom]
+[ INFO] [1529497455.937735340, 19.248000000]: Odom tf timestamp: 0.000000
+</code></pre>
+
+<p>if, instead of <code>stamp</code>, I pass <code>ros::Time(0)</code> as argument to <strong>waitForTransform()</strong> and <strong>lookupTransform()</strong> I get no error but I see that the laser message stamp and the tf stamp have a not negligible difference:</p>
+
+<pre><code>dede@srrg-02:~$ rosrun lucrezio_semantic_mapper pose_broadcaster_node 
+[ INFO] [1529497759.281287706, 321.114000000]: Laser msg timestamp: 321.107000
+[ INFO] [1529497759.484725587, 321.317000000]: Odom tf timestamp: 321.316000
+[ INFO] [1529497759.499681070, 321.331000000]: Laser msg timestamp: 321.308000
+[ INFO] [1529497759.685763872, 321.516000000]: Odom tf timestamp: 321.516000
+</code></pre>
+
+<p>Please, can someone explain me what is happening and how to tackle this problem?</p>
+
+<p>Thanks.</p>
+
+        <div class="owner"><p>Asked by <a href="/users/3511">schizzz8</a> on 2018-06-20 07:34:12 UTC</p></div>
+      </div>
+
+      <section class="comments">
+        <h3>Comments</h3>
+      </section>
+
+      <section class="answers">
+        <h3>Answers</h3>
+<div class="answer accepted">
+              <p>You are getting a lookup error because you are creating your TransformListener inside the callback. The transform listener requires building up a cache of known transforms. When you construct the listener it will be initialized with an empty cache. In that case it&#39;s likely that you&#39;ll never be able to transform.</p>
+
+<p>Note in the tutorial how the listener is initialized outside the loop not inside. <a href="http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20listener%20%28C%2B%2B%29#CA-462816d8af59c3aa7e95f6de603fa0a07b25aa07_20">http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20listener%20%28C%2B%2B%29#CA-462816d8af59c3aa7e95f6de603fa0a07b25aa07_20</a></p>
+
+<p>The lifetime requirements are explained below: <a href="http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20listener%20%28C%2B%2B%29#The_Code_Explained">http://wiki.ros.org/tf/Tutorials/Writing%20a%20tf%20listener%20%28C%2B%2B%29#The_Code_Explained</a></p>
+
+
+  <div class="accepted">
+    <span class="accepted">☑️</span> This answer was <strong>ACCEPTED</strong> on the original site.
+  </div>
+  <div class="owner">
+    <p>
+      Asked by <a href="/users/3"></a> on 2018-06-20 13:04:40 UTC
+    </p>
+  </div>
+
+  <section class="comments">
+    <h3>Comments</h3>
+  </section>
+</div>
+      </section>
+    </div>
+  </body>
+</html>
